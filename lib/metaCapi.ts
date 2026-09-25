@@ -2,7 +2,9 @@ import crypto from 'crypto';
 import { graphUrl, validateTokenFormat, validatePixelIdFormat } from './metaErrors';
 import { fetchMetaApi } from './metaApiLogger';
 
-const PIXEL_ID = process.env.META_PIXEL_ID || process.env.NEXT_PUBLIC_META_PIXEL_ID || '2049977412558608';
+// Keep the public fallback order identical to app/layout.tsx and metaPixel.ts.
+const BROWSER_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || '2049977412558608';
+const PIXEL_ID = process.env.META_PIXEL_ID || BROWSER_PIXEL_ID;
 const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN!;
 const TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE;
 
@@ -81,11 +83,9 @@ function cleanAndHash(val: string | undefined, normalizer: (v: string) => string
 }
 
 const normalizePhone = (p: string) => {
-  const digits = p.replace(/\D/g, "");
-  let base = digits;
-  if (digits.length === 12 && digits.startsWith("91")) base = digits.slice(2);
-  else if (digits.length === 11 && digits.startsWith("0")) base = digits.slice(1);
-  return `91${base}`;
+  const digits = p.replace(/\D/g, '');
+  // Already international numbers retain their country code.
+  return digits.length === 10 ? `91${digits}` : digits.replace(/^00/, '');
 };
 
 const normalizeCountry = (c: string) => {
@@ -100,6 +100,13 @@ const normalizeEmail = (e: string) => e.trim().toLowerCase();
 const normalizeDob = (d: string) => d.trim().replace(/\D/g, "");
 
 export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ success: boolean; data?: any; error?: any; fbtrace_id?: string }> {
+  if (typeof payload.eventId !== 'string' || !payload.eventId.trim()) {
+    return { success: false, error: 'Missing event ID for deduplication' };
+  }
+  if (PIXEL_ID !== BROWSER_PIXEL_ID) {
+    console.error('[Meta CAPI CONFIG ERROR] Browser and server Pixel IDs must match');
+    return { success: false, error: 'Browser and server Pixel IDs do not match' };
+  }
   // Pre-request validation
   const tokenErr = validateTokenFormat(ACCESS_TOKEN);
   if (tokenErr) {
@@ -118,8 +125,11 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
   // Validate event time
   const eventTime = payload.eventTime ?? Math.floor(Date.now() / 1000);
   const now = Math.floor(Date.now() / 1000);
-  if (eventTime < now - 7 * 24 * 60 * 60 || eventTime > now + 24 * 60 * 60) {
-    console.warn('[Meta CAPI] Event time is out of valid range (older than 7 days or in future):', eventTime);
+  if (!Number.isSafeInteger(eventTime) || eventTime < now - 7 * 24 * 60 * 60 || eventTime > now + 300) {
+    return { success: false, error: 'Invalid event time' };
+  }
+  if (payload.eventName === 'Purchase' && (!Number.isFinite(payload.customData?.value) || payload.customData?.value <= 0 || !/^[A-Z]{3}$/.test(payload.customData?.currency || ''))) {
+    return { success: false, error: 'Invalid purchase value/currency' };
   }
 
   // Clean custom data — strip undefined or null values
@@ -247,8 +257,8 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
       label: `POST /${PIXEL_ID}/events [${payload.eventName}]`,
     });
 
-    if (!logEntry.success) {
-      console.error('[Meta CAPI Error]', resJson);
+    if (!logEntry.success || Number(resJson?.events_received) < 1 || !Number.isFinite(Number(resJson?.events_received))) {
+      console.error('[Meta CAPI] Event not accepted', { code: resJson?.error?.code, eventId: payload.eventId });
       return {
         success: false,
         error: resJson,
@@ -262,7 +272,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
       fbtrace_id: logEntry.fbtrace_id,
     };
   } catch (err: any) {
-    console.error('[Meta CAPI Catch Error]', err);
-    return { success: false, error: err.message || 'Fetch failed' };
+    console.error('[Meta CAPI] Request failed or timed out', { eventId: payload.eventId });
+    return { success: false, error: 'Meta request failed or timed out' };
   }
 }

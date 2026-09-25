@@ -1,6 +1,6 @@
 'use client';
 import { usePathname } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import {
   initPixel,
@@ -41,11 +41,16 @@ function cleanStringNoSpaces(val: string | undefined): string {
 
 export function MetaPixelRouteTracker() {
   const pathname = usePathname();
+  const lastPage = useRef<string | null>(null);
   const { data: session } = useSession();
 
   useEffect(() => {
     // Don't fire any pixel/CAPI events on admin dashboard or admin routes
     if (pathname.startsWith('/dashboard') || pathname.startsWith('/admin') || pathname.startsWith('/web-store')) return;
+
+    const pageKey = window.location.pathname + window.location.search;
+    const shouldTrackPage = lastPage.current !== pageKey;
+    lastPage.current = pageKey;
 
     // ─── STEP 1: Synchronous setup (cookies, fbclid capture) ───
 
@@ -80,6 +85,7 @@ export function MetaPixelRouteTracker() {
 
     // ─── STEP 2: Fire PageView IMMEDIATELY with sync-available data ───
 
+    if (shouldTrackPage) {
     const eventId = 'pv.' + uuidv4();
     const eventTime = Math.floor(Date.now() / 1000);
 
@@ -129,6 +135,7 @@ export function MetaPixelRouteTracker() {
 
     fetch('/api/meta/event', {
       method: 'POST',
+      keepalive: true,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         eventName: 'PageView',
@@ -143,6 +150,8 @@ export function MetaPixelRouteTracker() {
 
     // GA PageView
     trackGAPageView(pathname);
+
+    }
 
     // ZB First-Party Analytics PageView
     trackZBPageView(pathname);
