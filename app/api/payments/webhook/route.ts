@@ -176,7 +176,7 @@ export async function POST(req: NextRequest) {
                     razorpayPaymentId,
                     paymentFailureReason: null,
                     ...(isCodOrder ? {
-                      codUpfrontPaid: capturedAmount || Number(wsOrder.codUpfrontPaid) || 99,
+                      codUpfrontPaid: capturedAmount || Number(wsOrder.codUpfrontPaid) || 0,
                       codUpfrontPaymentId: razorpayPaymentId,
                     } : {}),
                   },

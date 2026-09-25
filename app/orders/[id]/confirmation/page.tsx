@@ -202,7 +202,7 @@ export default function OrderConfirmationPage() {
   const rawMethod = (order.paymentMethod || '').toLowerCase();
   const isCod = order.isCod || rawMethod === 'cod' || rawMethod.includes('cash');
   const totalPrice = Number(order.totalPrice || 0);
-  const upfrontPaid = isCod ? (Number(order.codUpfrontPaid) || 99) : totalPrice;
+  const upfrontPaid = isCod ? (Number(order.codUpfrontPaid) || 0) : totalPrice;
   const balanceDue = isCod ? Math.max(0, totalPrice - upfrontPaid) : 0;
   const currency = order.currency || "INR";
 

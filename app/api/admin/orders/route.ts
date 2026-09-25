@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { enrichItemsWithSize } from '@/lib/enrichSize';
+import { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
 
 export const dynamic = 'force-dynamic';
 
@@ -219,7 +220,14 @@ export async function GET(req: Request) {
       }
 
       if (isCodOrder && codUpfrontPaid === 0 && (paymentStatus === 'cod_upfront_paid' || paymentStatus === 'paid')) {
-        codUpfrontPaid = 99;
+        codUpfrontPaid = resolveStoredCodUpfrontPaid({
+          storedPaid: Number((order as any).codUpfrontPaid) || 0,
+          paymentStatus,
+          paymentMethod: order.paymentMethod as string,
+          tags: order.tags as string,
+          note: order.note as string,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        });
       }
 
       const totalPrice = order.totalPrice;

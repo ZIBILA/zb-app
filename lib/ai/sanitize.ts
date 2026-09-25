@@ -131,7 +131,7 @@ export function sanitizeOrderForCustomer(order: any): Record<string, any> {
       safe.balanceDue = 0;
     } else {
       // Standard upfront paid or pending COD order
-      safe.codUpfrontPaid = codUpfront > 0 ? codUpfront : 99;
+      safe.codUpfrontPaid = codUpfront > 0 ? codUpfront : 0;
       safe.paidAmount = safe.codUpfrontPaid;
       safe.balanceDue = Math.max(0, total - safe.paidAmount);
     }
@@ -189,7 +189,7 @@ export function sanitizePaymentForCustomer(payment: any): Record<string, any> {
   safe.paymentMethod = formatPaymentMethodName(rawMethod);
 
   if (isCOD) {
-    safe.codUpfrontPaid = codUpfront > 0 ? codUpfront : 99;
+    safe.codUpfrontPaid = codUpfront > 0 ? codUpfront : 0;
     safe.paidAmount = safe.codUpfrontPaid;
     safe.balanceDue = Math.max(0, total - safe.paidAmount);
   } else {
@@ -243,7 +243,7 @@ export function mapPaymentStatus(status: string, isCOD = false, codUpfront = 0):
   if (!status) return 'Unknown';
   const lower = status.toLowerCase();
   if (lower === 'cod_upfront_paid' || (isCOD && (lower === 'paid' || lower === 'pending') && codUpfront > 0)) {
-    return `COD Upfront Paid (₹${codUpfront || 99} Paid, Balance Due at Delivery)`;
+    return `COD Upfront Paid (₹${codUpfront || 0} Paid, Balance Due at Delivery)`;
   }
   return PAYMENT_STATUS_MAP[lower] ?? status;
 }

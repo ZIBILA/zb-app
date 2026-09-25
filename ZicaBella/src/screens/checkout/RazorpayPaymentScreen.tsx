@@ -146,13 +146,16 @@ export default function RazorpayPaymentScreen() {
       const apiBase = getPaymentApiBaseUrl();
 
       if (orderData) {
+        const isCod = String(orderData.paymentMethod || '').toUpperCase() === 'COD';
         const orderPayload = {
           ...orderData,
           paymentId: paymentId,
           razorpayOrderId: rzpOrderId,
           razorpay_order_id: rzpOrderId,
           paymentStatus: 'paid',
-          paymentMethod: 'PREPAID',
+          paymentMethod: isCod ? 'COD' : 'PREPAID',
+          codFee: isCod ? Number(orderData.codFee || orderData.codUpfrontPaid || amount || 0) : 0,
+          codUpfrontPaid: isCod ? Number(orderData.codFee || orderData.codUpfrontPaid || amount || 0) : 0,
         };
 
         const res = await fetch(`${apiBase}/api/app/orders/create`, {
@@ -232,7 +235,7 @@ export default function RazorpayPaymentScreen() {
   const goToOrders = () => {
     nav.getParent()?.reset({
       index: 1,
-      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: 'PREPAID' } }],
+      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
     });
   };
 

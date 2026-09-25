@@ -219,8 +219,29 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       ? parseInt(shopifyCustomerId, 10)
       : null;
 
-    const codUpfrontPaid = Number(order.codUpfrontPaid) || 99;
-    const codBalanceDue = Math.max(0, Number(order.totalPrice || 0) - codUpfrontPaid);
+    const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+    // Prefer amount locked on the order at payment time; fall back only for legacy rows
+    let codUpfrontPaid = resolveStoredCodUpfrontPaid({
+      storedPaid: (order as any).codUpfrontPaid,
+      paymentStatus: order.paymentStatus,
+      paymentMethod: order.paymentMethod,
+      tags: order.tags,
+      note: order.note,
+      configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+    });
+    if (isCod && codUpfrontPaid <= 0) {
+      // Legacy: look up WebStoreOrder if master Order never stored the fee
+      try {
+        const ws = order.razorpayOrderId
+          ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: order.razorpayOrderId } })
+          : null;
+        if (ws?.codUpfrontPaid && Number(ws.codUpfrontPaid) > 0) {
+          codUpfrontPaid = Number(ws.codUpfrontPaid);
+        }
+      } catch {}
+    }
+    if (isCod && codUpfrontPaid <= 0) codUpfrontPaid = DEFAULT_COD_UPFRONT_AMOUNT;
+    const codBalanceDue = getCodBalanceDue(order.totalPrice || 0, codUpfrontPaid);
     const resolvedMethodTag = isCod ? 'COD' : 'Prepaid, Razorpay';
     const emailToUse = order.customer?.email || shippingAddress?.email || '';
 

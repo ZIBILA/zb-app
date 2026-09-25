@@ -113,7 +113,19 @@ export async function POST(req: Request) {
     const rawShipping = Number(shipping || 0);
     const rawStoreCredit = Number(storeCreditAmount || 0);
     const calculatedTotal = Math.max(0, rawSubtotal + rawShipping - finalCouponDiscount - rawStoreCredit);
-    const chargeAmount = isCodOrder ? (Number(codFee) > 0 ? Number(codFee) : Number(amount)) : calculatedTotal;
+
+    // COD: always charge the dashboard-configured upfront fee (ignore client amount for safety).
+    // Prepaid: charge the calculated order total.
+    const { getConfiguredCodUpfrontAmount } = await import("@/lib/cod-upfront");
+    const configuredCodFee = isCodOrder ? await getConfiguredCodUpfrontAmount() : 0;
+    const chargeAmount = isCodOrder ? configuredCodFee : calculatedTotal;
+
+    // Soft-warn if client sent a mismatched COD fee (UI stale cache) but still use server value
+    if (isCodOrder && Number(codFee) > 0 && Math.abs(Number(codFee) - configuredCodFee) > 0.01) {
+      console.warn(
+        `[Razorpay Checkout] Client COD fee ₹${codFee} differs from configured ₹${configuredCodFee}; using configured amount`
+      );
+    }
 
     // Validate required fields
     if (!chargeAmount || typeof chargeAmount !== "number" || chargeAmount <= 0) {
@@ -216,6 +228,7 @@ export async function POST(req: Request) {
                 billingAddress: JSON.stringify(checkoutAddress),
                 razorpayOrderId: rzpOrder.id,
                 paymentMethod: isCodOrder ? "cod" : "razorpay",
+                codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                 discountCode: finalCouponCode || null,
                 discountAmount: Number(finalCouponDiscount) || 0,
                 storeCreditAmount: Number(rawStoreCredit) || 0,
@@ -272,6 +285,7 @@ export async function POST(req: Request) {
                   totalAmount: calculatedTotal,
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
                   razorpayOrderId: rzpOrder.id,
+                  codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                 }
               });
             }
@@ -305,6 +319,7 @@ export async function POST(req: Request) {
                 razorpayOrderId: rzpOrder.id,
                 razorpayPaymentId: null,
                 paymentMethod: isCodOrder ? "cod" : "razorpay",
+                codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                 paymentCapturedAt: null,
                 orderType: "WEB_STORE",
                 tags: `WebStoreOrder, Web, ${isCodOrder ? "cod" : "razorpay"}, zb-order-${universalOrderNumber}, payment_pending, Order creation in process${sessionTag}`,
@@ -361,6 +376,7 @@ export async function POST(req: Request) {
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
                   razorpayOrderId: rzpOrder.id,
                   razorpayPaymentId: null,
+                  codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                   fulfillmentStatus: "unfulfilled",
                   notes: rawStoreCredit > 0
                     ? `Order creation in process - ₹${rawStoreCredit} Store Credit applied - Remaining Payment pending`
@@ -389,6 +405,8 @@ export async function POST(req: Request) {
       keyId: keyId,
       localOrderId,
       internalOrderNumber: universalOrderNumber,
+      codFee: isCodOrder ? configuredCodFee : 0,
+      codUpfrontAmount: isCodOrder ? configuredCodFee : 0,
     }), {
       orderId: localOrderId,
       gateway: { id: rzpOrder.id, amount: Number(rzpOrder.amount), currency: String(rzpOrder.currency), live: keyId.startsWith('rzp_live_') },

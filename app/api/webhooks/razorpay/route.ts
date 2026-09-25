@@ -113,6 +113,10 @@ export async function POST(req: Request) {
               status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending') ? 'OPEN' : order.status,
               tags: cleanedTags,
               note: isCOD ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
+              ...(isCOD ? {
+                codUpfrontPaid: Number(payment.amount / 100) || Number((order as any).codUpfrontPaid) || 0,
+                codUpfrontPaymentId: razorpayPaymentId,
+              } : {}),
             },
           });
 
@@ -182,7 +186,7 @@ export async function POST(req: Request) {
             paymentStatus: targetPaymentStatus,
             razorpayPaymentId,
             ...(isCOD ? {
-              codUpfrontPaid: Number(payment.amount / 100) || 99,
+              codUpfrontPaid: Number(payment.amount / 100) || 0,
               codUpfrontPaymentId: razorpayPaymentId,
               notes: `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay) | Order: ${currentOrderNum || order.id}`
             } : {})

@@ -45,10 +45,19 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         const wsOrder = order.razorpayOrderId
           ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: order.razorpayOrderId } })
           : null;
-        codUpfront = wsOrder?.codUpfrontPaid ? Number(wsOrder.codUpfrontPaid) : 99;
+        const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+        codUpfront = resolveStoredCodUpfrontPaid({
+          storedPaid: Number((order as any).codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
+          paymentStatus: order.paymentStatus,
+          paymentMethod: order.paymentMethod,
+          tags: order.tags,
+          note: order.note,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        });
       }
 
-      const codBalanceDue = isCodOrder ? Math.max(0, order.totalPrice - codUpfront) : 0;
+      const { getCodBalanceDue } = await import('@/lib/cod-upfront');
+      const codBalanceDue = isCodOrder ? getCodBalanceDue(order.totalPrice, codUpfront) : 0;
       const paymentMode = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
 
       const shipmentPayload = {

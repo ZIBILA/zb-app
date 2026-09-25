@@ -36,8 +36,12 @@ export async function createShipment(order: DelhiveryOrder): Promise<{ awb: stri
           return_name: 'Zica Bella Returns',
           return_add: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
           products_desc: order.items.map(i => i.title).join(', '),
-          cod_amount: (order.paymentMode === 'COD' || String(order.paymentMode).toUpperCase() === 'COD') 
-            ? String(Math.max(0, Math.round(Number(order.total) - (Number((order as any).codUpfrontPaid) || 99)))) 
+          cod_amount: (order.paymentMode === 'COD' || String(order.paymentMode).toUpperCase() === 'COD')
+            ? String(Math.max(0, Math.round(
+                Number(order.total) - (Number((order as any).codUpfrontPaid) > 0
+                  ? Number((order as any).codUpfrontPaid)
+                  : 0)
+              )))
             : '',
           order_date: new Date().toISOString(),
           total_amount: String(Math.round(Number(order.total))),
