@@ -228,3 +228,31 @@ test('actual browser Pixel and CAPI transports share one Purchase identity, valu
   const pixelId = f.loaded.load('lib/metaPixel.ts').META_PIXEL_ID;
   assert.ok(new URL(serverCalls[0].url).pathname.endsWith(`/${pixelId}/events`));
 });
+
+for (const rebind of [true, false]) {
+  test(`capture cannot verify a concurrently refreshed ${rebind ? 'gateway order' : 'payment amount'}`, async () => {
+    const f = fixture(); await f.prepare();
+    const update = f.db.metaPurchase.updateMany;
+    let interleaved = false;
+    f.db.metaPurchase.updateMany = async args => {
+      if (!interleaved && args.data.status === 'pending') {
+        interleaved = true;
+        f.order.razorpayOrderId = rebind ? 'order_2' : 'order_1';
+        await f.api.prepareMetaPurchase(f.req, 'local1', {
+          id: f.order.razorpayOrderId, amount: rebind ? 9900 : 19900, currency: 'INR', live: true,
+        }, token, f.db);
+      }
+      return update(args);
+    };
+    assert.equal(await f.capture(), null);
+    assert.equal(f.row.status, 'awaiting_payment');
+    assert.equal(f.row.verifiedPaymentId, null);
+    assert.equal(f.row.capturedAt, null);
+    assert.equal(await f.api.browserPurchase(f.req, 'local1', f.db), null);
+    assert.equal(await f.api.dispatchMetaPurchase('local1', f.db, () => assert.fail('stale proof sent')), 'not_claimed');
+    f.payment.order_id = f.order.razorpayOrderId;
+    f.payment.amount = f.row.expectedAmountMinor;
+    assert.equal(await f.capture(), 'local1');
+    assert.equal(f.row.status, 'pending');
+  });
+}

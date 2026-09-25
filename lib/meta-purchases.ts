@@ -126,9 +126,15 @@ export async function recordCapturedPurchase(payment: any, capturedAt = new Date
   if (!row) return null; // Legacy/recovery orders deliberately excluded.
   if (!validateCapturedPayment(row, payment)) throw new Error('Captured payment does not match checkout snapshot');
   // Never reset a sent event, event time, attempts, or a worker lease on a repeated callback.
-  await db.metaPurchase.updateMany({ where: { orderId: row.orderId, status: 'awaiting_payment' },
-    data: { status: 'pending', verifiedPaymentId: payment.id, capturedAt, availableAt: new Date() } });
-  return row.orderId;
+  if (row.status !== 'awaiting_payment') return row.orderId;
+  // Compare the payment binding atomically: checkout reuse may refresh it after
+  // the read above. Never attach stale capture proof to the replacement attempt.
+  const recorded = await db.metaPurchase.updateMany({ where: {
+    orderId: row.orderId, status: 'awaiting_payment', capturedAt: null,
+    razorpayOrderId: row.razorpayOrderId, expectedAmountMinor: row.expectedAmountMinor,
+    currency: row.currency, live: row.live,
+  }, data: { status: 'pending', verifiedPaymentId: payment.id, capturedAt, availableAt: new Date() } });
+  return recorded.count === 1 ? row.orderId : null;
 }
 
 async function eligible(row: any, db: any): Promise<boolean> {

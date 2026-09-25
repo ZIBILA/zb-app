@@ -26,7 +26,7 @@ Retries and browser duplicates stop 47 hours after verified capture. A historica
 
 ## Local validation
 
-- `npm run test:meta`: **53 passed, 0 failed**, including the deduplication and reused-unpaid-checkout regression tests. Tests execute actual TypeScript modules with isolated DB, gateway, HTTP and browser boundaries. They cover observer failures/timeouts, unchanged checkout reuse and responses, signed/unsigned webhooks, captured versus authorized payments, stale bindings, lost-browser delivery, worker recovery/concurrency, retries, value/currency, private IPs, Pixel-ID configuration and the full browser/server deduplication path.
+- `npm run test:meta`: **55 passed, 0 failed**, including the deduplication and reused-unpaid-checkout regression tests. Tests execute actual TypeScript modules with isolated DB, gateway, HTTP and browser boundaries. They cover observer failures/timeouts, unchanged checkout reuse and responses, signed/unsigned webhooks, captured versus authorized payments, stale bindings, lost-browser delivery, worker recovery/concurrency, retries, value/currency, private IPs, Pixel-ID configuration and the full browser/server deduplication path.
 - TypeScript passed again after the deduplication review. Prisma generation and schema validation passed for the unchanged schema. The full application build at prior revision `78d08f6` completed compilation and type checking, then stopped at page-data collection because `NEXTAUTH_SECRET`, `DATABASE_URL` and `SHOPIFY_ADMIN_ACCESS_TOKEN` are unavailable here. Existing affiliate Edge-crypto and CSS warnings remain. No fake production credentials are supplied.
 - A one-off TypeScript AST comparison confirmed that the original business statements are unchanged in the four payment routes and middleware after removing the isolated additions. This is not a substitute for staging payment tests.
 - No production gateway transaction, Meta event, schema change, campaign change or deployment is used for testing.
@@ -51,3 +51,7 @@ GROUP BY "status";
 ```
 
 Investigate missing snapshots, `delivery_failed`, `order_not_ready`, stale awaiting attempts and `ineligible_or_expired`. Never create a new event ID/time merely to retry an expired conversion. Apply the business's existing retention policy to advertising identifiers and do not log them.
+
+## Capture/reuse race regression
+
+Capture recording now atomically matches the verified gateway order, amount, currency and live mode, as well as awaiting status and absent capture time. A concurrent replacement cannot inherit stale payment proof; a failed conditional write returns null. Two deterministic interleaving regressions failed before the fix and pass after it, including later valid capture recovery. The complete 55-test Meta suite and TypeScript check pass. Database boundaries are mocked; production PostgreSQL concurrency and live Meta deduplication remain rollout checks. No schema or checkout/payment business route changed in this follow-up.
