@@ -79,6 +79,7 @@ export async function fetchMetaApi(
     body?: any;
     /** Human-readable label for logs, e.g. "GET /PIXEL_ID" */
     label?: string;
+    timeoutMs?: number;
   }
 ): Promise<{ response: Response; data: any; logEntry: MetaApiLogEntry }> {
   const method = options?.method || 'GET';
@@ -99,6 +100,7 @@ export async function fetchMetaApi(
     const fetchOptions: RequestInit = {
       method,
       cache: 'no-store',
+      signal: AbortSignal.timeout(options?.timeoutMs || 10000),
     };
 
     if (options?.body) {
@@ -117,12 +119,12 @@ export async function fetchMetaApi(
       method,
       fields,
       httpStatus: 0,
-      errorMessage: `Network error: ${err.message}`,
+      errorMessage: 'Network request failed or timed out',
       response_time_ms: elapsed,
       success: false,
     };
     logMetaApiRequest(entry);
-    console.error(`[Meta API] ${method} ${cleanEndpoint} — NETWORK ERROR (${elapsed}ms):`, err.message);
+    console.error(`[Meta API] ${method} ${cleanEndpoint} — NETWORK ERROR (${elapsed}ms)`);
     throw err;
   }
 

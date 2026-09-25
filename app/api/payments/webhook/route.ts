@@ -1,3 +1,4 @@
+import { observeMetaCapture } from '@/lib/meta-checkout-observer';
 /**
  * POST /api/payments/webhook — Razorpay Webhook Handler
  * 
@@ -58,6 +59,10 @@ export async function POST(req: NextRequest) {
     const eventId = payload.payload?.payment?.entity?.id || 
                     payload.payload?.refund?.entity?.id ||
                     `rp_${Date.now()}`;
+
+    if (eventType === 'payment.captured') {
+      await observeMetaCapture(payload.payload?.payment?.entity, new Date((payload.created_at || Date.now() / 1000) * 1000));
+    }
 
     // Idempotency check — skip if already processed
     const existingEvent = await prisma.webhookEvent.findFirst({

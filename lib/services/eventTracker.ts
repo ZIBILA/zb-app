@@ -75,7 +75,7 @@ export const eventTracker = {
     }
 
     // 2. Forward to Meta Conversions API if enabled
-    if (isMetaEventsEnabled) {
+    if (isMetaEventsEnabled && eventSource === 'whatsapp') {
       try {
         const datasetId = dbSettings['whatsapp_dataset_id'] || process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID;
         const accessToken = dbSettings['whatsapp_access_token'] || process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN;

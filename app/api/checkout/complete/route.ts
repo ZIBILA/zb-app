@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { observeMetaWalletCheckout, attachMetaWalletCookie } from '@/lib/meta-checkout-observer';
 import crypto from "crypto";
 import prisma from "@/lib/db";
 import { createCustomer, updateCustomer } from "@/lib/shopify-admin";
@@ -590,6 +591,10 @@ export async function POST(req: Request) {
       });
     }
 
+    const metaWalletToken = isFullStoreCredit
+      ? await observeMetaWalletCheckout(req, localOrder.id, sessionUserId)
+      : undefined;
+
     // ─── ONE AND ONLY ONE SHOPIFY-CREATE CHOKE POINT (FIX 1) ───
     try {
       const syncRes = await syncOrderToShopify(localOrder.id);
@@ -1126,7 +1131,7 @@ export async function POST(req: Request) {
         console.error("Shopify Customer Name Update Error:", e);
     }
 
-    return NextResponse.json({ orderId: localOrder.id });
+    return attachMetaWalletCookie(NextResponse.json({ orderId: localOrder.id }), metaWalletToken);
   } catch (error: any) {
     console.error("Order Completion Error:", error);
     return NextResponse.json({ error: error.message || "Order completion failed" }, { status: 500 });
