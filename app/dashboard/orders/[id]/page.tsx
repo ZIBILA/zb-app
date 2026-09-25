@@ -410,7 +410,7 @@ export default function OrderDetailPage() {
   const subtotalPrice = order ? (order.subtotalPrice || order.totalPrice) : 0;
   const isUndiscounted = order ? (discountAmount > 0 && Math.abs(order.totalPrice - subtotalPrice) < 0.01) : false;
   const finalGrandTotal = order ? (isUndiscounted ? order.totalPrice - discountAmount : order.totalPrice) : 0;
-  const codUpfrontAmount = order ? (Number((order as any).codUpfrontPaid) || (isCodMethod && (order.paymentStatus === 'cod_upfront_paid' || order.paymentStatus === 'paid') ? 99 : 0)) : 0;
+  const codUpfrontAmount = order ? Number((order as any).codUpfrontPaid) || 0 : 0;
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-12 pb-32 pt-4 relative">

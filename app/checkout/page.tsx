@@ -848,6 +848,22 @@ export default function CheckoutPage() {
   }, [address.zip, address.country, address.countryCode]);
 
    const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("PAYNOW");
+  const [configuredCodFee, setConfiguredCodFee] = useState<number>(99);
+
+  // Load dashboard-configured COD upfront fee (falls back to ₹99)
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/checkout/cod-fee")
+      .then((r) => r.json())
+      .then((data) => {
+        const amt = Number(data?.amount);
+        if (!cancelled && Number.isFinite(amt) && amt > 0) {
+          setConfiguredCodFee(amt);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Ensure paymentMethod is either PAYNOW or COD
   useEffect(() => {
@@ -884,12 +900,12 @@ export default function CheckoutPage() {
   const total = finalTotal;
 
   // Calculate COD upfront fee:
-  // Domestic India: fixed ₹99
+  // Domestic India: dashboard-configured amount (default ₹99)
   // International: 10% of order value in target currency
-  const codFeeBase = isInternational ? finalTotal * 0.10 : 99;
+  const codFeeBase = isInternational ? finalTotal * 0.10 : configuredCodFee;
   const codFeeDisplay = fmtPrice(codFeeBase);
-  const codFee = isInternational ? codFeeDisplay.amount : 99;
-  const codFeeFormatted = isInternational ? codFeeDisplay.formatted : `₹99`;
+  const codFee = isInternational ? codFeeDisplay.amount : configuredCodFee;
+  const codFeeFormatted = isInternational ? codFeeDisplay.formatted : `₹${configuredCodFee.toLocaleString("en-IN")}`;
 
   // Fetch available store credit balance when customer email/phone or session changes
   useEffect(() => {
@@ -1903,7 +1919,7 @@ export default function CheckoutPage() {
               <p className="text-[9px] font-light text-foreground/60 leading-relaxed">
                 {isInternational
                   ? `Pay ${codFeeFormatted} upfront (10% of order value, deducted from total). Remaining ${fmtAmount(Math.max(0, finalTotal - codFeeBase))} due at delivery.`
-                  : `Pay ₹99 upfront (deducted from total). Remaining ₹${Math.max(0, finalTotal - 99).toLocaleString("en-IN")} due at delivery.`}
+                  : `Pay ₹${configuredCodFee.toLocaleString("en-IN")} upfront (deducted from total). Remaining ₹${Math.max(0, finalTotal - configuredCodFee).toLocaleString("en-IN")} due at delivery.`}
               </p>
             </div>
           )}

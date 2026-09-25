@@ -693,7 +693,7 @@ async function getPaymentDetails(orderIdOrNumber: string, principal?: Principal)
   }
 
   const isCOD = (mergedOrder.paymentMethod || '').toLowerCase() === 'cod';
-  const paidAmount = isCOD ? (mergedOrder.codUpfrontPaid > 0 ? mergedOrder.codUpfrontPaid : 99) : (mergedOrder.paymentStatus === 'paid' ? mergedOrder.totalPrice : 0);
+  const paidAmount = isCOD ? (mergedOrder.codUpfrontPaid > 0 ? mergedOrder.codUpfrontPaid : 0) : (mergedOrder.paymentStatus === 'paid' ? mergedOrder.totalPrice : 0);
   const balanceDue = Math.max(0, mergedOrder.totalPrice - paidAmount);
 
   return JSON.stringify({

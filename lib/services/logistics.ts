@@ -279,6 +279,45 @@ export async function shipOrder(
       let data: any;
 
       if (config.provider === 'shiprocket') {
+        const dbOrder = await prisma.order.findFirst({
+          where: {
+            OR: [
+              { id: orderId },
+              { shopifyOrderId: orderId }
+            ]
+          }
+        });
+
+        const rawMethod = (dbOrder?.paymentMethod || '').toLowerCase();
+        const tagsLower = (dbOrder?.tags || '').toLowerCase();
+        const noteLower = (dbOrder?.note || '').toLowerCase();
+        const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
+
+        const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+        let codUpfront = 0;
+        if (isCodOrder) {
+          const wsOrder = dbOrder?.razorpayOrderId
+            ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
+            : null;
+          // Legacy rows without stored fee fall back to DEFAULT (99), not the live dashboard
+          // setting — so changing settings never rewrites old shipments' COD balance.
+          codUpfront = resolveStoredCodUpfrontPaid({
+            storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
+            paymentStatus: dbOrder?.paymentStatus,
+            paymentMethod: dbOrder?.paymentMethod,
+            tags: dbOrder?.tags,
+            note: dbOrder?.note,
+            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+          });
+        }
+
+        const calculatedTotalPrice = Number(
+          dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0)
+        );
+        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
+        const paymentMethod = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
+        const subTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+
         data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', {
           order_id: orderId,
           order_date: new Date().toISOString().split('T')[0],
@@ -297,8 +336,10 @@ export async function shipOrder(
             units: i.quantity,
             selling_price: i.price,
           })),
-          payment_method: 'prepaid',
-          sub_total: items.reduce((s, i) => s + i.price * i.quantity, 0),
+          payment_method: paymentMethod,
+          // Remaining COD after upfront Razorpay payment (0 for prepaid)
+          ...(paymentMethod === 'COD' ? { cod_amount: Math.round(codBalanceDue) } : {}),
+          sub_total: subTotal,
           length: 20,
           breadth: 15,
           height: 10,
@@ -356,11 +397,20 @@ export async function shipOrder(
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
-          codUpfront = wsOrder?.codUpfrontPaid ? Number(wsOrder.codUpfrontPaid) : 99;
+          const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          codUpfront = resolveStoredCodUpfrontPaid({
+            storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
+            paymentStatus: dbOrder?.paymentStatus,
+            paymentMethod: dbOrder?.paymentMethod,
+            tags: dbOrder?.tags,
+            note: dbOrder?.note,
+            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+          });
         }
 
         const calculatedTotalPrice = Number(dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0));
-        const codBalanceDue = isCodOrder ? Math.max(0, calculatedTotalPrice - codUpfront) : 0;
+        const { getCodBalanceDue } = await import('@/lib/cod-upfront');
+        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
         const paymentMode = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
 
         const payload = {

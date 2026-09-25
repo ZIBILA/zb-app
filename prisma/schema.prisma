@@ -118,6 +118,8 @@ model Shop {
   feedExcludedCollections  String?    @default("[]")
   zicaAiSupportEnabled     Boolean    @default(true)
   zicaAiWhatsappEnabled    Boolean    @default(true)
+  /// Configurable COD commitment fee charged via Razorpay at checkout (INR). Remaining balance is COD at delivery.
+  codUpfrontAmount         Decimal    @default(99) @map("cod_upfront_amount") @db.Decimal(10, 2)
   customers                Customer[]
   orders                   Order[]
   products                 Product[]
@@ -293,6 +295,9 @@ model Order {
   paymentMethod         String?
   razorpayOrderId       String?            @unique
   razorpayPaymentId     String?            @unique
+  /// Amount collected upfront via Razorpay for COD orders (locked at payment time).
+  codUpfrontPaid        Float?             @default(0) @map("cod_upfront_paid")
+  codUpfrontPaymentId   String?            @map("cod_upfront_payment_id")
   rtoRiskFactors        String?
   rtoRiskScore          Int?
   discountAmount        Float?             @default(0)

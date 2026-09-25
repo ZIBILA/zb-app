@@ -73,9 +73,9 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                 razorpayPaymentId: (confirmedMainOrder.razorpayPaymentId as string) || order.razorpayPaymentId,
                 paymentFailureReason: null,
                 ...(isCOD ? {
-                  codUpfrontPaid: Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 99,
+                  codUpfrontPaid: Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 0,
                   codUpfrontPaymentId: (confirmedMainOrder.razorpayPaymentId as string) || order.razorpayPaymentId || null,
-                  notes: `COD Order (₹${Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 99} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
+                  notes: `COD Order (₹${Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 0} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
                 } : {})
               },
             });
@@ -202,9 +202,19 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
           finalPaymentStatus &&
           (finalPaymentStatus !== order.paymentStatus || failureReason !== order.paymentFailureReason)
         ) {
-          console.log(`[RazorpaySync] Order ${order.orderNumber} status transition: ${order.paymentStatus} -> ${finalPaymentStatus}. Reason: ${failureReason || 'N/A'}, codUpfrontPaid: ${Number(order.codUpfrontPaid) || 99}, rzpOrderId: ${order.razorpayOrderId}, codUpfrontPaymentId: ${order.codUpfrontPaymentId || newPaymentId}`);
+          console.log(`[RazorpaySync] Order ${order.orderNumber} status transition: ${order.paymentStatus} -> ${finalPaymentStatus}. Reason: ${failureReason || 'N/A'}, codUpfrontPaid: ${Number(order.codUpfrontPaid) || 0}, rzpOrderId: ${order.razorpayOrderId}, codUpfrontPaymentId: ${order.codUpfrontPaymentId || newPaymentId}`);
 
           // 1. Update WebStoreOrder
+          const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          const syncedUpfront = isCOD
+            ? resolveStoredCodUpfrontPaid({
+                storedPaid: Number(order.codUpfrontPaid) || 0,
+                paymentStatus: finalPaymentStatus,
+                paymentMethod: order.paymentMethod,
+                configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+              })
+            : 0;
+
           await prisma.webStoreOrder.update({
             where: { id: order.id },
             data: {
@@ -212,9 +222,9 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
               razorpayPaymentId: newPaymentId || order.razorpayPaymentId,
               paymentFailureReason: failureReason,
               ...(isCOD && (finalPaymentStatus === "cod_upfront_paid" || finalPaymentStatus === "partially_paid" || finalPaymentStatus === "paid") ? {
-                codUpfrontPaid: Number(order.codUpfrontPaid) || 99,
+                codUpfrontPaid: syncedUpfront,
                 codUpfrontPaymentId: newPaymentId || order.codUpfrontPaymentId || order.razorpayPaymentId || null,
-                notes: order.notes || `COD Order (₹${Number(order.codUpfrontPaid) || 99} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
+                notes: order.notes || `COD Order (₹${syncedUpfront} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
               } : {})
             },
           });

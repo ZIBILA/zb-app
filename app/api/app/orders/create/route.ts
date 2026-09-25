@@ -57,13 +57,23 @@ export async function POST(req: Request) {
     
     // Normalize payment status
     let paymentStatus = (body.paymentStatus || body.financial_status || 'pending').toLowerCase();
-    if (paymentMethod === 'COD') {
-      paymentStatus = 'pending';
+    const isCod = paymentMethod === 'COD';
+    // COD with a successful Razorpay upfront payment is partially paid, not "pending"
+    if (isCod && (paymentStatus === 'paid' || paymentStatus === 'captured' || paymentStatus === 'success') && (paymentId || rzpOrderId)) {
+      paymentStatus = 'cod_upfront_paid';
+    } else if (isCod && paymentStatus === 'paid') {
+      // paid without payment ids — treat as upfront collected only if fee present
+      paymentStatus = Number(body.codUpfrontPaid || body.codFee || 0) > 0 ? 'cod_upfront_paid' : 'pending';
     }
 
     const subtotal = Number(body.subtotal || body.subtotal_price || 0);
     const total = Number(body.total || body.total_price || 0);
     const appliedStoreCredits = Number(body.appliedStoreCredits || 0);
+
+    const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
+    const configuredCodFee = paymentMethod === 'COD' ? await getConfiguredCodUpfrontAmount() : 0;
+    // Always use dashboard fee — never trust client for the locked amount
+    const resolvedCodFee = configuredCodFee;
 
     // Fallback to auth email if missing in body
     if (!customerEmail && auth?.customerEmail) {
@@ -290,6 +300,8 @@ export async function POST(req: Request) {
             paymentStatus,
             paymentMethod: paymentMethod === 'COD' ? 'COD' : 'Razorpay',
             razorpayPaymentId: paymentId || existingOrder!.razorpayPaymentId || null,
+            codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : (existingOrder as any).codUpfrontPaid || 0,
+            codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || (existingOrder as any).codUpfrontPaymentId || null) : null,
             paymentCapturedAt: paymentStatus === 'paid' ? now : existingOrder!.paymentCapturedAt,
             tags: finalTags,
             note: note,
@@ -422,6 +434,8 @@ export async function POST(req: Request) {
           tags: finalTags,
           razorpayPaymentId: paymentId || null,
           paymentMethod: paymentMethod === 'COD' ? 'COD' : 'Razorpay',
+          codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : 0,
+          codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || null) : null,
           paymentCapturedAt: paymentStatus === 'paid' ? now : null,
           
           internalOrderNumber: orderNumber,
@@ -680,7 +694,7 @@ async function triggerMobileEmail(created: any, orderNumber: string, subtotal: n
       products: itemsHtml,
       variants: formattedItems.map((i: any) => `${i.name} (${i.size})`).join(' | '),
       subtotal: `INR ${subtotal}`,
-      shipping: `INR ${paymentMethod === 'COD' ? 99 : 0}`,
+      shipping: `INR 0`,
       total: `INR ${total}`,
       totalPrice: `INR ${total}`,
       amount: `INR ${total}`,
@@ -697,7 +711,7 @@ async function triggerMobileEmail(created: any, orderNumber: string, subtotal: n
       orderDate: new Date(created.createdAt).toLocaleDateString(),
       items: formattedItems,
       subtotal: `INR ${subtotal}`,
-      shipping: `INR ${paymentMethod === 'COD' ? 99 : 0}`,
+      shipping: `INR 0`,
       total: `INR ${total}`,
       shippingAddress: emailVars.shippingAddress,
     });

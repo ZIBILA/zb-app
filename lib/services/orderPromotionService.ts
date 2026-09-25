@@ -53,6 +53,16 @@ export async function promoteMasterOrderToWebStoreOrder(mOrder: Record<string, u
   })) : [];
 
   try {
+    const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+    const storedUpfront = resolveStoredCodUpfrontPaid({
+      storedPaid: (mOrder as any).codUpfrontPaid,
+      paymentStatus: mOrder.paymentStatus as string,
+      paymentMethod: mOrder.paymentMethod as string,
+      tags: mOrder.tags as string,
+      note: mOrder.note as string,
+      configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+    });
+
     return await prisma.webStoreOrder.create({
       data: {
         orderNumber: orderNum,
@@ -70,8 +80,8 @@ export async function promoteMasterOrderToWebStoreOrder(mOrder: Record<string, u
         paymentMethod: isCod ? "cod" : ((mOrder.paymentMethod as string) || "razorpay"),
         razorpayOrderId: rzpOrderId,
         razorpayPaymentId: rzpPayId,
-        codUpfrontPaid: isCod ? 99 : 0,
-        codUpfrontPaymentId: isCod ? rzpPayId : null,
+        codUpfrontPaid: isCod ? storedUpfront : 0,
+        codUpfrontPaymentId: isCod ? ((mOrder as any).codUpfrontPaymentId || rzpPayId) : null,
         fulfillmentStatus: (mOrder.fulfillmentStatus as string) || "unfulfilled",
         notes: (mOrder.note as string) || `Reconciled from master Order: ${orderId}`,
         source: "web",

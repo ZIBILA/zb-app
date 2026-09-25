@@ -219,12 +219,19 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       resolvedDiscountAmount = 0;
     }
 
-    let resolvedCodUpfrontPaid = webStoreOrder?.codUpfrontPaid ? Number(webStoreOrder.codUpfrontPaid) : 0;
+    let resolvedCodUpfrontPaid = webStoreOrder?.codUpfrontPaid
+      ? Number(webStoreOrder.codUpfrontPaid)
+      : Number((order as any).codUpfrontPaid) || 0;
     if (isCodOrder && resolvedCodUpfrontPaid === 0) {
-      const pStat = (webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
-      if (pStat === 'cod_upfront_paid' || pStat === 'paid') {
-        resolvedCodUpfrontPaid = 99;
-      }
+      const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+      resolvedCodUpfrontPaid = resolveStoredCodUpfrontPaid({
+        storedPaid: 0,
+        paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
+        paymentMethod: order.paymentMethod,
+        tags: order.tags,
+        note: order.note,
+        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+      });
     }
 
     // Enrich the order payload with correct webstore fields if available
