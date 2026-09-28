@@ -169,10 +169,16 @@ export async function POST(req: Request) {
 
       if (!isMatch) {
         console.error(`[Checkout] Price mismatch! ServerBase: ₹${baseServerTotal}, ServerWithFee: ₹${serverTotalWithFee}, Client: ₹${clientTotal}, ServerSubtotal: ₹${serverSubtotal}`);
-        return NextResponse.json(
-          { error: 'Cart total mismatch. Please refresh and retry.' },
-          { status: 400 }
-        );
+        // If Razorpay already returned a payment id, money may already be captured —
+        // never 400 the customer into a "paid but no order" dead-end.
+        if (razorpay?.razorpay_payment_id) {
+          console.error(`[Checkout] Proceeding despite mismatch because payment ${razorpay.razorpay_payment_id} was returned by gateway`);
+        } else {
+          return NextResponse.json(
+            { error: 'Cart total mismatch. Please refresh and retry.' },
+            { status: 400 }
+          );
+        }
       }
     }
 
@@ -548,6 +554,7 @@ export async function POST(req: Request) {
           ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay`
           : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})`,
         internalOrderNumber: universalOrderNumber,
+        customerId: localCustomer.id,
       };
 
       localOrder = await prisma.order.update({

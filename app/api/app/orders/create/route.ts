@@ -45,8 +45,12 @@ export async function POST(req: Request) {
     const body = await req.json();
     console.log('[App API] Order creation request body:', JSON.stringify(body).slice(0, 500));
 
-    // Map fields from different naming conventions
-    const customerId = body.customerId || body.customer_id;
+    // Map fields from different naming conventions.
+    // Prefer auth.customerId so paid orders always attach to the logged-in account.
+    const bodyCustomerId = body.customerId || body.customer_id;
+    const customerId =
+      (auth?.customerId && auth.customerId !== 'GUEST' ? auth.customerId : null) ||
+      (bodyCustomerId && bodyCustomerId !== 'GUEST' ? bodyCustomerId : null);
     let customerEmail = body.customerEmail || body.email;
     const customerPhone = body.customerPhone || body.phone;
     const shippingAddress = body.shippingAddress || body.shipping_address;
@@ -131,10 +135,14 @@ export async function POST(req: Request) {
     }
 
     // Determine the universal order number: reuse if pre-initiated, otherwise generate based on payment status
+    const isSuccessfulPayment =
+      paymentStatus === 'paid' ||
+      paymentStatus === 'cod_upfront_paid' ||
+      paymentStatus === 'partially_paid';
     let orderNumber = '';
     if (existingOrder && existingOrder.internalOrderNumber) {
       // If the existing order has a pending prefix number and payment succeeded, promote it
-      if (paymentStatus === 'paid' && isFailedPrefixNumber(existingOrder.internalOrderNumber)) {
+      if (isSuccessfulPayment && isFailedPrefixNumber(existingOrder.internalOrderNumber)) {
         const oldNumber = existingOrder.internalOrderNumber;
         orderNumber = await assignUniversalOrderNumber(prisma);
         const previousNumbers = [existingOrder.previousOrderNumbers, oldNumber].filter(Boolean).join(',');
@@ -142,20 +150,24 @@ export async function POST(req: Request) {
           where: { id: existingOrder.id },
           data: { internalOrderNumber: orderNumber, previousOrderNumbers: previousNumbers || null }
         });
+        await prisma.mobileOrder.updateMany({
+          where: { orderNumber: oldNumber },
+          data: { orderNumber },
+        }).catch(() => {});
         console.log(`[MobileCheckoutComplete] Promoted order ${oldNumber} → ${orderNumber}`);
       } else {
         orderNumber = existingOrder.internalOrderNumber;
       }
     } else {
       try {
-        if (paymentStatus === 'paid') {
+        if (isSuccessfulPayment) {
           orderNumber = await assignUniversalOrderNumber(prisma);
         } else {
           orderNumber = await assignFailedOrderNumber(prisma, { cause: paymentMethod === 'COD' ? 'pending' : 'pending' });
         }
       } catch (seqErr: any) {
         console.error('[MobileCheckoutComplete] Failed to generate order number:', seqErr.message);
-        orderNumber = paymentStatus === 'paid' ? `ZB${Date.now().toString().slice(-8)}` : `ZBPP${Date.now().toString().slice(-8)}`;
+        orderNumber = isSuccessfulPayment ? `ZB${Date.now().toString().slice(-8)}` : `ZBPP${Date.now().toString().slice(-8)}`;
       }
     }
 

@@ -67,8 +67,19 @@ export async function GET(req: Request) {
         OR: masterOrClauses,
         NOT: {
           OR: [
-            { internalOrderNumber: { startsWith: 'ZBPF' } },
-            { internalOrderNumber: { startsWith: 'ZBPP' } },
+            // Hide pending placeholders only — paid ZBPP must remain visible
+            {
+              AND: [
+                { internalOrderNumber: { startsWith: 'ZBPP' } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'PAID'] } },
+              ],
+            },
+            {
+              AND: [
+                { internalOrderNumber: { startsWith: 'ZBPF' } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'PAID'] } },
+              ],
+            },
             { paymentStatus: { in: ['failed', 'FAILED', 'voided'] } },
             { status: { in: ['payment_failed', 'failed', 'FAILED', 'payment_pending'] } }
           ]

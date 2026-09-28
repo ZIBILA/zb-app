@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import Razorpay from "razorpay";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/app/api/auth/[...nextauth]/options";
 import prisma from "@/lib/db";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
@@ -168,8 +170,10 @@ export async function POST(req: Request) {
       try {
         const shop = await prisma.shop.findFirst();
         if (shop) {
-          // 1. Save Customer & Address
-          const { customer } = await resolveAndSyncCustomerAddress(shop.id, address);
+          // 1. Save Customer & Address (prefer logged-in session customer)
+          const session = await getServerSession(authOptions).catch(() => null);
+          const sessionUserId = (session?.user as any)?.id || null;
+          const { customer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
           // 2. Resolve Line Items
           const resolvedItems = await Promise.all(items.map(async (item: any, index: number) => {

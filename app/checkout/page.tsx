@@ -1790,6 +1790,31 @@ export default function CheckoutPage() {
         releasePaymentLock();
       };
 
+      // Persist checkout payload for callback_url recovery (mobile UPI / handler miss)
+      try {
+        sessionStorage.setItem(
+          "zb_pending_checkout",
+          JSON.stringify({
+            address: checkoutAddress,
+            paymentMethod,
+            items: convertedItems,
+            total: convertedTotal,
+            subtotal: convertedSubtotal,
+            currency: countryConfig?.currencyCode || "INR",
+            displayCountry: countryCode,
+            codFee: paymentMethod === "COD" ? codFee : 0,
+            couponCode: couponValid ? couponCode : null,
+            couponDiscount: fmtPrice(couponDiscount).amount,
+            applyAsStoreCredit,
+            cashbackAmount: fmtPrice(cashbackAmount).amount,
+            storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
+            guestId: getClientCookie("zb_device_id"),
+          })
+        );
+      } catch (e) {
+        console.warn("[Checkout] Could not persist pending checkout payload", e);
+      }
+
       // ═══════════════════════════════════════════════════════════
       // Razorpay Standard Checkout — used for ALL payment methods
       // ═══════════════════════════════════════════════════════════
@@ -1802,6 +1827,12 @@ export default function CheckoutPage() {
           description: paymentMethod === "COD" ? "COD Upfront Fee" : "Order Payment",
           order_id: orderId,
           handler: handlePaymentSuccess,
+          // Fallback when Standard handler does not fire (common after UPI app switch)
+          callback_url:
+            typeof window !== "undefined"
+              ? `${window.location.origin}/checkout/success`
+              : undefined,
+          redirect: false,
           prefill: {
             name: address.name,
             email: address.email,

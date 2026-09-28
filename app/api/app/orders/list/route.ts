@@ -33,6 +33,9 @@ function parseShippingAddress(raw: string | null) {
 }
 
 function orderNumberFromOrder(order: any) {
+  if (order.internalOrderNumber) {
+    return String(order.internalOrderNumber).replace('-', '').toUpperCase();
+  }
   const tags = String(order.tags || '');
   const m = tags.match(/zb-order-(ZB-?\d+)/i);
   if (m?.[1]) return m[1].replace('-', '').toUpperCase();
@@ -55,7 +58,9 @@ function paymentMethodFromOrder(order: any): 'COD' | 'PREPAID' {
 
 function paymentStatusFromOrder(order: any): 'pending' | 'paid' | 'failed' {
   const ps = String(order.paymentStatus || '').toLowerCase();
-  if (ps === 'paid') return 'paid';
+  if (ps === 'paid' || ps === 'cod_upfront_paid' || ps === 'partially_paid' || ps === 'success' || ps === 'captured') {
+    return 'paid';
+  }
   if (ps === 'failed') return 'failed';
   return 'pending';
 }
@@ -78,7 +83,8 @@ function statusTimeline(order: any) {
   const createdAt = order.createdAt ? new Date(order.createdAt).toISOString() : null;
   const status = String(order.status || '').toLowerCase();
   const delivery = String(order.deliveryStatus || '').toLowerCase();
-  const paid = String(order.paymentStatus || '').toLowerCase() === 'paid';
+  const psLower = String(order.paymentStatus || '').toLowerCase();
+  const paid = psLower === 'paid' || psLower === 'cod_upfront_paid' || psLower === 'partially_paid';
   const updatedAt = new Date(order.updatedAt).toISOString();
 
   const isReturnInitiated = status.includes('return') || status.includes('exchange') || status === 'returned' || status === 'exchanged';
@@ -153,8 +159,15 @@ export async function GET(req: Request) {
             { paymentStatus: { in: ['failed', 'payment_failed', 'FAILED', 'PAYMENT_FAILED'] } },
             {
               AND: [
-                { paymentStatus: { notIn: ['paid', 'partially_paid', 'refunded', 'partially_refunded', 'PAID', 'PARTIALLY_PAID', 'REFUNDED', 'PARTIALLY_REFUNDED', 'success', 'SUCCESS'] } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'refunded', 'partially_refunded', 'PAID', 'PARTIALLY_PAID', 'COD_UPFRONT_PAID', 'REFUNDED', 'PARTIALLY_REFUNDED', 'success', 'SUCCESS'] } },
                 { paymentMethod: { notIn: ['COD', 'cod', 'Cash on Delivery', 'cash_on_delivery'] } }
+              ]
+            },
+            // Hide unpaid ZBPP placeholders only — paid / COD-upfront must remain visible
+            {
+              AND: [
+                { internalOrderNumber: { startsWith: 'ZBPP' } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'PAID', 'PARTIALLY_PAID', 'COD_UPFRONT_PAID'] } },
               ]
             }
           ]
