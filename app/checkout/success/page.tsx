@@ -134,9 +134,11 @@ function CheckoutSuccessInner() {
   }, [router, searchParams]);
 
   return (
-    <div className="min-h-[60vh] flex flex-col items-center justify-center px-6 text-center">
-      <div className="h-8 w-8 border-2 border-black/20 border-t-black rounded-full animate-spin mb-4" />
-      <p className="text-sm text-black/70 max-w-md">{message}</p>
+    <div className="min-h-[60vh] flex flex-col items-center justify-center px-6 text-center bg-background text-foreground">
+      <div className="h-8 w-8 border-2 border-foreground/20 border-t-foreground rounded-full animate-spin mb-4" />
+      <p className="text-sm font-semibold text-foreground mb-1">Payment successful</p>
+      <p className="text-sm text-foreground/60 max-w-md">{message}</p>
+      <p className="text-[11px] text-foreground/40 mt-3">Please don’t refresh or pay again.</p>
     </div>
   );
 }

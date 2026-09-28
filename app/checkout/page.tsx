@@ -297,6 +297,8 @@ export default function CheckoutPage() {
   const [initiatedPixel, setInitiatedPixel] = useState(false);
   const [paymentInfoFired, setPaymentInfoFired] = useState(false);
   const [isOrderPlaced, setIsOrderPlaced] = useState(false);
+  /** Covers checkout while post-pay /api/checkout/complete runs — avoids misleading flash of checkout UI */
+  const [isConfirmingPayment, setIsConfirmingPayment] = useState(false);
 
   // Saved addresses
   const [savedAddresses, setSavedAddresses] = useState<DBAddress[]>([]);
@@ -311,6 +313,7 @@ export default function CheckoutPage() {
   } | null>(null);
 
   const paymentLockRef = useRef<boolean>(false);
+  const paymentSucceededRef = useRef(false);
 
   const isDark = resolvedTheme === "dark";
 
@@ -1712,6 +1715,13 @@ export default function CheckoutPage() {
       // Shared success handler — called by Razorpay Standard Checkout
       // ═══════════════════════════════════════════════════════════
       const handlePaymentSuccess = async (response: any) => {
+        // Immediately cover checkout — Razorpay modal closes before complete finishes
+        paymentSucceededRef.current = true;
+        setIsConfirmingPayment(true);
+        setIsOrderPlaced(true);
+        setLoading(true);
+        setError("");
+
         try {
           const verifyRes = await fetch("/api/checkout/complete", {
             method: "POST",
@@ -1736,22 +1746,46 @@ export default function CheckoutPage() {
           });
 
           const verifyData = await verifyRes.json();
-          if (verifyRes.ok) {
-            setIsOrderPlaced(true);
+          if (verifyRes.ok && verifyData.orderId) {
             if (typeof window !== "undefined") {
               sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
               const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ');
               sessionStorage.setItem(`order_categories_${verifyData.orderId}`, joinedCategories);
+              try {
+                sessionStorage.removeItem("zb_pending_checkout");
+              } catch { /* ignore */ }
             }
             clear();
-            router.push(`/orders/${verifyData.orderId}/confirmation`);
-          } else {
-            // CRITICAL: Payment was captured successfully, but database registration failed.
-            // Do not allow retry to prevent double-charging the customer.
-            setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered an issue registering your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can verify and manually create your order.`);
-            setLoading(false);
+            router.replace(`/orders/${verifyData.orderId}/confirmation`);
+            return;
           }
+
+          // Payment captured but complete failed — try recovery by Razorpay order id
+          const rzpOrderId = response?.razorpay_order_id;
+          if (rzpOrderId) {
+            try {
+              const lookup = await fetch(
+                `/api/orders/by-razorpay?orderId=${encodeURIComponent(rzpOrderId)}`
+              );
+              if (lookup.ok) {
+                const data = await lookup.json();
+                if (data?.orderId) {
+                  sessionStorage.setItem("last_placed_order_id", data.orderId);
+                  clear();
+                  router.replace(`/orders/${data.orderId}/confirmation`);
+                  return;
+                }
+              }
+            } catch { /* fall through */ }
+          }
+
+          // CRITICAL: Payment was captured successfully, but database registration failed.
+          // Do not allow retry to prevent double-charging the customer.
+          setIsConfirmingPayment(false);
+          setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered an issue registering your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can verify and manually create your order.`);
+          setLoading(false);
         } catch {
+          setIsConfirmingPayment(false);
           setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered a connection issue confirming your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can confirm your order manually.`);
           setLoading(false);
         }
@@ -1845,6 +1879,8 @@ export default function CheckoutPage() {
           },
           modal: {
             ondismiss: function () {
+              // Success path also closes the modal — don't treat that as cancel
+              if (paymentSucceededRef.current) return;
               releasePaymentLock();
               if (orderId) {
                 fetch("/api/checkout/cancel", {
@@ -2305,6 +2341,19 @@ export default function CheckoutPage() {
 
   return (
     <div className="min-h-[100dvh] relative bg-background text-foreground font-sans">
+      {isConfirmingPayment && (
+        <div
+          className="fixed inset-0 z-[10000] bg-background flex flex-col items-center justify-center px-6 text-center"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="w-10 h-10 animate-spin text-foreground mb-5" />
+          <p className="text-base font-bold text-foreground tracking-tight">Payment successful</p>
+          <p className="text-sm text-foreground/60 mt-2 max-w-sm">
+            Confirming your order — please don’t refresh or pay again.
+          </p>
+        </div>
+      )}
       <div className="relative z-10 max-w-xl md:max-w-5xl mx-auto px-4 pt-16 pb-8 md:pt-24 md:pb-12 flex flex-col" style={{ minHeight: '100dvh' }}>
 
         {/* Page Title & H1 */}
