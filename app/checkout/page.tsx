@@ -9,6 +9,7 @@ import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zbTrackPaymentInitiated } from "@/lib/analytics-tracker";
+import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -304,8 +305,9 @@ export default function CheckoutPage() {
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [prefetchedOrder, setPrefetchedOrder] = useState<{
     id: string;
-    amount: number;
+    amount: number; // paise
     keyId: string;
+    currency?: string;
   } | null>(null);
 
   const paymentLockRef = useRef<boolean>(false);
@@ -988,7 +990,10 @@ export default function CheckoutPage() {
               id: orderData.id || orderData.razorpay_order_id,
               amount: orderData.amount,
               keyId: orderData.keyId || orderData.key_id,
+              currency: orderData.currency || countryConfig?.currencyCode || "INR",
             });
+          } else {
+            setPrefetchedOrder(null);
           }
         } catch (e) {
           console.error("Failed to prefetch Razorpay order:", e);
@@ -1528,12 +1533,18 @@ export default function CheckoutPage() {
     setLoading(true);
     setError("");
 
+    const releasePaymentLock = () => {
+      paymentLockRef.current = false;
+      setLoading(false);
+    };
+
     try {
-      // Ensure Razorpay SDK is loaded
-      if (!(window as any).Razorpay) {
-        setError("Payment gateway is loading. Please try again in a moment.");
-        setLoading(false);
-        paymentLockRef.current = false;
+      // Ensure Razorpay SDK is loaded (wait / inject if needed)
+      try {
+        await waitForRazorpaySdk();
+      } catch (sdkErr: any) {
+        setError(sdkErr?.message || "Payment gateway is loading. Please try again in a moment.");
+        releasePaymentLock();
         return;
       }
 
@@ -1612,15 +1623,28 @@ export default function CheckoutPage() {
       const convertedSubtotal = fmtPrice(subtotal).amount;
       const convertedTotal = fmtPrice(effectiveFinalTotal).amount;
       const paymentAmount = paymentMethod === "COD" ? codFee : convertedTotal;
+      const paymentAmountPaise = Math.round(Number(paymentAmount) * 100);
+
+      if (!Number.isFinite(paymentAmountPaise) || paymentAmountPaise <= 0) {
+        throw new Error("Invalid payment amount. Please refresh and try again.");
+      }
 
       let orderId = "";
       let keyId = "";
-      let orderData: any = null;
+      let orderAmountPaise = 0;
+      let orderCurrency = countryConfig?.currencyCode || "INR";
 
-      if (prefetchedOrder && Math.round(prefetchedOrder.amount / 100) === Math.round(paymentAmount)) {
+      const prefetchMatches =
+        !!prefetchedOrder &&
+        Math.round(Number(prefetchedOrder.amount)) === paymentAmountPaise &&
+        String(prefetchedOrder.keyId || "").startsWith("rzp_") &&
+        String(prefetchedOrder.id || "").startsWith("order_");
+
+      if (prefetchMatches && prefetchedOrder) {
         orderId = prefetchedOrder.id;
         keyId = prefetchedOrder.keyId;
-        orderData = prefetchedOrder;
+        orderAmountPaise = Number(prefetchedOrder.amount);
+        orderCurrency = prefetchedOrder.currency || orderCurrency;
         console.log("[Razorpay] Using pre-fetched order:", orderId);
       } else {
         console.log("[Razorpay] Pre-fetched order missing or mismatch, fetching fresh...");
@@ -1654,8 +1678,22 @@ export default function CheckoutPage() {
         if (!res.ok) throw new Error(data.error || "Failed to initiate payment");
         orderId = data.id || data.razorpay_order_id;
         keyId = data.keyId || data.key_id;
-        orderData = data;
+        orderAmountPaise = Number(data.amount);
+        orderCurrency = data.currency || orderCurrency;
+        setPrefetchedOrder({
+          id: orderId,
+          amount: orderAmountPaise,
+          keyId,
+          currency: orderCurrency,
+        });
       }
+
+      const optionError = validateRazorpayOpenOptions({
+        key: keyId,
+        orderId,
+        amountPaise: orderAmountPaise,
+      });
+      if (optionError) throw new Error(optionError);
 
       // Track Payment Initiated event
       trackStorefrontEvent('Payment Initiated', {
@@ -1716,17 +1754,14 @@ export default function CheckoutPage() {
         } catch {
           setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered a connection issue confirming your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can confirm your order manually.`);
           setLoading(false);
-        } finally {
-          paymentLockRef.current = false;
         }
+        // Keep lock held after success to prevent double-charge retries until navigation
       };
 
       // ═══════════════════════════════════════════════════════════
       // Shared error handler for payment.failed event
       // ═══════════════════════════════════════════════════════════
       const handlePaymentError = (error: any) => {
-        paymentLockRef.current = false;
-
         const errorDesc = error?.error?.description || error?.description || "Payment failed. Please try again.";
         const errorCode = error?.error?.code || error?.code || "";
         const errorReason = error?.error?.reason || "";
@@ -1752,65 +1787,57 @@ export default function CheckoutPage() {
         }
 
         setError(`${friendlyMessage}${errorCode ? ` (${errorCode})` : ''}`);
-        setLoading(false);
+        releasePaymentLock();
       };
 
       // ═══════════════════════════════════════════════════════════
       // Razorpay Standard Checkout — used for ALL payment methods
-      // The Standard Checkout modal handles UPI Intent (auto-detects
-      // installed apps on mobile), UPI Collect (VPA entry), QR code
-      // (desktop), Cards, Pay Later, EMI — all within its own UI.
       // ═══════════════════════════════════════════════════════════
-      const options: any = {
-        key: keyId,
-        amount: orderData.amount,
-        currency: orderData.currency || countryConfig?.currencyCode || "INR",
-        name: "Zica Bella",
-        description: paymentMethod === "COD" ? "COD Upfront Fee" : "Order Payment",
-        order_id: orderId,
-        handler: handlePaymentSuccess,
-        prefill: {
-          name: address.name,
-          email: address.email,
-          contact: address.phone,
-        },
-        theme: {
-          color: "#000000",
-          backdrop_color: "rgba(0,0,0,0.85)",
-        },
-        modal: {
-          ondismiss: function () {
-            setLoading(false);
-            paymentLockRef.current = false;
-            if (orderId) {
-              fetch("/api/checkout/cancel", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ razorpayOrderId: orderId, reason: "payment_cancelled_by_user" }),
-              }).catch(err => console.error("[Razorpay] Failed to log modal dismiss:", err));
-            }
+      await openRazorpayStandardCheckout(
+        {
+          key: keyId,
+          amount: orderAmountPaise,
+          currency: orderCurrency,
+          name: "Zica Bella",
+          description: paymentMethod === "COD" ? "COD Upfront Fee" : "Order Payment",
+          order_id: orderId,
+          handler: handlePaymentSuccess,
+          prefill: {
+            name: address.name,
+            email: address.email,
+            contact: address.phone,
+            ...(isInternational ? { method: "card" } : {}),
           },
-          confirm_close: true,
+          theme: {
+            color: "#000000",
+            backdrop_color: "rgba(0,0,0,0.6)",
+          },
+          modal: {
+            ondismiss: function () {
+              releasePaymentLock();
+              if (orderId) {
+                fetch("/api/checkout/cancel", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ razorpayOrderId: orderId, reason: "payment_cancelled_by_user" }),
+                }).catch(err => console.error("[Razorpay] Failed to log modal dismiss:", err));
+              }
+            },
+            confirm_close: true,
+          },
         },
-      };
-
-      // Configure display preferences:
-      // Both PAYNOW and COD open the full standard Razorpay checkout modal
-      // supporting all instruments (UPI, Cards, Netbanking, Wallets)
-      if (isInternational) {
-        options.prefill.method = "card";
-      }
-
-      const rzp = new (window as any).Razorpay(options);
-      rzp.on('payment.failed', function (response: any) {
-        handlePaymentError(response);
-      });
-      rzp.open();
+        {
+          onPaymentFailed: handlePaymentError,
+          onOpened: () => {
+            // Modal is visible — stop spinner so UI doesn't look frozen behind it
+            setLoading(false);
+          },
+        }
+      );
 
     } catch (err: any) {
       setError(err.message || "An error occurred");
-      setLoading(false);
-      paymentLockRef.current = false;
+      releasePaymentLock();
     }
   };
 
