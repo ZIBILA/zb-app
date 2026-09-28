@@ -180,9 +180,9 @@ export async function POST(req: Request) {
                   ? `COD upfront ₹${chargeAmountRupees} pending via Razorpay`
                   : 'Created via Payment Initiation'),
                 
-                // Set universal numbering and status
+                // Set universal numbering and status — pending until payment confirms (not 'failed')
                 internalOrderNumber: universalOrderNumber,
-                shopifySyncStatus: 'failed',
+                shopifySyncStatus: 'pending',
                 shopifySyncError: 'Order initiated on mobile, payment pending',
 
                 items: {

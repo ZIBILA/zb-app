@@ -334,7 +334,7 @@ export async function POST(req: Request) {
                 discountAmount: Number(finalCouponDiscount) || 0,
                 storeCreditAmount: Number(rawStoreCredit) || 0,
                 internalOrderNumber: universalOrderNumber,
-                shopifySyncStatus: 'failed',
+                shopifySyncStatus: 'pending',
                 shopifySyncError: 'Order pre-created at payment initiation; payment pending',
                 items: {
                   create: resolvedItems.map((item: any) => ({

@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { syncOrderToShopify } from '@/lib/services/shopifyOrderSyncService';
+import {
+  syncOrderToShopify,
+  SHOPIFY_SYNC_PAID_STATUSES,
+} from '@/lib/services/shopifyOrderSyncService';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Cron worker: /api/cron/sync-failed-shopify-orders
- * Retries syncing orders that failed to sync to Shopify.
+ * Retries syncing paid orders that failed or never reached Shopify.
+ * Payment gate: never sync unpaid / abandoned checkouts (ghost orders).
  * Runs in batches of 10, ordered by createdAt ASC to prevent starvation.
  * Excludes orders that are already synced or in-flight ('syncing').
  */
@@ -28,11 +32,14 @@ export async function GET(req: NextRequest) {
   try {
     const failedOrders = await prisma.order.findMany({
       where: {
-        shopifySyncStatus: 'failed',
         shopifyOrderId: null,
+        shopifySyncStatus: { in: ['failed', 'pending'] },
+        paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] },
       },
       select: {
         id: true,
+        paymentStatus: true,
+        shopifySyncStatus: true,
       },
       orderBy: { createdAt: 'asc' },
       take: 10,
@@ -42,7 +49,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: true, processed: 0, message: 'No failed orders to sync' });
     }
 
-    const results: Array<{ id: string; success: boolean; shopifyOrderId?: string; error?: string }> = [];
+    const results: Array<{
+      id: string;
+      success: boolean;
+      shopifyOrderId?: string;
+      error?: string;
+      skippedUnpaid?: boolean;
+    }> = [];
 
     for (const order of failedOrders) {
       try {
@@ -52,6 +65,7 @@ export async function GET(req: NextRequest) {
           success: syncRes.success,
           shopifyOrderId: syncRes.shopifyOrderId,
           error: syncRes.error,
+          skippedUnpaid: syncRes.skippedUnpaid,
         });
       } catch (orderErr: any) {
         console.error(`[Sync Failed Orders Cron] Failed to sync order ${order.id}:`, orderErr.message);
