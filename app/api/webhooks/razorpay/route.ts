@@ -90,8 +90,12 @@ export async function POST(req: Request) {
 
       if (order) {
         // Path A: Order exists — update status
-        const isCOD = (order.paymentMethod || "").toLowerCase().trim() === "cod";
-        const targetPaymentStatus = isCOD ? "partially_paid" : "paid";
+        // Canonical COD vocabulary: cod_upfront_paid (not partially_paid)
+        const isCOD =
+          (order.paymentMethod || "").toLowerCase().trim() === "cod" ||
+          (order.tags || "").toLowerCase().includes("cod") ||
+          (order.note || "").toLowerCase().includes("cod order");
+        const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "paid";
         const isAlreadyPaid = order.paymentStatus === 'paid' || order.paymentStatus === 'partially_paid' || order.paymentStatus === 'cod_upfront_paid';
 
         if (!isAlreadyPaid) {
@@ -100,7 +104,7 @@ export async function POST(req: Request) {
             .split(',')
             .map((t: string) => t.trim())
             .filter((t: string) => Boolean(t) && t !== 'payment_pending' && t !== 'Order creation in process')
-            .concat(isCOD ? ['cod_upfront_paid', 'partially_paid'] : ['paid'])
+            .concat(isCOD ? ['cod_upfront_paid'] : ['paid'])
             .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
             .join(', ');
 

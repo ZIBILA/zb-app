@@ -142,13 +142,13 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
         let newPaymentId: string | null = null;
         let failureReason: string | null = null;
 
-        // 1. Explicit COD Guard: if COD and upfront fee was captured, status is partially_paid
+        // 1. Explicit COD Guard: if COD and upfront fee was captured, status is cod_upfront_paid
         if (isCOD && upfrontCaptured) {
-          newStatus = "partially_paid";
+          newStatus = "cod_upfront_paid";
           newPaymentId = (capturedPayment?.id as string) || (upfrontPayment?.id as string) || order.codUpfrontPaymentId || order.razorpayPaymentId || null;
           failureReason = null;
         } else if (rzpOrder.status === "paid" || capturedPayment) {
-          newStatus = isCOD ? "partially_paid" : "paid";
+          newStatus = isCOD ? "cod_upfront_paid" : "paid";
           newPaymentId = (capturedPayment?.id as string) || order.razorpayPaymentId || null;
           failureReason = null;
         } else if (latestFailedPayment && !upfrontCaptured) {
@@ -196,7 +196,9 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
           failureReason = null;
         }
 
-        const finalPaymentStatus = (isCOD && (newStatus === "paid" || newStatus === "cod_upfront_paid" || newStatus === "partially_paid")) ? "partially_paid" : newStatus;
+        const finalPaymentStatus = (isCOD && (newStatus === "paid" || newStatus === "cod_upfront_paid" || newStatus === "partially_paid"))
+          ? "cod_upfront_paid"
+          : newStatus;
 
         if (
           finalPaymentStatus &&
@@ -240,7 +242,7 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                 .split(',')
                 .map((t: string) => t.trim())
                 .filter((t: string) => Boolean(t) && t !== 'payment_pending' && t !== 'Order creation in process')
-                .concat(isCOD ? ['cod_upfront_paid', 'partially_paid'] : ['paid'])
+                .concat(isCOD ? ['cod_upfront_paid'] : ['paid'])
                 .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
                 .join(', ');
 
