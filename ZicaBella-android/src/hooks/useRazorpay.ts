@@ -103,6 +103,8 @@ export function useRazorpay(): UseRazorpayReturn {
   const [installedWallets, setInstalledWallets] = useState<string[]>([]);
   const [isLoadingApps, setIsLoadingApps] = useState(false);
   const abortRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const statusRef = useRef<PaymentStatus>('idle');
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentOrderIdRef = useRef<string | null>(null);
   const isPollingRef = useRef(false);
@@ -131,8 +133,10 @@ export function useRazorpay(): UseRazorpayReturn {
 
   const reset = useCallback(() => {
     abortRef.current = false;
+    inFlightRef.current = false;
     stopPolling();
     setStatus('idle');
+    statusRef.current = 'idle';
     setError(null);
     setSuccessData(null);
   }, [stopPolling]);
@@ -264,22 +268,51 @@ export function useRazorpay(): UseRazorpayReturn {
 
   const startPayment = useCallback(
     async (method: PaymentMethod, opts: UseRazorpayOptions) => {
+      if (inFlightRef.current) {
+        console.warn('[useRazorpay] Ignored duplicate startPayment while in flight');
+        return;
+      }
+      inFlightRef.current = true;
       abortRef.current = false;
       setError(null);
       setSuccessData(null);
 
       const token = useAuthStore.getState().token || '';
       const apiBase = getPaymentApiBaseUrl();
-      const amountPaise = Math.round(opts.amount * 100);
+      const amountRupees = Number(opts.amount);
+      if (!Number.isFinite(amountRupees) || amountRupees <= 0) {
+        inFlightRef.current = false;
+        setStatus('failed');
+        setError('Invalid payment amount. Please go back and try again.');
+        throw new Error('Invalid payment amount');
+      }
+      const amountPaise = Math.round(amountRupees * 100);
 
       let orderId = opts.orderId;
       let keyId = opts.razorpayKeyId;
 
+      // Hard timeout so UI never sits forever on a hung SDK call
+      const hangTimer = setTimeout(() => {
+        if (!abortRef.current && (statusRef.current === 'processing' || statusRef.current === 'creating_order')) {
+          console.warn('[useRazorpay] Payment timed out waiting for gateway');
+          abortRef.current = true;
+          stopPolling();
+          setStatus('failed');
+          setError('Payment is taking too long. Please try again.');
+          inFlightRef.current = false;
+        }
+      }, 90_000);
+
       try {
+
+        if (!isRazorpayAvailable()) {
+          throw new Error(getRazorpayLoadError() || 'Payment SDK is not ready. Please restart the app and try again.');
+        }
 
         // ── Step 1: Create order on backend (only if not pre-created) ──
         if (!orderId || !keyId) {
           setStatus('creating_order');
+          statusRef.current = 'creating_order';
 
           const orderRes = await fetch(`${apiBase}/api/app/payment/create-order`, {
             method: 'POST',
@@ -315,11 +348,15 @@ export function useRazorpay(): UseRazorpayReturn {
         if (!keyId || !String(keyId).startsWith('rzp_')) {
           throw new Error('Invalid Razorpay key. Please contact support.');
         }
+        if (!orderId || !String(orderId).startsWith('order_')) {
+          throw new Error('Invalid payment order. Please go back and try again.');
+        }
 
         if (abortRef.current) return;
 
         // ── Step 2: Build Custom UI SDK options (method-specific) ──
         setStatus('processing');
+        statusRef.current = 'processing';
         const contact = cleanContact(opts.prefill?.contact);
         const email = normalizeEmail(opts.prefill?.email);
         const name = (opts.prefill?.name || 'Zica Customer').trim();
@@ -503,12 +540,14 @@ export function useRazorpay(): UseRazorpayReturn {
           orderId: paymentData.razorpay_order_id,
         });
         setStatus('success');
+        statusRef.current = 'success';
 
       } catch (err: any) {
         if (!abortRef.current) {
           console.error('[useRazorpay] Final Error:', err);
           setError(err.message || 'Payment failed');
           setStatus('failed');
+          statusRef.current = 'failed';
 
           // Trigger the automated payment failed email notification!
           try {
@@ -528,6 +567,9 @@ export function useRazorpay(): UseRazorpayReturn {
             // Ignore background trigger errors silently
           }
         }
+      } finally {
+        clearTimeout(hangTimer);
+        inFlightRef.current = false;
       }
     },
     [startUPIStatusPolling, stopPolling],
