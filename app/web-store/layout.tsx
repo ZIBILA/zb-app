@@ -1,7 +1,10 @@
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/options";
 import { redirect } from "next/navigation";
-import DashboardLayout from "../dashboard/layout";
+import DashboardClientLayout from "../dashboard/DashboardClientLayout";
+
+/** Auth-gated admin store tools — skip static generation to reduce build memory. */
+export const dynamic = "force-dynamic";
 
 export default async function ServerWebStoreLayout({
   children,
@@ -22,5 +25,5 @@ export default async function ServerWebStoreLayout({
     redirect("/unauthorized");
   }
 
-  return <DashboardLayout>{children}</DashboardLayout>;
+  return <DashboardClientLayout>{children}</DashboardClientLayout>;
 }
