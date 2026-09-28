@@ -12,6 +12,22 @@ export interface SyncResult {
   shopifyOrderName?: string;
   error?: string;
   skippedDuplicate?: boolean;
+  skippedUnpaid?: boolean;
+}
+
+/** Only these payment statuses may create a Shopify order. */
+export const SHOPIFY_SYNC_PAID_STATUSES = [
+  'paid',
+  'cod_upfront_paid',
+  'partially_paid',
+  'PAID',
+  'COD_UPFRONT_PAID',
+  'PARTIALLY_PAID',
+] as const;
+
+export function isShopifySyncEligiblePaymentStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (SHOPIFY_SYNC_PAID_STATUSES as readonly string[]).includes(status);
 }
 
 export interface PullSyncResult {
@@ -30,6 +46,7 @@ export interface PullSyncResult {
  * Syncs a local Order to Shopify Admin API.
  * 
  * Guarantees:
+ * - Payment gate: only paid / cod_upfront_paid / partially_paid create Shopify orders.
  * - Atomic compare-and-set claim on shopifySyncStatus ('syncing') to prevent concurrent duplicate syncs.
  * - Stale claim auto-recovery (> 5 minutes).
  * - Pre-creation existence check in Shopify (findShopifyOrderByInternalNumber) to prevent re-creation.
@@ -45,6 +62,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       shopifyOrderId: true,
       shopifyOrderName: true,
       shopifySyncStatus: true,
+      paymentStatus: true,
     },
   });
 
@@ -57,6 +75,18 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       success: true,
       shopifyOrderId: existing.shopifyOrderId,
       shopifyOrderName: existing.shopifyOrderName || undefined,
+    };
+  }
+
+  // Gate: never create Shopify orders for unpaid / abandoned checkouts
+  if (!isShopifySyncEligiblePaymentStatus(existing.paymentStatus)) {
+    console.log(
+      `[ShopifyOrderSync] Skipping order ${orderId}: paymentStatus=${existing.paymentStatus} (not paid)`
+    );
+    return {
+      success: false,
+      error: `Skipping Shopify sync: payment not confirmed (${existing.paymentStatus || 'unknown'})`,
+      skippedUnpaid: true,
     };
   }
 
@@ -110,6 +140,22 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
 
     if (!order) {
       throw new Error(`Order ${orderId} not found after claiming`);
+    }
+
+    // Re-check payment after claim (status may have changed)
+    if (!isShopifySyncEligiblePaymentStatus(order.paymentStatus)) {
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          shopifySyncStatus: 'pending',
+          shopifySyncError: `Payment not confirmed (${order.paymentStatus || 'unknown'})`,
+        },
+      });
+      return {
+        success: false,
+        error: `Skipping Shopify sync: payment not confirmed (${order.paymentStatus || 'unknown'})`,
+        skippedUnpaid: true,
+      };
     }
 
     const universalOrderNumber = order.internalOrderNumber || `ZB${order.id.slice(-6).toUpperCase()}`;
