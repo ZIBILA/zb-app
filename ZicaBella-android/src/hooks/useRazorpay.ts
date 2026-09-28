@@ -53,6 +53,10 @@ export interface PaymentResult {
 export interface PaymentSuccessData {
   paymentId: string;
   orderId: string;
+  /** Local DB order id returned by /api/app/payment/verify when available */
+  localOrderId?: string | null;
+  /** Promoted ZB… number from verify when available */
+  orderNumber?: string | null;
 }
 
 export interface UseRazorpayOptions {
@@ -538,6 +542,8 @@ export function useRazorpay(): UseRazorpayReturn {
         setSuccessData({
           paymentId: paymentData.razorpay_payment_id,
           orderId: paymentData.razorpay_order_id,
+          localOrderId: verifyJson.orderId || null,
+          orderNumber: verifyJson.orderNumber || null,
         });
         setStatus('success');
         statusRef.current = 'success';

@@ -233,6 +233,8 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
           const isSuccessfulPayment = finalPaymentStatus === "paid" || finalPaymentStatus === "cod_upfront_paid" || finalPaymentStatus === "partially_paid";
 
           if (isSuccessfulPayment) {
+            const { assignUniversalOrderNumber, isFailedPrefixNumber } = await import("@/lib/orderNumber");
+
             for (const mOrder of matchingMainOrders) {
               const cleanedTags = (mOrder.tags || '')
                 .split(',')
@@ -242,26 +244,74 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                 .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
                 .join(', ');
 
-              await prisma.order.update({
-                where: { id: mOrder.id },
-                data: {
-                  paymentStatus: finalPaymentStatus,
-                  status: "open",
-                  razorpayPaymentId: newPaymentId || undefined,
-                  paymentFailureReason: null,
-                  tags: cleanedTags,
-                },
-              });
+              // Promote ZBPP/ZBPF → real ZB number when cron marks paid (complete may never have run)
+              let promotedNumber = mOrder.internalOrderNumber as string | null;
+              if (isFailedPrefixNumber(promotedNumber)) {
+                const oldNumber = promotedNumber!;
+                let mintedNumber = '';
+                try {
+                  mintedNumber = await assignUniversalOrderNumber(prisma);
+                } catch {
+                  mintedNumber = `ZB${Date.now().toString().slice(-8)}`;
+                }
+                const previousNumbers = [mOrder.previousOrderNumbers, oldNumber].filter(Boolean).join(',');
+                const promoted = await prisma.order.updateMany({
+                  where: {
+                    id: mOrder.id,
+                    internalOrderNumber: oldNumber,
+                  },
+                  data: {
+                    internalOrderNumber: mintedNumber,
+                    previousOrderNumbers: previousNumbers || null,
+                    paymentStatus: finalPaymentStatus,
+                    status: "open",
+                    razorpayPaymentId: newPaymentId || undefined,
+                    paymentFailureReason: null,
+                    tags: cleanedTags,
+                  },
+                });
+                if (promoted.count > 0) {
+                  promotedNumber = mintedNumber;
+                  await prisma.webStoreOrder.updateMany({
+                    where: { orderNumber: oldNumber },
+                    data: { orderNumber: mintedNumber },
+                  });
+                  await prisma.mobileOrder.updateMany({
+                    where: { orderNumber: oldNumber },
+                    data: { orderNumber: mintedNumber },
+                  }).catch(() => {});
+                  console.log(`[RazorpaySync] Promoted order number: ${oldNumber} -> ${mintedNumber}`);
+                } else {
+                  const fresh = await prisma.order.findUnique({
+                    where: { id: mOrder.id },
+                    select: { internalOrderNumber: true },
+                  });
+                  if (fresh?.internalOrderNumber && !isFailedPrefixNumber(fresh.internalOrderNumber)) {
+                    promotedNumber = fresh.internalOrderNumber;
+                  }
+                }
+              } else {
+                await prisma.order.update({
+                  where: { id: mOrder.id },
+                  data: {
+                    paymentStatus: finalPaymentStatus,
+                    status: "open",
+                    razorpayPaymentId: newPaymentId || undefined,
+                    paymentFailureReason: null,
+                    tags: cleanedTags,
+                  },
+                });
+              }
 
               // 3. Upgrade WebStoreOrder number from ZBPP prefix to real order number
-              const realOrderNumber = (mOrder.internalOrderNumber as string) || (mOrder.shopifyOrderName as string);
-              if (realOrderNumber && order.orderNumber.startsWith("ZBPP")) {
+              const realOrderNumber = promotedNumber || (mOrder.shopifyOrderName as string);
+              if (realOrderNumber && order.orderNumber.startsWith("ZBPP") && !isFailedPrefixNumber(realOrderNumber)) {
                 try {
                   // Check if the real order number is already taken
                   const existing = await prisma.webStoreOrder.findUnique({
                     where: { orderNumber: realOrderNumber },
                   });
-                  if (!existing) {
+                  if (!existing || existing.id === order.id) {
                     const shopifyInfo = (mOrder.shopifyOrderName as string) ? `Shopify: ${mOrder.shopifyOrderName}` : '';
                     const localInfo = `Local: ${mOrder.id}`;
                     const notesSuffix = [shopifyInfo, localInfo].filter(Boolean).join(' | ');

@@ -21,7 +21,9 @@ function razorpayErrMessage(err: unknown): string {
 }
 
 async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: AppAuthTokenPayload) {
-  const customerId = orderData?.customerId && orderData.customerId !== 'GUEST' ? orderData.customerId : userAuth.customerId;
+  // Prefer auth customer so prepaid orders always stick to the logged-in account
+  const bodyCustomerId = orderData?.customerId && orderData.customerId !== 'GUEST' ? orderData.customerId : null;
+  const customerId = userAuth.customerId || bodyCustomerId;
   const customerEmail = orderData?.customerEmail || orderData?.shippingAddress?.email || userAuth.customerEmail;
   const customerPhone = orderData?.customerPhone || orderData?.shippingAddress?.phone || '';
 
@@ -96,7 +98,7 @@ export async function POST(req: Request) {
       receipt,
       payment_capture: true,
       notes: {
-        customerId: orderData?.customerId || userAuth.customerId,
+        customerId: userAuth.customerId || orderData?.customerId,
         source: 'mobile-app',
         ...(isCod ? { payment_type: 'cod_upfront', cod_upfront: String(chargeAmountRupees) } : {}),
       }
