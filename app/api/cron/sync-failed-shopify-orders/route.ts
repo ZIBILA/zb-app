@@ -1,18 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/db';
-import {
-  syncOrderToShopify,
-  SHOPIFY_SYNC_PAID_STATUSES,
-} from '@/lib/services/shopifyOrderSyncService';
+import { retryFailedPaidShopifySyncs } from '@/lib/services/orderLifecycleService';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Cron worker: /api/cron/sync-failed-shopify-orders
  * Retries syncing paid orders that failed or never reached Shopify.
- * Payment gate: never sync unpaid / abandoned checkouts (ghost orders).
- * Runs in batches of 10, ordered by createdAt ASC to prevent starvation.
- * Excludes orders that are already synced or in-flight ('syncing').
+ * Payment gate lives in syncOrderToShopify (via retryFailedPaidShopifySyncs).
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -30,53 +24,14 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const failedOrders = await prisma.order.findMany({
-      where: {
-        shopifyOrderId: null,
-        shopifySyncStatus: { in: ['failed', 'pending'] },
-        paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] },
-      },
-      select: {
-        id: true,
-        paymentStatus: true,
-        shopifySyncStatus: true,
-      },
-      orderBy: { createdAt: 'asc' },
-      take: 10,
-    });
-
-    if (failedOrders.length === 0) {
-      return NextResponse.json({ success: true, processed: 0, message: 'No failed orders to sync' });
-    }
-
-    const results: Array<{
-      id: string;
-      success: boolean;
-      shopifyOrderId?: string;
-      error?: string;
-      skippedUnpaid?: boolean;
-    }> = [];
-
-    for (const order of failedOrders) {
-      try {
-        const syncRes = await syncOrderToShopify(order.id);
-        results.push({
-          id: order.id,
-          success: syncRes.success,
-          shopifyOrderId: syncRes.shopifyOrderId,
-          error: syncRes.error,
-          skippedUnpaid: syncRes.skippedUnpaid,
-        });
-      } catch (orderErr: any) {
-        console.error(`[Sync Failed Orders Cron] Failed to sync order ${order.id}:`, orderErr.message);
-        results.push({ id: order.id, success: false, error: orderErr.message });
-      }
-    }
+    const limit = Math.min(Number(searchParams.get('limit') || 15) || 15, 50);
+    const batch = await retryFailedPaidShopifySyncs(limit);
 
     return NextResponse.json({
       success: true,
-      processed: failedOrders.length,
-      results,
+      processed: batch.processed,
+      results: batch.results,
+      message: batch.processed === 0 ? 'No failed orders to sync' : undefined,
     });
   } catch (err: any) {
     console.error('[Sync Failed Orders Cron] Top-level error:', err);
