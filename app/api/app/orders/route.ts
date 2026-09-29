@@ -104,7 +104,7 @@ export async function GET(req: Request) {
             { paymentStatus: { in: ['failed', 'payment_failed', 'FAILED', 'PAYMENT_FAILED'] } },
             {
               AND: [
-                { paymentStatus: { notIn: ['paid', 'partially_paid', 'refunded', 'partially_refunded', 'PAID', 'PARTIALLY_PAID', 'REFUNDED', 'PARTIALLY_REFUNDED', 'success', 'SUCCESS'] } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'refunded', 'partially_refunded', 'PAID', 'PARTIALLY_PAID', 'COD_UPFRONT_PAID', 'REFUNDED', 'PARTIALLY_REFUNDED', 'success', 'SUCCESS'] } },
                 { paymentMethod: { notIn: ['COD', 'cod', 'Cash on Delivery', 'cash_on_delivery'] } }
               ]
             }

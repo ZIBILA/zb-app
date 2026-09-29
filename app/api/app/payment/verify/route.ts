@@ -200,7 +200,7 @@ export async function POST(req: Request) {
                 data: {
                   orderNumber: promotedNumber || mobileOrderNumber,
                   status: 'synced',
-                  paymentStatus: targetPaymentStatus === 'cod_upfront_paid' ? 'partially_paid' : 'paid',
+                  paymentStatus: targetPaymentStatus === 'cod_upfront_paid' ? 'cod_upfront_paid' : 'paid',
                   paymentId: razorpay_payment_id,
                   shopifyOrderId: shopifyOrderId,
                   syncedAt: now,
@@ -215,11 +215,33 @@ export async function POST(req: Request) {
 
           // Record payment (skip if customer missing — never fail verify after capture)
           if (order.customerId) {
+            let recordedAmount = Number((order as any).codUpfrontPaid) || 0;
+            if (targetPaymentStatus !== 'cod_upfront_paid') {
+              recordedAmount = Number(order.totalPrice) || 0;
+            }
+            if (!(recordedAmount > 0)) {
+              recordedAmount = Number(order.totalPrice) || 0;
+            }
+            // Prefer live Razorpay capture amount when available
+            try {
+              const creds = await resolveRazorpayCredentials();
+              const razorpay = new Razorpay({
+                key_id: creds.key_id.trim(),
+                key_secret: creds.key_secret.trim(),
+              });
+              const livePayment: any = await razorpay.payments.fetch(razorpay_payment_id);
+              const liveRupees = Number(livePayment?.amount) / 100;
+              if (Number.isFinite(liveRupees) && liveRupees > 0) {
+                recordedAmount = liveRupees;
+              }
+            } catch {
+              /* keep fallback amount */
+            }
             await prisma.payment.create({
               data: {
                 orderId: order.id,
                 customerId: order.customerId,
-                amount: order.totalPrice,
+                amount: recordedAmount,
                 type: 'CAPTURE',
                 status: 'success',
                 gateway: 'razorpay',

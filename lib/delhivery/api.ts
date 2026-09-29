@@ -38,9 +38,7 @@ export async function createShipment(order: DelhiveryOrder): Promise<{ awb: stri
           products_desc: order.items.map(i => i.title).join(', '),
           cod_amount: (order.paymentMode === 'COD' || String(order.paymentMode).toUpperCase() === 'COD')
             ? String(Math.max(0, Math.round(
-                Number(order.total) - (Number((order as any).codUpfrontPaid) > 0
-                  ? Number((order as any).codUpfrontPaid)
-                  : 0)
+                Number(order.total) - (Number(order.codUpfrontPaid) > 0 ? Number(order.codUpfrontPaid) : 0)
               )))
             : '',
           order_date: new Date().toISOString(),
