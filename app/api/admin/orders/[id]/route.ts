@@ -488,11 +488,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     // Auto-cancel sub-statuses if status is set to cancelled
     if (body.status === 'cancelled' && oldOrder.status !== 'cancelled') {
-      const deliveryStatusLower = (oldOrder.deliveryStatus || '').toLowerCase();
-      const isShippedOrDelivered = ['shipped', 'delivered', 'in transit', 'out for delivery'].includes(deliveryStatusLower);
-      
-      if (isShippedOrDelivered) {
-        return NextResponse.json({ success: false, error: 'Cannot cancel order that is already shipped or delivered' }, { status: 400 });
+      const { assertOrderCancellable } = await import('@/lib/services/orderLifecycleService');
+      try {
+        assertOrderCancellable(oldOrder);
+      } catch (cancelErr: any) {
+        return NextResponse.json(
+          { success: false, error: cancelErr?.message || 'Cannot cancel order that is already shipped or delivered' },
+          { status: 400 }
+        );
       }
 
       body.paymentStatus = ['paid', 'cod_upfront_paid', 'refunded', 'approved', 'success'].includes(oldOrder.paymentStatus) ? oldOrder.paymentStatus : 'cancelled';
