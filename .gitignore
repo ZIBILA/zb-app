@@ -65,3 +65,6 @@ tsc_output*.txt
 # Manufacturing module backup (moved to separate employee dashboard)
 /_manufacturing_backup/
 
+# Local audit dump (large Drive export — keep out of git)
+/docs/audit
+
