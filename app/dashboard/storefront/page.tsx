@@ -907,7 +907,7 @@ export default function StorefrontSettingsPage() {
                 <div className="flex items-center justify-between border-b border-foreground/[0.03] pb-2">
                    <div>
                       <p className="text-[11px] font-semibold text-foreground tracking-tight">Product Feed Excluded Collections</p>
-                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Selected collections will be excluded from /feed.xml (Meta, Snap, TikTok, Google)</span>
+                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Selected collections will be excluded from /feed.xml and /feed.csv (Meta, Snap, Google, ChatGPT). Manage URLs and sync status in Marketing → Catalogue Feeds.</span>
                    </div>
                    <span className="text-[9px] font-semibold text-amber-500 uppercase tracking-widest">{safeParseArray(settings.feedExcludedCollections).length} Excluded</span>
                 </div>

@@ -104,6 +104,7 @@ const MODULE_PAGES: Record<string, { name: string; href: string }[]> = {
   ],
   MARKETING: [
     { name: "SEO Dashboard", href: "/dashboard/marketing/seo" },
+    { name: "Catalogue Feeds", href: "/dashboard/marketing/catalogue-feeds" },
     { name: "Omnichannel Analytics", href: "/dashboard/marketing/analytics" },
     { name: "Meta Pixel Tracker", href: "/dashboard/marketing/meta-pixel" },
     { name: "Customer Wishlist", href: "/dashboard/wishlist" },

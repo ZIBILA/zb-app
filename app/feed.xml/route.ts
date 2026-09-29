@@ -1,36 +1,24 @@
 /**
- * /feed.xml — Spec-complete product feed for Meta, Snapchat, TikTok & Google Merchant Center
+ * /feed.xml — Spec-complete product feed for Meta, Snapchat, TikTok, Google & OpenAI Ads
  *
  * RSS 2.0 with Google Merchant `g:` namespace.
  * Data sourced from Shopify Admin REST API; feed-inclusion flags from Prisma.
- *
- * Platform requirements covered:
- * - Google Merchant Center: g:id, title, description, link, g:image_link, g:price, g:availability,
- *   g:brand, g:condition, g:google_product_category, g:item_group_id, g:size, g:color, g:mpn, g:gtin
- * - Meta Commerce Manager: Same fields (RSS 2.0 w/ Google namespace is accepted)
- * - Snapchat Catalog: Same RSS 2.0 feed format
- * - TikTok Catalog: Same RSS 2.0 feed format
- * - OpenAI Ads: Same RSS 2.0 feed format
- *
- * Performance: Uses a single Shopify API call (fetchAllProducts) + one cheap Prisma
- * query for exclusions. Previous implementation used N+1 collection-to-product API
- * calls that caused rate limiting and 500 errors.
  */
 
-import {
-  fetchAllProducts,
-  type ShopifyProduct,
-} from '@/lib/shopify-admin';
-import prisma from '@/lib/db';
+import { type ShopifyProduct } from '@/lib/shopify-admin';
 import { getGoogleCategory } from '@/lib/google-product-categories';
+import {
+  getProductSiteUrl,
+  loadFeedProducts,
+  recordFeedBuildStatus,
+} from '@/lib/product-feed';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com').replace(/\/+$/, '');
+const SITE_URL = getProductSiteUrl();
 const BRAND = 'Zica Bella';
 
-// ─── XML Escape ──────────────────────────────────────────────────────
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -40,7 +28,6 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
-/** Strip HTML tags and decode basic entities for plain-text description */
 function stripHtml(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, '\n')
@@ -56,20 +43,17 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-/** Wrap text in CDATA, escaping any nested ]]> sequences */
 function cdata(text: string): string {
   const safe = text.replace(/\]\]>/g, ']]]><![CDATA[>');
   return `<![CDATA[${safe}]]>`;
 }
 
-/** Format a price as "1999.00 INR" */
 function formatPrice(price: string | number): string {
   const num = typeof price === 'string' ? parseFloat(price) : price;
   if (isNaN(num) || num <= 0) return '';
   return `${num.toFixed(2)} INR`;
 }
 
-/** Determine size and color from a variant based on product option definitions */
 function getVariantAttributes(
   product: ShopifyProduct,
   variant: ShopifyProduct['variants'][0]
@@ -89,28 +73,6 @@ function getVariantAttributes(
   return { size, color };
 }
 
-// ─── Data Fetching ───────────────────────────────────────────────────
-
-/**
- * Fetch the set of Shopify product IDs that have been explicitly excluded
- * from the feed via the admin dashboard's includeInFeed toggle.
- */
-async function getExcludedProductIds(): Promise<Set<string>> {
-  try {
-    const excludedProducts = await prisma.product.findMany({
-      where: { includeInFeed: false },
-      select: { shopifyProductId: true },
-    });
-
-    return new Set<string>(excludedProducts.map((p: { shopifyProductId: string }) => p.shopifyProductId));
-  } catch (err) {
-    console.error('[Feed] Error fetching feed exclusions from database:', err);
-    return new Set<string>();
-  }
-}
-
-// ─── XML Generation ──────────────────────────────────────────────────
-
 function generateItemXml(
   product: ShopifyProduct,
   variant: ShopifyProduct['variants'][0]
@@ -119,30 +81,23 @@ function generateItemXml(
 
   const productId = String(product.id);
   const variantId = String(variant.id);
-  const itemId = variantId; // MUST equal the pixel content_id (bare Shopify variant id) for catalogue matching
+  const itemId = variantId;
 
   const variantTitle = variant.title && variant.title !== 'Default Title' ? variant.title : '';
   const fullTitle = variantTitle ? `${product.title} - ${variantTitle}` : product.title;
 
   const description = product.body_html ? stripHtml(product.body_html) : product.title;
-
   const link = `${SITE_URL}/products/${product.handle}`;
 
-  // Images
   const primaryImage = product.image?.src || product.images?.[0]?.src || '';
   const additionalImages = (product.images || [])
-    .slice(1, 11) // Max 10 additional images per Google spec
-    .map(img => img.src);
+    .slice(1, 11)
+    .map((img) => img.src);
 
-  // Availability — from Shopify variant inventory.
-  // If inventory is NOT tracked (inventory_management is null/empty), the
-  // variant is always purchasable → treat as in_stock. Only mark
-  // out_of_stock when inventory IS tracked and quantity <= 0.
   const inventoryTracked = !!variant.inventory_management;
   const inStock = inventoryTracked ? (variant.inventory_quantity ?? 0) > 0 : true;
   const availability = inStock ? 'in_stock' : 'out_of_stock';
 
-  // Pricing
   const variantPrice = parseFloat(variant.price || '0');
   const compareAtPrice = variant.compare_at_price ? parseFloat(variant.compare_at_price) : null;
 
@@ -150,14 +105,12 @@ function generateItemXml(
   let salePriceTag = '';
 
   if (compareAtPrice && compareAtPrice > variantPrice && variantPrice > 0) {
-    // Product is on sale: g:price = original, g:sale_price = current
     priceTag = formatPrice(compareAtPrice);
     salePriceTag = formatPrice(variantPrice);
   } else if (variantPrice > 0) {
     priceTag = formatPrice(variantPrice);
   }
 
-  // Product type / category — use product_type directly from Shopify
   const productType = product.product_type || '';
   const googleCategory = getGoogleCategory(product.product_type);
 
@@ -188,62 +141,34 @@ function generateItemXml(
     lines.push(`      <g:product_type>${escapeXml(productType)}</g:product_type>`);
   }
   lines.push(`      <g:google_product_category>${escapeXml(googleCategory)}</g:google_product_category>`);
-
-  // Variant grouping
   lines.push(`      <g:item_group_id>${escapeXml(productId)}</g:item_group_id>`);
 
   if (size) lines.push(`      <g:size>${escapeXml(size)}</g:size>`);
   if (color) lines.push(`      <g:color>${escapeXml(color)}</g:color>`);
 
-  // Identifiers
   if (variant.sku) lines.push(`      <g:mpn>${escapeXml(variant.sku)}</g:mpn>`);
   if (variant.barcode) lines.push(`      <g:gtin>${escapeXml(variant.barcode)}</g:gtin>`);
 
-  // If no GTIN or MPN, set identifier_exists to false
   if (!variant.sku && !variant.barcode) {
     lines.push(`      <g:identifier_exists>false</g:identifier_exists>`);
   }
 
   lines.push('    </item>');
-
   return lines.join('\n');
 }
 
-// ─── Route Handler ───────────────────────────────────────────────────
-
 export async function GET(): Promise<Response> {
+  const startTime = Date.now();
   try {
     console.log('[Feed] Starting feed generation...');
-    const startTime = Date.now();
 
-    // Parallel fetch: Shopify products + Prisma exclusions
-    // Only 1 Shopify API call (fetchAllProducts) + 1 cheap DB query
-    const [allProducts, excludedProductIds] = await Promise.all([
-      fetchAllProducts(250, { allowFallback: false }),
-      getExcludedProductIds(),
-    ]);
+    const loaded = await loadFeedProducts();
+    console.log(
+      `[Feed] Fetched ${loaded.totalFetched} products; toggle-excluded=${loaded.toggleExcludedCount}, collection-excluded=${loaded.collectionExcludedCount}, included=${loaded.products.length}`
+    );
 
-    console.log(`[Feed] Fetched ${allProducts.length} products, ${excludedProductIds.size} excluded`);
-
-    // Filter products
-    const feedProducts = allProducts.filter(product => {
-      // Must be active
-      if (product.status !== 'active') return false;
-
-      // Must not be explicitly excluded via the includeInFeed toggle
-      if (excludedProductIds.has(String(product.id))) return false;
-
-      // NOTE: do NOT exclude out-of-stock or untracked products.
-      // They belong in the catalogue with g:availability = out_of_stock so
-      // (a) the full catalogue is represented and (b) pixel events still match.
-      return true;
-    });
-
-    console.log(`[Feed] ${feedProducts.length} products pass feed filters`);
-
-    // Generate items — one per variant
     const items: string[] = [];
-    for (const product of feedProducts) {
+    for (const product of loaded.products) {
       if (!product.variants || !Array.isArray(product.variants)) continue;
       for (const variant of product.variants) {
         if (!variant) continue;
@@ -252,7 +177,6 @@ export async function GET(): Promise<Response> {
     }
 
     const now = new Date().toUTCString();
-
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
   <channel>
@@ -267,6 +191,14 @@ ${items.join('\n')}
     const elapsed = Date.now() - startTime;
     console.log(`[Feed] Generated feed with ${items.length} items in ${elapsed}ms`);
 
+    await recordFeedBuildStatus({
+      format: 'xml',
+      status: 'success',
+      itemCount: items.length,
+      productCount: loaded.products.length,
+      durationMs: elapsed,
+    });
+
     return new Response(xml, {
       status: 200,
       headers: {
@@ -278,8 +210,13 @@ ${items.join('\n')}
     });
   } catch (err) {
     console.error('[Feed] Critical error generating feed:', err);
+    await recordFeedBuildStatus({
+      format: 'xml',
+      status: 'error',
+      durationMs: Date.now() - startTime,
+      error: err,
+    });
 
-    // Return a valid but empty feed on error — platforms handle empty feeds gracefully
     const errorXml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
   <channel>
@@ -290,7 +227,7 @@ ${items.join('\n')}
 </rss>`;
 
     return new Response(errorXml, {
-      status: 200, // Return 200 even on error — platforms may mark feeds as broken on 500
+      status: 200,
       headers: {
         'Content-Type': 'application/xml; charset=utf-8',
         'Cache-Control': 'public, s-maxage=60',
