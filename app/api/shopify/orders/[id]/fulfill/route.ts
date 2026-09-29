@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createFulfillment, fetchLocations, adminUrl, headers } from '@/lib/shopify-admin';
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import prisma from '@/lib/db';
 import { shipOrder } from '@/lib/services/logistics';
 
@@ -16,7 +17,13 @@ export async function POST(
   { params }: { params: { id: string } }
 ) {
   try {
+    await requirePermission('ORDERS', 'edit');
+
     const orderId = params.id;
+    if (!orderId) {
+      return NextResponse.json({ error: 'Order ID is required' }, { status: 400 });
+    }
+
     const body = await req.json().catch(() => ({}));
     const { locationId, lineItems } = body;
 
@@ -121,6 +128,9 @@ export async function POST(
       }
     });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Fulfillment Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
