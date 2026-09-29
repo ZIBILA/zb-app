@@ -199,30 +199,50 @@ export default function AdminNotificationsPage() {
   const [markingRead, setMarkingRead] = useState(false);
   const limit = 30;
 
-  const fetchNotifications = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  const fetchNotifications = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) {
+      setIsLoading(true);
+      setError(null);
+    }
     try {
       const res = await fetch(
         `/api/admin/notifications?page=${page}&limit=${limit}&filter=${filter}`
       );
       const data = await res.json();
       if (res.ok) {
-        setNotifications(data.notifications || []);
+        const next = (data.notifications || []) as Notification[];
+        // Keep previous list reference when nothing changed so React skips a full list remount.
+        setNotifications((prev) => {
+          if (
+            prev.length === next.length &&
+            prev.every(
+              (n, i) =>
+                n.id === next[i]?.id &&
+                n.timestamp === next[i]?.timestamp &&
+                n.action === next[i]?.action
+            )
+          ) {
+            return prev;
+          }
+          return next;
+        });
         setTotal(data.total || 0);
         setUnreadCount(data.unreadCount || 0);
         setLastReadAt(data.lastReadAt || "");
-      } else {
+      } else if (!silent) {
         const errMsg = data.error || "Failed to load notifications";
         setError(errMsg);
         toast.error(errMsg);
       }
     } catch {
-      const errMsg = "Network error loading notifications";
-      setError(errMsg);
-      toast.error(errMsg);
+      if (!silent) {
+        const errMsg = "Network error loading notifications";
+        setError(errMsg);
+        toast.error(errMsg);
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, [page, filter]);
 
@@ -232,7 +252,8 @@ export default function AdminNotificationsPage() {
 
   useEffect(() => {
     const handleSync = () => {
-      fetchNotifications();
+      // Background poll: revalidate only — no loading spinner / list wipe.
+      fetchNotifications({ silent: true });
     };
     window.addEventListener("realtime-sync", handleSync);
     return () => window.removeEventListener("realtime-sync", handleSync);
@@ -247,7 +268,7 @@ export default function AdminNotificationsPage() {
         toast.success("All notifications marked as read");
         setUnreadCount(0);
         setLastReadAt(new Date().toISOString());
-        fetchNotifications();
+        fetchNotifications({ silent: true });
       }
     } catch {
       toast.error("Failed to mark as read");

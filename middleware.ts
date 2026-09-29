@@ -46,6 +46,7 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
   ],
   MARKETING: [
     "/dashboard/marketing/seo",
+    "/dashboard/marketing/catalogue-feeds",
     "/dashboard/marketing/analytics",
     "/dashboard/marketing/meta-pixel",
     "/dashboard/wishlist",
