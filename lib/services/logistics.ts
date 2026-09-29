@@ -254,6 +254,67 @@ async function logisticsApiFetch(
 // ─── Core Service Methods ───────────────────────────────────────────
 
 /**
+ * Resolve local Order.id and write Shipment + Order + WebStoreOrder delivery status
+ * so Admin / Shopify / logistics stay aligned on the same local FK.
+ */
+async function persistShipmentAndDeliveryStatus(
+  orderRef: string,
+  result: ShipmentResult,
+  extraOrderData?: Record<string, unknown>
+): Promise<string | null> {
+  const { resolveLocalOrderId } = await import('@/lib/services/orderLifecycleService');
+  const localId = await resolveLocalOrderId(orderRef);
+  if (!localId) {
+    console.warn(`[Logistics] No local Order for ref=${orderRef}; skipping shipment DB write`);
+    return null;
+  }
+
+  await prisma.shipment.create({
+    data: {
+      orderId: localId,
+      trackingNumber: result.trackingNumber,
+      awb: result.trackingNumber || undefined,
+      trackingUrl: result.trackingUrl,
+      courier: result.courier,
+      status: 'confirmed',
+      events: JSON.stringify([
+        {
+          status: 'confirmed',
+          location: 'Warehouse',
+          timestamp: new Date().toISOString(),
+          description: 'Shipment booked',
+        },
+      ]),
+    },
+  });
+
+  await prisma.order.update({
+    where: { id: localId },
+    data: {
+      deliveryStatus: 'confirmed',
+      ...(extraOrderData || {}),
+    },
+  });
+
+  const order = await prisma.order.findUnique({
+    where: { id: localId },
+    select: { internalOrderNumber: true, razorpayOrderId: true, shopifyOrderId: true },
+  });
+  const wsWhere: Array<Record<string, string>> = [];
+  if (order?.internalOrderNumber) wsWhere.push({ orderNumber: order.internalOrderNumber });
+  if (order?.razorpayOrderId) wsWhere.push({ razorpayOrderId: order.razorpayOrderId });
+  if (order?.shopifyOrderId) wsWhere.push({ shopifyOrderId: order.shopifyOrderId });
+  if (wsWhere.length) {
+    await prisma.webStoreOrder.updateMany({
+      where: { OR: wsWhere },
+      data: { deliveryStatus: 'confirmed' },
+    }).catch(() => {});
+  }
+
+  return localId;
+}
+
+/**
  * Create a forward shipment for an order.
  * Returns tracking_number, tracking_url, and courier name.
  */
@@ -354,22 +415,8 @@ export async function shipOrder(
           shipmentId: data?.shipment_id?.toString(),
         };
 
-        // Save shipment to DB
-        await prisma.shipment.create({
-          data: {
-            orderId,
-            trackingNumber: result.trackingNumber,
-            trackingUrl: result.trackingUrl,
-            courier: result.courier,
-            status: 'confirmed',
-          },
-        });
-
-        // Update order delivery status
-        await prisma.order.updateMany({
-          where: { shopifyOrderId: orderId },
-          data: { deliveryStatus: 'confirmed' },
-        });
+        // Save shipment + delivery status on local Order / WebStoreOrder
+        await persistShipmentAndDeliveryStatus(orderId, result);
 
         return result;
       }
@@ -479,31 +526,10 @@ export async function shipOrder(
               courier: 'Delhivery',
             };
 
-            // Save shipment to DB
-            await prisma.shipment.create({
-              data: {
-                orderId: dbOrder?.id || orderId,
-                trackingNumber: result.trackingNumber,
-                awb: result.trackingNumber,
-                trackingUrl: result.trackingUrl,
-                courier: result.courier,
-                status: 'confirmed',
-              },
-            });
-
-            // Update order delivery status & delhivery_awb
-            await prisma.order.updateMany({
-              where: {
-                OR: [
-                  { id: orderId },
-                  { shopifyOrderId: orderId }
-                ]
-              },
-              data: {
-                deliveryStatus: 'confirmed',
-                delhivery_awb: result.trackingNumber,
-                status: 'Shipped'
-              },
+            // Save shipment + delivery status on local Order / WebStoreOrder
+            await persistShipmentAndDeliveryStatus(dbOrder?.id || orderId, result, {
+              delhivery_awb: result.trackingNumber,
+              status: 'Shipped',
             });
 
             return result;
@@ -528,15 +554,7 @@ export async function shipOrder(
         courier: config.provider,
       };
 
-      await prisma.shipment.create({
-        data: {
-          orderId,
-          trackingNumber: result.trackingNumber,
-          trackingUrl: result.trackingUrl,
-          courier: result.courier,
-          status: 'confirmed',
-        },
-      });
+      await persistShipmentAndDeliveryStatus(orderId, result);
 
       return result;
     } catch (err: any) {
@@ -553,18 +571,7 @@ export async function shipOrder(
     courier: 'Mock Courier',
   };
 
-  await prisma.shipment.create({
-    data: {
-      orderId,
-      trackingNumber: result.trackingNumber,
-      trackingUrl: result.trackingUrl,
-      courier: result.courier,
-      status: 'confirmed',
-      events: JSON.stringify([
-        { status: 'confirmed', location: 'Warehouse', timestamp: new Date().toISOString(), description: 'Order confirmed and ready for pickup' },
-      ]),
-    },
-  });
+  await persistShipmentAndDeliveryStatus(orderId, result);
 
   return result;
 }
