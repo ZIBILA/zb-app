@@ -12,11 +12,11 @@ WHERE "paymentStatus" IN ('partially_paid', 'PARTIALLY_PAID')
     OR LOWER(COALESCE("note", '')) LIKE '%upfront fee paid%'
   );
 
-UPDATE "WebStoreOrder"
-SET "paymentStatus" = 'cod_upfront_paid'
-WHERE "paymentStatus" IN ('partially_paid', 'PARTIALLY_PAID')
+UPDATE "web_store_orders"
+SET "payment_status" = 'cod_upfront_paid'
+WHERE "payment_status" IN ('partially_paid', 'PARTIALLY_PAID')
   AND (
-    LOWER(COALESCE("paymentMethod", '')) = 'cod'
+    LOWER(COALESCE("payment_method", '')) = 'cod'
     OR LOWER(COALESCE("notes", '')) LIKE '%cod%'
   );
 
