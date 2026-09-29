@@ -104,9 +104,16 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
     // 6. Determine refund amount
     let refundAmount = 0;
     if (isCod) {
-      // For COD, refund the upfront fee (typically Rs 99)
-      const upfrontPaid = webStoreOrder ? Number(webStoreOrder.codUpfrontPaid) : 0;
-      refundAmount = upfrontPaid > 0 ? upfrontPaid : 99;
+      // For COD, refund the locked upfront fee (never re-read current dashboard setting)
+      const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+      refundAmount = resolveStoredCodUpfrontPaid({
+        storedPaid: Number((order as any).codUpfrontPaid) || Number(webStoreOrder?.codUpfrontPaid) || 0,
+        paymentStatus: order.paymentStatus,
+        paymentMethod: order.paymentMethod,
+        tags: order.tags,
+        note: order.note,
+        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+      });
     } else {
       // For Prepaid, refund the total price
       refundAmount = order.totalPrice;

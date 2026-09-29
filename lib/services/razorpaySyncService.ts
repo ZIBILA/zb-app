@@ -73,9 +73,9 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                 razorpayPaymentId: (confirmedMainOrder.razorpayPaymentId as string) || order.razorpayPaymentId,
                 paymentFailureReason: null,
                 ...(isCOD ? {
-                  codUpfrontPaid: Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 99,
+                  codUpfrontPaid: Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 0,
                   codUpfrontPaymentId: (confirmedMainOrder.razorpayPaymentId as string) || order.razorpayPaymentId || null,
-                  notes: `COD Order (₹${Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 99} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
+                  notes: `COD Order (₹${Number(order.codUpfrontPaid) || Number((confirmedMainOrder as any).codUpfrontPaid) || 0} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
                 } : {})
               },
             });
@@ -142,13 +142,13 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
         let newPaymentId: string | null = null;
         let failureReason: string | null = null;
 
-        // 1. Explicit COD Guard: if COD and upfront fee was captured, status is partially_paid
+        // 1. Explicit COD Guard: if COD and upfront fee was captured, status is cod_upfront_paid
         if (isCOD && upfrontCaptured) {
-          newStatus = "partially_paid";
+          newStatus = "cod_upfront_paid";
           newPaymentId = (capturedPayment?.id as string) || (upfrontPayment?.id as string) || order.codUpfrontPaymentId || order.razorpayPaymentId || null;
           failureReason = null;
         } else if (rzpOrder.status === "paid" || capturedPayment) {
-          newStatus = isCOD ? "partially_paid" : "paid";
+          newStatus = isCOD ? "cod_upfront_paid" : "paid";
           newPaymentId = (capturedPayment?.id as string) || order.razorpayPaymentId || null;
           failureReason = null;
         } else if (latestFailedPayment && !upfrontCaptured) {
@@ -196,15 +196,27 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
           failureReason = null;
         }
 
-        const finalPaymentStatus = (isCOD && (newStatus === "paid" || newStatus === "cod_upfront_paid" || newStatus === "partially_paid")) ? "partially_paid" : newStatus;
+        const finalPaymentStatus = (isCOD && (newStatus === "paid" || newStatus === "cod_upfront_paid" || newStatus === "partially_paid"))
+          ? "cod_upfront_paid"
+          : newStatus;
 
         if (
           finalPaymentStatus &&
           (finalPaymentStatus !== order.paymentStatus || failureReason !== order.paymentFailureReason)
         ) {
-          console.log(`[RazorpaySync] Order ${order.orderNumber} status transition: ${order.paymentStatus} -> ${finalPaymentStatus}. Reason: ${failureReason || 'N/A'}, codUpfrontPaid: ${Number(order.codUpfrontPaid) || 99}, rzpOrderId: ${order.razorpayOrderId}, codUpfrontPaymentId: ${order.codUpfrontPaymentId || newPaymentId}`);
+          console.log(`[RazorpaySync] Order ${order.orderNumber} status transition: ${order.paymentStatus} -> ${finalPaymentStatus}. Reason: ${failureReason || 'N/A'}, codUpfrontPaid: ${Number(order.codUpfrontPaid) || 0}, rzpOrderId: ${order.razorpayOrderId}, codUpfrontPaymentId: ${order.codUpfrontPaymentId || newPaymentId}`);
 
           // 1. Update WebStoreOrder
+          const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          const syncedUpfront = isCOD
+            ? resolveStoredCodUpfrontPaid({
+                storedPaid: Number(order.codUpfrontPaid) || 0,
+                paymentStatus: finalPaymentStatus,
+                paymentMethod: order.paymentMethod,
+                configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+              })
+            : 0;
+
           await prisma.webStoreOrder.update({
             where: { id: order.id },
             data: {
@@ -212,9 +224,9 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
               razorpayPaymentId: newPaymentId || order.razorpayPaymentId,
               paymentFailureReason: failureReason,
               ...(isCOD && (finalPaymentStatus === "cod_upfront_paid" || finalPaymentStatus === "partially_paid" || finalPaymentStatus === "paid") ? {
-                codUpfrontPaid: Number(order.codUpfrontPaid) || 99,
+                codUpfrontPaid: syncedUpfront,
                 codUpfrontPaymentId: newPaymentId || order.codUpfrontPaymentId || order.razorpayPaymentId || null,
-                notes: order.notes || `COD Order (₹${Number(order.codUpfrontPaid) || 99} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
+                notes: order.notes || `COD Order (₹${syncedUpfront} upfront fee paid via Razorpay) | Order: ${order.orderNumber}`
               } : {})
             },
           });
@@ -223,35 +235,85 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
           const isSuccessfulPayment = finalPaymentStatus === "paid" || finalPaymentStatus === "cod_upfront_paid" || finalPaymentStatus === "partially_paid";
 
           if (isSuccessfulPayment) {
+            const { assignUniversalOrderNumber, isFailedPrefixNumber } = await import("@/lib/orderNumber");
+
             for (const mOrder of matchingMainOrders) {
               const cleanedTags = (mOrder.tags || '')
                 .split(',')
                 .map((t: string) => t.trim())
                 .filter((t: string) => Boolean(t) && t !== 'payment_pending' && t !== 'Order creation in process')
-                .concat(isCOD ? ['cod_upfront_paid', 'partially_paid'] : ['paid'])
+                .concat(isCOD ? ['cod_upfront_paid'] : ['paid'])
                 .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
                 .join(', ');
 
-              await prisma.order.update({
-                where: { id: mOrder.id },
-                data: {
-                  paymentStatus: finalPaymentStatus,
-                  status: "open",
-                  razorpayPaymentId: newPaymentId || undefined,
-                  paymentFailureReason: null,
-                  tags: cleanedTags,
-                },
-              });
+              // Promote ZBPP/ZBPF → real ZB number when cron marks paid (complete may never have run)
+              let promotedNumber = mOrder.internalOrderNumber as string | null;
+              if (isFailedPrefixNumber(promotedNumber)) {
+                const oldNumber = promotedNumber!;
+                let mintedNumber = '';
+                try {
+                  mintedNumber = await assignUniversalOrderNumber(prisma);
+                } catch {
+                  mintedNumber = `ZB${Date.now().toString().slice(-8)}`;
+                }
+                const previousNumbers = [mOrder.previousOrderNumbers, oldNumber].filter(Boolean).join(',');
+                const promoted = await prisma.order.updateMany({
+                  where: {
+                    id: mOrder.id,
+                    internalOrderNumber: oldNumber,
+                  },
+                  data: {
+                    internalOrderNumber: mintedNumber,
+                    previousOrderNumbers: previousNumbers || null,
+                    paymentStatus: finalPaymentStatus,
+                    status: "open",
+                    razorpayPaymentId: newPaymentId || undefined,
+                    paymentFailureReason: null,
+                    tags: cleanedTags,
+                  },
+                });
+                if (promoted.count > 0) {
+                  promotedNumber = mintedNumber;
+                  await prisma.webStoreOrder.updateMany({
+                    where: { orderNumber: oldNumber },
+                    data: { orderNumber: mintedNumber },
+                  });
+                  await prisma.mobileOrder.updateMany({
+                    where: { orderNumber: oldNumber },
+                    data: { orderNumber: mintedNumber },
+                  }).catch(() => {});
+                  console.log(`[RazorpaySync] Promoted order number: ${oldNumber} -> ${mintedNumber}`);
+                } else {
+                  const fresh = await prisma.order.findUnique({
+                    where: { id: mOrder.id },
+                    select: { internalOrderNumber: true },
+                  });
+                  if (fresh?.internalOrderNumber && !isFailedPrefixNumber(fresh.internalOrderNumber)) {
+                    promotedNumber = fresh.internalOrderNumber;
+                  }
+                }
+              } else {
+                await prisma.order.update({
+                  where: { id: mOrder.id },
+                  data: {
+                    paymentStatus: finalPaymentStatus,
+                    status: "open",
+                    razorpayPaymentId: newPaymentId || undefined,
+                    paymentFailureReason: null,
+                    tags: cleanedTags,
+                  },
+                });
+              }
 
               // 3. Upgrade WebStoreOrder number from ZBPP prefix to real order number
-              const realOrderNumber = (mOrder.internalOrderNumber as string) || (mOrder.shopifyOrderName as string);
-              if (realOrderNumber && order.orderNumber.startsWith("ZBPP")) {
+              const realOrderNumber = promotedNumber || (mOrder.shopifyOrderName as string);
+              if (realOrderNumber && order.orderNumber.startsWith("ZBPP") && !isFailedPrefixNumber(realOrderNumber)) {
                 try {
                   // Check if the real order number is already taken
                   const existing = await prisma.webStoreOrder.findUnique({
                     where: { orderNumber: realOrderNumber },
                   });
-                  if (!existing) {
+                  if (!existing || existing.id === order.id) {
                     const shopifyInfo = (mOrder.shopifyOrderName as string) ? `Shopify: ${mOrder.shopifyOrderName}` : '';
                     const localInfo = `Local: ${mOrder.id}`;
                     const notesSuffix = [shopifyInfo, localInfo].filter(Boolean).join(' | ');

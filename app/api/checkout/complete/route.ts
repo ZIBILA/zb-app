@@ -14,6 +14,7 @@ import { debitStoreCredits } from "@/lib/storeCreditsHelper";
 import { assignUniversalOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
 import { sendSnapEvent } from '@/lib/snap-capi';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
+import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
 
 export async function POST(req: Request) {
   const rateLimitResult = await checkRateLimit(req, "checkout-complete", { maxRequests: 30, windowMs: 60_000 });
@@ -88,6 +89,11 @@ export async function POST(req: Request) {
 
     const parsedStoreCredit = Number(storeCreditAmount) || 0;
 
+    // Resolve COD upfront fee from dashboard config only — never trust client-supplied codFee
+    // (Razorpay create-order also charges this same server value).
+    const configuredCodFee = isCodOrder ? await getConfiguredCodUpfrontAmount() : 0;
+    const resolvedCodFee = configuredCodFee;
+
     const shop = await prisma.shop.findFirst();
     if (!shop) {
       return NextResponse.json({ error: "Shop not found" }, { status: 404 });
@@ -97,6 +103,10 @@ export async function POST(req: Request) {
     // Never trust client-supplied subtotal/total. Recompute from authoritative variant prices.
     let serverSubtotal = 0;
     let priceVerified = false;
+    let authoritativeTotal = Math.max(0, Number(total || 0));
+    let authoritativeSubtotal = Math.max(0, Number(subtotal || 0));
+    let paymentUnderpaid = false;
+    let capturedRupees: number | null = null;
     try {
       const variantIds = items
         .map((item: any) => {
@@ -153,21 +163,32 @@ export async function POST(req: Request) {
 
     // If verified, derive server total and compare
     if (priceVerified) {
-      const serverCodFee = isCodOrder ? Number(codFee || 99) : 0;
+      // Webstore COD upfront is an advance deposit deducted from total (not added on top).
+      // Mobile historically added fee to total — still tolerate that within ₹1.
+      const serverCodFee = isCodOrder ? resolvedCodFee : 0;
       const baseServerTotal = Math.max(0, serverSubtotal - Number(finalCouponDiscount || 0) - parsedStoreCredit);
       const serverTotalWithFee = baseServerTotal + serverCodFee;
       const clientTotal = Number(total || 0);
 
-      // In webstore COD, upfront fee (₹99) is an advance deposit deducted from total.
-      // In mobile app, COD fee is added to total. Both are accepted within ₹1 tolerance.
       const isMatch = Math.abs(baseServerTotal - clientTotal) <= 1 || (isCodOrder && Math.abs(serverTotalWithFee - clientTotal) <= 1);
 
       if (!isMatch) {
         console.error(`[Checkout] Price mismatch! ServerBase: ₹${baseServerTotal}, ServerWithFee: ₹${serverTotalWithFee}, Client: ₹${clientTotal}, ServerSubtotal: ₹${serverSubtotal}`);
-        return NextResponse.json(
-          { error: 'Cart total mismatch. Please refresh and retry.' },
-          { status: 400 }
-        );
+        // If Razorpay already returned a payment id, money may already be captured —
+        // never 400 the customer into a "paid but no order" dead-end. Force server totals.
+        if (razorpay?.razorpay_payment_id) {
+          console.error(`[Checkout] Proceeding despite mismatch because payment ${razorpay.razorpay_payment_id} was returned by gateway — using server totals`);
+          authoritativeSubtotal = serverSubtotal;
+          authoritativeTotal = baseServerTotal;
+        } else {
+          return NextResponse.json(
+            { error: 'Cart total mismatch. Please refresh and retry.' },
+            { status: 400 }
+          );
+        }
+      } else {
+        authoritativeSubtotal = serverSubtotal;
+        authoritativeTotal = baseServerTotal;
       }
     }
 
@@ -211,6 +232,26 @@ export async function POST(req: Request) {
           } catch {
             console.error("[Razorpay] Signature verification error");
             return NextResponse.json({ error: "Invalid payment signature" }, { status: 400 });
+          }
+
+          // Confirm captured amount matches what we should have charged (COD fee or full prepaid total).
+          try {
+            const creds = await resolveRazorpayCredentials();
+            const { fetchCapturedPayment } = await import('@/lib/meta-payment-verification');
+            const payment = await fetchCapturedPayment(razorpay.razorpay_payment_id, {
+              key_id: creds.key_id,
+              key_secret: creds.key_secret,
+            });
+            capturedRupees = Number(payment.amount) / 100;
+            const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
+            if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
+              paymentUnderpaid = true;
+              console.error(
+                `[Checkout] Underpayment: captured ₹${capturedRupees} < expected ₹${expectedCharge} (payment ${razorpay.razorpay_payment_id})`
+              );
+            }
+          } catch (amtErr: any) {
+            console.warn('[Checkout] Could not verify Razorpay captured amount:', amtErr?.message || amtErr);
           }
         } else {
           console.warn('[Checkout] Accepting MOCK payment for testing');
@@ -517,30 +558,47 @@ export async function POST(req: Request) {
 
     let localOrder: any = null;
     const finalPaymentMethod = isFullStoreCredit ? "store_credit" : isCodOrder ? "cod" : "razorpay";
+    const orderPaymentStatus = isFullStoreCredit
+      ? "paid"
+      : isCodOrder
+        ? "cod_upfront_paid"
+        : paymentUnderpaid
+          ? "partially_paid"
+          : "paid";
+    const orderTotalPrice = priceVerified
+      ? authoritativeTotal
+      : Math.max(0, Number(subtotal || total || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
+    const orderSubtotalPrice = priceVerified ? authoritativeSubtotal : Number(subtotal || 0);
+    const underpayNote = paymentUnderpaid && capturedRupees != null
+      ? ` | UNDERPAID: captured ₹${capturedRupees} vs expected ₹${isCodOrder ? resolvedCodFee : orderTotalPrice}`
+      : '';
 
     if (existingPreCreatedOrder) {
-      // Recalculate correct total: subtotal - discount - storeCredit
-      const correctedTotal = Math.max(0, Number(subtotal || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
+      // Recalculate correct total: prefer server-verified totals when available
+      const correctedTotal = orderTotalPrice;
 
       const updateData: any = {
         status: isCodOrder ? "open" : "approved",
-        paymentStatus: isCodOrder ? "cod_upfront_paid" : "paid",
+        paymentStatus: orderPaymentStatus,
         razorpayPaymentId: razorpay?.razorpay_payment_id || null,
         paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
         paymentMethod: finalPaymentMethod,
         storeCreditAmount: parsedStoreCredit,
         totalPrice: correctedTotal,
-        subtotalPrice: Number(subtotal || 0),
+        subtotalPrice: orderSubtotalPrice,
         discountCode: finalCouponCode || null,
         discountAmount: Number(finalCouponDiscount) || 0,
         paymentFailureReason: null,
+        codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
+        codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
         tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
         note: isFullStoreCredit
           ? `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`
           : isCodOrder
-          ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${codFee || 99} upfront fee paid via Razorpay`
-          : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})`,
+          ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay${underpayNote}`
+          : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})${underpayNote}`,
         internalOrderNumber: universalOrderNumber,
+        customerId: localCustomer.id,
       };
 
       localOrder = await prisma.order.update({
@@ -555,18 +613,20 @@ export async function POST(req: Request) {
           shopifyOrderId: null,
           customerId: localCustomer.id,
           status: isCodOrder ? "open" : "approved",
-          totalPrice: total,
-          subtotalPrice: subtotal,
+          totalPrice: orderTotalPrice,
+          subtotalPrice: orderSubtotalPrice,
           currency: body.currency || "INR",
           displayCountry: body.displayCountry || "IN",
-          paymentStatus: isCodOrder ? "cod_upfront_paid" : "paid",
+          paymentStatus: orderPaymentStatus,
           fulfillmentStatus: "unfulfilled",
           deliveryStatus: "pending",
           shippingAddress: JSON.stringify(address),
           billingAddress: JSON.stringify(address),
-          razorpayOrderId: razorpay?.razorpay_payment_id || null,
+          razorpayOrderId: razorpay?.razorpay_order_id || null,
           razorpayPaymentId: razorpay?.razorpay_payment_id || null,
           paymentMethod: finalPaymentMethod,
+          codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
+          codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
           storeCreditAmount: parsedStoreCredit,
           paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
           orderType: "WEB_STORE",
@@ -576,6 +636,9 @@ export async function POST(req: Request) {
           internalOrderNumber: universalOrderNumber,
           shopifySyncStatus: 'pending',
           shopifySyncError: null,
+          note: underpayNote
+            ? `Web checkout${underpayNote}`
+            : undefined,
           items: {
             create: resolvedItems.map((item: any) => ({
               shopifyLineItemId: item.shopifyLineItemId,
@@ -856,8 +919,8 @@ export async function POST(req: Request) {
         }
       });
 
-      const wsPaymentStatus = isFullStoreCredit ? "paid" : isCodOrder ? "partially_paid" : "paid";
-      const wsCodUpfrontPaid = isCodOrder ? (Number(codFee) || 99) : 0;
+      const wsPaymentStatus = orderPaymentStatus;
+      const wsCodUpfrontPaid = isCodOrder ? resolvedCodFee : 0;
       const wsCodUpfrontPaymentId = isCodOrder ? (razorpay?.razorpay_payment_id || null) : null;
       const wsNotes = isFullStoreCredit
         ? `Paid 100% via Store Credit (₹${parsedStoreCredit})`

@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import { createFulfillment, fetchLocations, adminUrl, headers } from '@/lib/shopify-admin';
-import prisma from '@/lib/db';
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { shipOrder } from '@/lib/services/logistics';
+import {
+  markOrderFulfilledLocally,
+  resolveLocalOrderId,
+} from '@/lib/services/orderLifecycleService';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,9 +20,18 @@ export async function POST(
   { params }: { params: { id: string } }
 ) {
   try {
+    await requirePermission('ORDERS', 'edit');
+
     const orderId = params.id;
+    if (!orderId) {
+      return NextResponse.json({ error: 'Order ID is required' }, { status: 400 });
+    }
+
     const body = await req.json().catch(() => ({}));
     const { locationId, lineItems } = body;
+
+    // Prefer local Order.id for logistics FK + status writes
+    const localOrderId = await resolveLocalOrderId(orderId);
 
     // 1. Fetch Order Details from Shopify
     const orderRes = await fetch(await adminUrl(`orders/${orderId}.json`), {
@@ -51,7 +64,7 @@ export async function POST(
 
     try {
       const shipment = await shipOrder(
-        order.name || order.id.toString(),
+        localOrderId || orderId,
         order.line_items.map((i: any) => ({
           title: i.title,
           sku: i.sku,
@@ -68,59 +81,49 @@ export async function POST(
           phone: order.shipping_address?.phone || order.customer?.phone || '',
         }
       );
-      
+
       trackingNumber = shipment.trackingNumber;
       trackingUrl = shipment.trackingUrl;
       courierName = shipment.courier;
     } catch (logisticsError: any) {
       console.error('[Logistics] Shipment booking failed:', logisticsError.message);
-      // We'll continue with Shopify fulfillment even if logistics fails, 
-      // but without a tracking number (or a mock one).
+      // Continue with Shopify fulfillment even if logistics fails
     }
 
     // 4. Create Fulfillment in Shopify
     const fulfillment = await createFulfillment(
-      orderId, 
-      resolvedLocationId, 
+      orderId,
+      resolvedLocationId,
       lineItems,
-      trackingNumber ? {
-        number: trackingNumber,
-        url: trackingUrl,
-        company: courierName
-      } : undefined
+      trackingNumber
+        ? {
+            number: trackingNumber,
+            url: trackingUrl,
+            company: courierName,
+          }
+        : undefined
     );
 
-    // 5. Update local DB
-    try {
-      const targetOrder = await prisma.order.findFirst({
-        where: { OR: [{ shopifyOrderId: orderId }, { id: orderId }] },
-        select: { id: true },
-      });
-      if (targetOrder) {
-        await prisma.order.update({
-          where: { id: targetOrder.id },
-          data: {
-            fulfillmentStatus: 'fulfilled',
-            deliveryStatus: trackingNumber ? 'confirmed' : undefined,
-          },
-        });
-      } else {
-        console.warn(`[Fulfill] No local Order row for ${orderId}; skipped DB status write`);
-      }
-    } catch (e) {
-      console.error(`[Fulfill] Failed to persist fulfillmentStatus for ${orderId}:`, e);
-    }
+    // 5. Update local Order + WebStoreOrder (never OR inside update.where)
+    await markOrderFulfilledLocally({
+      localOrderId,
+      shopifyOrderId: orderId,
+      trackingNumber: trackingNumber || null,
+    });
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       fulfillment,
       tracking: {
         number: trackingNumber,
         url: trackingUrl,
-        courier: courierName
-      }
+        courier: courierName,
+      },
     });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Fulfillment Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

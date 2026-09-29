@@ -3,12 +3,12 @@ import { DelhiveryOrder } from './types';
 const BASE_URL = 'https://track.delhivery.com';
 
 function getAuthHeader(): Record<string, string> {
-  const token = process.env.DELHIVERY_API_KEY || process.env.DELHIVERY_API_TOKEN;
+  const token = (process.env.DELHIVERY_API_KEY || process.env.DELHIVERY_API_TOKEN || '').trim();
   if (!token) {
-    console.warn('[Delhivery API] Warning: DELHIVERY_API_KEY is not set in environment.');
+    throw new Error('DELHIVERY_API_KEY is not set. Leave it blank for Mock Courier, or add a valid Delhivery token.');
   }
   return {
-    'Authorization': `Token ${token || ''}`,
+    'Authorization': `Token ${token}`,
   };
 }
 
@@ -36,8 +36,10 @@ export async function createShipment(order: DelhiveryOrder): Promise<{ awb: stri
           return_name: 'Zica Bella Returns',
           return_add: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
           products_desc: order.items.map(i => i.title).join(', '),
-          cod_amount: (order.paymentMode === 'COD' || String(order.paymentMode).toUpperCase() === 'COD') 
-            ? String(Math.max(0, Math.round(Number(order.total) - (Number((order as any).codUpfrontPaid) || 99)))) 
+          cod_amount: (order.paymentMode === 'COD' || String(order.paymentMode).toUpperCase() === 'COD')
+            ? String(Math.max(0, Math.round(
+                Number(order.total) - (Number(order.codUpfrontPaid) > 0 ? Number(order.codUpfrontPaid) : 0)
+              )))
             : '',
           order_date: new Date().toISOString(),
           total_amount: String(Math.round(Number(order.total))),

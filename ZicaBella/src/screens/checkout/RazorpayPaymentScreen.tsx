@@ -146,13 +146,16 @@ export default function RazorpayPaymentScreen() {
       const apiBase = getPaymentApiBaseUrl();
 
       if (orderData) {
+        const isCod = String(orderData.paymentMethod || '').toUpperCase() === 'COD';
         const orderPayload = {
           ...orderData,
           paymentId: paymentId,
           razorpayOrderId: rzpOrderId,
           razorpay_order_id: rzpOrderId,
           paymentStatus: 'paid',
-          paymentMethod: 'PREPAID',
+          paymentMethod: isCod ? 'COD' : 'PREPAID',
+          codFee: isCod ? Number(orderData.codFee || orderData.codUpfrontPaid || amount || 0) : 0,
+          codUpfrontPaid: isCod ? Number(orderData.codFee || orderData.codUpfrontPaid || amount || 0) : 0,
         };
 
         const res = await fetch(`${apiBase}/api/app/orders/create`, {
@@ -193,6 +196,8 @@ export default function RazorpayPaymentScreen() {
   }, [orderData, buyNowItem, setBuyNowItem, clearCart]);
 
   const isPayReady = (): boolean => {
+    if (!amount || Number(amount) <= 0) return false;
+    if (!orderId || !razorpayKeyId) return false;
     if (tab === 'upi') return upiSubTab === 'apps' ? !!selectedUPIApp : upiId.includes('@');
     if (tab === 'card') return cardNum.replace(/\s/g, '').length === 16 && cardExpiry.length === 5 && cardCvv.length >= 3;
     if (tab === 'netbanking') return !!selectedBank;
@@ -200,8 +205,24 @@ export default function RazorpayPaymentScreen() {
     return false;
   };
 
+  const payReadyHint = (): string => {
+    if (!amount || Number(amount) <= 0) return 'Invalid amount — go back and retry';
+    if (!orderId || !razorpayKeyId) return 'Payment session not ready — go back and retry';
+    if (tab === 'upi') {
+      return upiSubTab === 'apps'
+        ? (selectedUPIApp ? '' : 'Select a UPI app to continue')
+        : (upiId.includes('@') ? '' : 'Enter a valid UPI ID (e.g. name@upi)');
+    }
+    if (tab === 'card') return 'Enter full card number, expiry, and CVV';
+    if (tab === 'netbanking') return selectedBank ? '' : 'Select a bank to continue';
+    if (tab === 'wallet') return selectedWallet ? '' : 'Select a wallet to continue';
+    return '';
+  };
+
+  const payLockRef = useRef(false);
   const onPay = async () => {
-    if (!isPayReady()) return;
+    if (!isPayReady() || payLockRef.current || isProcessing) return;
+    payLockRef.current = true;
     haptics.success();
     
     const opts: any = {
@@ -225,14 +246,15 @@ export default function RazorpayPaymentScreen() {
       await startPayment(tab, opts);
     } catch (e: any) {
       console.error('[RazorpayPayment] Payment failed:', e.message);
-      // Optional: show alert if status doesn't catch it
+    } finally {
+      payLockRef.current = false;
     }
   };
 
   const goToOrders = () => {
     nav.getParent()?.reset({
       index: 1,
-      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: 'PREPAID' } }],
+      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
     });
   };
 
@@ -439,6 +461,16 @@ export default function RazorpayPaymentScreen() {
       </KeyboardAvoidingView>
 
       <View style={[s.bottomBar, { paddingBottom: insets.bottom + 20, backgroundColor: colors.background }]}>
+        {!isPayReady() && !!payReadyHint() && (
+          <Typography size={10} color={colors.textMuted} style={{ textAlign: 'center', marginBottom: 10, letterSpacing: 0.3 }}>
+            {payReadyHint()}
+          </Typography>
+        )}
+        {!!error && (
+          <Typography size={10} color="#FF3B30" style={{ textAlign: 'center', marginBottom: 10 }}>
+            {error}
+          </Typography>
+        )}
         <TouchableOpacity style={[s.payBtn, { backgroundColor: isPayReady() ? colors.foreground : colors.surface, opacity: isPayReady() ? 1 : 0.4 }]} onPress={onPay} disabled={isProcessing || !isPayReady()}>
           {isProcessing ? <ActivityIndicator color={colors.background} /> :
             <Typography size={13} weight="800" color={isPayReady() ? colors.background : colors.textMuted} style={{ letterSpacing: 2 }}>PLACE ORDER</Typography>
