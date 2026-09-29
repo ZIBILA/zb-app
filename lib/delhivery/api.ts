@@ -3,12 +3,12 @@ import { DelhiveryOrder } from './types';
 const BASE_URL = 'https://track.delhivery.com';
 
 function getAuthHeader(): Record<string, string> {
-  const token = process.env.DELHIVERY_API_KEY || process.env.DELHIVERY_API_TOKEN;
+  const token = (process.env.DELHIVERY_API_KEY || process.env.DELHIVERY_API_TOKEN || '').trim();
   if (!token) {
-    console.warn('[Delhivery API] Warning: DELHIVERY_API_KEY is not set in environment.');
+    throw new Error('DELHIVERY_API_KEY is not set. Leave it blank for Mock Courier, or add a valid Delhivery token.');
   }
   return {
-    'Authorization': `Token ${token || ''}`,
+    'Authorization': `Token ${token}`,
   };
 }
 
