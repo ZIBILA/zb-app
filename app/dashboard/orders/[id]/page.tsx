@@ -300,9 +300,11 @@ export default function OrderDetailPage() {
         setShowCancelModal(false);
         fetchOrder(true);
       } else {
+        setShowCancelModal(false);
         setToast(data.error || "Cancellation Failed");
       }
     } catch (err: any) {
+      setShowCancelModal(false);
       setToast(err.message || "Cancellation Failed");
     } finally {
       setSaving(false);
@@ -420,8 +422,8 @@ export default function OrderDetailPage() {
             initial={{ opacity: 0, y: -20, x: '-50%' }}
             animate={{ opacity: 1, y: 0, x: '-50%' }}
             exit={{ opacity: 0, y: -20, x: '-50%' }}
-            className={`fixed top-8 left-1/2 z-[100] px-6 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest shadow-2xl ${
-              /failed|error|mismatch|invalid|sold/i.test(toast) 
+            className={`fixed top-8 left-1/2 z-[200] px-6 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest shadow-2xl ${
+              /failed|error|mismatch|invalid|sold|cannot be cancelled/i.test(toast) 
                 ? 'bg-rose-500 text-white' 
                 : 'bg-foreground text-background'
             }`}
@@ -1085,12 +1087,14 @@ export default function OrderDetailPage() {
               <div className="space-y-4 relative z-10">
                 <button
                   onClick={() => setShowCancelModal(true)}
-                  disabled={['shipped', 'delivered', 'in transit', 'out for delivery'].includes((order.deliveryStatus || '').toLowerCase())}
+                  disabled={['shipped', 'delivered', 'in transit', 'out for delivery', 'confirmed', 'fulfilled'].includes((order.deliveryStatus || '').toLowerCase())
+                    || ['fulfilled', 'partial'].includes((order.fulfillmentStatus || '').toLowerCase())}
                   className="w-full py-3.5 bg-rose-500/10 border border-rose-500/15 hover:bg-rose-500/20 text-rose-500 disabled:opacity-30 disabled:pointer-events-none rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all active:scale-[0.98]"
                 >
                   Cancel Order
                 </button>
-                {['shipped', 'delivered', 'in transit', 'out for delivery'].includes((order.deliveryStatus || '').toLowerCase()) && (
+                {(['shipped', 'delivered', 'in transit', 'out for delivery', 'confirmed', 'fulfilled'].includes((order.deliveryStatus || '').toLowerCase())
+                  || ['fulfilled', 'partial'].includes((order.fulfillmentStatus || '').toLowerCase())) && (
                   <p className="text-[8px] text-foreground/30 uppercase tracking-widest text-center leading-normal">
                     Cancellation blocked — Order has already left terminal
                   </p>
