@@ -2,6 +2,8 @@ export interface DelhiveryOrder {
   shopifyOrderId: string;
   paymentMode: 'Prepaid' | 'COD';
   total: number;
+  /** Locked COD upfront already collected via Razorpay (INR). */
+  codUpfrontPaid?: number;
   quantity: number;
   weight: number;
   shipment_length?: number;

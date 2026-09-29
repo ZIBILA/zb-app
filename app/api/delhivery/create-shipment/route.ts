@@ -29,14 +29,9 @@ export async function POST(req: Request) {
       ? JSON.parse(order.shippingAddress)
       : order.shippingAddress || {};
 
-    // No Delhivery credentials: mock only in non-prod (or explicit opt-in).
-    // Production with a real DELHIVERY_API_KEY uses the Delhivery path below unchanged.
+    // No Delhivery credentials → Mock Courier only outside production.
     if (!hasDelhiveryToken()) {
-      const allowMock =
-        process.env.NODE_ENV !== 'production' ||
-        process.env.ALLOW_MOCK_LOGISTICS === '1' ||
-        process.env.ALLOW_MOCK_LOGISTICS === 'true';
-      if (!allowMock) {
+      if (process.env.NODE_ENV === 'production') {
         return NextResponse.json(
           { error: 'DELHIVERY_API_KEY is not configured. Refusing mock shipment in production.' },
           { status: 503 }
@@ -79,10 +74,35 @@ export async function POST(req: Request) {
       });
     }
 
+    const rawMethod = (order.paymentMethod || '').toLowerCase();
+    const tagsLower = (order.tags || '').toLowerCase();
+    const noteLower = (order.note || '').toLowerCase();
+    const isCodOrder =
+      rawMethod === 'cod' ||
+      tagsLower.includes('cod') ||
+      noteLower.includes('cod order') ||
+      noteLower.includes('upfront fee paid');
+
+    const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+    const codUpfrontPaid = isCodOrder
+      ? resolveStoredCodUpfrontPaid({
+          storedPaid: Number((order as any).codUpfrontPaid) || 0,
+          paymentStatus: order.paymentStatus,
+          paymentMethod: order.paymentMethod,
+          tags: order.tags,
+          note: order.note,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        })
+      : 0;
+
+    const paymentMode: 'COD' | 'Prepaid' =
+      isCodOrder && codUpfrontPaid < Number(order.totalPrice || 0) ? 'COD' : 'Prepaid';
+
     const delhiveryOrder: DelhiveryOrder = {
       shopifyOrderId: (order.shopifyOrderId || order.internalOrderNumber || order.id).replace('#', ''),
-      paymentMode: order.paymentMethod === 'COD' || (order.paymentMethod || '').toLowerCase() === 'cod' ? 'COD' : 'Prepaid',
+      paymentMode,
       total: order.totalPrice,
+      codUpfrontPaid,
       quantity: order.items.reduce((acc: any, item: any) => acc + item.quantity, 0),
       weight: weight ? Number(weight) : 500,
       shipment_length: shipment_length ? Number(shipment_length) : 30,
