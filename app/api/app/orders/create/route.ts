@@ -201,14 +201,18 @@ export async function POST(req: Request) {
       .filter(Boolean)
       .join(' | ');
 
-    // Status logic: 
-    // 1. Paid -> OPEN (Auto-approved)
-    // 2. COD -> awaiting_approval (Requires manual review)
-    // 3. Unpaid Prepaid -> payment_pending (Abandoned/Failed flow)
-    const initialStatus = paymentStatus === 'paid' 
-      ? 'approved' 
-      : paymentMethod === 'COD' 
-        ? 'awaiting_approval' 
+    // Status logic:
+    // 1. Paid / COD upfront paid -> open/approved (auto)
+    // 2. COD without upfront confirmation -> awaiting_approval
+    // 3. Unpaid Prepaid -> payment_pending
+    const isPaidLike =
+      paymentStatus === 'paid' ||
+      paymentStatus === 'cod_upfront_paid' ||
+      paymentStatus === 'partially_paid';
+    const initialStatus = isPaidLike
+      ? (paymentMethod === 'COD' || paymentStatus === 'cod_upfront_paid' ? 'open' : 'approved')
+      : paymentMethod === 'COD'
+        ? 'awaiting_approval'
         : 'payment_pending';
     
     let finalShopifyOrderId = existingOrder?.shopifyOrderId || null;
@@ -216,7 +220,13 @@ export async function POST(req: Request) {
     let isSyncedNow = false;
 
     // --- SHOPIFY SYNC FLAG ---
-    const shouldSyncNow = (paymentStatus === 'paid') && (!existingOrder?.shopifyOrderId || existingOrder.shopifyOrderId.startsWith('#') || existingOrder.shopifyOrderId.startsWith('local_') || existingOrder.shopifyOrderId.startsWith('app_pending_'));
+    // Include COD upfront / partial capture — same gate as syncOrderToShopify
+    const needsShopifyId =
+      !existingOrder?.shopifyOrderId ||
+      existingOrder.shopifyOrderId.startsWith('#') ||
+      existingOrder.shopifyOrderId.startsWith('local_') ||
+      existingOrder.shopifyOrderId.startsWith('app_pending_');
+    const shouldSyncNow = isPaidLike && needsShopifyId;
 
     if (existingOrder) {
       console.log(`[App API] Updating existing order ${existingOrder.id}...`);
@@ -314,7 +324,7 @@ export async function POST(req: Request) {
             razorpayPaymentId: paymentId || existingOrder!.razorpayPaymentId || null,
             codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : (existingOrder as any).codUpfrontPaid || 0,
             codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || (existingOrder as any).codUpfrontPaymentId || null) : null,
-            paymentCapturedAt: paymentStatus === 'paid' ? now : existingOrder!.paymentCapturedAt,
+            paymentCapturedAt: isPaidLike ? now : existingOrder!.paymentCapturedAt,
             tags: finalTags,
             note: note,
             shippingAddress: typeof shippingAddress === 'string' ? shippingAddress : JSON.stringify({
@@ -448,7 +458,7 @@ export async function POST(req: Request) {
           paymentMethod: paymentMethod === 'COD' ? 'COD' : 'Razorpay',
           codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : 0,
           codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || null) : null,
-          paymentCapturedAt: paymentStatus === 'paid' ? now : null,
+          paymentCapturedAt: isPaidLike ? now : null,
           
           internalOrderNumber: orderNumber,
           shopifyOrderName: null,

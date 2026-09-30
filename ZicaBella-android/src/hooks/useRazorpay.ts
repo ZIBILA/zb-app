@@ -477,6 +477,10 @@ export function useRazorpay(): UseRazorpayReturn {
 
           paymentData = normalizePaymentResult(await razorpayOpen(rzpOptions), orderId!);
           stopPolling();
+          // Hang timer may have fired while the SDK was still open — always verify a real capture
+          abortRef.current = false;
+          inFlightRef.current = true;
+          setError(null);
           console.log('[useRazorpay] SDK Success:', {
             payment_id: paymentData.razorpay_payment_id,
             order_id: paymentData.razorpay_order_id,
@@ -500,10 +504,9 @@ export function useRazorpay(): UseRazorpayReturn {
           );
         }
 
-        if (abortRef.current) return;
-
         // ── Step 4: Verify signature on backend ──
         setStatus('verifying');
+        statusRef.current = 'verifying';
 
         const verifyBody = paymentData.razorpay_signature
           ? {

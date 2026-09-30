@@ -54,9 +54,15 @@ export default function OrderReviewScreen() {
   const orderTotal = Math.max(0, subtotal + shipping - discountAmount);
   const creditToApply = useStoreCredits ? Math.min(availableCredits, orderTotal) : 0;
   const netOrderTotal = Math.max(0, orderTotal - creditToApply);
-  const codFee = selectedPaymentMethod === 'cod' ? configuredCodFee : 0;
-  const balanceDue = selectedPaymentMethod === 'cod' ? Math.max(0, netOrderTotal - codFee) : 0;
-  const grandTotal = selectedPaymentMethod === 'cod' ? codFee : netOrderTotal;
+  // Credits already cover the order → no COD upfront / Razorpay charge
+  const codFee =
+    selectedPaymentMethod === 'cod' && netOrderTotal > 0 ? configuredCodFee : 0;
+  const balanceDue =
+    selectedPaymentMethod === 'cod' ? Math.max(0, netOrderTotal - codFee) : 0;
+  const grandTotal =
+    selectedPaymentMethod === 'cod'
+      ? (netOrderTotal > 0 ? codFee : 0)
+      : netOrderTotal;
   const totalBeforeCredits = orderTotal;
 
   // ─── Fetch COD upfront fee from dashboard settings ──────────────────
