@@ -672,6 +672,41 @@ export async function POST(req: Request) {
       console.error('[Checkout Complete] Shopify order sync error (will be retried):', syncErr.message);
     }
 
+    // Push to Shiprocket/Delhivery immediately after payment (idempotent).
+    // Do not wait for Razorpay webhook — that path was often delayed/blocked.
+    try {
+      const { shipOrder } = await import('@/lib/services/logistics');
+      const shipAddr: any = normalizedAddress || address || {};
+      const lineItems = (resolvedItems.length ? resolvedItems : items).map((i: any) => ({
+        title: i.title,
+        sku: i.sku || undefined,
+        quantity: Number(i.quantity) || 1,
+        price: Number(i.price) || 0,
+      }));
+      if (lineItems.length > 0) {
+        // Fire-and-forget so confirmation page is not blocked by logistics API
+        void shipOrder(
+          localOrder.id,
+          lineItems,
+          {
+            name: shipAddr.name || '',
+            address1: shipAddr.street || shipAddr.address1 || shipAddr.line1 || '',
+            city: shipAddr.city || '',
+            province: shipAddr.state || shipAddr.province || '',
+            zip: shipAddr.zip || shipAddr.pincode || '',
+            country: shipAddr.country || 'India',
+            phone: shipAddr.phone || '',
+          }
+        ).then((r) => {
+          console.log(`[Checkout Complete] Logistics booked for ${localOrder.id}: ${r.trackingNumber}`);
+        }).catch((shipErr: any) => {
+          console.warn(`[Checkout Complete] Logistics booking deferred: ${shipErr?.message}`);
+        });
+      }
+    } catch (shipErr: any) {
+      console.warn('[Checkout Complete] Logistics trigger failed non-fatally:', shipErr?.message);
+    }
+
     // ─── AFFILIATE / CREATOR ATTRIBUTION ───
     try {
       const { attributeOrder } = await import('@/lib/affiliate/attribution');
