@@ -110,8 +110,48 @@ export default withAuth(
       return NextResponse.next();
     }
 
-    // Allow webhook routes through without auth (Meta WhatsApp, Shopify, etc.)
-    if (pathname.startsWith('/api/webhooks')) {
+    // Allow webhook / payment-provider callbacks through without auth or CSRF.
+    // These are authenticated by signature headers, not browser Origin.
+    if (
+      pathname.startsWith('/api/webhooks') ||
+      pathname.startsWith('/api/shopify/webhooks') ||
+      pathname.startsWith('/api/payments/webhook') ||
+      pathname.startsWith('/api/delhivery/webhook') ||
+      pathname.startsWith('/api/razorpay')
+    ) {
+      return NextResponse.next();
+    }
+
+    // Razorpay callback_url: often POSTs payment fields (Origin = razorpay).
+    // Convert to GET so the success page can read searchParams and finish checkout.
+    if (pathname === '/checkout/success') {
+      if (req.method === 'POST') {
+        try {
+          const contentType = req.headers.get('content-type') || '';
+          const url = req.nextUrl.clone();
+          if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+            const formData = await req.formData();
+            for (const key of ['razorpay_payment_id', 'razorpay_order_id', 'razorpay_signature']) {
+              const val = formData.get(key);
+              if (typeof val === 'string' && val) url.searchParams.set(key, val);
+            }
+          } else {
+            // Some gateways POST JSON; also accept already-present query params
+            try {
+              const body = await req.json();
+              for (const key of ['razorpay_payment_id', 'razorpay_order_id', 'razorpay_signature']) {
+                if (body?.[key]) url.searchParams.set(key, String(body[key]));
+              }
+            } catch {
+              /* keep any existing query */
+            }
+          }
+          return NextResponse.redirect(url, 303);
+        } catch (e: any) {
+          console.warn('[Middleware] Razorpay callback POST parse failed:', e?.message);
+          return NextResponse.redirect(new URL('/checkout/success', req.url), 303);
+        }
+      }
       return NextResponse.next();
     }
 
@@ -172,39 +212,51 @@ export default withAuth(
       return attachStorefrontCookies(NextResponse.next());
     }
 
-    // CSRF protection for mutation routes (POST, PUT, DELETE) on admin APIs
-    if (["POST", "PUT", "DELETE"].includes(req.method)) {
+    // CSRF for admin mutations only — never storefront checkout/cart/orders.
+    // Broad CSRF was blocking Razorpay callback POSTs and payment webhooks
+    // ("CSRF validation failed: Origin mismatch" → success.json download).
+    const isAdminMutationPath =
+      pathname.startsWith('/dashboard') ||
+      pathname.startsWith('/web-store') ||
+      pathname.startsWith('/api/admin') ||
+      pathname.startsWith('/api/web-store') ||
+      pathname === '/api/payments/refund';
+
+    if (isAdminMutationPath && ["POST", "PUT", "DELETE"].includes(req.method)) {
       const origin = req.headers.get("origin");
       const referer = req.headers.get("referer");
-      const currentHost = req.headers.get("host") || "";
+      const currentHost = (
+        req.headers.get("x-forwarded-host") ||
+        req.headers.get("host") ||
+        ""
+      ).split(",")[0].trim().split(":")[0];
+
+      const allowedHosts = new Set([
+        currentHost,
+        "zicabella.com",
+        "www.zicabella.com",
+        "app.zicabella.com",
+      ].filter(Boolean));
+
+      const hostAllowed = (raw: string) => {
+        try {
+          return allowedHosts.has(new URL(raw).host.split(":")[0]);
+        } catch {
+          return false;
+        }
+      };
 
       if (process.env.NODE_ENV === "production") {
         if (origin) {
-          try {
-            const originHost = new URL(origin).host;
-            if (originHost !== currentHost) {
-              return new NextResponse(JSON.stringify({ error: "CSRF validation failed: Origin mismatch" }), {
-                status: 403,
-                headers: { "Content-Type": "application/json" }
-              });
-            }
-          } catch {
-            return new NextResponse(JSON.stringify({ error: "CSRF validation failed: Invalid Origin" }), {
+          if (!hostAllowed(origin)) {
+            return new NextResponse(JSON.stringify({ error: "CSRF validation failed: Origin mismatch" }), {
               status: 403,
               headers: { "Content-Type": "application/json" }
             });
           }
         } else if (referer) {
-          try {
-            const refererHost = new URL(referer).host;
-            if (refererHost !== currentHost) {
-              return new NextResponse(JSON.stringify({ error: "CSRF validation failed: Referer mismatch" }), {
-                status: 403,
-                headers: { "Content-Type": "application/json" }
-              });
-            }
-          } catch {
-            return new NextResponse(JSON.stringify({ error: "CSRF validation failed: Invalid Referer" }), {
+          if (!hostAllowed(referer)) {
+            return new NextResponse(JSON.stringify({ error: "CSRF validation failed: Referer mismatch" }), {
               status: 403,
               headers: { "Content-Type": "application/json" }
             });

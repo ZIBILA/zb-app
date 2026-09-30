@@ -331,6 +331,21 @@ export async function shipOrder(
     phone?: string;
   }
 ): Promise<ShipmentResult> {
+  // Idempotent: skip if we already booked logistics for this order
+  const existing = await prisma.shipment.findFirst({
+    where: { orderId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing?.trackingNumber) {
+    console.log(`[Logistics] Shipment already exists for ${orderId} (${existing.trackingNumber}) — skipping create`);
+    return {
+      trackingNumber: existing.trackingNumber,
+      trackingUrl: existing.trackingUrl || undefined,
+      courier: existing.courier || 'Shiprocket',
+      shipmentId: existing.awb || undefined,
+    };
+  }
+
   const config = await getLogisticsConfig();
   const preset = PROVIDER_PRESETS[config.provider];
 
