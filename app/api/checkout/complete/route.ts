@@ -236,7 +236,7 @@ export async function POST(req: Request) {
           // Confirm captured amount matches what we should have charged (COD fee or full prepaid total).
           try {
             const creds = await resolveRazorpayCredentials();
-            const { fetchCapturedPayment } = await import('@/lib/meta-payment-verification');
+            const { fetchCapturedPayment } = await import('@/lib/razorpay-payment');
             const payment = await fetchCapturedPayment(razorpay.razorpay_payment_id, {
               key_id: creds.key_id,
               key_secret: creds.key_secret,
