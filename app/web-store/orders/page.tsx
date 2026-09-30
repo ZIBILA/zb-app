@@ -286,7 +286,7 @@ function WebStoreOrdersContent() {
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
             <Banknote className="w-3 h-3" /> COD
           </span>
-          <span className="text-[9px] font-bold text-emerald-400 pl-1">₹{codUpfront || 0} paid ✓</span>
+          <span className="text-[9px] font-bold text-emerald-400 pl-1">₹{codUpfront || 99} paid ✓</span>
         </div>
       );
     }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   View, Text, StyleSheet, Modal, TouchableOpacity, 
   Dimensions, Pressable, Alert, Platform
@@ -40,7 +40,6 @@ const QuickAddModal = React.memo(({ visible, product, initialSize, onClose }: Pr
   
   const [selectedSize, setSelectedSize] = useState<string | null>(initialSize || null);
   const [added, setAdded] = useState(false);
-  const addingLockRef = useRef(false);
   const [sizeError, setSizeError] = useState(false);
   const [sizeChartVisible, setSizeChartVisible] = useState(false);
 
@@ -137,7 +136,6 @@ const QuickAddModal = React.memo(({ visible, product, initialSize, onClose }: Pr
   };
 
   const handleAdd = () => {
-    if (addingLockRef.current || added) return;
     // Strictly require login for adding to bag
     if (!isAuthenticated) {
       haptics.buttonTap();
@@ -158,7 +156,6 @@ const QuickAddModal = React.memo(({ visible, product, initialSize, onClose }: Pr
     const variant = sizes.find((s) => s.size === (selectedSize ?? sizes[0]?.size));
     const variantObj = product.variants?.find((v) => String(v.id) === variant?.variantId) || product.variants?.[0];
     
-    addingLockRef.current = true;
     addItem({
       productId: product.id,
       variantId: variant?.variantId || product.variants?.[0]?.id || product.id,
@@ -174,7 +171,6 @@ const QuickAddModal = React.memo(({ visible, product, initialSize, onClose }: Pr
     
     setTimeout(() => {
       setAdded(false);
-      addingLockRef.current = false;
       onClose();
       // Auto-open cart after modal closes
       setTimeout(() => setCartOpen(true), 300);

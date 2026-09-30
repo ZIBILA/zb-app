@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { X, ShoppingBag, Check } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
@@ -28,7 +28,6 @@ export default function QuickAddModal({ product, initialSize, onClose }: Props) 
   const { trackItemsAdded: trackOaiItemsAdded } = useOpenAiEvents();
   const [selectedSize, setSelectedSize] = useState<string | null>(initialSize || null);
   const [added, setAdded] = useState(false);
-  const addingLockRef = useRef(false);
   const [mounted, setMounted] = useState(false);
   const [sizeError, setSizeError] = useState(false);
 
@@ -70,7 +69,6 @@ export default function QuickAddModal({ product, initialSize, onClose }: Props) 
   }, []);
 
   const handleAdd = () => {
-    if (addingLockRef.current || added) return;
     if (sizes.length > 1 && !selectedSize) {
       setSizeError(true);
       toast.error("Please select a size first");
@@ -93,7 +91,6 @@ export default function QuickAddModal({ product, initialSize, onClose }: Props) 
     const variantId = variant?.variantId ?? String(product.variants?.[0]?.id);
     const itemPrice = parseFloat(productVariant.price || price || "0");
 
-    addingLockRef.current = true;
     add({
       productId: String(product.id),
       variantId,
@@ -111,7 +108,7 @@ export default function QuickAddModal({ product, initialSize, onClose }: Props) 
 
     setAdded(true);
     toast.success(`${product.title} added to bag`);
-    setTimeout(() => { setAdded(false); addingLockRef.current = false; onClose(); }, 900);
+    setTimeout(() => { setAdded(false); onClose(); }, 900);
   };
 
   const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>) => {

@@ -33,22 +33,31 @@ export function isDemoValue(field: 'phone' | 'email' | 'name', rawValue: string 
  * every 100ms for up to 3 seconds. After 3s, logs a visible warning instead
  * of silently dropping the event.
  */
-export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): Promise<boolean> {
-  if (typeof window === 'undefined') return Promise.resolve(false);
-  return new Promise(resolve => {
-    let attempt = 0;
-    const invoke = () => {
-      if ((window as any).fbq) {
-        try { callback((window as any).fbq); resolve(true); } catch { resolve(false); }
-      } else if (++attempt < 30) {
-        setTimeout(invoke, 100);
-      } else {
-        console.warn(`[Meta Pixel] SDK unavailable: ${eventLabel}`);
-        resolve(false);
-      }
-    };
-    invoke();
-  });
+export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): void {
+  if (typeof window === 'undefined') return;
+
+  if ((window as any).fbq) {
+    callback((window as any).fbq);
+    return;
+  }
+
+  const MAX_RETRIES = 30; // 30 × 100ms = 3 seconds
+  let attempt = 0;
+
+  const retry = () => {
+    attempt++;
+    if ((window as any).fbq) {
+      callback((window as any).fbq);
+      return;
+    }
+    if (attempt >= MAX_RETRIES) {
+      console.warn(`[Meta Pixel] fbq never became available — event dropped: ${eventLabel}`);
+      return;
+    }
+    setTimeout(retry, 100);
+  };
+
+  setTimeout(retry, 100);
 }
 
 export const pageview = () => {
@@ -188,9 +197,33 @@ export function getMetaIdentityCookies(): Record<string, string | undefined> {
 
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 
-// layout.tsx owns the only pixel initialization. Changing identity is matched
-// through request-scoped CAPI user data; reinitializing an existing pixel is not needed.
-export const initPixel = (_additionalData: Record<string, any> = {}) => {};
+// Module-level guard to prevent redundant fbq('init') calls with identical data.
+// The layout.tsx inline script handles the base init (no user data).
+// This function only re-inits when advanced matching data actually changes.
+let lastInitHash: string | null = null;
+
+export const initPixel = (additionalData: Record<string, any> = {}) => {
+  withFbq((fbq) => {
+    // Build advanced matching user data for fbq('init') using the unified builder.
+    // NOTE: fbc, fbp, and client_user_agent are NOT passed here — the pixel SDK reads them
+    // directly from the cookies/browser. Passing them in init is unsupported or redundant.
+    const rawIdentity = getMetaIdentityCookies();
+    const builtIdentity = buildClientUserData(rawIdentity);
+    const { fbc, fbp, client_user_agent, ...userData } = builtIdentity;
+
+    const merged = { ...userData, ...additionalData };
+
+    // Dedup guard: skip fbq('init') if the merged userData is identical to last call.
+    // This prevents the "Duplicate Pixel ID" warning from fbevents.js.
+    const currentHash = JSON.stringify(merged, Object.keys(merged).sort());
+    if (currentHash === lastInitHash) {
+      return; // Data unchanged — skip redundant init
+    }
+    lastInitHash = currentHash;
+
+    fbq('init', META_PIXEL_ID, merged);
+  }, 'init');
+};
 
 function cleanStringNoSpaces(val: string | undefined): string {
   if (!val) return "";
@@ -316,10 +349,7 @@ export const trackEvent = (
   params: Record<string, any> = {},
   eventId?: string
 ) => {
-  if (eventName === 'Purchase' && (typeof eventId !== 'string' || !eventId.trim())) {
-    return Promise.resolve(false);
-  }
-  return withFbq((fbq) => {
+  withFbq((fbq) => {
     const options: Record<string, any> = {};
     if (eventId) options.eventID = eventId;
     

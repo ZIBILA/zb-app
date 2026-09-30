@@ -3,29 +3,6 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { config } from '../constants/config';
 
-/** Ignore accidental double-taps of the same line within this window. */
-const ADD_DEBOUNCE_MS = 500;
-const recentAdds = new Map<string, number>();
-
-function cartLineId(productId: string, variantId: string, size: string | null | undefined): string {
-  const sizeKey = (size || '').trim() || 'one-size';
-  return `${productId}_${variantId}_${sizeKey}`;
-}
-
-function acceptAdd(lineId: string): boolean {
-  const now = Date.now();
-  const last = recentAdds.get(lineId) || 0;
-  if (now - last < ADD_DEBOUNCE_MS) return false;
-  recentAdds.set(lineId, now);
-  if (recentAdds.size > 200) {
-    const cutoff = now - ADD_DEBOUNCE_MS * 4;
-    for (const [k, t] of recentAdds) {
-      if (t < cutoff) recentAdds.delete(k);
-    }
-  }
-  return true;
-}
-
 export interface CartItem {
   id: string;
   productId: string;
@@ -112,9 +89,7 @@ export const useCartStore = create<CartStore>()(
       shippingAddress: null,
 
       addItem: (item) => {
-        const id = cartLineId(item.productId, item.variantId, item.size);
-        if (!acceptAdd(id)) return;
-
+        const id = `${item.productId}_${item.variantId}_${item.size || 'one-size'}`;
         set((state) => {
           const existing = state.items.find((i) => i.id === id);
           let newItems;

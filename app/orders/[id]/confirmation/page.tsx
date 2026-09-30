@@ -1,5 +1,4 @@
 "use client";
-import { trackVerifiedPurchase } from '@/lib/meta-purchase-client';
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -40,10 +39,6 @@ export default function OrderConfirmationPage() {
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
   const { trackOrderCreated: trackOpenAiOrderCreated } = useOpenAiEvents();
-
-  useEffect(() => {
-    if (id) void trackVerifiedPurchase(String(id));
-  }, [id]);
 
   useEffect(() => {
     if (order) {
@@ -202,7 +197,7 @@ export default function OrderConfirmationPage() {
   const rawMethod = (order.paymentMethod || '').toLowerCase();
   const isCod = order.isCod || rawMethod === 'cod' || rawMethod.includes('cash');
   const totalPrice = Number(order.totalPrice || 0);
-  const upfrontPaid = isCod ? (Number(order.codUpfrontPaid) || 0) : totalPrice;
+  const upfrontPaid = isCod ? (Number(order.codUpfrontPaid) || 99) : totalPrice;
   const balanceDue = isCod ? Math.max(0, totalPrice - upfrontPaid) : 0;
   const currency = order.currency || "INR";
 

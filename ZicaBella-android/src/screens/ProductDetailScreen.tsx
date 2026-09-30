@@ -255,7 +255,6 @@ export default function ProductDetailScreen() {
   }, [showMinimalSticky]);
 
   const stickyOpacity = useRef(new Animated.Value(0)).current;
-  const addingLockRef = useRef(false);
   useEffect(() => {
     Animated.timing(stickyOpacity, {
       toValue: showMinimalSticky ? 1 : 0,
@@ -339,7 +338,6 @@ export default function ProductDetailScreen() {
 
   const handleAddToCart = () => {
     if (!product) return;
-    if (addingLockRef.current) return;
     if (!requireSize()) return;
 
     if (!isAuthenticated) {
@@ -356,7 +354,6 @@ export default function ProductDetailScreen() {
       (v.color === selectedColor || !v.color)
     ) || product.variants.find(v => v.size === selectedSize) || product.variants[0];
     
-    addingLockRef.current = true;
     addItem({
       productId: product.id,
       variantId: variant.id,
@@ -369,7 +366,6 @@ export default function ProductDetailScreen() {
     setIsStickySizeExpanded(false);
     haptics.addToCart();
     setCartOpen(true);
-    setTimeout(() => { addingLockRef.current = false; }, 600);
   };
 
   const handleBuyNow = () => {

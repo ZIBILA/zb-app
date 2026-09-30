@@ -1582,39 +1582,21 @@ export async function fetchProductById(productId: string, includeMetafields = fa
 }
 
 export async function fetchProductByHandle(handle: string): Promise<ShopifyProduct | null> {
-  const fromFallback = (): ShopifyProduct | null => {
-    const key = String(handle || '').trim().toLowerCase();
-    if (!key) return null;
-    return (
-      FALLBACK_PRODUCTS.find(
-        (p) => p.handle?.toLowerCase() === key || String(p.id) === key
-      ) || null
-    );
-  };
-
-  try {
-    // If the handle looks like a numeric ID, try fetching by ID first
-    if (/^\d+$/.test(handle)) {
-      try {
-        const product = await fetchProductById(handle);
-        if (product) return product;
-      } catch {
-        // Fall through to handle search
-      }
+  // If the handle looks like a numeric ID, try fetching by ID first
+  if (/^\d+$/.test(handle)) {
+    try {
+      const product = await fetchProductById(handle);
+      if (product) return product;
+    } catch (e) {
+      // Fall through to handle search
     }
-
-    const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`products.json?handle=${handle}`);
-    if (data?.products?.length) {
-      const product = data.products[0];
-      const metafields = await fetchProductMetafields(product.id.toString()).catch(() => []);
-      return { ...product, metafields };
-    }
-  } catch (err: any) {
-    console.warn(`[Shopify Admin] fetchProductByHandle("${handle}") failed:`, err?.message || err);
   }
 
-  // Local/dev resilience when Shopify is unavailable (402) or product missing remotely
-  return fromFallback();
+  const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`products.json?handle=${handle}`);
+  if (!data.products || data.products.length === 0) return null;
+  const product = data.products[0];
+  const metafields = await fetchProductMetafields(product.id.toString());
+  return { ...product, metafields };
 }
 
 /**

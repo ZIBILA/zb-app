@@ -25,22 +25,12 @@ export async function GET() {
       ...publicSettings
     } = shop as any;
 
-    // Ensure COD upfront amount is always present for mobile/web clients
-    const { normalizeCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-    const codUpfrontAmount = normalizeCodUpfrontAmount(
-      publicSettings.codUpfrontAmount ?? (shop as any).codUpfrontAmount,
-      DEFAULT_COD_UPFRONT_AMOUNT
-    );
-
-    return NextResponse.json(
-      { ...publicSettings, codUpfrontAmount },
-      {
-        headers: {
-          'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=60',
-          'Access-Control-Allow-Origin': '*',
-        },
-      }
-    );
+    return NextResponse.json(publicSettings, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=60',
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
   } catch (error: any) {
     console.error('[App API] Public Settings error:', error.message);
     return NextResponse.json(

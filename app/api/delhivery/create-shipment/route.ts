@@ -2,12 +2,6 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { createShipment } from '@/lib/delhivery/api';
 import { DelhiveryOrder } from '@/lib/delhivery/types';
-import { shipOrder } from '@/lib/services/logistics';
-
-function hasDelhiveryToken(): boolean {
-  const token = (process.env.DELHIVERY_API_KEY || process.env.DELHIVERY_API_TOKEN || '').trim();
-  return token.length > 0;
-}
 
 export async function POST(req: Request) {
   try {
@@ -29,87 +23,17 @@ export async function POST(req: Request) {
       ? JSON.parse(order.shippingAddress)
       : order.shippingAddress || {};
 
-    // No Delhivery credentials → Mock Courier only outside production.
-    if (!hasDelhiveryToken()) {
-      if (process.env.NODE_ENV === 'production') {
-        return NextResponse.json(
-          { error: 'DELHIVERY_API_KEY is not configured. Refusing mock shipment in production.' },
-          { status: 503 }
-        );
-      }
-
-      const result = await shipOrder(
-        order.id,
-        order.items.map((i: any) => ({
-          title: i.title,
-          sku: i.sku,
-          quantity: i.quantity,
-          price: Number(i.price) || 0,
-        })),
-        {
-          name: shippingAddr.name || order.customer?.name || 'Customer',
-          address1: shippingAddr.address1 || '',
-          city: shippingAddr.city || '',
-          province: shippingAddr.province || shippingAddr.state || '',
-          zip: String(shippingAddr.zip || shippingAddr.pincode || ''),
-          country: shippingAddr.country || 'India',
-          phone: shippingAddr.phone || order.customer?.phone || '',
-        }
-      );
-
-      await prisma.order.update({
-        where: { id: orderId },
-        data: {
-          delhivery_awb: result.trackingNumber,
-          status: 'Shipped',
-          deliveryStatus: 'confirmed',
-        },
-      });
-
-      return NextResponse.json({
-        awb: result.trackingNumber,
-        status: 'confirmed',
-        courier: result.courier,
-        mock: true,
-      });
-    }
-
-    const rawMethod = (order.paymentMethod || '').toLowerCase();
-    const tagsLower = (order.tags || '').toLowerCase();
-    const noteLower = (order.note || '').toLowerCase();
-    const isCodOrder =
-      rawMethod === 'cod' ||
-      tagsLower.includes('cod') ||
-      noteLower.includes('cod order') ||
-      noteLower.includes('upfront fee paid');
-
-    const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-    const codUpfrontPaid = isCodOrder
-      ? resolveStoredCodUpfrontPaid({
-          storedPaid: Number((order as any).codUpfrontPaid) || 0,
-          paymentStatus: order.paymentStatus,
-          paymentMethod: order.paymentMethod,
-          tags: order.tags,
-          note: order.note,
-          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-        })
-      : 0;
-
-    const paymentMode: 'COD' | 'Prepaid' =
-      isCodOrder && codUpfrontPaid < Number(order.totalPrice || 0) ? 'COD' : 'Prepaid';
-
     const delhiveryOrder: DelhiveryOrder = {
-      shopifyOrderId: (order.shopifyOrderId || order.internalOrderNumber || order.id).replace('#', ''),
-      paymentMode,
+      shopifyOrderId: order.shopifyOrderId.replace('#', ''),
+      paymentMode: order.paymentMethod === 'COD' ? 'COD' : 'Prepaid',
       total: order.totalPrice,
-      codUpfrontPaid,
       quantity: order.items.reduce((acc: any, item: any) => acc + item.quantity, 0),
       weight: weight ? Number(weight) : 500,
       shipment_length: shipment_length ? Number(shipment_length) : 30,
       shipment_width: shipment_width ? Number(shipment_width) : 20,
       shipment_height: shipment_height ? Number(shipment_height) : 5,
       shipping_mode: shipping_mode || 'Surface',
-      sellerInvoice: (order.shopifyOrderId || order.internalOrderNumber || order.id).replace('#', ''),
+      sellerInvoice: order.shopifyOrderId.replace('#', ''),
       shippingAddress: {
         name: shippingAddr.name || order.customer?.name || 'Customer',
         add: `${shippingAddr.address1 || ''} ${shippingAddr.address2 || ''} ${shippingAddr.city || ''} ${shippingAddr.province || ''}`.trim() || 'No street address',
@@ -135,6 +59,7 @@ export async function POST(req: Request) {
         }
       });
 
+      // Also create a shipment in the Shipment table for tracking continuity
       await prisma.shipment.create({
         data: {
           orderId: order.id,

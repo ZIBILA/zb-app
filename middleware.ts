@@ -171,9 +171,6 @@ export default withAuth(
       return attachStorefrontCookies(NextResponse.next());
     }
 
-    // The new Meta worker authenticates its own bearer secret.
-    if (pathname === '/api/cron/meta-purchases') return NextResponse.next();
-
     // CSRF protection for mutation routes (POST, PUT, DELETE) on admin APIs
     if (["POST", "PUT", "DELETE"].includes(req.method)) {
       const origin = req.headers.get("origin");

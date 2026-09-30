@@ -99,7 +99,6 @@ export default function SearchProductCardEditorial({ chunk, index, priority = fa
     .filter((v, i, a) => a.findIndex((x) => x.size === v.size) === i) || [];
 
   const handleAddFeatured = () => {
-    if (isAdding || added) return;
     if (p1Sizes.length > 1 && !selectedSize) {
       setSizeError(true);
       toast.error("Please select a size first");
