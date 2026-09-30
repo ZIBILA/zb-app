@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { observeMetaCapture } from '@/lib/meta-checkout-observer';
 import Razorpay from 'razorpay';
 import prisma from '@/lib/db';
 import { paymentLog } from '@/lib/payment-logger';
@@ -37,10 +36,6 @@ export async function POST(req: Request) {
     const eventType = eventData.event;
     const data = eventData.payload;
     const eventId = data?.payment?.entity?.id || data?.refund?.entity?.id || 'unknown';
-
-    if (eventType === 'payment.captured' || eventType === 'order.paid') {
-      await observeMetaCapture(data?.payment?.entity, new Date((eventData.created_at || Date.now() / 1000) * 1000));
-    }
 
     // 2. Idempotency Check
     const existing = await prisma.webhookEvent.findFirst({
@@ -90,12 +85,8 @@ export async function POST(req: Request) {
 
       if (order) {
         // Path A: Order exists — update status
-        // Canonical COD vocabulary: cod_upfront_paid (not partially_paid)
-        const isCOD =
-          (order.paymentMethod || "").toLowerCase().trim() === "cod" ||
-          (order.tags || "").toLowerCase().includes("cod") ||
-          (order.note || "").toLowerCase().includes("cod order");
-        const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "paid";
+        const isCOD = (order.paymentMethod || "").toLowerCase().trim() === "cod";
+        const targetPaymentStatus = isCOD ? "partially_paid" : "paid";
         const isAlreadyPaid = order.paymentStatus === 'paid' || order.paymentStatus === 'partially_paid' || order.paymentStatus === 'cod_upfront_paid';
 
         if (!isAlreadyPaid) {
@@ -104,7 +95,7 @@ export async function POST(req: Request) {
             .split(',')
             .map((t: string) => t.trim())
             .filter((t: string) => Boolean(t) && t !== 'payment_pending' && t !== 'Order creation in process')
-            .concat(isCOD ? ['cod_upfront_paid'] : ['paid'])
+            .concat(isCOD ? ['cod_upfront_paid', 'partially_paid'] : ['paid'])
             .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
             .join(', ');
 
@@ -117,10 +108,6 @@ export async function POST(req: Request) {
               status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending') ? 'OPEN' : order.status,
               tags: cleanedTags,
               note: isCOD ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
-              ...(isCOD ? {
-                codUpfrontPaid: Number(payment.amount / 100) || Number((order as any).codUpfrontPaid) || 0,
-                codUpfrontPaymentId: razorpayPaymentId,
-              } : {}),
             },
           });
 
@@ -190,7 +177,7 @@ export async function POST(req: Request) {
             paymentStatus: targetPaymentStatus,
             razorpayPaymentId,
             ...(isCOD ? {
-              codUpfrontPaid: Number(payment.amount / 100) || 0,
+              codUpfrontPaid: Number(payment.amount / 100) || 99,
               codUpfrontPaymentId: razorpayPaymentId,
               notes: `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay) | Order: ${currentOrderNum || order.id}`
             } : {})

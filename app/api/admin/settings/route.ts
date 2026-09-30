@@ -30,7 +30,6 @@ function envSettings() {
     twilioAccountSid: '',
     twilioAuthToken: '',
     twilioPhoneNumber: '',
-    codUpfrontAmount: 99,
     heroImage: '',
     heroVideo: '',
     heroVideoMobile: '',
@@ -140,7 +139,6 @@ export async function PATCH(req: Request) {
     const allowedKeys = [
       'domain', 'accessToken',
       'delhiveryApiKey', 'razorpayKeyId', 'razorpayKeySecret',
-      'codUpfrontAmount',
       'shiprocketEmail', 'shiprocketPassword', 'shiprocketToken', 'webhookSecret',
       'whatsappPhoneId', 'whatsappToken', 'firebaseProjectId', 'firebaseClientEmail',
       'firebasePrivateKey', 'sendgridApiKey', 'twilioAccountSid', 'twilioAuthToken', 'twilioPhoneNumber',
@@ -177,17 +175,6 @@ export async function PATCH(req: Request) {
     const data: any = {};
     for (const key of allowedKeys) {
       if (updates[key] !== undefined) {
-        if (key === 'codUpfrontAmount') {
-          const n = Number(updates[key]);
-          if (!Number.isFinite(n) || n <= 0) {
-            return NextResponse.json(
-              { error: 'COD upfront amount must be a positive number (INR).' },
-              { status: 400 }
-            );
-          }
-          data[key] = Math.round(n * 100) / 100;
-          continue;
-        }
         data[key] = booleanKeys.includes(key as any)
           ? (updates[key] === true || updates[key] === 'true')
           : updates[key];

@@ -5,8 +5,7 @@ import { authOptions } from '@/app/api/auth/[...nextauth]/options';
 import prisma from '@/lib/db';
 import { DEMO_PHONES_RAW, DEMO_EMAILS_RAW } from '@/lib/metaPixel';
 import { buildServerUserData } from '@/lib/buildMetaUserData';
-import { extractEdgeGeo } from '@/lib/ip-geo';
-import { requestClientIp } from '@/lib/client-ip';
+import { getClientIP, lookupIpGeo, type IpGeoResult } from '@/lib/ip-geo';
 import crypto from 'crypto';
 
 function normalizePhone(p: string | undefined): string | undefined {
@@ -99,11 +98,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Purchase is exclusively produced from a captured-payment checkout snapshot.
-    if (eventName === 'Purchase') {
-      return NextResponse.json({ error: 'Purchase requires a verified order' }, { status: 403 });
+    // Issue 4 diagnostics (no session dependency — runs before fast path)
+    if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
+      const headersObj: Record<string, string> = {};
+      req.headers.forEach((value, key) => {
+        headersObj[key] = value;
+      });
+      console.log(`[Meta CAPI Route IP Diagnostics] Event: ${eventName} | Raw Headers:`, JSON.stringify(headersObj));
     }
-    const ip = requestClientIp(req) || undefined;
+
+    // Extract request-scoped data (synchronous — no I/O)
+    const ip = req.cookies.get('zb_client_ip')?.value || getClientIP(req);
 
     const fbp = req.cookies.get('_fbp')?.value;
     const fbc = req.cookies.get('_fbc')?.value;
@@ -122,9 +127,15 @@ export async function POST(req: NextRequest) {
     const guestDob = req.cookies.get('zb_guest_dob')?.value;
     const piiOwnerCookie = req.cookies.get('zb_pii_owner')?.value;
 
-    // Preserve actual edge geography; Meta can resolve the public visitor IP itself.
-    // Avoid external geo lookups delaying delivery or inventing fallback locations.
-    const ipGeo = extractEdgeGeo(req);
+    // ── IP Geolocation Fallback ──
+    // If all client-side address cookies are absent (user denied/ignored location prompt),
+    // look up city/state/country from the visitor's IP address.
+    // Applies to ALL events so country/region parameters are always sent to Meta.
+    let ipGeo: IpGeoResult | null = null;
+    const hasClientGeo = !!(guestCountry || guestState || guestCity || guestZip);
+    if (!hasClientGeo) {
+      ipGeo = await lookupIpGeo(ip, req);
+    }
 
     // Issue 5 fix: Apply server-side value adjustment for Purchase and InitiateCheckout.
     // The client sends the real order/cart value; the adjustment happens here so
@@ -160,14 +171,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Checkout identity is already supplied by the current request. Await Meta acceptance.
-    if (eventName === 'InitiateCheckout') {
+    // === FAST PATH: Purchase/InitiateCheckout ===
+    // Return reportedValue/currency immediately; fire session/Prisma/CAPI in background.
+    // This ensures the client receives the adjusted value well within the 2500ms timeout,
+    // eliminating the Pixel↔CAPI value mismatch that was degrading Data Quality Score.
+    if (['Purchase', 'InitiateCheckout'].includes(eventName)) {
       // Build mergedUserData from cookies + body userData (no session await needed).
       // By the time a user reaches checkout/purchase, MetaPixelRouteTracker has already
       // hashed and stored all session PII in cookies (email, phone, name, DOB, address).
       const mergedUserData = buildServerUserData({
         client_ip_address: ip,
-        client_user_agent: req.headers.get('user-agent') || userAgent,
+        client_user_agent: userData?.client_user_agent || userAgent,
         fbp: userData?.fbp || fbp,
         fbc: userData?.fbc || fbc,
         external_id: userData?.external_id || externalId,
@@ -204,8 +218,8 @@ export async function POST(req: NextRequest) {
         .map(([key]) => key);
       console.log(`[Meta CAPI Event Received] ${eventName} — Deduplication ID: ${eventId} — Customer Identifiers Present: [${presentKeys.join(', ')}]`);
 
-      // Report delivery success only after Meta accepts the event.
-      const result = await sendCapiEvent({
+      // Fire CAPI send in background — do NOT await before responding
+      sendCapiEvent({
         eventName,
         eventId,
         eventTime,
@@ -213,9 +227,10 @@ export async function POST(req: NextRequest) {
         userAgent,
         userData: mergedUserData,
         customData: adjustedCustomData,
-        actionSource: 'website',
+        actionSource: actionSource ?? 'website',
+      }).catch((err: any) => {
+        console.error(`[Meta CAPI Background ${eventName}] eventId=${eventId} Error:`, err);
       });
-      if (!result.success) return NextResponse.json({ success: false }, { status: 502 });
 
       return NextResponse.json({
         success: true,
@@ -271,7 +286,7 @@ export async function POST(req: NextRequest) {
     // body for reliability, since server-side cookie access can fail on edge/CDN.
     const mergedUserData = buildServerUserData({
       client_ip_address: ip,
-      client_user_agent: req.headers.get('user-agent') || userAgent,
+      client_user_agent: userData?.client_user_agent || userAgent,
       fbp: userData?.fbp || fbp,
       fbc: userData?.fbc || fbc,
       external_id: userData?.external_id || externalId || sessionUserData.external_id,
@@ -332,7 +347,7 @@ export async function POST(req: NextRequest) {
       userAgent,
       userData: mergedUserData,
       customData: adjustedCustomData,
-      actionSource: 'website',
+      actionSource: actionSource ?? 'website',
     });
 
     return NextResponse.json({ ...result }, { status: result.success ? 200 : 400 });

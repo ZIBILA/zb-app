@@ -74,14 +74,19 @@ export async function POST(req: Request) {
     }
 
     // Only allow cancellation if order is not already processed/shipped/fulfilled
-    const { assertOrderCancellable } = await import('@/lib/services/orderLifecycleService');
-    try {
-      assertOrderCancellable(order);
-    } catch (cancelErr: any) {
-      return NextResponse.json(
-        { error: cancelErr?.message || 'Order cannot be cancelled after fulfillment or shipment' },
-        { status: 400, headers: corsHeaders }
-      );
+    const status = (order.status || '').toLowerCase();
+    const fulfillmentStatus = (order.fulfillmentStatus || '').toLowerCase();
+    const deliveryStatus = (order.deliveryStatus || '').toLowerCase();
+
+    if (
+      fulfillmentStatus === 'fulfilled' ||
+      fulfillmentStatus === 'shipped' ||
+      deliveryStatus === 'shipped' ||
+      deliveryStatus === 'delivered' ||
+      status === 'shipped' ||
+      status === 'delivered'
+    ) {
+      return NextResponse.json({ error: 'Order cannot be cancelled after fulfillment or shipment' }, { status: 400, headers: corsHeaders });
     }
 
     // Determine if cancelled before processed (status is open/awaiting_approval/payment_pending)

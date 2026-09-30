@@ -15,7 +15,6 @@ interface SettingsData {
   delhiveryApiKey: string;
   razorpayKeyId: string;
   razorpayKeySecret: string;
-  codUpfrontAmount: number | string;
   shiprocketEmail: string;
   shiprocketPassword: string;
   shiprocketToken: string;
@@ -146,7 +145,7 @@ export default function AdminSettingsPage() {
 
     const adminKeys: (keyof SettingsData)[] = [
         'shopDomain', 'accessToken', 'delhiveryApiKey',
-        'razorpayKeyId', 'razorpayKeySecret', 'codUpfrontAmount',
+        'razorpayKeyId', 'razorpayKeySecret',
         'shiprocketEmail', 'shiprocketPassword', 'shiprocketToken', 'webhookSecret',
         'whatsappPhoneId', 'whatsappToken', 'firebaseProjectId', 'firebaseClientEmail',
         'firebasePrivateKey', 'sendgridApiKey', 'twilioAccountSid', 'twilioAuthToken', 'twilioPhoneNumber',
@@ -239,13 +238,6 @@ export default function AdminSettingsPage() {
            </SettingsRow>
            <SettingsRow label="Razorpay Secret" icon={Fingerprint} description="Private merchant secret">
               <InputField value={settings.razorpayKeySecret!} onChange={set('razorpayKeySecret')} secret />
-           </SettingsRow>
-           <SettingsRow label="COD Upfront Amount (₹)" icon={CreditCard} description="Charged via Razorpay for COD; remainder collected at delivery">
-              <InputField
-                value={String(settings.codUpfrontAmount ?? 99)}
-                onChange={(v) => set('codUpfrontAmount')(v.replace(/[^\d.]/g, ''))}
-                placeholder="99"
-              />
            </SettingsRow>
            <div className="px-10 py-6 border-t border-foreground/5">
               <Link href="/dashboard/payments/razorpay" className="text-[10px] font-bold uppercase tracking-[0.25em] text-foreground/50 hover:text-foreground transition-colors">

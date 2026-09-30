@@ -145,7 +145,6 @@ export default function ProductDetailsClient({
   const [showSuccess, setShowSuccess] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [isAdded, setIsAdded] = useState(false);
-  const addingLockRef = useRef(false);
   const [quickAddProduct, setQuickAddProduct] = useState<ShopifyProduct | null>(null);
   const [sizeError, setSizeError] = useState(false);
   const [moodBoardImages, setMoodBoardImages] = useState<string[]>([]);
@@ -266,7 +265,6 @@ export default function ProductDetailsClient({
     .filter((v, i, a) => v && a.indexOf(v) === i) || [];
 
   const handleAddToBag = () => {
-    if (addingLockRef.current || isAdded) return;
     if (!selectedSize && sizes.length > 0) {
       setSizeError(true);
       toast.error("Please select a size first");
@@ -286,7 +284,6 @@ export default function ProductDetailsClient({
       return;
     }
 
-    addingLockRef.current = true;
     addToCart({
       productId: product.id.toString(),
       handle: product.handle,
@@ -305,14 +302,10 @@ export default function ProductDetailsClient({
 
     setIsAdded(true);
     toast.success(`${product.title} added to bag`);
-    setTimeout(() => {
-      setIsAdded(false);
-      addingLockRef.current = false;
-    }, 2000);
+    setTimeout(() => setIsAdded(false), 2000);
   };
 
   const handleBuyNow = async () => {
-    if (addingLockRef.current) return;
     if (!selectedSize && sizes.length > 0) {
       setSizeError(true);
       toast.error("Please select a size first");
@@ -332,7 +325,6 @@ export default function ProductDetailsClient({
       return;
     }
 
-    addingLockRef.current = true;
     addToCart({
       productId: product.id.toString(),
       handle: product.handle,

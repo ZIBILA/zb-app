@@ -12,22 +12,6 @@ export interface SyncResult {
   shopifyOrderName?: string;
   error?: string;
   skippedDuplicate?: boolean;
-  skippedUnpaid?: boolean;
-}
-
-/** Only these payment statuses may create a Shopify order. */
-export const SHOPIFY_SYNC_PAID_STATUSES = [
-  'paid',
-  'cod_upfront_paid',
-  'partially_paid',
-  'PAID',
-  'COD_UPFRONT_PAID',
-  'PARTIALLY_PAID',
-] as const;
-
-export function isShopifySyncEligiblePaymentStatus(status: string | null | undefined): boolean {
-  if (!status) return false;
-  return (SHOPIFY_SYNC_PAID_STATUSES as readonly string[]).includes(status);
 }
 
 export interface PullSyncResult {
@@ -46,7 +30,6 @@ export interface PullSyncResult {
  * Syncs a local Order to Shopify Admin API.
  * 
  * Guarantees:
- * - Payment gate: only paid / cod_upfront_paid / partially_paid create Shopify orders.
  * - Atomic compare-and-set claim on shopifySyncStatus ('syncing') to prevent concurrent duplicate syncs.
  * - Stale claim auto-recovery (> 5 minutes).
  * - Pre-creation existence check in Shopify (findShopifyOrderByInternalNumber) to prevent re-creation.
@@ -62,7 +45,6 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       shopifyOrderId: true,
       shopifyOrderName: true,
       shopifySyncStatus: true,
-      paymentStatus: true,
     },
   });
 
@@ -75,18 +57,6 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       success: true,
       shopifyOrderId: existing.shopifyOrderId,
       shopifyOrderName: existing.shopifyOrderName || undefined,
-    };
-  }
-
-  // Gate: never create Shopify orders for unpaid / abandoned checkouts
-  if (!isShopifySyncEligiblePaymentStatus(existing.paymentStatus)) {
-    console.log(
-      `[ShopifyOrderSync] Skipping order ${orderId}: paymentStatus=${existing.paymentStatus} (not paid)`
-    );
-    return {
-      success: false,
-      error: `Skipping Shopify sync: payment not confirmed (${existing.paymentStatus || 'unknown'})`,
-      skippedUnpaid: true,
     };
   }
 
@@ -140,22 +110,6 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
 
     if (!order) {
       throw new Error(`Order ${orderId} not found after claiming`);
-    }
-
-    // Re-check payment after claim (status may have changed)
-    if (!isShopifySyncEligiblePaymentStatus(order.paymentStatus)) {
-      await prisma.order.update({
-        where: { id: orderId },
-        data: {
-          shopifySyncStatus: 'pending',
-          shopifySyncError: `Payment not confirmed (${order.paymentStatus || 'unknown'})`,
-        },
-      });
-      return {
-        success: false,
-        error: `Skipping Shopify sync: payment not confirmed (${order.paymentStatus || 'unknown'})`,
-        skippedUnpaid: true,
-      };
     }
 
     const universalOrderNumber = order.internalOrderNumber || `ZB${order.id.slice(-6).toUpperCase()}`;
@@ -265,29 +219,8 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       ? parseInt(shopifyCustomerId, 10)
       : null;
 
-    const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-    // Prefer amount locked on the order at payment time; fall back only for legacy rows
-    let codUpfrontPaid = resolveStoredCodUpfrontPaid({
-      storedPaid: (order as any).codUpfrontPaid,
-      paymentStatus: order.paymentStatus,
-      paymentMethod: order.paymentMethod,
-      tags: order.tags,
-      note: order.note,
-      configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-    });
-    if (isCod && codUpfrontPaid <= 0) {
-      // Legacy: look up WebStoreOrder if master Order never stored the fee
-      try {
-        const ws = order.razorpayOrderId
-          ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: order.razorpayOrderId } })
-          : null;
-        if (ws?.codUpfrontPaid && Number(ws.codUpfrontPaid) > 0) {
-          codUpfrontPaid = Number(ws.codUpfrontPaid);
-        }
-      } catch {}
-    }
-    if (isCod && codUpfrontPaid <= 0) codUpfrontPaid = DEFAULT_COD_UPFRONT_AMOUNT;
-    const codBalanceDue = getCodBalanceDue(order.totalPrice || 0, codUpfrontPaid);
+    const codUpfrontPaid = Number(order.codUpfrontPaid) || 99;
+    const codBalanceDue = Math.max(0, Number(order.totalPrice || 0) - codUpfrontPaid);
     const resolvedMethodTag = isCod ? 'COD' : 'Prepaid, Razorpay';
     const emailToUse = order.customer?.email || shippingAddress?.email || '';
 

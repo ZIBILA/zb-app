@@ -37,12 +37,9 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
   typescript: {
-    ignoreBuildErrors: process.env.RENDER === 'true',
+    ignoreBuildErrors: false,
   },
-  // Serialize static page generation to lower peak RSS on small build machines.
-  staticPageGenerationTimeout: 180,
   experimental: {
-    cpus: 1,
     optimizePackageImports: ['lucide-react', 'framer-motion'],
   },
   async headers() {

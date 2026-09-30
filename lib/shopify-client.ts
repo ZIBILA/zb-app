@@ -103,21 +103,22 @@ export async function shopifyFetch<T>(endpoint: string, params?: Record<string, 
       return data as T;
     }
 
-    if (res.status === 429 || res.status >= 500) {
-      // Rate limited or transient server error — serve stale cache if available
-      if (res.status === 429 && cached) {
+    if (res.status === 429) {
+      // Rate limited — serve stale cache if available
+      if (cached) {
         console.warn(`[Shopify Client] Rate limited. Serving stale cache for ${endpoint}`);
         return cached.data as T;
       }
+      // No cache — wait with exponential backoff and retry
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
       const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
-      console.warn(`[Shopify Client] ${endpoint} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      console.warn(`[Shopify Client] Rate limited on ${endpoint}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      lastError = new Error(`Shopify API ${res.status}: transient failure on ${endpoint}`);
+      lastError = new Error(`Shopify API 429: Rate limited on ${endpoint}`);
       continue;
     }
 
-    // Non-retryable error — throw immediately
+    // Non-429 error — throw immediately
     const text = await res.text();
     throw new Error(`Shopify API ${res.status}: ${text}`);
   }

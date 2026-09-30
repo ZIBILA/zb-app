@@ -47,45 +47,26 @@ import { getClientCookie, setClientCookie } from "@/lib/metaPixel";
 
 const STORAGE_KEY = "zb_cart_v1";
 
-/** Ignore accidental double-taps of the same line within this window. */
-const ADD_DEBOUNCE_MS = 500;
-const recentAdds = new Map<string, number>();
-
-function cartLineId(productId: string, variantId: string, size: string | null | undefined): string {
-  const sizeKey = (size || "").trim() || "one-size";
-  return `${productId}_${variantId}_${sizeKey}`;
-}
-
-function acceptAdd(lineId: string): boolean {
-  const now = Date.now();
-  const last = recentAdds.get(lineId) || 0;
-  if (now - last < ADD_DEBOUNCE_MS) return false;
-  recentAdds.set(lineId, now);
-  // Bound map growth
-  if (recentAdds.size > 200) {
-    const cutoff = now - ADD_DEBOUNCE_MS * 4;
-    for (const [k, t] of recentAdds) {
-      if (t < cutoff) recentAdds.delete(k);
-    }
-  }
-  return true;
-}
-
 // ─── Provider ────────────────────────────────────────────
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const { status } = useSession();
-  // Start empty on both server and first client paint to avoid hydration mismatch.
-  // Hydrate once from localStorage in the effect below — do not re-read after that,
-  // or a concurrent add can be overwritten / appear to "double".
-  const [items, setItems] = useState<CartItem[]>([]);
+  const [items, setItems] = useState<CartItem[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
   const [isLoaded, setIsLoaded] = useState(false);
   const restoredRef = useRef(false);
-  const hydratedRef = useRef(false);
 
+  // Ensure items are synced on client mount
   useEffect(() => {
-    if (hydratedRef.current) return;
-    hydratedRef.current = true;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -213,10 +194,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   }, [items, status]);
 
   const add = useCallback((item: Omit<CartItem, "id" | "quantity">) => {
-    const id = cartLineId(item.productId, item.variantId, item.size);
-    // Synchronous debounce: blocks double-tap / duplicate handler fires before React re-renders
-    if (!acceptAdd(id)) return;
-
+    const id = `${item.productId}_${item.variantId}_${item.size || "one-size"}`;
+    
     // Track Add To Cart event
     trackStorefrontEvent('Add To Cart', {
       productId: item.productId,
