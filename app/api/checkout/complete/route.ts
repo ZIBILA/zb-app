@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { observeMetaWalletCheckout, attachMetaWalletCookie } from '@/lib/meta-checkout-observer';
 import crypto from "crypto";
 import prisma from "@/lib/db";
 import { createCustomer, updateCustomer } from "@/lib/shopify-admin";
@@ -237,11 +236,17 @@ export async function POST(req: Request) {
           // Confirm captured amount matches what we should have charged (COD fee or full prepaid total).
           try {
             const creds = await resolveRazorpayCredentials();
-            const { fetchCapturedPayment } = await import('@/lib/meta-payment-verification');
-            const payment = await fetchCapturedPayment(razorpay.razorpay_payment_id, {
-              key_id: creds.key_id,
-              key_secret: creds.key_secret,
+            const paymentId = razorpay.razorpay_payment_id;
+            if (!/^pay_[A-Za-z0-9]+$/.test(paymentId)) throw new Error('Invalid payment ID');
+            const response = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}`, {
+              headers: { Authorization: `Basic ${Buffer.from(`${creds.key_id}:${creds.key_secret}`).toString('base64')}` },
+              cache: 'no-store', signal: AbortSignal.timeout(10000),
             });
+            if (!response.ok) throw new Error('Payment verification unavailable');
+            const payment = await response.json();
+            if (payment.id !== paymentId || payment.status !== 'captured' || payment.captured !== true || Number(payment.amount_refunded || 0) !== 0) {
+              throw new Error('Payment has not been captured');
+            }
             capturedRupees = Number(payment.amount) / 100;
             const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
             if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
@@ -653,10 +658,6 @@ export async function POST(req: Request) {
         }
       });
     }
-
-    const metaWalletToken = isFullStoreCredit
-      ? await observeMetaWalletCheckout(req, localOrder.id, sessionUserId)
-      : undefined;
 
     // ─── ONE AND ONLY ONE SHOPIFY-CREATE CHOKE POINT (FIX 1) ───
     try {
@@ -1194,7 +1195,7 @@ export async function POST(req: Request) {
         console.error("Shopify Customer Name Update Error:", e);
     }
 
-    return attachMetaWalletCookie(NextResponse.json({ orderId: localOrder.id }), metaWalletToken);
+    return NextResponse.json({ orderId: localOrder.id });
   } catch (error: any) {
     console.error("Order Completion Error:", error);
     return NextResponse.json({ error: error.message || "Order completion failed" }, { status: 500 });

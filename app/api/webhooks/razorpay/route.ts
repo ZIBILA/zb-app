@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { observeMetaCapture } from '@/lib/meta-checkout-observer';
 import Razorpay from 'razorpay';
 import prisma from '@/lib/db';
 import { paymentLog } from '@/lib/payment-logger';
@@ -37,10 +36,6 @@ export async function POST(req: Request) {
     const eventType = eventData.event;
     const data = eventData.payload;
     const eventId = data?.payment?.entity?.id || data?.refund?.entity?.id || 'unknown';
-
-    if (eventType === 'payment.captured' || eventType === 'order.paid') {
-      await observeMetaCapture(data?.payment?.entity, new Date((eventData.created_at || Date.now() / 1000) * 1000));
-    }
 
     // 2. Idempotency Check
     const existing = await prisma.webhookEvent.findFirst({

@@ -330,7 +330,6 @@ model Order {
   cartSession           Cart?              @relation("ConvertedOrder")
   webhookEvents         WebhookEvent[]
   affiliateReferral     AffiliateReferral?
-  metaPurchase          MetaPurchase?
 
   @@index([createdAt])
   @@index([status, createdAt])
@@ -339,33 +338,6 @@ model Order {
   @@index([customerId, createdAt])
   @@index([refundStatus])
   @@index([shopifyOrderName])
-}
-
-// A new checkout snapshot is required; historical/recovered orders are never backfilled.
-model MetaPurchase {
-  orderId               String   @id
-  order                 Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  razorpayOrderId        String?  @unique
-  expectedAmountMinor   Int
-  currency              String
-  live                  Boolean
-  snapshot              Json
-  userData              Json
-  eventSourceUrl        String
-  browserTokenHash       String
-  verifiedPaymentId     String?  @unique
-  capturedAt            DateTime?
-  status                String   @default("awaiting_payment")
-  attempts              Int      @default(0)
-  availableAt           DateTime @default(now())
-  leaseToken            String?
-  leaseExpiresAt        DateTime?
-  sentAt                DateTime?
-  lastError             String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-
-  @@index([status, availableAt])
 }
 
 model OrderItem {

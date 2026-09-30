@@ -7,7 +7,6 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { toMinorUnits } from "@/lib/global-pricing";
 import { assignFailedOrderNumber } from "@/lib/orderNumber";
-import { attachMetaCheckoutContext } from '@/lib/meta-checkout-observer';
 
 export const dynamic = 'force-dynamic';
 
@@ -400,7 +399,7 @@ export async function POST(req: Request) {
       }
     }
 
-    return attachMetaCheckoutContext(req, NextResponse.json({
+    return NextResponse.json({
       razorpay_order_id: rzpOrder.id,
       id: rzpOrder.id,
       amount: rzpOrder.amount,
@@ -411,9 +410,6 @@ export async function POST(req: Request) {
       internalOrderNumber: universalOrderNumber,
       codFee: isCodOrder ? configuredCodFee : 0,
       codUpfrontAmount: isCodOrder ? configuredCodFee : 0,
-    }), {
-      orderId: localOrderId,
-      gateway: { id: rzpOrder.id, amount: Number(rzpOrder.amount), currency: String(rzpOrder.currency), live: keyId.startsWith('rzp_live_') },
     });
   } catch (error: any) {
     console.error("[Razorpay] Order creation error:", error);
