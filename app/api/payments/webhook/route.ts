@@ -14,6 +14,10 @@ import prisma from "@/lib/db";
 import { shipOrder } from "@/lib/services/logistics";
 import { createCustomer } from "@/lib/shopify-admin";
 import { syncOrderToShopify } from "@/lib/services/shopifyOrderSyncService";
+import {
+  isSparseShippingAddress,
+  pickRicherShippingAddress,
+} from "@/lib/order-shipping-address";
 
 export const dynamic = "force-dynamic";
 
@@ -108,11 +112,12 @@ export async function POST(req: NextRequest) {
               (order.note || '').toLowerCase().includes('upfront fee paid')
             );
 
-            // Update address if captured by Razorpay
-            let addressToUse = null;
+            // Update address only when Razorpay provides a richer one than we already have.
+            // Sparse Razorpay shipping (empty line1) used to wipe a good checkout address.
+            let addressToUse: any = null;
             if (payment.shipping_address) {
               const sa = payment.shipping_address;
-              const formattedAddress = {
+              const razorpayAddress = {
                 name: payment.customer_name || order.customer?.name || "Customer",
                 phone: payment.customer_contact || order.customer?.phone || "",
                 email: payment.customer_email || order.customer?.email || "",
@@ -121,9 +126,19 @@ export async function POST(req: NextRequest) {
                 city: sa.city || "",
                 state: sa.state || "",
                 zip: sa.postal_code || "",
-                country: sa.country || "India"
+                country: sa.country || "India",
               };
-              addressToUse = formattedAddress;
+
+              const chosen = pickRicherShippingAddress(order.shippingAddress, razorpayAddress);
+              if (!isSparseShippingAddress(chosen)) {
+                addressToUse = chosen;
+              } else if (order.shippingAddress) {
+                try {
+                  addressToUse = JSON.parse(order.shippingAddress);
+                } catch {
+                  addressToUse = null;
+                }
+              }
             } else if (order.shippingAddress) {
               try {
                 addressToUse = JSON.parse(order.shippingAddress);
