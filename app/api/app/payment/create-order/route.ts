@@ -21,7 +21,9 @@ function razorpayErrMessage(err: unknown): string {
 }
 
 async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: AppAuthTokenPayload) {
-  const customerId = orderData?.customerId && orderData.customerId !== 'GUEST' ? orderData.customerId : userAuth.customerId;
+  // Prefer auth customer so prepaid orders always stick to the logged-in account
+  const bodyCustomerId = orderData?.customerId && orderData.customerId !== 'GUEST' ? orderData.customerId : null;
+  const customerId = userAuth.customerId || bodyCustomerId;
   const customerEmail = orderData?.customerEmail || orderData?.shippingAddress?.email || userAuth.customerEmail;
   const customerPhone = orderData?.customerPhone || orderData?.shippingAddress?.phone || '';
 
@@ -75,6 +77,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400, headers: corsHeaders });
     }
 
+    const isCod = String(orderData?.paymentMethod || '').toUpperCase() === 'COD';
+    const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
+    const configuredCodFee = isCod ? await getConfiguredCodUpfrontAmount() : 0;
+    // COD: charge dashboard fee only. Prepaid: charge the client amount (order total).
+    const chargeAmountRupees = isCod ? configuredCodFee : amountRupees;
+    const orderTotalRupees = isCod
+      ? Number(orderData?.total ?? orderData?.total_price ?? amountRupees)
+      : amountRupees;
+
     // Razorpay receipt: required, max 40 chars
     let receipt = typeof receiptIn === 'string' && receiptIn.trim() ? receiptIn.trim() : `zb_${Date.now()}`;
     if (receipt.length > 40) {
@@ -82,13 +93,14 @@ export async function POST(req: Request) {
     }
 
     const order = await instance.orders.create({
-      amount: Math.round(amountRupees * 100),
+      amount: Math.round(chargeAmountRupees * 100),
       currency,
       receipt,
       payment_capture: true,
       notes: {
-        customerId: orderData?.customerId || userAuth.customerId,
-        source: 'mobile-app'
+        customerId: userAuth.customerId || orderData?.customerId,
+        source: 'mobile-app',
+        ...(isCod ? { payment_type: 'cod_upfront', cod_upfront: String(chargeAmountRupees) } : {}),
       }
     });
 
@@ -145,8 +157,8 @@ export async function POST(req: Request) {
                 customerId: customer.id,
                 shopifyOrderId: null, // Null initially, set when synced
                 razorpayOrderId: order.id,
-                totalPrice: amountRupees,
-                subtotalPrice: orderData.subtotal || amountRupees,
+                totalPrice: orderTotalRupees,
+                subtotalPrice: orderData.subtotal || orderTotalRupees,
                 totalTax: 0,
                 currency: 'INR',
                 paymentStatus: 'pending',
@@ -154,7 +166,8 @@ export async function POST(req: Request) {
                 orderType: 'MOBILE_APP',
                 fulfillmentStatus: 'unfulfilled',
                 deliveryStatus: 'pending',
-                paymentMethod: 'Razorpay',
+                paymentMethod: isCod ? 'COD' : 'Razorpay',
+                codUpfrontPaid: isCod ? chargeAmountRupees : 0,
                 shippingAddress: typeof orderData.shippingAddress === 'string' ? orderData.shippingAddress : JSON.stringify({
                   ...orderData.shippingAddress,
                   address1: orderData.shippingAddress?.address1 || orderData.shippingAddress?.line1 || orderData.shippingAddress?.street || '',
@@ -162,12 +175,14 @@ export async function POST(req: Request) {
                   zip: orderData.shippingAddress?.zip || orderData.shippingAddress?.pincode || '',
                 }),
                 billingAddress: null,
-                tags: orderData.tags || 'mobile-app, pending',
-                note: orderData.note || 'Created via Payment Initiation',
+                tags: orderData.tags || `mobile-app, pending${isCod ? ', COD' : ''}`,
+                note: orderData.note || (isCod
+                  ? `COD upfront ₹${chargeAmountRupees} pending via Razorpay`
+                  : 'Created via Payment Initiation'),
                 
-                // Set universal numbering and status
+                // Set universal numbering and status — pending until payment confirms (not 'failed')
                 internalOrderNumber: universalOrderNumber,
-                shopifySyncStatus: 'failed',
+                shopifySyncStatus: 'pending',
                 shopifySyncError: 'Order initiated on mobile, payment pending',
 
                 items: {
@@ -191,15 +206,17 @@ export async function POST(req: Request) {
                 customerId: customer.id,
                 status: 'payment_pending',
                 paymentStatus: 'pending',
-                paymentMethod: 'PREPAID',
-                totalPrice: amountRupees,
-                subtotalPrice: orderData.subtotal || amountRupees,
+                paymentMethod: isCod ? 'COD' : 'PREPAID',
+                totalPrice: orderTotalRupees,
+                subtotalPrice: orderData.subtotal || orderTotalRupees,
                 currency: 'INR',
                 fulfillmentStatus: 'unfulfilled',
                 deliveryStatus: 'pending',
                 shippingAddress: typeof orderData.shippingAddress === 'string' ? orderData.shippingAddress : JSON.stringify(orderData.shippingAddress),
-                tags: orderData.tags || 'mobile-app, pending',
-                note: orderData.note || 'Created via Payment Initiation',
+                tags: orderData.tags || `mobile-app, pending${isCod ? ', COD' : ''}`,
+                note: orderData.note || (isCod
+                  ? `COD upfront ₹${chargeAmountRupees} pending via Razorpay`
+                  : 'Created via Payment Initiation'),
                 source: 'mobile_app',
                 items: {
                   create: resolvedItems.map(item => ({
@@ -229,6 +246,7 @@ export async function POST(req: Request) {
         amount: order.amount,
         currency: order.currency,
         key_id,
+        codFee: isCod ? chargeAmountRupees : 0,
       },
       { headers: corsHeaders }
     );

@@ -622,11 +622,11 @@ export default function OrderDetailsPage() {
                     <div className="pt-2 border-t border-dashed border-foreground/10 space-y-1.5 text-[11px]">
                        <div className="flex justify-between items-center text-emerald-500 font-semibold">
                           <span>Amount Paid Online (Upfront)</span>
-                          <span>✓ {formatPriceString(Number(order.codUpfrontPaid || 99), order.currency || "INR", "en-US")}</span>
+                          <span>✓ {formatPriceString(Number(order.codUpfrontPaid || 0), order.currency || "INR", "en-US")}</span>
                        </div>
                        <div className="flex justify-between items-center text-amber-500 font-bold">
                           <span>Balance Due at Delivery</span>
-                          <span>{formatPriceString(Number(order.codBalanceDue || Math.max(0, order.totalPrice - 99)), order.currency || "INR", "en-US")}</span>
+                          <span>{formatPriceString(Number(order.codBalanceDue || Math.max(0, order.totalPrice - Number(order.codUpfrontPaid || 0))), order.currency || "INR", "en-US")}</span>
                        </div>
                     </div>
                  )}
@@ -762,9 +762,9 @@ export default function OrderDetailsPage() {
                   All items will be restocked.
                   {isCOD ? (
                     isProcessed ? (
-                      <span className="text-amber-500/90 font-medium block mt-1">Note: Since this order has already been processed, the upfront COD fee of ₹99 is non-refundable.</span>
+                      <span className="text-amber-500/90 font-medium block mt-1">Note: Since this order has already been processed, the upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} is non-refundable.</span>
                     ) : (
-                      <span className="text-emerald-400/90 font-medium block mt-1">The upfront COD fee of ₹99 will be fully refunded to your source account.</span>
+                      <span className="text-emerald-400/90 font-medium block mt-1">The upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} will be fully refunded to your source account.</span>
                     )
                   ) : (
                     " Any upfront online payments will be refunded to your source account automatically."

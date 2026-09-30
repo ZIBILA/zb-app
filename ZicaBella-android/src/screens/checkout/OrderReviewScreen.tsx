@@ -27,6 +27,7 @@ export default function OrderReviewScreen() {
 
   const [loading, setLoading] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'razorpay' | 'cod'>('razorpay');
+  const [configuredCodFee, setConfiguredCodFee] = useState(99);
 
   // ─── Store Credits State ───────────────────────────────────────────
   const [useStoreCredits, setUseStoreCredits] = useState(false);
@@ -48,15 +49,34 @@ export default function OrderReviewScreen() {
 
   const subtotal = checkoutTotal;
   const shipping = 0;
-  const codFee = selectedPaymentMethod === 'cod' ? 99 : 0;
   const discountAmount = appliedDiscount?.discountAmount ?? 0;
-  
-  // Calculate total before credits
-  const totalBeforeCredits = Math.max(0, subtotal + shipping + codFee - discountAmount);
-  
-  // Applied credits cannot exceed the total
-  const creditToApply = useStoreCredits ? Math.min(availableCredits, totalBeforeCredits) : 0;
-  const grandTotal = Math.max(0, totalBeforeCredits - creditToApply);
+  // COD upfront is an advance deducted from order total (aligned with webstore) — not an extra fee
+  const orderTotal = Math.max(0, subtotal + shipping - discountAmount);
+  const creditToApply = useStoreCredits ? Math.min(availableCredits, orderTotal) : 0;
+  const netOrderTotal = Math.max(0, orderTotal - creditToApply);
+  // Credits already cover the order → no COD upfront / Razorpay charge
+  const codFee =
+    selectedPaymentMethod === 'cod' && netOrderTotal > 0 ? configuredCodFee : 0;
+  const balanceDue =
+    selectedPaymentMethod === 'cod' ? Math.max(0, netOrderTotal - codFee) : 0;
+  const grandTotal =
+    selectedPaymentMethod === 'cod'
+      ? (netOrderTotal > 0 ? codFee : 0)
+      : netOrderTotal;
+  const totalBeforeCredits = orderTotal;
+
+  // ─── Fetch COD upfront fee from dashboard settings ──────────────────
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`${config.appUrl}/api/checkout/cod-fee`)
+      .then((r) => r.json())
+      .then((data) => {
+        const amt = Number(data?.amount);
+        if (!cancelled && Number.isFinite(amt) && amt > 0) setConfiguredCodFee(amt);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // ─── Fetch Credits ──────────────────────────────────────────────────
   React.useEffect(() => {
@@ -148,13 +168,18 @@ export default function OrderReviewScreen() {
         email: user?.email || shippingAddress?.email || '',
       },
       paymentMethod: selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID',
-      paymentStatus: (selectedPaymentMethod === 'cod' || grandTotal > 0) ? 'pending' : 'paid',
-      total: grandTotal,
-      total_price: grandTotal,
+      paymentStatus: (selectedPaymentMethod === 'cod' || netOrderTotal > 0) ? 'pending' : 'paid',
+      // Full order total (credits applied). COD upfront is separate and deducted at delivery.
+      total: netOrderTotal,
+      total_price: netOrderTotal,
       subtotal,
-      deliveryFee: codFee,
+      deliveryFee: 0,
+      codFee,
+      codUpfrontPaid: codFee,
       tags: `mobile-app, AppOrder, ${selectedPaymentMethod === 'cod' ? 'COD' : 'Razorpay'}${creditToApply > 0 ? ', StoreCreditUsed' : ''}`,
-      note: `Mobile app order | Payment: ${selectedPaymentMethod === 'cod' ? 'COD' : 'Razorpay'}${creditToApply > 0 ? ` | Credits: ₹${creditToApply}` : ''}`,
+      note: selectedPaymentMethod === 'cod'
+        ? `Mobile app COD order | ₹${codFee} upfront via Razorpay | Balance ₹${balanceDue} at delivery${creditToApply > 0 ? ` | Credits: ₹${creditToApply}` : ''}`
+        : `Mobile app order | Payment: Razorpay${creditToApply > 0 ? ` | Credits: ₹${creditToApply}` : ''}`,
     };
   };
 
@@ -239,53 +264,56 @@ export default function OrderReviewScreen() {
     }
 
     if (selectedPaymentMethod === 'cod') {
+      // COD still collects dashboard upfront fee via Razorpay (same as web),
+      // then remaining balance is due at delivery.
       setLoading(true);
       try {
-        console.log('[OrderReview] Placing COD order...');
-        const res = await fetch(`${apiBase}/api/app/orders/create`, {
+        console.log('[OrderReview] Initiating COD upfront Razorpay order...');
+        const orderRes = await fetch(`${apiBase}/api/app/payment/create-order`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : '',
+            'Authorization': token ? `Bearer ${token}` : ''
           },
           body: JSON.stringify({
-            ...orderData,
-            paymentMethod: 'COD',
-            paymentStatus: 'pending'
+            amount: grandTotal, // fee amount; server enforces configured COD fee
+            currency: 'INR',
+            receipt: `zb_cod_${Date.now()}`,
+            orderData: orderData,
           }),
         });
-        
-        const resText = await res.text();
-        let json: any;
+
+        const resText = await orderRes.text();
+        let orderJson: any;
         try {
-          json = JSON.parse(resText);
+          orderJson = JSON.parse(resText);
         } catch (e) {
-          throw new Error(`Server error: ${res.status}. Please check your connection.`);
+          throw new Error('Server returned an invalid response. Please try again.');
         }
 
-        if (!res.ok) throw new Error(json.error || 'Failed to place order');
-        
-        haptics.success();
-        buyNowItem ? setBuyNowItem(null) : clearCart();
-        
-        navigation.getParent()?.reset({
-            index: 1,
-            routes: [
-              { name: 'Main' },
-              { name: 'OrderConfirmation', params: { 
-                orderId: json.orderId || json.id, 
-                paymentMethod: 'COD', 
-                estimatedDelivery: '3-5 Business Days',
-                orderNumber: json.orderNumber 
-              } }
-            ],
-          });
+        if (!orderRes.ok || !orderJson.order_id) {
+          throw new Error(orderJson.error || 'Failed to create payment order.');
+        }
+
+        const payAmount = Number(orderJson.codFee || grandTotal);
+        setLoading(false);
+
+        navigation.navigate('RazorpayPayment', {
+          amount: payAmount,
+          orderId: orderJson.order_id,
+          razorpayKeyId: orderJson.key_id,
+          prefill: {
+            name: shippingAddress?.name || user?.name || '',
+            email: user?.email || shippingAddress?.email || '',
+            contact: (user?.phone || shippingAddress?.phone || '').replace(/^\+91/, ''),
+          },
+          orderData: orderData,
+        });
       } catch (e: any) {
         haptics.error();
-        console.error('[OrderReview] COD placement error:', e.message);
-        Alert.alert('Order Failed', e.message || 'Something went wrong. Please try again.');
-      } finally {
+        console.error('[OrderReview] COD Razorpay initiation error:', e.message);
+        Alert.alert('Payment Error', e.message || 'Could not start COD upfront payment. Please try again.');
         setLoading(false);
       }
       return;
@@ -551,7 +579,7 @@ export default function OrderReviewScreen() {
                 </View>
                 <View style={{ flex: 1, marginLeft: 14 }}>
                   <Typography size={11} weight="800" color={colors.text}>Cash on Delivery</Typography>
-                  <Typography size={8} weight="600" color={colors.textExtraLight} style={{ marginTop: 2 }}>Extra ₹99 service fee applies</Typography>
+                  <Typography size={8} weight="600" color={colors.textExtraLight} style={{ marginTop: 2 }}>Pay ₹{configuredCodFee} upfront (deducted from total)</Typography>
                 </View>
                 <View style={[styles.radio, { borderColor: selectedPaymentMethod === 'cod' ? colors.foreground : colors.borderLight }]}>
                   {selectedPaymentMethod === 'cod' && <View style={[styles.radioInner, { backgroundColor: colors.foreground }]} />}
@@ -571,8 +599,14 @@ export default function OrderReviewScreen() {
              </View>
              {codFee > 0 && (
                <View style={styles.row}>
-                 <Typography size={10} color={colors.textSecondary}>COD Service Fee</Typography>
+                 <Typography size={10} color={colors.textSecondary}>COD Upfront (pay now)</Typography>
                  <Typography size={10} weight="600" color={colors.text}>{formatPrice(codFee)}</Typography>
+               </View>
+             )}
+             {balanceDue > 0 && (
+               <View style={styles.row}>
+                 <Typography size={10} color={colors.textSecondary}>Balance due at delivery</Typography>
+                 <Typography size={10} weight="600" color={colors.text}>{formatPrice(balanceDue)}</Typography>
                </View>
              )}
              <View style={styles.row}>

@@ -254,6 +254,67 @@ async function logisticsApiFetch(
 // ─── Core Service Methods ───────────────────────────────────────────
 
 /**
+ * Resolve local Order.id and write Shipment + Order + WebStoreOrder delivery status
+ * so Admin / Shopify / logistics stay aligned on the same local FK.
+ */
+async function persistShipmentAndDeliveryStatus(
+  orderRef: string,
+  result: ShipmentResult,
+  extraOrderData?: Record<string, unknown>
+): Promise<string | null> {
+  const { resolveLocalOrderId } = await import('@/lib/services/orderLifecycleService');
+  const localId = await resolveLocalOrderId(orderRef);
+  if (!localId) {
+    console.warn(`[Logistics] No local Order for ref=${orderRef}; skipping shipment DB write`);
+    return null;
+  }
+
+  await prisma.shipment.create({
+    data: {
+      orderId: localId,
+      trackingNumber: result.trackingNumber,
+      awb: result.trackingNumber || undefined,
+      trackingUrl: result.trackingUrl,
+      courier: result.courier,
+      status: 'confirmed',
+      events: JSON.stringify([
+        {
+          status: 'confirmed',
+          location: 'Warehouse',
+          timestamp: new Date().toISOString(),
+          description: 'Shipment booked',
+        },
+      ]),
+    },
+  });
+
+  await prisma.order.update({
+    where: { id: localId },
+    data: {
+      deliveryStatus: 'confirmed',
+      ...(extraOrderData || {}),
+    },
+  });
+
+  const order = await prisma.order.findUnique({
+    where: { id: localId },
+    select: { internalOrderNumber: true, razorpayOrderId: true, shopifyOrderId: true },
+  });
+  const wsWhere: Array<Record<string, string>> = [];
+  if (order?.internalOrderNumber) wsWhere.push({ orderNumber: order.internalOrderNumber });
+  if (order?.razorpayOrderId) wsWhere.push({ razorpayOrderId: order.razorpayOrderId });
+  if (order?.shopifyOrderId) wsWhere.push({ shopifyOrderId: order.shopifyOrderId });
+  if (wsWhere.length) {
+    await prisma.webStoreOrder.updateMany({
+      where: { OR: wsWhere },
+      data: { deliveryStatus: 'confirmed' },
+    }).catch(() => {});
+  }
+
+  return localId;
+}
+
+/**
  * Create a forward shipment for an order.
  * Returns tracking_number, tracking_url, and courier name.
  */
@@ -270,6 +331,21 @@ export async function shipOrder(
     phone?: string;
   }
 ): Promise<ShipmentResult> {
+  // Idempotent: skip if we already booked logistics for this order
+  const existing = await prisma.shipment.findFirst({
+    where: { orderId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing?.trackingNumber) {
+    console.log(`[Logistics] Shipment already exists for ${orderId} (${existing.trackingNumber}) — skipping create`);
+    return {
+      trackingNumber: existing.trackingNumber,
+      trackingUrl: existing.trackingUrl || undefined,
+      courier: existing.courier || 'Shiprocket',
+      shipmentId: existing.awb || undefined,
+    };
+  }
+
   const config = await getLogisticsConfig();
   const preset = PROVIDER_PRESETS[config.provider];
 
@@ -279,6 +355,45 @@ export async function shipOrder(
       let data: any;
 
       if (config.provider === 'shiprocket') {
+        const dbOrder = await prisma.order.findFirst({
+          where: {
+            OR: [
+              { id: orderId },
+              { shopifyOrderId: orderId }
+            ]
+          }
+        });
+
+        const rawMethod = (dbOrder?.paymentMethod || '').toLowerCase();
+        const tagsLower = (dbOrder?.tags || '').toLowerCase();
+        const noteLower = (dbOrder?.note || '').toLowerCase();
+        const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
+
+        const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+        let codUpfront = 0;
+        if (isCodOrder) {
+          const wsOrder = dbOrder?.razorpayOrderId
+            ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
+            : null;
+          // Legacy rows without stored fee fall back to DEFAULT (99), not the live dashboard
+          // setting — so changing settings never rewrites old shipments' COD balance.
+          codUpfront = resolveStoredCodUpfrontPaid({
+            storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
+            paymentStatus: dbOrder?.paymentStatus,
+            paymentMethod: dbOrder?.paymentMethod,
+            tags: dbOrder?.tags,
+            note: dbOrder?.note,
+            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+          });
+        }
+
+        const calculatedTotalPrice = Number(
+          dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0)
+        );
+        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
+        const paymentMethod = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
+        const subTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+
         data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', {
           order_id: orderId,
           order_date: new Date().toISOString().split('T')[0],
@@ -297,8 +412,10 @@ export async function shipOrder(
             units: i.quantity,
             selling_price: i.price,
           })),
-          payment_method: 'prepaid',
-          sub_total: items.reduce((s, i) => s + i.price * i.quantity, 0),
+          payment_method: paymentMethod,
+          // Remaining COD after upfront Razorpay payment (0 for prepaid)
+          ...(paymentMethod === 'COD' ? { cod_amount: Math.round(codBalanceDue) } : {}),
+          sub_total: subTotal,
           length: 20,
           breadth: 15,
           height: 10,
@@ -313,22 +430,8 @@ export async function shipOrder(
           shipmentId: data?.shipment_id?.toString(),
         };
 
-        // Save shipment to DB
-        await prisma.shipment.create({
-          data: {
-            orderId,
-            trackingNumber: result.trackingNumber,
-            trackingUrl: result.trackingUrl,
-            courier: result.courier,
-            status: 'confirmed',
-          },
-        });
-
-        // Update order delivery status
-        await prisma.order.updateMany({
-          where: { shopifyOrderId: orderId },
-          data: { deliveryStatus: 'confirmed' },
-        });
+        // Save shipment + delivery status on local Order / WebStoreOrder
+        await persistShipmentAndDeliveryStatus(orderId, result);
 
         return result;
       }
@@ -356,11 +459,20 @@ export async function shipOrder(
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
-          codUpfront = wsOrder?.codUpfrontPaid ? Number(wsOrder.codUpfrontPaid) : 99;
+          const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          codUpfront = resolveStoredCodUpfrontPaid({
+            storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
+            paymentStatus: dbOrder?.paymentStatus,
+            paymentMethod: dbOrder?.paymentMethod,
+            tags: dbOrder?.tags,
+            note: dbOrder?.note,
+            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+          });
         }
 
         const calculatedTotalPrice = Number(dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0));
-        const codBalanceDue = isCodOrder ? Math.max(0, calculatedTotalPrice - codUpfront) : 0;
+        const { getCodBalanceDue } = await import('@/lib/cod-upfront');
+        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
         const paymentMode = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
 
         const payload = {
@@ -429,31 +541,10 @@ export async function shipOrder(
               courier: 'Delhivery',
             };
 
-            // Save shipment to DB
-            await prisma.shipment.create({
-              data: {
-                orderId: dbOrder?.id || orderId,
-                trackingNumber: result.trackingNumber,
-                awb: result.trackingNumber,
-                trackingUrl: result.trackingUrl,
-                courier: result.courier,
-                status: 'confirmed',
-              },
-            });
-
-            // Update order delivery status & delhivery_awb
-            await prisma.order.updateMany({
-              where: {
-                OR: [
-                  { id: orderId },
-                  { shopifyOrderId: orderId }
-                ]
-              },
-              data: {
-                deliveryStatus: 'confirmed',
-                delhivery_awb: result.trackingNumber,
-                status: 'Shipped'
-              },
+            // Save shipment + delivery status on local Order / WebStoreOrder
+            await persistShipmentAndDeliveryStatus(dbOrder?.id || orderId, result, {
+              delhivery_awb: result.trackingNumber,
+              status: 'Shipped',
             });
 
             return result;
@@ -478,15 +569,7 @@ export async function shipOrder(
         courier: config.provider,
       };
 
-      await prisma.shipment.create({
-        data: {
-          orderId,
-          trackingNumber: result.trackingNumber,
-          trackingUrl: result.trackingUrl,
-          courier: result.courier,
-          status: 'confirmed',
-        },
-      });
+      await persistShipmentAndDeliveryStatus(orderId, result);
 
       return result;
     } catch (err: any) {
@@ -503,18 +586,7 @@ export async function shipOrder(
     courier: 'Mock Courier',
   };
 
-  await prisma.shipment.create({
-    data: {
-      orderId,
-      trackingNumber: result.trackingNumber,
-      trackingUrl: result.trackingUrl,
-      courier: result.courier,
-      status: 'confirmed',
-      events: JSON.stringify([
-        { status: 'confirmed', location: 'Warehouse', timestamp: new Date().toISOString(), description: 'Order confirmed and ready for pickup' },
-      ]),
-    },
-  });
+  await persistShipmentAndDeliveryStatus(orderId, result);
 
   return result;
 }

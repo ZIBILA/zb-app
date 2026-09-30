@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
+import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -12,6 +13,22 @@ export interface SyncResult {
   shopifyOrderName?: string;
   error?: string;
   skippedDuplicate?: boolean;
+  skippedUnpaid?: boolean;
+}
+
+/** Only these payment statuses may create a Shopify order. */
+export const SHOPIFY_SYNC_PAID_STATUSES = [
+  'paid',
+  'cod_upfront_paid',
+  'partially_paid',
+  'PAID',
+  'COD_UPFRONT_PAID',
+  'PARTIALLY_PAID',
+] as const;
+
+export function isShopifySyncEligiblePaymentStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (SHOPIFY_SYNC_PAID_STATUSES as readonly string[]).includes(status);
 }
 
 export interface PullSyncResult {
@@ -30,6 +47,7 @@ export interface PullSyncResult {
  * Syncs a local Order to Shopify Admin API.
  * 
  * Guarantees:
+ * - Payment gate: only paid / cod_upfront_paid / partially_paid create Shopify orders.
  * - Atomic compare-and-set claim on shopifySyncStatus ('syncing') to prevent concurrent duplicate syncs.
  * - Stale claim auto-recovery (> 5 minutes).
  * - Pre-creation existence check in Shopify (findShopifyOrderByInternalNumber) to prevent re-creation.
@@ -45,6 +63,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       shopifyOrderId: true,
       shopifyOrderName: true,
       shopifySyncStatus: true,
+      paymentStatus: true,
     },
   });
 
@@ -57,6 +76,18 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       success: true,
       shopifyOrderId: existing.shopifyOrderId,
       shopifyOrderName: existing.shopifyOrderName || undefined,
+    };
+  }
+
+  // Gate: never create Shopify orders for unpaid / abandoned checkouts
+  if (!isShopifySyncEligiblePaymentStatus(existing.paymentStatus)) {
+    console.log(
+      `[ShopifyOrderSync] Skipping order ${orderId}: paymentStatus=${existing.paymentStatus} (not paid)`
+    );
+    return {
+      success: false,
+      error: `Skipping Shopify sync: payment not confirmed (${existing.paymentStatus || 'unknown'})`,
+      skippedUnpaid: true,
     };
   }
 
@@ -112,6 +143,22 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       throw new Error(`Order ${orderId} not found after claiming`);
     }
 
+    // Re-check payment after claim (status may have changed)
+    if (!isShopifySyncEligiblePaymentStatus(order.paymentStatus)) {
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          shopifySyncStatus: 'pending',
+          shopifySyncError: `Payment not confirmed (${order.paymentStatus || 'unknown'})`,
+        },
+      });
+      return {
+        success: false,
+        error: `Skipping Shopify sync: payment not confirmed (${order.paymentStatus || 'unknown'})`,
+        skippedUnpaid: true,
+      };
+    }
+
     const universalOrderNumber = order.internalOrderNumber || `ZB${order.id.slice(-6).toUpperCase()}`;
 
     // 4. FIX 4: Pre-create existence check in Shopify (self-heal linking)
@@ -149,24 +196,51 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       (order.tags || '').includes('MobileApp') ||
       Boolean(options?.preserveAppTags);
 
-    // Parse shipping address
-    let shippingAddress: any = {};
+    // WebStoreOrder often has the best customerName / phone / address when Order JSON is sparse or alias-mismatched
+    let webStoreOrder: {
+      customerName: string;
+      customerPhone: string;
+      customerEmail: string;
+      shippingAddress: unknown;
+      codUpfrontPaid: unknown;
+    } | null = null;
     try {
-      shippingAddress = typeof order.shippingAddress === 'string'
-        ? JSON.parse(order.shippingAddress)
-        : order.shippingAddress || {};
+      webStoreOrder = await prisma.webStoreOrder.findFirst({
+        where: {
+          OR: [
+            ...(order.razorpayOrderId ? [{ razorpayOrderId: order.razorpayOrderId }] : []),
+            ...(order.internalOrderNumber ? [{ orderNumber: order.internalOrderNumber }] : []),
+          ],
+        },
+        select: {
+          customerName: true,
+          customerPhone: true,
+          customerEmail: true,
+          shippingAddress: true,
+          codUpfrontPaid: true,
+        },
+      });
     } catch {
-      shippingAddress = {};
+      webStoreOrder = null;
     }
+
+    const shippingAddress = normalizeOrderShippingAddress(
+      order.shippingAddress || webStoreOrder?.shippingAddress,
+      {
+        name: order.customer?.name || webStoreOrder?.customerName,
+        phone: order.customer?.phone || webStoreOrder?.customerPhone,
+        email: order.customer?.email || webStoreOrder?.customerEmail,
+      }
+    );
 
     // Resolve or sync Shopify customer
     let shopifyCustomerId = order.customer?.shopifyId;
     if (!shopifyCustomerId || shopifyCustomerId.startsWith('temp_') || shopifyCustomerId.startsWith('google_') || shopifyCustomerId.startsWith('apple_') || shopifyCustomerId.startsWith('mobile_') || shopifyCustomerId.startsWith('GUEST_')) {
       try {
-        const customerName = order.customer?.name || shippingAddress?.name || 'Customer';
-        const nameParts = String(customerName).trim().split(' ');
-        const customerEmail = order.customer?.email || shippingAddress?.email || '';
-        const customerPhone = order.customer?.phone || shippingAddress?.phone || '';
+        const customerName = shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer';
+        const nameParts = String(customerName).trim().split(/\s+/).filter(Boolean);
+        const customerEmail = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
+        const customerPhone = shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
 
         const sCustomer = await createCustomer({
           first_name: nameParts[0] || 'Customer',
@@ -219,10 +293,27 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       ? parseInt(shopifyCustomerId, 10)
       : null;
 
-    const codUpfrontPaid = Number(order.codUpfrontPaid) || 99;
-    const codBalanceDue = Math.max(0, Number(order.totalPrice || 0) - codUpfrontPaid);
+    const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+    // Prefer amount locked on the order at payment time; fall back only for legacy rows
+    let codUpfrontPaid = resolveStoredCodUpfrontPaid({
+      storedPaid: (order as any).codUpfrontPaid,
+      paymentStatus: order.paymentStatus,
+      paymentMethod: order.paymentMethod,
+      tags: order.tags,
+      note: order.note,
+      configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+    });
+    if (isCod && codUpfrontPaid <= 0) {
+      try {
+        if (webStoreOrder?.codUpfrontPaid && Number(webStoreOrder.codUpfrontPaid) > 0) {
+          codUpfrontPaid = Number(webStoreOrder.codUpfrontPaid);
+        }
+      } catch {}
+    }
+    if (isCod && codUpfrontPaid <= 0) codUpfrontPaid = DEFAULT_COD_UPFRONT_AMOUNT;
+    const codBalanceDue = getCodBalanceDue(order.totalPrice || 0, codUpfrontPaid);
     const resolvedMethodTag = isCod ? 'COD' : 'Prepaid, Razorpay';
-    const emailToUse = order.customer?.email || shippingAddress?.email || '';
+    const emailToUse = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
 
     // Build consolidated tags
     const mergedTags = new Set<string>();
@@ -269,24 +360,42 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       currency: order.currency || 'INR',
     };
 
-    if (shippingAddress?.name || shippingAddress?.street || shippingAddress?.address1) {
-      const nameParts = String(shippingAddress.name || order.customer?.name || '').trim().split(' ');
+    if (
+      shippingAddress.name ||
+      shippingAddress.address1 ||
+      shippingAddress.city ||
+      shippingAddress.zip ||
+      shippingAddress.phone
+    ) {
+      const nameParts = String(
+        shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer'
+      )
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
       const addrPayload = {
         first_name: nameParts[0] || 'Customer',
         last_name: nameParts.slice(1).join(' ') || '.',
-        address1: shippingAddress.street || shippingAddress.address1 || '',
+        address1: shippingAddress.address1 || 'Address pending',
+        ...(shippingAddress.address2 ? { address2: shippingAddress.address2 } : {}),
         city: shippingAddress.city || '',
-        province: shippingAddress.state || shippingAddress.province || '',
-        zip: shippingAddress.zip || shippingAddress.pincode || '',
+        province: shippingAddress.province || '',
+        zip: shippingAddress.zip || '',
         country: shippingAddress.country || 'India',
-        phone: shippingAddress.phone || order.customer?.phone || '',
+        phone:
+          shippingAddress.phone ||
+          order.customer?.phone ||
+          webStoreOrder?.customerPhone ||
+          '',
       };
       shopifyOrderPayload.shipping_address = addrPayload;
       shopifyOrderPayload.billing_address = addrPayload;
     }
 
-    if (shippingAddress?.phone || order.customer?.phone) {
-      shopifyOrderPayload.phone = shippingAddress.phone || order.customer?.phone;
+    const orderPhone =
+      shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
+    if (orderPhone) {
+      shopifyOrderPayload.phone = orderPhone;
     }
 
     if (parsedCustomerId) {

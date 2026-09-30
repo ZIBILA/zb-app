@@ -139,12 +139,19 @@ export async function GET(
     const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
     const finalPaymentMethod = isCodOrder ? 'COD' : (webStoreOrder?.paymentMethod || order.paymentMethod || 'razorpay').toUpperCase();
 
-    let codUpfrontPaid = webStoreOrder?.codUpfrontPaid ? Number(webStoreOrder.codUpfrontPaid) : 0;
+    let codUpfrontPaid = webStoreOrder?.codUpfrontPaid
+      ? Number(webStoreOrder.codUpfrontPaid)
+      : Number((order as any).codUpfrontPaid) || 0;
     if (isCodOrder && codUpfrontPaid === 0) {
-      const pStat = (webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
-      if (pStat === 'cod_upfront_paid' || pStat === 'partially_paid' || pStat === 'paid' || isCodOrder) {
-        codUpfrontPaid = Number(order.codUpfrontPaid) || 99;
-      }
+      const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+      codUpfrontPaid = resolveStoredCodUpfrontPaid({
+        storedPaid: 0,
+        paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
+        paymentMethod: order.paymentMethod,
+        tags: order.tags,
+        note: order.note,
+        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+      });
     }
 
     const discountCode = webStoreOrder?.discountCode || order.discountCode || null;
@@ -155,7 +162,8 @@ export async function GET(
 
     const storeCreditAmount = webStoreOrder?.storeCreditAmount ? Number(webStoreOrder.storeCreditAmount) : ((order as any).storeCreditAmount || 0);
     const subtotalPrice = order.subtotalPrice || webStoreOrder?.subtotal || (order.items || []).reduce((sum: number, item: any) => sum + (Number(item.price) * (item.quantity || 1)), 0);
-    const codBalanceDue = isCodOrder ? Math.max(0, Number(order.totalPrice) - codUpfrontPaid) : 0;
+    const { getCodBalanceDue } = await import('@/lib/cod-upfront');
+    const codBalanceDue = isCodOrder ? getCodBalanceDue(order.totalPrice, codUpfrontPaid) : 0;
 
     const orderNumber = order.internalOrderNumber || webStoreOrder?.orderNumber || (order.shopifyOrderId && !order.shopifyOrderId.startsWith('app_pending_') ? order.shopifyOrderId : `#ZB${order.id.slice(-5).toUpperCase()}`);
 

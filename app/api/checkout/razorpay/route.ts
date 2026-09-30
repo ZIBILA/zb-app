@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import Razorpay from "razorpay";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/app/api/auth/[...nextauth]/options";
 import prisma from "@/lib/db";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
@@ -112,7 +114,19 @@ export async function POST(req: Request) {
     const rawShipping = Number(shipping || 0);
     const rawStoreCredit = Number(storeCreditAmount || 0);
     const calculatedTotal = Math.max(0, rawSubtotal + rawShipping - finalCouponDiscount - rawStoreCredit);
-    const chargeAmount = isCodOrder ? (Number(codFee) > 0 ? Number(codFee) : Number(amount)) : calculatedTotal;
+
+    // COD: always charge the dashboard-configured upfront fee (ignore client amount for safety).
+    // Prepaid: charge the calculated order total.
+    const { getConfiguredCodUpfrontAmount } = await import("@/lib/cod-upfront");
+    const configuredCodFee = isCodOrder ? await getConfiguredCodUpfrontAmount() : 0;
+    const chargeAmount = isCodOrder ? configuredCodFee : calculatedTotal;
+
+    // Soft-warn if client sent a mismatched COD fee (UI stale cache) but still use server value
+    if (isCodOrder && Number(codFee) > 0 && Math.abs(Number(codFee) - configuredCodFee) > 0.01) {
+      console.warn(
+        `[Razorpay Checkout] Client COD fee ₹${codFee} differs from configured ₹${configuredCodFee}; using configured amount`
+      );
+    }
 
     // Validate required fields
     if (!chargeAmount || typeof chargeAmount !== "number" || chargeAmount <= 0) {
@@ -156,8 +170,10 @@ export async function POST(req: Request) {
       try {
         const shop = await prisma.shop.findFirst();
         if (shop) {
-          // 1. Save Customer & Address
-          const { customer } = await resolveAndSyncCustomerAddress(shop.id, address);
+          // 1. Save Customer & Address (prefer logged-in session customer)
+          const session = await getServerSession(authOptions).catch(() => null);
+          const sessionUserId = (session?.user as any)?.id || null;
+          const { customer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
           // 2. Resolve Line Items
           const resolvedItems = await Promise.all(items.map(async (item: any, index: number) => {
@@ -215,6 +231,7 @@ export async function POST(req: Request) {
                 billingAddress: JSON.stringify(checkoutAddress),
                 razorpayOrderId: rzpOrder.id,
                 paymentMethod: isCodOrder ? "cod" : "razorpay",
+                codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                 discountCode: finalCouponCode || null,
                 discountAmount: Number(finalCouponDiscount) || 0,
                 storeCreditAmount: Number(rawStoreCredit) || 0,
@@ -271,6 +288,7 @@ export async function POST(req: Request) {
                   totalAmount: calculatedTotal,
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
                   razorpayOrderId: rzpOrder.id,
+                  codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                 }
               });
             }
@@ -304,6 +322,7 @@ export async function POST(req: Request) {
                 razorpayOrderId: rzpOrder.id,
                 razorpayPaymentId: null,
                 paymentMethod: isCodOrder ? "cod" : "razorpay",
+                codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                 paymentCapturedAt: null,
                 orderType: "WEB_STORE",
                 tags: `WebStoreOrder, Web, ${isCodOrder ? "cod" : "razorpay"}, zb-order-${universalOrderNumber}, payment_pending, Order creation in process${sessionTag}`,
@@ -314,7 +333,7 @@ export async function POST(req: Request) {
                 discountAmount: Number(finalCouponDiscount) || 0,
                 storeCreditAmount: Number(rawStoreCredit) || 0,
                 internalOrderNumber: universalOrderNumber,
-                shopifySyncStatus: 'failed',
+                shopifySyncStatus: 'pending',
                 shopifySyncError: 'Order pre-created at payment initiation; payment pending',
                 items: {
                   create: resolvedItems.map((item: any) => ({
@@ -360,6 +379,7 @@ export async function POST(req: Request) {
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
                   razorpayOrderId: rzpOrder.id,
                   razorpayPaymentId: null,
+                  codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
                   fulfillmentStatus: "unfulfilled",
                   notes: rawStoreCredit > 0
                     ? `Order creation in process - ₹${rawStoreCredit} Store Credit applied - Remaining Payment pending`
@@ -388,6 +408,8 @@ export async function POST(req: Request) {
       keyId: keyId,
       localOrderId,
       internalOrderNumber: universalOrderNumber,
+      codFee: isCodOrder ? configuredCodFee : 0,
+      codUpfrontAmount: isCodOrder ? configuredCodFee : 0,
     });
   } catch (error: any) {
     console.error("[Razorpay] Order creation error:", error);

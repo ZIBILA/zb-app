@@ -16,7 +16,9 @@ import {
   adminUrl, 
   headers,
   API_VERSION,
-  clearShopConfigCache
+  clearShopConfigCache,
+  shouldAutoRefreshShopifyAdminToken,
+  getShopifyClientCredentialsToken,
 } from './shopify-client';
 
 export { getShopConfig, shopifyFetch, adminUrl, headers, clearShopConfigCache, shopifyPatch };
@@ -157,12 +159,26 @@ async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, stri
   return allResults;
 }
 
+async function remintShopifyTokenAfter401(): Promise<boolean> {
+  if (!shouldAutoRefreshShopifyAdminToken()) return false;
+  try {
+    const { domain } = await getShopConfig();
+    await getShopifyClientCredentialsToken(domain, { force: true });
+    console.warn('[Shopify Admin] 401 — reminted Admin token');
+    return true;
+  } catch (err) {
+    console.error('[Shopify Admin] 401 remint failed:', err);
+    return false;
+  }
+}
+
 async function shopifyPost<T>(endpoint: string, body: unknown, customHeaders?: Record<string, string>): Promise<T> {
   const url = await adminUrl(endpoint);
-  const baseHeaders = await headers();
-  const requestHeaders = { ...baseHeaders, ...(customHeaders || {}) };
   const MAX = 4;
+  let didForceTokenRefresh = false;
   for (let attempt = 0; attempt < MAX; attempt++) {
+    const baseHeaders = await headers();
+    const requestHeaders = { ...baseHeaders, ...(customHeaders || {}) };
     const res = await fetch(url, {
       method: 'POST',
       headers: requestHeaders,
@@ -171,6 +187,11 @@ async function shopifyPost<T>(endpoint: string, body: unknown, customHeaders?: R
 
     if (res.ok) {
       return res.json();
+    }
+
+    if (res.status === 401 && !didForceTokenRefresh && (await remintShopifyTokenAfter401())) {
+      didForceTokenRefresh = true;
+      continue;
     }
 
     if ((res.status === 429 || res.status >= 500) && attempt < MAX - 1) {
@@ -191,6 +212,7 @@ async function shopifyPost<T>(endpoint: string, body: unknown, customHeaders?: R
 async function shopifyPatch<T>(endpoint: string, body: unknown): Promise<T> {
   const url = await adminUrl(endpoint);
   const MAX = 4;
+  let didForceTokenRefresh = false;
   for (let attempt = 0; attempt < MAX; attempt++) {
     const res = await fetch(url, {
       method: 'PUT',
@@ -200,6 +222,11 @@ async function shopifyPatch<T>(endpoint: string, body: unknown): Promise<T> {
 
     if (res.ok) {
       return res.json();
+    }
+
+    if (res.status === 401 && !didForceTokenRefresh && (await remintShopifyTokenAfter401())) {
+      didForceTokenRefresh = true;
+      continue;
     }
 
     if ((res.status === 429 || res.status >= 500) && attempt < MAX - 1) {
@@ -1582,21 +1609,39 @@ export async function fetchProductById(productId: string, includeMetafields = fa
 }
 
 export async function fetchProductByHandle(handle: string): Promise<ShopifyProduct | null> {
-  // If the handle looks like a numeric ID, try fetching by ID first
-  if (/^\d+$/.test(handle)) {
-    try {
-      const product = await fetchProductById(handle);
-      if (product) return product;
-    } catch (e) {
-      // Fall through to handle search
+  const fromFallback = (): ShopifyProduct | null => {
+    const key = String(handle || '').trim().toLowerCase();
+    if (!key) return null;
+    return (
+      FALLBACK_PRODUCTS.find(
+        (p) => p.handle?.toLowerCase() === key || String(p.id) === key
+      ) || null
+    );
+  };
+
+  try {
+    // If the handle looks like a numeric ID, try fetching by ID first
+    if (/^\d+$/.test(handle)) {
+      try {
+        const product = await fetchProductById(handle);
+        if (product) return product;
+      } catch {
+        // Fall through to handle search
+      }
     }
+
+    const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`products.json?handle=${handle}`);
+    if (data?.products?.length) {
+      const product = data.products[0];
+      const metafields = await fetchProductMetafields(product.id.toString()).catch(() => []);
+      return { ...product, metafields };
+    }
+  } catch (err: any) {
+    console.warn(`[Shopify Admin] fetchProductByHandle("${handle}") failed:`, err?.message || err);
   }
 
-  const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`products.json?handle=${handle}`);
-  if (!data.products || data.products.length === 0) return null;
-  const product = data.products[0];
-  const metafields = await fetchProductMetafields(product.id.toString());
-  return { ...product, metafields };
+  // Local/dev resilience when Shopify is unavailable (402) or product missing remotely
+  return fromFallback();
 }
 
 /**

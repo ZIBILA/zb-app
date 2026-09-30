@@ -113,28 +113,13 @@ export default function RazorpayPaymentScreen() {
     }
   }, [status]);
 
-  // ── Success/Fail animations ──
-  useEffect(() => {
-    if (status === 'success' && successData) {
-      Animated.parallel([
-        Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
-        Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-      ]).start();
-      recordOrderOnBackend(successData.paymentId, successData.orderId);
-    }
-  }, [status, successData]);
-
-  useEffect(() => {
-    if (status === 'failed') {
-      Animated.spring(failScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
-    }
-  }, [status]);
-
-  // ── Record order on backend ──
+  // ── Record order on backend (state before success effect) ──
   const [isRecording, setIsRecording] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [createdOrderNumber, setCreatedOrderNumber] = useState<string | null>(null);
+  const syncRetryRef = useRef(0);
+  const MAX_SYNC_RETRIES = 3;
 
   const recordOrderOnBackend = useCallback(async (paymentId: string, rzpOrderId: string) => {
     if (orderRecordedRef.current) return;
@@ -142,17 +127,25 @@ export default function RazorpayPaymentScreen() {
     setRecordError(null);
 
     try {
-      const token = useAuthStore.getState().token || '';
+      const auth = useAuthStore.getState();
+      const token = auth.token || '';
       const apiBase = getPaymentApiBaseUrl();
 
       if (orderData) {
+        const isCod = String(orderData.paymentMethod || '').toUpperCase() === 'COD';
         const orderPayload = {
           ...orderData,
+          // Prefer logged-in customer so order appears under My Orders
+          customerId: auth.user?.id || orderData.customerId,
+          customerEmail: orderData.customerEmail || auth.user?.email,
+          customerPhone: orderData.customerPhone || auth.user?.phone,
           paymentId: paymentId,
           razorpayOrderId: rzpOrderId,
           razorpay_order_id: rzpOrderId,
           paymentStatus: 'paid',
-          paymentMethod: 'PREPAID',
+          paymentMethod: isCod ? 'COD' : 'PREPAID',
+          codFee: isCod ? Number(orderData.codFee || orderData.codUpfrontPaid || amount || 0) : 0,
+          codUpfrontPaid: isCod ? Number(orderData.codFee || orderData.codUpfrontPaid || amount || 0) : 0,
         };
 
         const res = await fetch(`${apiBase}/api/app/orders/create`, {
@@ -176,9 +169,10 @@ export default function RazorpayPaymentScreen() {
         if (!res.ok || resJson.success === false) {
           throw new Error(resJson.error || 'Failed to sync order');
         }
-        setCreatedOrderId(resJson.orderId || resJson.id || null);
-        setCreatedOrderNumber(resJson.orderNumber || null);
+        setCreatedOrderId(resJson.orderId || resJson.id || successData?.localOrderId || null);
+        setCreatedOrderNumber(resJson.orderNumber || successData?.orderNumber || null);
         orderRecordedRef.current = true;
+        syncRetryRef.current = 0;
       } else {
         throw new Error('Missing order details for backend sync');
       }
@@ -188,11 +182,36 @@ export default function RazorpayPaymentScreen() {
       console.error('[RazorpayPayment] Error recording order:', e.message);
       setRecordError(e.message || 'Sync failed');
       setIsRecording(false);
-      setTimeout(() => recordOrderOnBackend(paymentId, rzpOrderId), 3000);
+      if (syncRetryRef.current < MAX_SYNC_RETRIES) {
+        syncRetryRef.current += 1;
+        setTimeout(() => recordOrderOnBackend(paymentId, rzpOrderId), 3000);
+      }
     }
-  }, [orderData, buyNowItem, setBuyNowItem, clearCart]);
+  }, [orderData, buyNowItem, setBuyNowItem, clearCart, amount, successData?.localOrderId, successData?.orderNumber]);
+
+  // ── Success/Fail animations ──
+  useEffect(() => {
+    if (status === 'success' && successData) {
+      Animated.parallel([
+        Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
+        Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+      ]).start();
+      // Prefer backend ids from verify so confirmation works even if create retries
+      if (successData.localOrderId) setCreatedOrderId(successData.localOrderId);
+      if (successData.orderNumber) setCreatedOrderNumber(successData.orderNumber);
+      recordOrderOnBackend(successData.paymentId, successData.orderId);
+    }
+  }, [status, successData]);
+
+  useEffect(() => {
+    if (status === 'failed') {
+      Animated.spring(failScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
+    }
+  }, [status]);
 
   const isPayReady = (): boolean => {
+    if (!amount || Number(amount) <= 0) return false;
+    if (!orderId || !razorpayKeyId) return false;
     if (tab === 'upi') return upiSubTab === 'apps' ? !!selectedUPIApp : upiId.includes('@');
     if (tab === 'card') return cardNum.replace(/\s/g, '').length === 16 && cardExpiry.length === 5 && cardCvv.length >= 3;
     if (tab === 'netbanking') return !!selectedBank;
@@ -200,8 +219,24 @@ export default function RazorpayPaymentScreen() {
     return false;
   };
 
+  const payReadyHint = (): string => {
+    if (!amount || Number(amount) <= 0) return 'Invalid amount — go back and retry';
+    if (!orderId || !razorpayKeyId) return 'Payment session not ready — go back and retry';
+    if (tab === 'upi') {
+      return upiSubTab === 'apps'
+        ? (selectedUPIApp ? '' : 'Select a UPI app to continue')
+        : (upiId.includes('@') ? '' : 'Enter a valid UPI ID (e.g. name@upi)');
+    }
+    if (tab === 'card') return 'Enter full card number, expiry, and CVV';
+    if (tab === 'netbanking') return selectedBank ? '' : 'Select a bank to continue';
+    if (tab === 'wallet') return selectedWallet ? '' : 'Select a wallet to continue';
+    return '';
+  };
+
+  const payLockRef = useRef(false);
   const onPay = async () => {
-    if (!isPayReady()) return;
+    if (!isPayReady() || payLockRef.current || isProcessing) return;
+    payLockRef.current = true;
     haptics.success();
     
     const opts: any = {
@@ -225,14 +260,16 @@ export default function RazorpayPaymentScreen() {
       await startPayment(tab, opts);
     } catch (e: any) {
       console.error('[RazorpayPayment] Payment failed:', e.message);
-      // Optional: show alert if status doesn't catch it
+    } finally {
+      payLockRef.current = false;
     }
   };
 
   const goToOrders = () => {
+    const confirmationId = createdOrderId || successData?.localOrderId || orderId;
     nav.getParent()?.reset({
       index: 1,
-      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: 'PREPAID' } }],
+      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: confirmationId, orderNumber: createdOrderNumber || successData?.orderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
     });
   };
 
@@ -251,18 +288,24 @@ export default function RazorpayPaymentScreen() {
           </Animated.View>
           <Typography size={24} weight="800" color={colors.text} style={{ marginTop: 40, letterSpacing: 4 }}>PAID SUCCESSFULLY</Typography>
           <Typography size={11} color={colors.textMuted} style={{ marginTop: 12 }}>
-            {recordError ? 'Payment received. Syncing your order again.' : 'Your order has been recorded and synced.'}
+            {recordError && !createdOrderId
+              ? 'Payment received. Syncing your order again.'
+              : 'Your order has been recorded and synced.'}
           </Typography>
           
-          {isRecording ? (
+          {isRecording && !createdOrderId ? (
              <View style={{ marginTop: 32, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                <ActivityIndicator size="small" color={colors.textMuted} />
                <Typography size={10} color={colors.textMuted} weight="800">SYNCING WITH STORE...</Typography>
              </View>
-          ) : recordError && successData ? (
+          ) : recordError && successData && !createdOrderId ? (
             <TouchableOpacity
               style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]}
-              onPress={() => recordOrderOnBackend(successData.paymentId, successData.orderId)}
+              onPress={() => {
+                syncRetryRef.current = 0;
+                orderRecordedRef.current = false;
+                recordOrderOnBackend(successData.paymentId, successData.orderId);
+              }}
             >
               <Typography size={11} weight="800" color={colors.background} style={{ letterSpacing: 1 }}>SYNC ORDER</Typography>
             </TouchableOpacity>
@@ -439,6 +482,16 @@ export default function RazorpayPaymentScreen() {
       </KeyboardAvoidingView>
 
       <View style={[s.bottomBar, { paddingBottom: insets.bottom + 20, backgroundColor: colors.background }]}>
+        {!isPayReady() && !!payReadyHint() && (
+          <Typography size={10} color={colors.textMuted} style={{ textAlign: 'center', marginBottom: 10, letterSpacing: 0.3 }}>
+            {payReadyHint()}
+          </Typography>
+        )}
+        {!!error && (
+          <Typography size={10} color="#FF3B30" style={{ textAlign: 'center', marginBottom: 10 }}>
+            {error}
+          </Typography>
+        )}
         <TouchableOpacity style={[s.payBtn, { backgroundColor: isPayReady() ? colors.foreground : colors.surface, opacity: isPayReady() ? 1 : 0.4 }]} onPress={onPay} disabled={isProcessing || !isPayReady()}>
           {isProcessing ? <ActivityIndicator color={colors.background} /> :
             <Typography size={13} weight="800" color={isPayReady() ? colors.background : colors.textMuted} style={{ letterSpacing: 2 }}>PLACE ORDER</Typography>

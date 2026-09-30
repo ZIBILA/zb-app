@@ -313,6 +313,7 @@ export const DEFAULT_SHOP_SETTINGS = {
   flipbookTitle: "Archival Vision",
   flipbookTag: "Core Manifest",
   flipbookDesc: "Engineered for those who move without compromise.",
+  codUpfrontAmount: 99,
 };
 
 import * as fs from 'fs';
