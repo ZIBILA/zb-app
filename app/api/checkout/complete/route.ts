@@ -264,7 +264,7 @@ export async function POST(req: Request) {
     // 2. Find/Sync Customer & Address using customerService
     const session = await getServerSession(authOptions);
     const sessionUserId = (session?.user as any)?.id || null;
-    const { customer: localCustomer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
+    const { customer: localCustomer, normalizedAddress } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
     // Duplicate account check and merge
     if (address.phone) {
@@ -599,6 +599,9 @@ export async function POST(req: Request) {
           : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})${underpayNote}`,
         internalOrderNumber: universalOrderNumber,
         customerId: localCustomer.id,
+        // Always refresh address on complete — pre-create may have been sparse / stale
+        shippingAddress: JSON.stringify(normalizedAddress || address),
+        billingAddress: JSON.stringify(normalizedAddress || address),
       };
 
       localOrder = await prisma.order.update({
@@ -620,8 +623,8 @@ export async function POST(req: Request) {
           paymentStatus: orderPaymentStatus,
           fulfillmentStatus: "unfulfilled",
           deliveryStatus: "pending",
-          shippingAddress: JSON.stringify(address),
-          billingAddress: JSON.stringify(address),
+          shippingAddress: JSON.stringify(normalizedAddress || address),
+          billingAddress: JSON.stringify(normalizedAddress || address),
           razorpayOrderId: razorpay?.razorpay_order_id || null,
           razorpayPaymentId: razorpay?.razorpay_payment_id || null,
           paymentMethod: finalPaymentMethod,
@@ -939,7 +942,11 @@ export async function POST(req: Request) {
             codUpfrontPaid: wsCodUpfrontPaid,
             codUpfrontPaymentId: wsCodUpfrontPaymentId,
             paymentFailureReason: null,
-            notes: wsNotes
+            notes: wsNotes,
+            customerName: (normalizedAddress as any)?.name || address.name || existingWebStoreOrder.customerName,
+            customerEmail: (normalizedAddress as any)?.email || address.email || existingWebStoreOrder.customerEmail || "",
+            customerPhone: (normalizedAddress as any)?.phone || address.phone || existingWebStoreOrder.customerPhone || "",
+            shippingAddress: (normalizedAddress || address) as any,
           }
         });
         console.log(`[Checkout Complete] Updated pre-created WebStoreOrder ${webStoreOrder.id} (${universalOrderNumber}) to ${wsPaymentStatus}`);
@@ -961,7 +968,11 @@ export async function POST(req: Request) {
               codUpfrontPaid: wsCodUpfrontPaid,
               codUpfrontPaymentId: wsCodUpfrontPaymentId,
               paymentFailureReason: null,
-              notes: wsNotes
+              notes: wsNotes,
+              customerName: (normalizedAddress as any)?.name || address.name || byOrderNum.customerName,
+              customerEmail: (normalizedAddress as any)?.email || address.email || byOrderNum.customerEmail || "",
+              customerPhone: (normalizedAddress as any)?.phone || address.phone || byOrderNum.customerPhone || "",
+              shippingAddress: (normalizedAddress || address) as any,
             }
           });
           console.log(`[Checkout Complete] Re-adopted WebStoreOrder by orderNumber: ${universalOrderNumber}`);
@@ -969,10 +980,10 @@ export async function POST(req: Request) {
           webStoreOrder = await prisma.webStoreOrder.create({
             data: {
               orderNumber: universalOrderNumber,
-              customerName: address.name,
-              customerEmail: address.email || "",
-              customerPhone: address.phone || "",
-              shippingAddress: address as any,
+              customerName: (normalizedAddress as any)?.name || address.name,
+              customerEmail: (normalizedAddress as any)?.email || address.email || "",
+              customerPhone: (normalizedAddress as any)?.phone || address.phone || "",
+              shippingAddress: (normalizedAddress || address) as any,
               items: items.map((item: any) => ({
                 product_id: item.productId,
                 variant_id: item.variantId || "",

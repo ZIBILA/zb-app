@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
+import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -195,24 +196,51 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       (order.tags || '').includes('MobileApp') ||
       Boolean(options?.preserveAppTags);
 
-    // Parse shipping address
-    let shippingAddress: any = {};
+    // WebStoreOrder often has the best customerName / phone / address when Order JSON is sparse or alias-mismatched
+    let webStoreOrder: {
+      customerName: string;
+      customerPhone: string;
+      customerEmail: string;
+      shippingAddress: unknown;
+      codUpfrontPaid: unknown;
+    } | null = null;
     try {
-      shippingAddress = typeof order.shippingAddress === 'string'
-        ? JSON.parse(order.shippingAddress)
-        : order.shippingAddress || {};
+      webStoreOrder = await prisma.webStoreOrder.findFirst({
+        where: {
+          OR: [
+            ...(order.razorpayOrderId ? [{ razorpayOrderId: order.razorpayOrderId }] : []),
+            ...(order.internalOrderNumber ? [{ orderNumber: order.internalOrderNumber }] : []),
+          ],
+        },
+        select: {
+          customerName: true,
+          customerPhone: true,
+          customerEmail: true,
+          shippingAddress: true,
+          codUpfrontPaid: true,
+        },
+      });
     } catch {
-      shippingAddress = {};
+      webStoreOrder = null;
     }
+
+    const shippingAddress = normalizeOrderShippingAddress(
+      order.shippingAddress || webStoreOrder?.shippingAddress,
+      {
+        name: order.customer?.name || webStoreOrder?.customerName,
+        phone: order.customer?.phone || webStoreOrder?.customerPhone,
+        email: order.customer?.email || webStoreOrder?.customerEmail,
+      }
+    );
 
     // Resolve or sync Shopify customer
     let shopifyCustomerId = order.customer?.shopifyId;
     if (!shopifyCustomerId || shopifyCustomerId.startsWith('temp_') || shopifyCustomerId.startsWith('google_') || shopifyCustomerId.startsWith('apple_') || shopifyCustomerId.startsWith('mobile_') || shopifyCustomerId.startsWith('GUEST_')) {
       try {
-        const customerName = order.customer?.name || shippingAddress?.name || 'Customer';
-        const nameParts = String(customerName).trim().split(' ');
-        const customerEmail = order.customer?.email || shippingAddress?.email || '';
-        const customerPhone = order.customer?.phone || shippingAddress?.phone || '';
+        const customerName = shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer';
+        const nameParts = String(customerName).trim().split(/\s+/).filter(Boolean);
+        const customerEmail = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
+        const customerPhone = shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
 
         const sCustomer = await createCustomer({
           first_name: nameParts[0] || 'Customer',
@@ -276,20 +304,16 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
     });
     if (isCod && codUpfrontPaid <= 0) {
-      // Legacy: look up WebStoreOrder if master Order never stored the fee
       try {
-        const ws = order.razorpayOrderId
-          ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: order.razorpayOrderId } })
-          : null;
-        if (ws?.codUpfrontPaid && Number(ws.codUpfrontPaid) > 0) {
-          codUpfrontPaid = Number(ws.codUpfrontPaid);
+        if (webStoreOrder?.codUpfrontPaid && Number(webStoreOrder.codUpfrontPaid) > 0) {
+          codUpfrontPaid = Number(webStoreOrder.codUpfrontPaid);
         }
       } catch {}
     }
     if (isCod && codUpfrontPaid <= 0) codUpfrontPaid = DEFAULT_COD_UPFRONT_AMOUNT;
     const codBalanceDue = getCodBalanceDue(order.totalPrice || 0, codUpfrontPaid);
     const resolvedMethodTag = isCod ? 'COD' : 'Prepaid, Razorpay';
-    const emailToUse = order.customer?.email || shippingAddress?.email || '';
+    const emailToUse = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
 
     // Build consolidated tags
     const mergedTags = new Set<string>();
@@ -336,24 +360,42 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       currency: order.currency || 'INR',
     };
 
-    if (shippingAddress?.name || shippingAddress?.street || shippingAddress?.address1) {
-      const nameParts = String(shippingAddress.name || order.customer?.name || '').trim().split(' ');
+    if (
+      shippingAddress.name ||
+      shippingAddress.address1 ||
+      shippingAddress.city ||
+      shippingAddress.zip ||
+      shippingAddress.phone
+    ) {
+      const nameParts = String(
+        shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer'
+      )
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
       const addrPayload = {
         first_name: nameParts[0] || 'Customer',
         last_name: nameParts.slice(1).join(' ') || '.',
-        address1: shippingAddress.street || shippingAddress.address1 || '',
+        address1: shippingAddress.address1 || 'Address pending',
+        ...(shippingAddress.address2 ? { address2: shippingAddress.address2 } : {}),
         city: shippingAddress.city || '',
-        province: shippingAddress.state || shippingAddress.province || '',
-        zip: shippingAddress.zip || shippingAddress.pincode || '',
+        province: shippingAddress.province || '',
+        zip: shippingAddress.zip || '',
         country: shippingAddress.country || 'India',
-        phone: shippingAddress.phone || order.customer?.phone || '',
+        phone:
+          shippingAddress.phone ||
+          order.customer?.phone ||
+          webStoreOrder?.customerPhone ||
+          '',
       };
       shopifyOrderPayload.shipping_address = addrPayload;
       shopifyOrderPayload.billing_address = addrPayload;
     }
 
-    if (shippingAddress?.phone || order.customer?.phone) {
-      shopifyOrderPayload.phone = shippingAddress.phone || order.customer?.phone;
+    const orderPhone =
+      shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
+    if (orderPhone) {
+      shopifyOrderPayload.phone = orderPhone;
     }
 
     if (parsedCustomerId) {

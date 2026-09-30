@@ -402,6 +402,38 @@ export default function OrderDetailPage() {
     // shippingAddress may be a plain string, not JSON
     shippingAddr = typeof order.shippingAddress === 'string' ? { address1: order.shippingAddress } : null;
   }
+  const displayCustomerName =
+    shippingAddr?.name ||
+    order.customer?.name ||
+    "Anonymous";
+  const displayCustomerPhone =
+    shippingAddr?.phone ||
+    order.customer?.phone ||
+    "No signal";
+  const displayCustomerEmail =
+    shippingAddr?.email ||
+    order.customer?.email ||
+    "—";
+
+  const primaryAddressLine = (() => {
+    if (!shippingAddr) return "";
+    const houseNo = String(shippingAddr.houseNo || "").trim();
+    const street = String(
+      shippingAddr.street || shippingAddr.address1 || shippingAddr.line1 || ""
+    ).trim();
+    const landmark = String(
+      shippingAddr.landmark || shippingAddr.address2 || shippingAddr.line2 || ""
+    ).trim();
+    // Avoid "4, 4, kilo" when street already starts with houseNo
+    const line =
+      houseNo && street.toLowerCase().startsWith(houseNo.toLowerCase())
+        ? street
+        : [houseNo, street].filter(Boolean).join(", ");
+    if (landmark && !line.toLowerCase().includes(landmark.toLowerCase())) {
+      return [line, landmark].filter(Boolean).join(", ");
+    }
+    return line || [shippingAddr.address1, shippingAddr.address2].filter(Boolean).join(", ");
+  })();
   const latestShipment = order.shipments?.[0];
 
   const rawDiscountCode = order ? (order.discountCode || "") : "";
@@ -864,10 +896,10 @@ export default function OrderDetailPage() {
               <h3 className="text-[10px] font-bold text-foreground/20 uppercase tracking-[0.4em]">Identity Profile</h3>
               <div className="flex items-center gap-5 pt-4">
                  <div className="w-14 h-14 rounded-[20px] bg-foreground/5 flex items-center justify-center border border-foreground/10 text-xl font-bold text-foreground/40">
-                   {order.customer.name?.charAt(0) || "U"}
+                   {displayCustomerName?.charAt(0) || "U"}
                  </div>
                  <div>
-                   <h4 className="text-[18px] font-semibold text-foreground tracking-tight">{order.customer.name || "Anonymous"}</h4>
+                   <h4 className="text-[18px] font-semibold text-foreground tracking-tight">{displayCustomerName}</h4>
                    <p className="text-[10px] text-foreground/20 font-bold uppercase tracking-widest mt-1">Tier-1 Entity</p>
                  </div>
               </div>
@@ -876,11 +908,11 @@ export default function OrderDetailPage() {
             <div className="space-y-4">
                <div className="flex items-center gap-4 p-4 rounded-[20px] bg-foreground/[0.03] border border-foreground/5 group hover:border-foreground/20 transition-all">
                   <Mail className="w-4 h-4 text-foreground/20 group-hover:text-blue-500 transition-colors" />
-                  <p className="text-[12px] font-medium text-foreground/60 truncate">{order.customer.email}</p>
+                  <p className="text-[12px] font-medium text-foreground/60 truncate">{displayCustomerEmail}</p>
                </div>
                <div className="flex items-center gap-4 p-4 rounded-[20px] bg-foreground/[0.03] border border-foreground/5 group hover:border-foreground/20 transition-all">
                   <Phone className="w-4 h-4 text-foreground/20 group-hover:text-emerald-500 transition-colors" />
-                  <p className="text-[12px] font-mono font-bold text-foreground/60">{order.customer.phone || "No signal"}</p>
+                  <p className="text-[12px] font-mono font-bold text-foreground/60">{displayCustomerPhone}</p>
                </div>
             </div>
           </div>
@@ -966,11 +998,7 @@ export default function OrderDetailPage() {
                 <div className="space-y-1.5">
                   <p className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest">Primary Vector</p>
                   <p className="text-[14px] font-semibold text-foreground/80 leading-relaxed italic">
-                    &quot;{shippingAddr.houseNo || shippingAddr.street ? (
-                      [shippingAddr.houseNo, shippingAddr.street, shippingAddr.landmark].filter(Boolean).join(', ')
-                    ) : (
-                      [shippingAddr.address1, shippingAddr.address2].filter(Boolean).join(', ')
-                    )}&quot;
+                    &quot;{primaryAddressLine || "—"}&quot;
                   </p>
                 </div>
                 
