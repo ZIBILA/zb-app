@@ -1,16 +1,20 @@
 /**
  * POST /api/logistics/create-shipment
  * Idempotent: returns existing shipment if already booked.
+ * Books Shiprocket (create + AWB) from local Order.
  */
 
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { shipOrder } from "@/lib/services/logistics";
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   try {
+    await requireAdmin("LOGISTICS", "edit");
+
     const body = await req.json();
     const { order_id, name, address1, city, province, zip, country, phone } = body;
 
@@ -82,14 +86,18 @@ export async function POST(req: Request) {
     return NextResponse.json({
       awb: result.awb || null,
       tracking_number: result.trackingNumber || null,
+      shipment_id: result.shipmentId || null,
       label_url: result.trackingUrl,
       courier: result.courier,
       success: true,
     });
   } catch (error: any) {
+    if (error instanceof Error && (error.message === "401" || error.message === "403")) {
+      return handleAuthError(error);
+    }
     console.error("[Logistics] Create shipment error:", error.message);
     return NextResponse.json(
-      { error: "Failed to create shipment. Please try again." },
+      { error: error.message || "Failed to create shipment. Please try again." },
       { status: 500 }
     );
   }

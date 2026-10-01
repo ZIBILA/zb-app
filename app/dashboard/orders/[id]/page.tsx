@@ -39,6 +39,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import DelhiveryActions from "@/components/orders/DelhiveryActions";
+import ShiprocketActions from "@/components/orders/ShiprocketActions";
 import LineItemEditor from "@/components/orders/LineItemEditor";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
@@ -827,10 +828,15 @@ export default function OrderDetailPage() {
               const trackingUrl =
                 activeShipment?.trackingUrl ||
                 (awb ? `https://shiprocket.co/tracking/${awb}` : null);
-              const isNonDelhivery = courier && !courier.toLowerCase().includes('delhivery');
+              const isDelhivery =
+                Boolean(order.delhivery_awb) ||
+                (Boolean(courier) && courier.toLowerCase().includes('delhivery'));
               const displayStatus =
                 activeShipment?.status || order.deliveryStatus || 'pending';
               const awbPending = Boolean(externalId) && !awb;
+              // Default new orders → Shiprocket ops; keep Delhivery panel only for Delhivery AWBs
+              const showShiprocketActions = !isDelhivery;
+              const showDelhiveryActions = isDelhivery;
 
               return (
                 <>
@@ -889,8 +895,10 @@ export default function OrderDetailPage() {
                     </div>
                   )}
 
-                  {/* Hide Delhivery only when a non-Delhivery (e.g. Shiprocket) shipment already exists */}
-                  {!(externalId && isNonDelhivery) && (
+                  {showShiprocketActions && (
+                    <ShiprocketActions order={order as any} onRefresh={() => fetchOrder(true)} />
+                  )}
+                  {showDelhiveryActions && (
                     <DelhiveryActions order={order as any} onRefresh={() => fetchOrder(true)} />
                   )}
                 </>
