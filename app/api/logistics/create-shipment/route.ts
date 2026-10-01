@@ -1,8 +1,6 @@
 /**
- * POST /api/logistics/create-shipment — Create a Delhivery shipment
- * 
- * Idempotent: if AWB already exists for this order, returns existing.
- * Creates shipment via logistics service and stores in DB.
+ * POST /api/logistics/create-shipment
+ * Idempotent: returns existing shipment if already booked.
  */
 
 import { NextResponse } from "next/server";
@@ -14,27 +12,30 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { order_id, name, address1, city, province, zip, country, phone, weight, cod, payment_mode } = body;
+    const { order_id, name, address1, city, province, zip, country, phone } = body;
 
     if (!order_id) {
       return NextResponse.json({ error: "order_id is required" }, { status: 400 });
     }
 
-    // Check if shipment already exists for this order
     const existingShipment = await prisma.shipment.findFirst({
       where: { orderId: order_id },
+      orderBy: { createdAt: "desc" },
     });
 
-    if (existingShipment?.awb || existingShipment?.trackingNumber) {
+    const existingTn = existingShipment?.trackingNumber || "";
+    const isFake =
+      existingTn.startsWith("MOCK") ||
+      String(existingShipment?.courier || "").toLowerCase().includes("mock");
+    if (existingShipment && !isFake && (existingShipment.awb || existingTn)) {
       return NextResponse.json({
         awb: existingShipment.awb || existingShipment.trackingNumber,
-        label_url: existingShipment.labelUrl,
+        label_url: existingShipment.labelUrl || existingShipment.trackingUrl,
         success: true,
         existing: true,
       });
     }
 
-    // Get order items
     const order = await prisma.order.findUnique({
       where: { id: order_id },
       include: { items: true },
@@ -61,32 +62,26 @@ export async function POST(req: Request) {
       phone: phone || "",
     };
 
-    // If address not provided, try to parse from order
     if (!address1 && order.shippingAddress) {
       try {
         const parsed = JSON.parse(order.shippingAddress);
         address.name = parsed.name || address.name;
         address.address1 = parsed.street || parsed.address1 || "";
         address.city = parsed.city || "";
-        address.province = parsed.state || "";
+        address.province = parsed.state || parsed.province || "";
         address.zip = parsed.zip || "";
         address.country = parsed.country || "India";
         address.phone = parsed.phone || "";
-      } catch { /* use provided */ }
+      } catch {
+        /* use provided */
+      }
     }
 
     const result = await shipOrder(order_id, items, address);
 
-    // Update the shipment with AWB alias
-    if (result.trackingNumber) {
-      await prisma.shipment.updateMany({
-        where: { orderId: order_id, trackingNumber: result.trackingNumber },
-        data: { awb: result.trackingNumber },
-      });
-    }
-
     return NextResponse.json({
-      awb: result.trackingNumber,
+      awb: result.awb || null,
+      tracking_number: result.trackingNumber || null,
       label_url: result.trackingUrl,
       courier: result.courier,
       success: true,

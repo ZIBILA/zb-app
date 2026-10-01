@@ -166,7 +166,7 @@ export async function resolveAndSyncCustomerAddress(
       await prisma.address.create({
         data: {
           customerId: localCustomer.id,
-          name,
+          name: rawRecipientName || localCustomer.name || 'Customer',
           phone: phone || '',
           email: email || '',
           address1: fullStreet,

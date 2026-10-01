@@ -24,6 +24,59 @@ export function getCodBalanceDue(orderTotal: unknown, upfrontPaid: unknown): num
 }
 
 /**
+ * Shiprocket COD fields.
+ * Prefer itemsSubtotal as sub_total so it matches order_items; total_discount absorbs
+ * coupons + COD upfront so collectable = sub_total − total_discount = orderTotal − upfront.
+ */
+export function buildShiprocketPaymentFields(opts: {
+  orderTotal: unknown;
+  /** Sum of line item price × qty (should match order_items selling_price × units). */
+  itemsSubtotal?: unknown;
+  upfrontPaid?: unknown;
+  isCod: boolean;
+}): {
+  payment_method: 'COD' | 'Prepaid';
+  sub_total: number;
+  total_discount?: number;
+  shiprocketCollectable: number;
+  codBalanceDue: number;
+  upfrontPaid: number;
+} {
+  const orderTotal = Math.max(0, Number(opts.orderTotal) || 0);
+  const itemsSum = Math.round(
+    Math.max(0, Number(opts.itemsSubtotal) || orderTotal)
+  );
+  const upfrontPaid = opts.isCod ? Math.max(0, Number(opts.upfrontPaid) || 0) : 0;
+  const codBalanceDue = opts.isCod ? getCodBalanceDue(orderTotal, upfrontPaid) : 0;
+
+  if (opts.isCod && codBalanceDue > 0) {
+    const collectable = Math.round(codBalanceDue);
+    // Prefer line-item sum as sub_total; discount bridges to collectable
+    const sub_total = Math.max(itemsSum, collectable);
+    const discount = Math.max(0, sub_total - collectable);
+    return {
+      payment_method: 'COD',
+      sub_total,
+      ...(discount > 0 ? { total_discount: discount } : {}),
+      shiprocketCollectable: collectable,
+      codBalanceDue,
+      upfrontPaid,
+    };
+  }
+
+  const prepaidSub = itemsSum > 0 ? itemsSum : Math.round(orderTotal);
+  const prepaidDiscount = Math.max(0, prepaidSub - Math.round(orderTotal));
+  return {
+    payment_method: 'Prepaid',
+    sub_total: prepaidSub,
+    ...(prepaidDiscount > 0 ? { total_discount: prepaidDiscount } : {}),
+    shiprocketCollectable: 0,
+    codBalanceDue: 0,
+    upfrontPaid,
+  };
+}
+
+/**
  * Resolve the fee that should be charged for a *new* COD checkout.
  * Prefers DB Shop setting; falls back to DEFAULT.
  */

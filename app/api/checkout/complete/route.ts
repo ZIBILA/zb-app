@@ -707,16 +707,19 @@ export async function POST(req: Request) {
             province: shipAddr.state || shipAddr.province || '',
             zip: shipAddr.zip || shipAddr.pincode || '',
             country: shipAddr.country || 'India',
+            email: shipAddr.email || '',
             phone: shipAddr.phone || '',
           }
         ).then((r) => {
           console.log(`[Checkout Complete] Logistics booked for ${localOrder.id}: ${r.trackingNumber}`);
         }).catch((shipErr: any) => {
-          console.warn(`[Checkout Complete] Logistics booking deferred: ${shipErr?.message}`);
+          console.error(
+            `[Checkout Complete] Logistics booking FAILED for ${localOrder.id}: ${shipErr?.message}`
+          );
         });
       }
     } catch (shipErr: any) {
-      console.warn('[Checkout Complete] Logistics trigger failed non-fatally:', shipErr?.message);
+      console.error('[Checkout Complete] Logistics trigger FAILED:', shipErr?.message);
     }
 
     // ─── AFFILIATE / CREATOR ATTRIBUTION ───

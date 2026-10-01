@@ -1,20 +1,16 @@
 /**
- * Verify COD upfront deduction for Shiprocket — no Razorpay required.
+ * Verify COD upfront → Shiprocket fields (no Razorpay).
+ * Example: order ₹1999, upfront ₹99 → sub_total 1999, total_discount 99 → collectable 1900
  *
- * Example from the requirement:
- *   order ₹1,999 − upfront ₹99 → Shiprocket cod_amount ₹1,900
- *
- * Usage:
  *   npx tsx scripts/test-cod-shiprocket-deduction.ts
  *   npx tsx scripts/test-cod-shiprocket-deduction.ts 1999 99
- *   npx tsx scripts/test-cod-shiprocket-deduction.ts 1999 199
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 config({ path: '.env' });
 
 import {
-  getCodBalanceDue,
+  buildShiprocketPaymentFields,
   getConfiguredCodUpfrontAmount,
   normalizeCodUpfrontAmount,
   DEFAULT_COD_UPFRONT_AMOUNT,
@@ -29,36 +25,46 @@ async function main() {
     ? normalizeCodUpfrontAmount(upfrontArg, DEFAULT_COD_UPFRONT_AMOUNT)
     : configured;
 
-  const balanceDue = getCodBalanceDue(orderTotal, upfrontPaid);
-  const paymentMethod = balanceDue > 0 ? 'COD' : 'Prepaid';
+  const fields = buildShiprocketPaymentFields({
+    orderTotal,
+    upfrontPaid,
+    isCod: true,
+  });
 
-  // Exact fields our Shiprocket booking path sends (see lib/services/logistics.ts)
+  // Exact fields shipOrder sends
   const shiprocketPayload = {
-    payment_method: paymentMethod,
-    ...(paymentMethod === 'COD' ? { cod_amount: Math.round(balanceDue) } : {}),
-    sub_total: orderTotal,
+    payment_method: fields.payment_method,
+    sub_total: fields.sub_total,
+    ...(fields.total_discount != null ? { total_discount: fields.total_discount } : {}),
   };
 
   console.log('\n=== COD → Shiprocket deduction test (no Razorpay) ===\n');
   console.log(`Dashboard configured fee : ₹${configured}`);
   console.log(`Order total              : ₹${orderTotal}`);
   console.log(`Upfront paid (Razorpay)  : ₹${upfrontPaid}`);
-  console.log(`Balance due at delivery  : ₹${balanceDue}`);
+  console.log(`Balance due at delivery  : ₹${fields.codBalanceDue}`);
   console.log('\nShiprocket payload would be:');
   console.log(JSON.stringify(shiprocketPayload, null, 2));
 
   const expected = Math.max(0, Math.round(orderTotal - upfrontPaid));
-  if (shiprocketPayload.cod_amount === expected && paymentMethod === 'COD') {
-    console.log(`\n✅ PASS — Shiprocket collects ₹${expected}, not full ₹${orderTotal}`);
+  const shiprocketTotal = shiprocketPayload.sub_total - (shiprocketPayload.total_discount ?? 0);
+  console.log(`Shiprocket will show total: ₹${shiprocketTotal} (sub_total − total_discount)`);
+
+  if (
+    fields.payment_method === 'COD' &&
+    shiprocketTotal === expected &&
+    shiprocketPayload.total_discount === Math.round(upfrontPaid)
+  ) {
+    console.log(`\n✅ PASS — Shiprocket collects ₹${expected} (sub_total − total_discount), not full ₹${orderTotal}`);
     process.exit(0);
   }
 
-  if (paymentMethod === 'Prepaid' && balanceDue === 0) {
+  if (fields.payment_method === 'Prepaid' && fields.codBalanceDue === 0) {
     console.log('\n✅ PASS — fully prepaid / zero COD balance → Shiprocket Prepaid');
     process.exit(0);
   }
 
-  console.error(`\n❌ FAIL — expected cod_amount ₹${expected}, got`, shiprocketPayload);
+  console.error(`\n❌ FAIL — expected sub_total ₹${expected}, got`, shiprocketPayload);
   process.exit(1);
 }
 

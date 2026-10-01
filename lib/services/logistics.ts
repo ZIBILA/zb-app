@@ -29,9 +29,13 @@ export interface TrackingStatus {
 
 export interface ShipmentResult {
   trackingNumber: string;
-  trackingUrl: string;
+  trackingUrl?: string;
   courier: string;
   shipmentId?: string;
+  /** Real AWB/waybill only — not Shiprocket order_id */
+  awb?: string | null;
+  status?: string;
+  deliveryStatus?: string;
 }
 
 export interface LogisticsConfig {
@@ -48,6 +52,8 @@ export const PROVIDER_PRESETS: Record<string, { baseUrl: string; endpoints: Reco
     baseUrl: 'https://apiv2.shiprocket.in/v1/external',
     endpoints: {
       createShipment: '/orders/create/adhoc',
+      assignAwb: '/courier/assign/awb',
+      generatePickup: '/courier/generate/pickup',
       trackShipment: '/courier/track/shipment',
       createReturn: '/orders/create/return',
       cancelShipment: '/orders/cancel',
@@ -202,8 +208,9 @@ async function logisticsApiFetch(
   const config = await getLogisticsConfig();
 
   if (config.provider === 'mock') {
-    console.log(`[Logistics Mock] ${method} ${endpoint}`, body ? JSON.stringify(body).slice(0, 100) : '');
-    return null; // Mock mode — caller handles fallback
+    throw new Error(
+      `Logistics API skipped: no provider configured (endpoint ${method} ${endpoint})`
+    );
   }
 
   const preset = PROVIDER_PRESETS[config.provider];
@@ -254,8 +261,7 @@ async function logisticsApiFetch(
 // ─── Core Service Methods ───────────────────────────────────────────
 
 /**
- * Resolve local Order.id and write Shipment + Order + WebStoreOrder delivery status
- * so Admin / Shopify / logistics stay aligned on the same local FK.
+ * Resolve local Order.id and write Shipment + Order + WebStoreOrder delivery status.
  */
 async function persistShipmentAndDeliveryStatus(
   orderRef: string,
@@ -269,20 +275,27 @@ async function persistShipmentAndDeliveryStatus(
     return null;
   }
 
+  const shipmentStatus = result.status || (result.awb ? 'confirmed' : 'new');
+  const deliveryStatus =
+    result.deliveryStatus || (result.awb ? 'confirmed' : 'processing');
+  const awbValue = result.awb && String(result.awb).trim() ? String(result.awb) : null;
+
   await prisma.shipment.create({
     data: {
       orderId: localId,
       trackingNumber: result.trackingNumber,
-      awb: result.trackingNumber || undefined,
-      trackingUrl: result.trackingUrl,
+      awb: awbValue || undefined,
+      trackingUrl: result.trackingUrl || null,
       courier: result.courier,
-      status: 'confirmed',
+      status: shipmentStatus,
       events: JSON.stringify([
         {
-          status: 'confirmed',
+          status: shipmentStatus,
           location: 'Warehouse',
           timestamp: new Date().toISOString(),
-          description: 'Shipment booked',
+          description: awbValue
+            ? `Shipment booked with AWB ${awbValue}`
+            : `Carrier order created (id ${result.trackingNumber}) — AWB not assigned yet`,
         },
       ]),
     },
@@ -291,7 +304,7 @@ async function persistShipmentAndDeliveryStatus(
   await prisma.order.update({
     where: { id: localId },
     data: {
-      deliveryStatus: 'confirmed',
+      deliveryStatus,
       ...(extraOrderData || {}),
     },
   });
@@ -307,7 +320,7 @@ async function persistShipmentAndDeliveryStatus(
   if (wsWhere.length) {
     await prisma.webStoreOrder.updateMany({
       where: { OR: wsWhere },
-      data: { deliveryStatus: 'confirmed' },
+      data: { deliveryStatus },
     }).catch(() => {});
   }
 
@@ -329,21 +342,36 @@ export async function shipOrder(
     zip: string;
     country: string;
     phone?: string;
+    email?: string;
   }
 ): Promise<ShipmentResult> {
-  // Idempotent: skip if we already booked logistics for this order
+  // Skip re-create if a real shipment already exists
   const existing = await prisma.shipment.findFirst({
     where: { orderId },
     orderBy: { createdAt: 'desc' },
   });
-  if (existing?.trackingNumber) {
-    console.log(`[Logistics] Shipment already exists for ${orderId} (${existing.trackingNumber}) — skipping create`);
+  const existingTn = existing?.trackingNumber || '';
+  const isFakeExisting =
+    !existingTn ||
+    existingTn.startsWith('MOCK') ||
+    String(existing?.courier || '').toLowerCase().includes('mock');
+  if (existing && !isFakeExisting) {
+    console.log(`[Logistics] Shipment already exists for ${orderId} (${existingTn}) — skipping create`);
     return {
-      trackingNumber: existing.trackingNumber,
+      trackingNumber: existingTn,
       trackingUrl: existing.trackingUrl || undefined,
       courier: existing.courier || 'Shiprocket',
       shipmentId: existing.awb || undefined,
     };
+  }
+  if (existing && isFakeExisting) {
+    console.warn(`[Logistics] Removing fake/MOCK shipment ${existingTn} for ${orderId}`);
+    await prisma.shipment.deleteMany({
+      where: {
+        orderId,
+        trackingNumber: { startsWith: 'MOCK' },
+      },
+    });
   }
 
   const config = await getLogisticsConfig();
@@ -361,7 +389,8 @@ export async function shipOrder(
               { id: orderId },
               { shopifyOrderId: orderId }
             ]
-          }
+          },
+          include: { items: true, customer: { select: { email: true } } },
         });
 
         const rawMethod = (dbOrder?.paymentMethod || '').toLowerCase();
@@ -369,14 +398,16 @@ export async function shipOrder(
         const noteLower = (dbOrder?.note || '').toLowerCase();
         const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
 
-        const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+        const {
+          resolveStoredCodUpfrontPaid,
+          buildShiprocketPaymentFields,
+          DEFAULT_COD_UPFRONT_AMOUNT,
+        } = await import('@/lib/cod-upfront');
         let codUpfront = 0;
         if (isCodOrder) {
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
-          // Legacy rows without stored fee fall back to DEFAULT (99), not the live dashboard
-          // setting — so changing settings never rewrites old shipments' COD balance.
           codUpfront = resolveStoredCodUpfrontPaid({
             storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
             paymentStatus: dbOrder?.paymentStatus,
@@ -387,50 +418,169 @@ export async function shipOrder(
           });
         }
 
-        const calculatedTotalPrice = Number(
-          dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0)
-        );
-        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
-        const paymentMethod = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
-        const subTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+        const shipItems =
+          dbOrder?.items && dbOrder.items.length > 0
+            ? dbOrder.items.map((i: any) => ({
+                title: i.title,
+                sku: i.sku || undefined,
+                quantity: i.quantity,
+                price: Number(i.price),
+              }))
+            : items;
 
-        data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', {
-          order_id: orderId,
+        const itemsSubtotal = shipItems.reduce(
+          (s: number, i: any) => s + Number(i.price) * Number(i.quantity),
+          0
+        );
+        const calculatedTotalPrice = Number(dbOrder?.totalPrice || itemsSubtotal);
+        const paymentFields = buildShiprocketPaymentFields({
+          orderTotal: calculatedTotalPrice,
+          itemsSubtotal,
+          upfrontPaid: codUpfront,
+          isCod: isCodOrder,
+        });
+
+        const shiprocketOrderId =
+          dbOrder?.internalOrderNumber ||
+          dbOrder?.id ||
+          orderId;
+
+        const nameParts = String(address.name || 'Customer')
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        const billingFirstName = nameParts[0] || 'Customer';
+        const billingLastName = nameParts.slice(1).join(' ') || '.';
+
+        const phoneDigits = String(address.phone || '').replace(/\D/g, '');
+        const billingPhone =
+          phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
+        const billingPincode = Number(String(address.zip || '').replace(/\D/g, '')) || 0;
+        const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
+
+        const payload = {
+          order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
-          pickup_location: 'Primary',
-          billing_customer_name: address.name,
+          pickup_location:
+            process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
+          billing_customer_name: billingFirstName,
+          billing_last_name: billingLastName,
           billing_address: address.address1,
           billing_city: address.city,
-          billing_pincode: address.zip,
+          billing_pincode: billingPincode,
           billing_state: address.province,
           billing_country: address.country || 'India',
-          billing_phone: address.phone || '',
+          billing_email:
+            address.email || (dbOrder as any)?.customer?.email || undefined,
+          billing_phone: billingPhone ? Number(billingPhone) : undefined,
           shipping_is_billing: true,
-          order_items: items.map(i => ({
+          order_items: shipItems.map((i: { title: string; sku?: string; quantity: number; price: number }) => ({
             name: i.title,
-            sku: i.sku || '',
+            sku: i.sku || `sku-${shiprocketOrderId}`.slice(0, 40),
             units: i.quantity,
             selling_price: i.price,
+            hsn: defaultHsn,
           })),
-          payment_method: paymentMethod,
-          // Remaining COD after upfront Razorpay payment (0 for prepaid)
-          ...(paymentMethod === 'COD' ? { cod_amount: Math.round(codBalanceDue) } : {}),
-          sub_total: subTotal,
+          payment_method: paymentFields.payment_method,
+          ...(paymentFields.total_discount != null
+            ? { total_discount: paymentFields.total_discount }
+            : {}),
+          sub_total: paymentFields.sub_total,
           length: 20,
           breadth: 15,
           height: 10,
           weight: 0.5,
-        });
-
-        const trackingNumber = data?.order_id?.toString() || data?.shipment_id?.toString() || `SR${Date.now()}`;
-        const result: ShipmentResult = {
-          trackingNumber,
-          trackingUrl: `https://shiprocket.co/tracking/${trackingNumber}`,
-          courier: data?.courier_name || 'Shiprocket',
-          shipmentId: data?.shipment_id?.toString(),
         };
 
-        // Save shipment + delivery status on local Order / WebStoreOrder
+        console.log(
+          `[Shiprocket] Booking ${shiprocketOrderId}: method=${paymentFields.payment_method} ` +
+            `total=₹${calculatedTotalPrice} upfront=₹${paymentFields.upfrontPaid} ` +
+            `sub_total=₹${paymentFields.sub_total} total_discount=₹${paymentFields.total_discount ?? 0} ` +
+            `→ Shiprocket collects ₹${paymentFields.shiprocketCollectable}`
+        );
+
+        data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', payload);
+
+        const srOrderId = data?.order_id ?? data?.payload?.order_id;
+        const srShipmentId = data?.shipment_id ?? data?.payload?.shipment_id;
+        const statusCode = data?.status_code ?? data?.payload?.status_code;
+        let awbCode = String(data?.awb_code ?? data?.payload?.awb_code ?? '').trim();
+        let courierName = data?.courier_name || data?.payload?.courier_name || '';
+
+        console.log(
+          `[Shiprocket] Create response for ${shiprocketOrderId}:`,
+          JSON.stringify({
+            order_id: srOrderId,
+            shipment_id: srShipmentId,
+            status_code: statusCode,
+            status: data?.status,
+            awb_code: awbCode || null,
+            message: data?.message,
+          })
+        );
+
+        if (!srOrderId && !srShipmentId) {
+          throw new Error(
+            `Shiprocket create returned no order_id/shipment_id: ${JSON.stringify(data).slice(0, 300)}`
+          );
+        }
+
+        // Assign AWB (create alone leaves NEW with null awb_code). No auto-pickup.
+        if (!awbCode && srShipmentId && preset.endpoints.assignAwb) {
+          console.log(
+            `[Shiprocket] Assigning AWB for shipment_id=${srShipmentId} (order ${shiprocketOrderId})`
+          );
+          const assignData = await logisticsApiFetch(preset.endpoints.assignAwb, 'POST', {
+            shipment_id: srShipmentId,
+          });
+          const assignPayload = assignData?.response?.data || assignData?.data || assignData;
+          const assignedAwb = String(assignPayload?.awb_code || '').trim();
+          const assignOk =
+            assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
+
+          console.log(
+            `[Shiprocket] AWB assign for ${shiprocketOrderId}:`,
+            JSON.stringify({
+              awb_assign_status: assignData?.awb_assign_status,
+              awb_code: assignedAwb || null,
+              courier_name: assignPayload?.courier_name || null,
+              message: assignData?.message,
+              error: assignPayload?.awb_assign_error || assignData?.response?.data?.awb_assign_error,
+            })
+          );
+
+          if (!assignOk || !assignedAwb) {
+            throw new Error(
+              `Shiprocket AWB assign failed for shipment ${srShipmentId}: ` +
+                `${JSON.stringify(assignData).slice(0, 400)}`
+            );
+          }
+
+          awbCode = assignedAwb;
+          courierName = assignPayload?.courier_name || courierName || 'Shiprocket';
+        }
+
+        if (!awbCode) {
+          throw new Error(
+            `Shiprocket order ${srOrderId} created but no AWB was assigned (shipment ${srShipmentId})`
+          );
+        }
+
+        const result: ShipmentResult = {
+          trackingNumber: awbCode,
+          trackingUrl: `https://shiprocket.co/tracking/${awbCode}`,
+          courier: courierName || 'Shiprocket',
+          shipmentId: srShipmentId != null ? String(srShipmentId) : undefined,
+          awb: awbCode,
+          status: 'confirmed',
+          deliveryStatus: 'confirmed',
+        };
+
+        console.log(
+          `[Shiprocket] Persisting ${shiprocketOrderId}: sr_order=${srOrderId} ` +
+            `awb=${result.awb} courier=${result.courier}`
+        );
+
         await persistShipmentAndDeliveryStatus(orderId, result);
 
         return result;
@@ -573,22 +723,17 @@ export async function shipOrder(
 
       return result;
     } catch (err: any) {
-      console.error(`[Logistics] ${config.provider} shipOrder failed:`, err.message);
-      // Fall through to mock
+      console.error(`[Logistics] ${config.provider} shipOrder failed for ${orderId}:`, err.message);
+      throw err;
     }
   }
 
-  // Mock fallback
-  const mockTrackingNumber = `MOCK${Date.now().toString(36).toUpperCase()}`;
-  const result: ShipmentResult = {
-    trackingNumber: mockTrackingNumber,
-    trackingUrl: `https://track.zicabella.com/${mockTrackingNumber}`,
-    courier: 'Mock Courier',
-  };
-
-  await persistShipmentAndDeliveryStatus(orderId, result);
-
-  return result;
+  console.error(
+    `[Logistics] shipOrder aborted for ${orderId}: no logistics provider configured`
+  );
+  throw new Error(
+    'Logistics booking failed: no Shiprocket/Delhivery provider configured'
+  );
 }
 
 /**
@@ -791,16 +936,12 @@ export async function createReturnShipment(
       }
     } catch (err: any) {
       console.error(`[Logistics] Return shipment creation failed:`, err.message);
+      throw err;
     }
   }
 
-  // Mock fallback
-  const mockTrackingNumber = `RET${Date.now().toString(36).toUpperCase()}`;
-  return {
-    trackingNumber: mockTrackingNumber,
-    trackingUrl: `https://track.zicabella.com/return/${mockTrackingNumber}`,
-    courier: 'Mock Return Courier',
-  };
+  console.error('[Logistics] createReturnShipment aborted: no logistics provider configured');
+  throw new Error('Return shipment failed: no Shiprocket/Delhivery provider configured');
 }
 
 /**
