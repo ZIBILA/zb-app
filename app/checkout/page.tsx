@@ -1544,12 +1544,12 @@ export default function CheckoutPage() {
     }
   }, [activeCoupons, subtotal, paymentMethod, isManualCoupon, calculateCouponDiscount]);
 
-  // Re-validate coupon when payment method changes (for ALL coupons to ensure PREPAID_ONLY is never allowed for COD)
+  // Re-validate coupon when payment method or subtotal changes (ensures percentages scale with cart size and minOrderValue is re-checked)
   useEffect(() => {
     if (couponCode) {
       handleApplyCoupon(couponCode, paymentMethod, !isManualCoupon);
     }
-  }, [paymentMethod]);
+  }, [paymentMethod, subtotal]);
 
   const handlePlaceOrder = async () => {
     // Synchronous double-submit lock check
