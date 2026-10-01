@@ -129,7 +129,15 @@ export async function POST(
       courierName = shipment.courier;
     } catch (logisticsError: any) {
       console.error('[Logistics] Shipment booking failed:', logisticsError.message);
-      // Continue with Shopify fulfillment even if logistics fails
+      if (!body?.forceFulfill) {
+        return NextResponse.json(
+          {
+            error: `Shipment booking failed: ${logisticsError.message || 'Courier error'}. Shopify fulfillment was aborted. Set forceFulfill: true to fulfill without carrier tracking.`,
+            logisticsError: logisticsError.message,
+          },
+          { status: 502 }
+        );
+      }
     }
 
     const fulfillment = await createFulfillment(

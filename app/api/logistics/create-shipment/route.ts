@@ -11,7 +11,10 @@ import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export const dynamic = "force-dynamic";
 
+const inFlightBookings = new Set<string>();
+
 export async function POST(req: Request) {
+  let orderIdForLock: string | null = null;
   try {
     await requireAdmin("LOGISTICS", "edit");
 
@@ -22,8 +25,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "order_id is required" }, { status: 400 });
     }
 
+    if (inFlightBookings.has(order_id)) {
+      return NextResponse.json(
+        { error: "Shipment booking is already in progress for this order. Please wait a moment." },
+        { status: 409 }
+      );
+    }
+    inFlightBookings.add(order_id);
+    orderIdForLock = order_id;
+
     const existingShipment = await prisma.shipment.findFirst({
-      where: { orderId: order_id },
+      where: { 
+        orderId: order_id,
+        status: { not: "cancelled" },
+      },
       orderBy: { createdAt: "desc" },
     });
 
@@ -100,5 +115,9 @@ export async function POST(req: Request) {
       { error: error.message || "Failed to create shipment. Please try again." },
       { status: 500 }
     );
+  } finally {
+    if (orderIdForLock) {
+      inFlightBookings.delete(orderIdForLock);
+    }
   }
 }

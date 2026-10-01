@@ -41,10 +41,12 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   const [message, setMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const shipment = order.shipments?.[0];
-  const awb = shipment?.awb || order.delhivery_awb || null;
+  const activeShipment = order.shipments?.find((s) => s.status !== 'cancelled') || order.shipments?.[0];
+  const isShipmentCancelled = activeShipment?.status === 'cancelled' || order.deliveryStatus === 'cancelled';
+  const shipment = isShipmentCancelled ? null : activeShipment;
+  const awb = shipment?.awb || (isShipmentCancelled ? null : order.delhivery_awb) || null;
   const trackingNumber = shipment?.trackingNumber || null;
-  const status = shipment?.status || order.deliveryStatus || 'pending';
+  const status = isShipmentCancelled ? 'cancelled' : (shipment?.status || order.deliveryStatus || 'pending');
   const trackingUrl =
     shipment?.trackingUrl || (awb ? `https://shiprocket.co/tracking/${awb}` : null);
   const pickupDone = status === 'pickup_scheduled' || Boolean(

@@ -368,9 +368,12 @@ export async function shipOrder(
     email?: string;
   }
 ): Promise<ShipmentResult> {
-  // Skip re-create if a real shipment already exists
+  // Skip re-create if a real active shipment already exists
   const existing = await prisma.shipment.findFirst({
-    where: { orderId },
+    where: { 
+      orderId,
+      status: { not: 'cancelled' },
+    },
     orderBy: { createdAt: 'desc' },
   });
   const existingTn = existing?.trackingNumber || '';
@@ -424,6 +427,7 @@ export async function shipOrder(
         const {
           resolveStoredCodUpfrontPaid,
           buildShiprocketPaymentFields,
+          getConfiguredCodUpfrontAmount,
           DEFAULT_COD_UPFRONT_AMOUNT,
         } = await import('@/lib/cod-upfront');
         let codUpfront = 0;
@@ -431,13 +435,14 @@ export async function shipOrder(
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
+          const fallbackFee = await getConfiguredCodUpfrontAmount();
           codUpfront = resolveStoredCodUpfrontPaid({
             storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
             paymentStatus: dbOrder?.paymentStatus,
             paymentMethod: dbOrder?.paymentMethod,
             tags: dbOrder?.tags,
             note: dbOrder?.note,
-            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+            configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
           });
         }
 
@@ -633,14 +638,15 @@ export async function shipOrder(
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
-          const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          const { resolveStoredCodUpfrontPaid, getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          const fallbackFee = await getConfiguredCodUpfrontAmount();
           codUpfront = resolveStoredCodUpfrontPaid({
             storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
             paymentStatus: dbOrder?.paymentStatus,
             paymentMethod: dbOrder?.paymentMethod,
             tags: dbOrder?.tags,
             note: dbOrder?.note,
-            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+            configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
           });
         }
 
@@ -1456,8 +1462,27 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
   if (shipment.orderId) {
     await prisma.order.update({
       where: { id: shipment.orderId },
-      data: { deliveryStatus: 'cancelled' },
+      data: { 
+        deliveryStatus: 'cancelled',
+        trackingNumber: null,
+      },
     }).catch(() => {});
+
+    const targetOrder = await prisma.order.findUnique({
+      where: { id: shipment.orderId },
+      select: { internalOrderNumber: true, razorpayOrderId: true, shopifyOrderId: true },
+    }).catch(() => null);
+
+    const wsWhere: Array<Record<string, string>> = [];
+    if (targetOrder?.internalOrderNumber) wsWhere.push({ orderNumber: targetOrder.internalOrderNumber });
+    if (targetOrder?.razorpayOrderId) wsWhere.push({ razorpayOrderId: targetOrder.razorpayOrderId });
+    if (targetOrder?.shopifyOrderId) wsWhere.push({ shopifyOrderId: targetOrder.shopifyOrderId });
+    if (wsWhere.length) {
+      await prisma.webStoreOrder.updateMany({
+        where: { OR: wsWhere },
+        data: { deliveryStatus: 'cancelled' },
+      }).catch(() => {});
+    }
   }
 
   return { success: true, message: 'Shipment cancelled successfully' };
