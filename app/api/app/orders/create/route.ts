@@ -314,6 +314,59 @@ export async function POST(req: Request) {
           });
         }
 
+        // Refresh line items from the verified payload so qty matches what was paid
+        // (pre-create may still hold an earlier cart quantity).
+        await tx.orderItem.deleteMany({ where: { orderId: existingOrder!.id } });
+        const refreshedItems = await Promise.all(lineItems.map(async (li: any, idx: number) => {
+          const rawPid = li.productId || li.product_id;
+          const vid = extractNumericId(li.variantId || li.variant_id);
+          let resolvedPid: string | null = null;
+          if (rawPid) {
+            const pidStr = String(rawPid);
+            const byId = await tx.product.findUnique({ where: { id: pidStr }, select: { id: true } });
+            if (byId) {
+              resolvedPid = byId.id;
+            } else {
+              const numericPid = extractNumericId(pidStr);
+              if (numericPid) {
+                const byShopifyId = await tx.product.findUnique({ where: { shopifyProductId: numericPid }, select: { id: true } });
+                if (byShopifyId) resolvedPid = byShopifyId.id;
+              }
+            }
+          }
+          return {
+            orderId: existingOrder!.id,
+            shopifyLineItemId: `app_${orderNumber}_${idx}_${Date.now()}`,
+            productId: resolvedPid,
+            title: li.name || li.title || 'Product',
+            quantity: Math.max(1, Number(li.quantity) || 1),
+            price: Number(li.price || 0),
+            sku: li.sku || (vid ? `variant:${vid}` : null),
+            image: li.image || li.imageUrl || null,
+          };
+        }));
+        await tx.orderItem.createMany({ data: refreshedItems });
+
+        // Keep MobileOrder line qty in sync when the record already existed
+        if (mobileOrder) {
+          await tx.mobileOrderItem.deleteMany({ where: { mobileOrderId: mobileOrder.id } });
+          await tx.mobileOrderItem.createMany({
+            data: refreshedItems.map((item) => ({
+              mobileOrderId: mobileOrder.id,
+              productId: item.productId,
+              title: item.title,
+              quantity: item.quantity,
+              price: item.price,
+              sku: item.sku,
+              image: item.image,
+            })),
+          });
+          await tx.mobileOrder.update({
+            where: { id: mobileOrder.id },
+            data: { totalPrice: total, subtotalPrice: subtotal },
+          });
+        }
+
         return tx.order.update({
           where: { id: existingOrder!.id },
           data: {
@@ -325,6 +378,8 @@ export async function POST(req: Request) {
             codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : (existingOrder as any).codUpfrontPaid || 0,
             codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || (existingOrder as any).codUpfrontPaymentId || null) : null,
             paymentCapturedAt: isPaidLike ? now : existingOrder!.paymentCapturedAt,
+            totalPrice: total,
+            subtotalPrice: subtotal,
             tags: finalTags,
             note: note,
             shippingAddress: typeof shippingAddress === 'string' ? shippingAddress : JSON.stringify({

@@ -242,19 +242,20 @@ export async function POST(req: Request) {
             });
             localOrderId = updatedOrder.id;
 
-            await prisma.lineItem.deleteMany({ where: { orderId: updatedOrder.id } });
-            await prisma.lineItem.createMany({
+            await prisma.orderItem.deleteMany({ where: { orderId: updatedOrder.id } });
+            await prisma.orderItem.createMany({
               data: resolvedItems.map((item: any) => ({
                 orderId: updatedOrder.id,
                 shopifyLineItemId: item.shopifyLineItemId,
                 productId: item.productId,
                 title: item.title,
-                quantity: item.quantity,
+                quantity: Number(item.quantity) || 1,
                 price: item.price,
                 sku: item.sku,
                 image: item.image
               }))
             });
+            console.log(`[Checkout Razorpay] Refreshed ${resolvedItems.length} OrderItem(s) on pre-created order ${updatedOrder.id}`);
 
             // Update matching WebStoreOrder if present
             const existingWsOrder = await prisma.webStoreOrder.findFirst({

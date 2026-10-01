@@ -607,7 +607,24 @@ export async function POST(req: Request) {
         where: { id: existingPreCreatedOrder.id },
         data: updateData,
       });
-      console.log(`[Checkout Complete] Updated pre-created order ${localOrder.id} (${universalOrderNumber}) status to paid/approved`);
+
+      // Always replace line items from the verified checkout payload.
+      // Pre-create refresh used to call a non-existent prisma.lineItem model, so
+      // stale quantities (e.g. qty 2) could survive while totals/Razorpay charged qty 1.
+      await prisma.orderItem.deleteMany({ where: { orderId: localOrder.id } });
+      await prisma.orderItem.createMany({
+        data: resolvedItems.map((item: any) => ({
+          orderId: localOrder.id,
+          shopifyLineItemId: item.shopifyLineItemId,
+          productId: item.productId,
+          title: item.title,
+          quantity: Number(item.quantity) || 1,
+          price: item.price,
+          sku: item.sku,
+          image: item.image,
+        })),
+      });
+      console.log(`[Checkout Complete] Updated pre-created order ${localOrder.id} (${universalOrderNumber}) + refreshed ${resolvedItems.length} item(s)`);
     } else {
       localOrder = await prisma.order.create({
         data: {
