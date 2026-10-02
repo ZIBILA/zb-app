@@ -262,14 +262,15 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       }
     }
 
-    // Format line items
-    const shopifyLineItems = (order.items || []).map((item: any) => {
+    // Format line items — collapse duplicate variant rows so Shopify never gets ×2 from two qty-1 lines
+    const rawLineItems = (order.items || []).map((item: any) => {
       const sku = item.sku || '';
       const m = sku.match(/variant:(\d+)/i);
+      const qty = Math.max(1, Number(item.quantity) || 1);
       if (m?.[1]) {
         return {
           variant_id: parseInt(m[1], 10),
-          quantity: item.quantity,
+          quantity: qty,
         };
       }
 
@@ -277,17 +278,44 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       if (/^\d+$/.test(rawId)) {
         return {
           variant_id: parseInt(rawId, 10),
-          quantity: item.quantity,
+          quantity: qty,
         };
       }
 
       return {
         title: item.title,
-        quantity: item.quantity,
+        quantity: qty,
         price: Number(item.price || 0).toFixed(2),
         requires_shipping: true,
       };
     });
+
+    const shopifyLineItems: any[] = [];
+    for (const li of rawLineItems) {
+      if (li.variant_id) {
+        const existing = shopifyLineItems.find((x) => x.variant_id === li.variant_id);
+        if (existing) {
+          existing.quantity += li.quantity;
+          continue;
+        }
+      }
+      shopifyLineItems.push({ ...li });
+    }
+
+    const lineSubtotal = (order.items || []).reduce(
+      (sum: number, item: any) => sum + Number(item.price || 0) * Math.max(1, Number(item.quantity) || 1),
+      0
+    );
+    const discount = Number((order as any).discountAmount || 0);
+    const expectedPaid = Math.max(0, lineSubtotal - discount - Number((order as any).storeCreditAmount || 0));
+    const storedTotal = Number(order.totalPrice || 0);
+    if (lineSubtotal > 0 && storedTotal > 0 && Math.abs(expectedPaid - storedTotal) > 1) {
+      console.error(
+        `[ShopifyOrderSync] Line/total mismatch for ${order.id}: lines≈₹${expectedPaid.toFixed(2)} vs totalPrice=₹${storedTotal.toFixed(2)} (items=${JSON.stringify(
+          (order.items || []).map((i: any) => ({ title: i.title, qty: i.quantity, price: i.price }))
+        )})`
+      );
+    }
 
     const parsedCustomerId = shopifyCustomerId && /^\d+$/.test(shopifyCustomerId)
       ? parseInt(shopifyCustomerId, 10)

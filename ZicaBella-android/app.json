@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zica Bella",
     "slug": "zicabella-android",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "scheme": "zicabella",
     "icon": "./assets/zb-logo-icon.png",
@@ -19,10 +19,10 @@
     },
     "android": {
       "package": "com.zicabella.app",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#FFFFFF"
       },
       "permissions": [
         "INTERNET",
@@ -52,8 +52,8 @@
         "projectId": "9ddd4bff-8a1b-460e-8427-72c6ccc1a284"
       },
       "appStoreMetadata": {
-        "subtitle": "Fashion. Redefined.",
-        "description": "Zica Bella is your destination for curated contemporary fashion. Discover the latest collections across women's and men's categories, styled for everyday elegance and effortless confidence. Browse thousands of pieces — from essentials to statement looks — with a seamless shopping experience designed for the way you live. Add items to your bag in seconds, check out with Apple Pay or your saved card, and choose from standard, express, or same-day delivery. Track every order in real time with live status updates and courier tracking, right inside the app. Need to make a change? Initiate a return or exchange in just a few taps — no calls, no hassle. Your order history, returns, and exchanges are all in one place, always in sync. Zica Bella brings the full power of a world-class fashion platform to your iPhone. New arrivals added weekly. Free returns on all orders. Download and discover fashion, redefined.",
+        "subtitle": "FOR THE FEARLESS",
+        "description": "ZICA BELLA — FOR THE FEARLESS\n\nNot your basic streetwear brand. Zica Bella is for the ones who go against the grain — gothic-inspired fits, acid-wash pieces, and oversized silhouettes built different from everything else out there.\n\nWHY YOU'RE HERE\n→ Drops that actually go hard\n→ Oversized fits for that effortless look\n→ Acid-wash pieces you won't find anywhere else\n→ Gothic aesthetic, zero compromise\n\nSHOP THE APP\nBrowse collections, cop your fits, and track your orders — all from your phone. Fast checkout, real-time order tracking, and drops before anyone else sees them.\n\nZICA AI\nStuck on sizing or styling? Zica AI's got you — your personal style assistant, built right into the app.\n\nTHE VIBE\nThis isn't fast fashion. It's a whole mood. Streetwear for people who dress like they mean it.\n\nDownload now and build a fit that says something.\n\nZicaBella",
         "keywords": "fashion, clothing, women, men, style, shop, apparel, trending, outfit, wardrobe",
         "category": "Shopping",
         "ageRating": "4+"

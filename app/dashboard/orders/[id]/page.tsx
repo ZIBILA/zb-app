@@ -39,6 +39,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import DelhiveryActions from "@/components/orders/DelhiveryActions";
+import ShiprocketActions from "@/components/orders/ShiprocketActions";
 import LineItemEditor from "@/components/orders/LineItemEditor";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
@@ -821,10 +822,21 @@ export default function OrderDetailPage() {
           <div className={`p-10 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-8 ${(order.status === 'cancelled' || order.status === 'payment_failed') ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
             {(() => {
               const activeShipment = (order as any).shipments?.[0];
-              const awb = activeShipment?.trackingNumber || activeShipment?.awb || order.delhivery_awb;
+              const externalId = activeShipment?.trackingNumber || null;
+              const awb = activeShipment?.awb || order.delhivery_awb || null;
               const courier = activeShipment?.courier || (order.delhivery_awb ? 'Delhivery Logistics' : 'Courier Logistics Hub');
-              const trackingUrl = activeShipment?.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
-              const isNonDelhivery = courier && !courier.toLowerCase().includes('delhivery');
+              const trackingUrl =
+                activeShipment?.trackingUrl ||
+                (awb ? `https://shiprocket.co/tracking/${awb}` : null);
+              const isDelhivery =
+                Boolean(order.delhivery_awb) ||
+                (Boolean(courier) && courier.toLowerCase().includes('delhivery'));
+              const displayStatus =
+                activeShipment?.status || order.deliveryStatus || 'pending';
+              const awbPending = Boolean(externalId) && !awb;
+              // Default new orders → Shiprocket ops; keep Delhivery panel only for Delhivery AWBs
+              const showShiprocketActions = !isDelhivery;
+              const showDelhiveryActions = isDelhivery;
 
               return (
                 <>
@@ -836,13 +848,13 @@ export default function OrderDetailPage() {
                         {courier}
                       </p>
                     </div>
-                    {awb && (
+                    {(awb || externalId) && (
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="px-4 py-2 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[12px] font-mono font-bold text-blue-500 flex items-center gap-2">
                           <ScanLine className="w-3.5 h-3.5" />
-                          <span>{awb}</span>
+                          <span>{awb ? `AWB ${awb}` : `SR Order ${externalId}`}</span>
                         </div>
-                        {trackingUrl && (
+                        {trackingUrl && awb && (
                           <a
                             href={trackingUrl}
                             target="_blank"
@@ -858,7 +870,7 @@ export default function OrderDetailPage() {
                   </div>
 
                   {/* Active Shipment Status Banner */}
-                  {awb && (
+                  {(awb || externalId) && (
                     <div className="p-5 rounded-2xl bg-foreground/[0.03] border border-foreground/5 flex items-center justify-between">
                       <div className="flex items-center gap-3.5">
                         <div className="w-11 h-11 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-400 border border-indigo-500/20">
@@ -867,19 +879,26 @@ export default function OrderDetailPage() {
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/40">Fulfillment Courier</p>
                           <p className="text-sm font-semibold text-foreground">{courier}</p>
+                          {awbPending && (
+                            <p className="text-[11px] text-amber-400/90 mt-1">
+                              Order created in Shiprocket — AWB not assigned yet (not trackable)
+                            </p>
+                          )}
                         </div>
                       </div>
                       <div className="text-right">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/40">Delivery Status</p>
-                        <p className="text-sm font-bold uppercase text-emerald-400 font-mono">
-                          {activeShipment?.status || order.deliveryStatus || 'SHIPPED'}
+                        <p className={`text-sm font-bold uppercase font-mono ${awbPending ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {displayStatus}
                         </p>
                       </div>
                     </div>
                   )}
 
-                  {/* If courier is Delhivery or no AWB yet, render Delhivery operations */}
-                  {(!awb || !isNonDelhivery) && (
+                  {showShiprocketActions && (
+                    <ShiprocketActions order={order as any} onRefresh={() => fetchOrder(true)} />
+                  )}
+                  {showDelhiveryActions && (
                     <DelhiveryActions order={order as any} onRefresh={() => fetchOrder(true)} />
                   )}
                 </>

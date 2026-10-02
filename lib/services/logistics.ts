@@ -29,10 +29,24 @@ export interface TrackingStatus {
 
 export interface ShipmentResult {
   trackingNumber: string;
-  trackingUrl: string;
+  trackingUrl?: string;
   courier: string;
   shipmentId?: string;
+  /** Shiprocket order_id (needed for cancel) */
+  shiprocketOrderId?: string | null;
+  /** Real AWB/waybill only — not Shiprocket order_id */
+  awb?: string | null;
+  status?: string;
+  deliveryStatus?: string;
+  labelUrl?: string | null;
 }
+
+export type ShiprocketShipmentMeta = {
+  provider: 'shiprocket';
+  shipment_id: string | number | null;
+  order_id: string | number | null;
+  pickup_scheduled_at?: string | null;
+};
 
 export interface LogisticsConfig {
   provider: string;
@@ -48,6 +62,10 @@ export const PROVIDER_PRESETS: Record<string, { baseUrl: string; endpoints: Reco
     baseUrl: 'https://apiv2.shiprocket.in/v1/external',
     endpoints: {
       createShipment: '/orders/create/adhoc',
+      assignAwb: '/courier/assign/awb',
+      generatePickup: '/courier/generate/pickup',
+      generateLabel: '/courier/generate/label',
+      trackAwb: '/courier/track/awb',
       trackShipment: '/courier/track/shipment',
       createReturn: '/orders/create/return',
       cancelShipment: '/orders/cancel',
@@ -202,8 +220,9 @@ async function logisticsApiFetch(
   const config = await getLogisticsConfig();
 
   if (config.provider === 'mock') {
-    console.log(`[Logistics Mock] ${method} ${endpoint}`, body ? JSON.stringify(body).slice(0, 100) : '');
-    return null; // Mock mode — caller handles fallback
+    throw new Error(
+      `Logistics API skipped: no provider configured (endpoint ${method} ${endpoint})`
+    );
   }
 
   const preset = PROVIDER_PRESETS[config.provider];
@@ -254,8 +273,7 @@ async function logisticsApiFetch(
 // ─── Core Service Methods ───────────────────────────────────────────
 
 /**
- * Resolve local Order.id and write Shipment + Order + WebStoreOrder delivery status
- * so Admin / Shopify / logistics stay aligned on the same local FK.
+ * Resolve local Order.id and write Shipment + Order + WebStoreOrder delivery status.
  */
 async function persistShipmentAndDeliveryStatus(
   orderRef: string,
@@ -269,20 +287,38 @@ async function persistShipmentAndDeliveryStatus(
     return null;
   }
 
+  const shipmentStatus = result.status || (result.awb ? 'confirmed' : 'new');
+  const deliveryStatus =
+    result.deliveryStatus || (result.awb ? 'confirmed' : 'processing');
+  const awbValue = result.awb && String(result.awb).trim() ? String(result.awb) : null;
+
+  const shiprocketMeta: ShiprocketShipmentMeta | null =
+    result.shipmentId || result.shiprocketOrderId
+      ? {
+          provider: 'shiprocket',
+          shipment_id: result.shipmentId || null,
+          order_id: result.shiprocketOrderId || null,
+        }
+      : null;
+
   await prisma.shipment.create({
     data: {
       orderId: localId,
       trackingNumber: result.trackingNumber,
-      awb: result.trackingNumber || undefined,
-      trackingUrl: result.trackingUrl,
+      awb: awbValue || undefined,
+      trackingUrl: result.trackingUrl || null,
+      labelUrl: result.labelUrl || null,
       courier: result.courier,
-      status: 'confirmed',
+      status: shipmentStatus,
+      rawDelhiveryResponse: shiprocketMeta ? JSON.stringify(shiprocketMeta) : undefined,
       events: JSON.stringify([
         {
-          status: 'confirmed',
+          status: shipmentStatus,
           location: 'Warehouse',
           timestamp: new Date().toISOString(),
-          description: 'Shipment booked',
+          description: awbValue
+            ? `Shipment booked with AWB ${awbValue}`
+            : `Carrier order created (id ${result.trackingNumber}) — AWB not assigned yet`,
         },
       ]),
     },
@@ -291,7 +327,7 @@ async function persistShipmentAndDeliveryStatus(
   await prisma.order.update({
     where: { id: localId },
     data: {
-      deliveryStatus: 'confirmed',
+      deliveryStatus,
       ...(extraOrderData || {}),
     },
   });
@@ -307,7 +343,7 @@ async function persistShipmentAndDeliveryStatus(
   if (wsWhere.length) {
     await prisma.webStoreOrder.updateMany({
       where: { OR: wsWhere },
-      data: { deliveryStatus: 'confirmed' },
+      data: { deliveryStatus },
     }).catch(() => {});
   }
 
@@ -329,21 +365,39 @@ export async function shipOrder(
     zip: string;
     country: string;
     phone?: string;
+    email?: string;
   }
 ): Promise<ShipmentResult> {
-  // Idempotent: skip if we already booked logistics for this order
+  // Skip re-create if a real active shipment already exists
   const existing = await prisma.shipment.findFirst({
-    where: { orderId },
+    where: { 
+      orderId,
+      status: { not: 'cancelled' },
+    },
     orderBy: { createdAt: 'desc' },
   });
-  if (existing?.trackingNumber) {
-    console.log(`[Logistics] Shipment already exists for ${orderId} (${existing.trackingNumber}) — skipping create`);
+  const existingTn = existing?.trackingNumber || '';
+  const isFakeExisting =
+    !existingTn ||
+    existingTn.startsWith('MOCK') ||
+    String(existing?.courier || '').toLowerCase().includes('mock');
+  if (existing && !isFakeExisting) {
+    console.log(`[Logistics] Shipment already exists for ${orderId} (${existingTn}) — skipping create`);
     return {
-      trackingNumber: existing.trackingNumber,
+      trackingNumber: existingTn,
       trackingUrl: existing.trackingUrl || undefined,
       courier: existing.courier || 'Shiprocket',
       shipmentId: existing.awb || undefined,
     };
+  }
+  if (existing && isFakeExisting) {
+    console.warn(`[Logistics] Removing fake/MOCK shipment ${existingTn} for ${orderId}`);
+    await prisma.shipment.deleteMany({
+      where: {
+        orderId,
+        trackingNumber: { startsWith: 'MOCK' },
+      },
+    });
   }
 
   const config = await getLogisticsConfig();
@@ -361,7 +415,8 @@ export async function shipOrder(
               { id: orderId },
               { shopifyOrderId: orderId }
             ]
-          }
+          },
+          include: { items: true, customer: { select: { email: true } } },
         });
 
         const rawMethod = (dbOrder?.paymentMethod || '').toLowerCase();
@@ -369,68 +424,192 @@ export async function shipOrder(
         const noteLower = (dbOrder?.note || '').toLowerCase();
         const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
 
-        const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+        const {
+          resolveStoredCodUpfrontPaid,
+          buildShiprocketPaymentFields,
+          getConfiguredCodUpfrontAmount,
+          DEFAULT_COD_UPFRONT_AMOUNT,
+        } = await import('@/lib/cod-upfront');
         let codUpfront = 0;
         if (isCodOrder) {
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
-          // Legacy rows without stored fee fall back to DEFAULT (99), not the live dashboard
-          // setting — so changing settings never rewrites old shipments' COD balance.
+          const fallbackFee = await getConfiguredCodUpfrontAmount();
           codUpfront = resolveStoredCodUpfrontPaid({
             storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
             paymentStatus: dbOrder?.paymentStatus,
             paymentMethod: dbOrder?.paymentMethod,
             tags: dbOrder?.tags,
             note: dbOrder?.note,
-            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+            configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
           });
         }
 
-        const calculatedTotalPrice = Number(
-          dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0)
-        );
-        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
-        const paymentMethod = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
-        const subTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+        const shipItems =
+          dbOrder?.items && dbOrder.items.length > 0
+            ? dbOrder.items.map((i: any) => ({
+                title: i.title,
+                sku: i.sku || undefined,
+                quantity: i.quantity,
+                price: Number(i.price),
+              }))
+            : items;
 
-        data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', {
-          order_id: orderId,
+        const itemsSubtotal = shipItems.reduce(
+          (s: number, i: any) => s + Number(i.price) * Number(i.quantity),
+          0
+        );
+        const calculatedTotalPrice = Number(dbOrder?.totalPrice || itemsSubtotal);
+        const paymentFields = buildShiprocketPaymentFields({
+          orderTotal: calculatedTotalPrice,
+          itemsSubtotal,
+          upfrontPaid: codUpfront,
+          isCod: isCodOrder,
+        });
+
+        const shiprocketOrderId =
+          dbOrder?.internalOrderNumber ||
+          dbOrder?.id ||
+          orderId;
+
+        const nameParts = String(address.name || 'Customer')
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        const billingFirstName = nameParts[0] || 'Customer';
+        const billingLastName = nameParts.slice(1).join(' ') || '.';
+
+        const phoneDigits = String(address.phone || '').replace(/\D/g, '');
+        const billingPhone =
+          phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
+        const billingPincode = Number(String(address.zip || '').replace(/\D/g, '')) || 0;
+        const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
+
+        const payload = {
+          order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
-          pickup_location: 'Primary',
-          billing_customer_name: address.name,
+          pickup_location:
+            process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
+          billing_customer_name: billingFirstName,
+          billing_last_name: billingLastName,
           billing_address: address.address1,
           billing_city: address.city,
-          billing_pincode: address.zip,
+          billing_pincode: billingPincode,
           billing_state: address.province,
           billing_country: address.country || 'India',
-          billing_phone: address.phone || '',
+          billing_email:
+            address.email || (dbOrder as any)?.customer?.email || undefined,
+          billing_phone: billingPhone ? Number(billingPhone) : undefined,
           shipping_is_billing: true,
-          order_items: items.map(i => ({
+          order_items: shipItems.map((i: { title: string; sku?: string; quantity: number; price: number }) => ({
             name: i.title,
-            sku: i.sku || '',
+            sku: i.sku || `sku-${shiprocketOrderId}`.slice(0, 40),
             units: i.quantity,
             selling_price: i.price,
+            hsn: defaultHsn,
           })),
-          payment_method: paymentMethod,
-          // Remaining COD after upfront Razorpay payment (0 for prepaid)
-          ...(paymentMethod === 'COD' ? { cod_amount: Math.round(codBalanceDue) } : {}),
-          sub_total: subTotal,
+          payment_method: paymentFields.payment_method,
+          ...(paymentFields.total_discount != null
+            ? { total_discount: paymentFields.total_discount }
+            : {}),
+          sub_total: paymentFields.sub_total,
           length: 20,
           breadth: 15,
           height: 10,
           weight: 0.5,
-        });
-
-        const trackingNumber = data?.order_id?.toString() || data?.shipment_id?.toString() || `SR${Date.now()}`;
-        const result: ShipmentResult = {
-          trackingNumber,
-          trackingUrl: `https://shiprocket.co/tracking/${trackingNumber}`,
-          courier: data?.courier_name || 'Shiprocket',
-          shipmentId: data?.shipment_id?.toString(),
         };
 
-        // Save shipment + delivery status on local Order / WebStoreOrder
+        console.log(
+          `[Shiprocket] Booking ${shiprocketOrderId}: method=${paymentFields.payment_method} ` +
+            `total=₹${calculatedTotalPrice} upfront=₹${paymentFields.upfrontPaid} ` +
+            `sub_total=₹${paymentFields.sub_total} total_discount=₹${paymentFields.total_discount ?? 0} ` +
+            `→ Shiprocket collects ₹${paymentFields.shiprocketCollectable}`
+        );
+
+        data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', payload);
+
+        const srOrderId = data?.order_id ?? data?.payload?.order_id;
+        const srShipmentId = data?.shipment_id ?? data?.payload?.shipment_id;
+        const statusCode = data?.status_code ?? data?.payload?.status_code;
+        let awbCode = String(data?.awb_code ?? data?.payload?.awb_code ?? '').trim();
+        let courierName = data?.courier_name || data?.payload?.courier_name || '';
+
+        console.log(
+          `[Shiprocket] Create response for ${shiprocketOrderId}:`,
+          JSON.stringify({
+            order_id: srOrderId,
+            shipment_id: srShipmentId,
+            status_code: statusCode,
+            status: data?.status,
+            awb_code: awbCode || null,
+            message: data?.message,
+          })
+        );
+
+        if (!srOrderId && !srShipmentId) {
+          throw new Error(
+            `Shiprocket create returned no order_id/shipment_id: ${JSON.stringify(data).slice(0, 300)}`
+          );
+        }
+
+        // Assign AWB (create alone leaves NEW with null awb_code). No auto-pickup.
+        if (!awbCode && srShipmentId && preset.endpoints.assignAwb) {
+          console.log(
+            `[Shiprocket] Assigning AWB for shipment_id=${srShipmentId} (order ${shiprocketOrderId})`
+          );
+          const assignData = await logisticsApiFetch(preset.endpoints.assignAwb, 'POST', {
+            shipment_id: srShipmentId,
+          });
+          const assignPayload = assignData?.response?.data || assignData?.data || assignData;
+          const assignedAwb = String(assignPayload?.awb_code || '').trim();
+          const assignOk =
+            assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
+
+          console.log(
+            `[Shiprocket] AWB assign for ${shiprocketOrderId}:`,
+            JSON.stringify({
+              awb_assign_status: assignData?.awb_assign_status,
+              awb_code: assignedAwb || null,
+              courier_name: assignPayload?.courier_name || null,
+              message: assignData?.message,
+              error: assignPayload?.awb_assign_error || assignData?.response?.data?.awb_assign_error,
+            })
+          );
+
+          if (!assignOk || !assignedAwb) {
+            throw new Error(
+              `Shiprocket AWB assign failed for shipment ${srShipmentId}: ` +
+                `${JSON.stringify(assignData).slice(0, 400)}`
+            );
+          }
+
+          awbCode = assignedAwb;
+          courierName = assignPayload?.courier_name || courierName || 'Shiprocket';
+        }
+
+        if (!awbCode) {
+          throw new Error(
+            `Shiprocket order ${srOrderId} created but no AWB was assigned (shipment ${srShipmentId})`
+          );
+        }
+
+        const result: ShipmentResult = {
+          trackingNumber: awbCode,
+          trackingUrl: `https://shiprocket.co/tracking/${awbCode}`,
+          courier: courierName || 'Shiprocket',
+          shipmentId: srShipmentId != null ? String(srShipmentId) : undefined,
+          shiprocketOrderId: srOrderId != null ? String(srOrderId) : undefined,
+          awb: awbCode,
+          status: 'confirmed',
+          deliveryStatus: 'confirmed',
+        };
+
+        console.log(
+          `[Shiprocket] Persisting ${shiprocketOrderId}: sr_order=${srOrderId} ` +
+            `awb=${result.awb} courier=${result.courier}`
+        );
+
         await persistShipmentAndDeliveryStatus(orderId, result);
 
         return result;
@@ -459,14 +638,15 @@ export async function shipOrder(
           const wsOrder = dbOrder?.razorpayOrderId
             ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
             : null;
-          const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          const { resolveStoredCodUpfrontPaid, getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+          const fallbackFee = await getConfiguredCodUpfrontAmount();
           codUpfront = resolveStoredCodUpfrontPaid({
             storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
             paymentStatus: dbOrder?.paymentStatus,
             paymentMethod: dbOrder?.paymentMethod,
             tags: dbOrder?.tags,
             note: dbOrder?.note,
-            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+            configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
           });
         }
 
@@ -573,26 +753,66 @@ export async function shipOrder(
 
       return result;
     } catch (err: any) {
-      console.error(`[Logistics] ${config.provider} shipOrder failed:`, err.message);
-      // Fall through to mock
+      console.error(`[Logistics] ${config.provider} shipOrder failed for ${orderId}:`, err.message);
+      throw err;
     }
   }
 
-  // Mock fallback
-  const mockTrackingNumber = `MOCK${Date.now().toString(36).toUpperCase()}`;
-  const result: ShipmentResult = {
-    trackingNumber: mockTrackingNumber,
-    trackingUrl: `https://track.zicabella.com/${mockTrackingNumber}`,
-    courier: 'Mock Courier',
-  };
-
-  await persistShipmentAndDeliveryStatus(orderId, result);
-
-  return result;
+  console.error(
+    `[Logistics] shipOrder aborted for ${orderId}: no logistics provider configured`
+  );
+  throw new Error(
+    'Logistics booking failed: no Shiprocket/Delhivery provider configured'
+  );
 }
 
 /**
- * Get tracking status for a shipment by tracking number.
+ * Normalize Shiprocket tracking payload into our status vocabulary.
+ */
+export function mapShiprocketTrackingStatus(raw: unknown): string {
+  const s = String(raw || '').toLowerCase().trim();
+  if (!s || s === 'unknown' || s === 'null') return 'unknown';
+
+  if (
+    s.includes('cancel') ||
+    s === '8' || // Shiprocket status id for Canceled (common)
+    s.includes('cancelled')
+  ) {
+    return 'cancelled';
+  }
+  if (s.includes('rto') || s.includes('return to origin')) return 'rto';
+  if (s.includes('deliver')) return 'delivered';
+  if (s.includes('out for delivery') || s.includes('ofd')) return 'out_for_delivery';
+  if (s.includes('in transit') || s.includes('shipped') || s.includes('in-transit')) return 'in_transit';
+  if (s.includes('pick') || s.includes('manifest')) return 'pickup_scheduled';
+  if (s.includes('confirm') || s.includes('awb') || s.includes('label')) return 'confirmed';
+  if (s.includes('pend') || s.includes('new') || s.includes('process')) return 'processing';
+
+  // Numeric Shiprocket shipment_status ids we commonly see
+  if (s === '7') return 'delivered';
+  if (s === '6') return 'shipped';
+  if (s === '17' || s === '18') return 'out_for_delivery';
+  if (s === '42' || s === '15') return 'pickup_scheduled';
+
+  return s.replace(/\s+/g, '_');
+}
+
+function applyDeliveryStatusFromShipment(
+  shipStatus: string
+): string | null {
+  const s = shipStatus.toLowerCase();
+  if (s === 'cancelled' || s === 'canceled') return 'cancelled';
+  if (s === 'delivered') return 'delivered';
+  if (s === 'out_for_delivery') return 'out_for_delivery';
+  if (s === 'in_transit' || s === 'shipped') return 'shipped';
+  if (s === 'pickup_scheduled' || s === 'picked_up') return 'pickup_scheduled';
+  if (s === 'rto') return 'returned_to_origin';
+  if (s === 'confirmed') return 'confirmed';
+  return null;
+}
+
+/**
+ * Get tracking status for a shipment by tracking number / AWB.
  */
 export async function getTrackingStatus(trackingNumber: string): Promise<TrackingStatus> {
   const config = await getLogisticsConfig();
@@ -604,18 +824,39 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
       let data: any;
 
       if (config.provider === 'shiprocket') {
-        data = await logisticsApiFetch(`${preset.endpoints.trackShipment}/${trackingNumber}`, 'GET');
-        const tracking = data?.tracking_data;
+        // Prefer AWB track (dashboard stores AWB as trackingNumber after assign)
+        try {
+          data = await logisticsApiFetch(
+            `${preset.endpoints.trackAwb}/${encodeURIComponent(trackingNumber)}`,
+            'GET'
+          );
+        } catch {
+          data = await logisticsApiFetch(
+            `${preset.endpoints.trackShipment}/${encodeURIComponent(trackingNumber)}`,
+            'GET'
+          );
+        }
+        const tracking = data?.tracking_data || data;
+        const trackStatus =
+          tracking?.shipment_track?.[0]?.current_status ||
+          tracking?.shipment_status ||
+          tracking?.current_status?.status ||
+          tracking?.track_status ||
+          tracking?.shipment_status_id;
+        const mapped = mapShiprocketTrackingStatus(trackStatus);
         return {
-          status: tracking?.shipment_status_id?.toString() || 'unknown',
-          location: tracking?.current_status?.location || null,
+          status: mapped,
+          location:
+            tracking?.shipment_track?.[0]?.location ||
+            tracking?.current_status?.location ||
+            null,
           estimatedDelivery: tracking?.etd || null,
           trackingUrl: `https://shiprocket.co/tracking/${trackingNumber}`,
           events: (tracking?.shipment_track || []).map((e: any) => ({
-            status: e.activity,
-            location: e.location,
-            timestamp: e.date,
-            description: e.activity,
+            status: e.activity || e.current_status || '',
+            location: e.location || '',
+            timestamp: e.date || e.updated_time || '',
+            description: e.activity || e.sr_status || '',
           })),
         };
       }
@@ -653,7 +894,10 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
 
   // Fallback: read from DB
   const shipment = await prisma.shipment.findFirst({
-    where: { trackingNumber },
+    where: {
+      OR: [{ trackingNumber }, { awb: trackingNumber }],
+    },
+    orderBy: { createdAt: 'desc' },
   });
 
   if (shipment) {
@@ -667,6 +911,83 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
   }
 
   return { status: 'unknown', location: null, estimatedDelivery: null, trackingUrl: null, events: [] };
+}
+
+/**
+ * Pull latest Shiprocket status into local Shipment + Order.deliveryStatus.
+ */
+export async function syncOrderLogisticsStatus(orderId: string): Promise<{
+  success: boolean;
+  shipmentStatus: string;
+  deliveryStatus: string | null;
+  message: string;
+}> {
+  const shipment = await prisma.shipment.findFirst({
+    where: { orderId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!shipment) {
+    return {
+      success: false,
+      shipmentStatus: 'unknown',
+      deliveryStatus: null,
+      message: 'No shipment on this order',
+    };
+  }
+
+  const trackRef = shipment.awb || shipment.trackingNumber;
+  if (!trackRef) {
+    return {
+      success: false,
+      shipmentStatus: shipment.status,
+      deliveryStatus: null,
+      message: 'Shipment has no AWB/tracking number yet',
+    };
+  }
+
+  const status = await getTrackingStatus(trackRef);
+  if (!status || status.status === 'unknown') {
+    return {
+      success: false,
+      shipmentStatus: shipment.status,
+      deliveryStatus: null,
+      message: 'Shiprocket returned unknown status',
+    };
+  }
+
+  await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: {
+      status: status.status,
+      currentLocation: status.location,
+      estimatedDelivery: status.estimatedDelivery
+        ? new Date(status.estimatedDelivery)
+        : undefined,
+      events: JSON.stringify(status.events || []),
+      trackingUrl: status.trackingUrl || shipment.trackingUrl,
+    },
+  });
+
+  const nextDelivery = applyDeliveryStatusFromShipment(status.status);
+  if (nextDelivery) {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        deliveryStatus: nextDelivery,
+        ...(nextDelivery === 'cancelled'
+          ? {} // keep order.status; logistics cancel ≠ full order cancel
+          : {}),
+      },
+    });
+  }
+
+  return {
+    success: true,
+    shipmentStatus: status.status,
+    deliveryStatus: nextDelivery,
+    message: `Synced: shipment=${status.status}` +
+      (nextDelivery ? `, delivery=${nextDelivery}` : ''),
+  };
 }
 
 /**
@@ -791,16 +1112,236 @@ export async function createReturnShipment(
       }
     } catch (err: any) {
       console.error(`[Logistics] Return shipment creation failed:`, err.message);
+      throw err;
     }
   }
 
-  // Mock fallback
-  const mockTrackingNumber = `RET${Date.now().toString(36).toUpperCase()}`;
-  return {
-    trackingNumber: mockTrackingNumber,
-    trackingUrl: `https://track.zicabella.com/return/${mockTrackingNumber}`,
-    courier: 'Mock Return Courier',
+  console.error('[Logistics] createReturnShipment aborted: no logistics provider configured');
+  throw new Error('Return shipment failed: no Shiprocket/Delhivery provider configured');
+}
+
+/**
+ * Parse Shiprocket ids stored on Shipment.rawDelhiveryResponse.
+ */
+export function parseShiprocketMeta(raw: string | null | undefined): ShiprocketShipmentMeta | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.provider !== 'shiprocket') return null;
+    return {
+      provider: 'shiprocket',
+      shipment_id: parsed.shipment_id ?? null,
+      order_id: parsed.order_id ?? null,
+      pickup_scheduled_at: parsed.pickup_scheduled_at ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getLatestShipmentForOrder(orderId: string) {
+  return prisma.shipment.findFirst({
+    where: { orderId },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+async function resolveShiprocketShipmentId(shipment: {
+  awb: string | null;
+  trackingNumber: string | null;
+  rawDelhiveryResponse: string | null;
+}): Promise<string> {
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  if (meta?.shipment_id) return String(meta.shipment_id);
+
+  const awb = shipment.awb || shipment.trackingNumber;
+  if (!awb) {
+    throw new Error('No Shiprocket shipment_id or AWB on this order');
+  }
+
+  const track = await logisticsApiFetch(
+    `${PROVIDER_PRESETS.shiprocket.endpoints.trackAwb}?awb_code=${encodeURIComponent(awb)}`,
+    'GET'
+  );
+  const shipmentId =
+    track?.tracking_data?.shipment_id ||
+    track?.shipment_id ||
+    track?.tracking_data?.track_status?.[0]?.shipment_id;
+  if (!shipmentId) {
+    throw new Error(`Could not resolve Shiprocket shipment_id for AWB ${awb}`);
+  }
+  return String(shipmentId);
+}
+
+/**
+ * Assign AWB for an existing Shiprocket shipment (dashboard retry).
+ */
+export async function assignShiprocketAwb(orderId: string): Promise<ShipmentResult> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+
+  const shipment = await getLatestShipmentForOrder(orderId);
+  if (!shipment) {
+    throw new Error('No shipment found for this order — book a shipment first');
+  }
+  if (shipment.awb) {
+    return {
+      trackingNumber: shipment.awb,
+      trackingUrl: shipment.trackingUrl || `https://shiprocket.co/tracking/${shipment.awb}`,
+      courier: shipment.courier || 'Shiprocket',
+      awb: shipment.awb,
+      shipmentId: parseShiprocketMeta(shipment.rawDelhiveryResponse)?.shipment_id
+        ? String(parseShiprocketMeta(shipment.rawDelhiveryResponse)!.shipment_id)
+        : undefined,
+      status: shipment.status,
+    };
+  }
+
+  const shipmentId = await resolveShiprocketShipmentId(shipment);
+  const assignData = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.assignAwb, 'POST', {
+    shipment_id: shipmentId,
+  });
+  const assignPayload = assignData?.response?.data || assignData?.data || assignData;
+  const assignedAwb = String(assignPayload?.awb_code || '').trim();
+  if (!assignedAwb) {
+    throw new Error(`Shiprocket AWB assign failed: ${JSON.stringify(assignData).slice(0, 300)}`);
+  }
+
+  const courierName = assignPayload?.courier_name || shipment.courier || 'Shiprocket';
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse) || {
+    provider: 'shiprocket' as const,
+    shipment_id: shipmentId,
+    order_id: null,
   };
+  meta.shipment_id = shipmentId;
+
+  await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: {
+      awb: assignedAwb,
+      trackingNumber: assignedAwb,
+      trackingUrl: `https://shiprocket.co/tracking/${assignedAwb}`,
+      courier: courierName,
+      status: 'confirmed',
+      rawDelhiveryResponse: JSON.stringify(meta),
+    },
+  });
+  await prisma.order.update({
+    where: { id: orderId },
+    data: { deliveryStatus: 'confirmed' },
+  });
+
+  return {
+    trackingNumber: assignedAwb,
+    trackingUrl: `https://shiprocket.co/tracking/${assignedAwb}`,
+    courier: courierName,
+    awb: assignedAwb,
+    shipmentId,
+    status: 'confirmed',
+    deliveryStatus: 'confirmed',
+  };
+}
+
+/**
+ * Schedule courier pickup for a Shiprocket shipment (dashboard).
+ */
+export async function generateShiprocketPickup(orderId: string): Promise<{
+  success: boolean;
+  message: string;
+  pickup_scheduled_date?: string | null;
+}> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+
+  const shipment = await getLatestShipmentForOrder(orderId);
+  if (!shipment) {
+    throw new Error('No shipment found for this order — book + assign AWB first');
+  }
+  if (!shipment.awb) {
+    throw new Error('AWB not assigned yet — assign AWB before scheduling pickup');
+  }
+
+  const shipmentId = await resolveShiprocketShipmentId(shipment);
+  const data = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.generatePickup, 'POST', {
+    shipment_id: [Number(shipmentId) || shipmentId],
+  });
+
+  const pickupDate =
+    data?.response?.pickup_scheduled_date ||
+    data?.pickup_scheduled_date ||
+    data?.data?.pickup_scheduled_date ||
+    null;
+  const message =
+    data?.response?.data ||
+    data?.message ||
+    (data?.pickup_status === 1 ? 'Pickup scheduled' : JSON.stringify(data).slice(0, 200));
+
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse) || {
+    provider: 'shiprocket' as const,
+    shipment_id: shipmentId,
+    order_id: null,
+  };
+  meta.shipment_id = shipmentId;
+  meta.pickup_scheduled_at = pickupDate || new Date().toISOString();
+
+  await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: {
+      status: 'pickup_scheduled',
+      rawDelhiveryResponse: JSON.stringify(meta),
+    },
+  });
+  await prisma.order.update({
+    where: { id: orderId },
+    data: { deliveryStatus: 'pickup_scheduled' },
+  });
+
+  return {
+    success: true,
+    message: typeof message === 'string' ? message : 'Pickup scheduled',
+    pickup_scheduled_date: pickupDate,
+  };
+}
+
+/**
+ * Generate shipping label PDF URL from Shiprocket.
+ */
+export async function generateShiprocketLabel(orderId: string): Promise<{ labelUrl: string }> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+
+  const shipment = await getLatestShipmentForOrder(orderId);
+  if (!shipment) {
+    throw new Error('No shipment found for this order');
+  }
+  if (!shipment.awb) {
+    throw new Error('AWB not assigned yet — cannot print label');
+  }
+  if (shipment.labelUrl) {
+    return { labelUrl: shipment.labelUrl };
+  }
+
+  const shipmentId = await resolveShiprocketShipmentId(shipment);
+  const data = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.generateLabel, 'POST', {
+    shipment_id: [Number(shipmentId) || shipmentId],
+  });
+  const labelUrl = data?.label_url || data?.label_url?.[0] || data?.response?.label_url;
+  if (!labelUrl) {
+    throw new Error(`Shiprocket label generation failed: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+
+  await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: { labelUrl: String(labelUrl) },
+  });
+
+  return { labelUrl: String(labelUrl) };
 }
 
 /**
@@ -810,16 +1351,27 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
   const config = await getLogisticsConfig();
   const preset = PROVIDER_PRESETS[config.provider];
 
-  // Check shipment in DB first
+  // Check shipment in DB first (AWB or tracking number)
   const shipment = await prisma.shipment.findFirst({
-    where: { trackingNumber },
+    where: {
+      OR: [{ trackingNumber }, { awb: trackingNumber }],
+    },
+    orderBy: { createdAt: 'desc' },
   });
 
   if (!shipment) {
     return { success: false, message: 'Shipment not found' };
   }
 
-  const cancellableStatuses = ['confirmed', 'packed', 'label_created', 'pickup_scheduled'];
+  const cancellableStatuses = [
+    'confirmed',
+    'packed',
+    'label_created',
+    'pickup_scheduled',
+    'new',
+    'processing',
+    'cancelled', // allow re-attempt when local was marked cancelled but SR order still open
+  ];
   if (!cancellableStatuses.includes(shipment.status)) {
     return { success: false, message: `Cannot cancel shipment in "${shipment.status}" state. Only cancellable in: ${cancellableStatuses.join(', ')}` };
   }
@@ -842,6 +1394,55 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
           const text = await res.text();
           throw new Error(`Delhivery Cancel Error: ${text}`);
         }
+      } else if (config.provider === 'shiprocket') {
+        const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+        const awb = (shipment.awb || trackingNumber || '').trim();
+        const orderCancelId = meta?.order_id;
+        let orderCancelled = false;
+        let awbCancelled = false;
+        const errors: string[] = [];
+
+        // 1) Cancel AWB if present
+        if (awb && !/^MOCK/i.test(awb)) {
+          try {
+            await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', {
+              awbs: [awb],
+            });
+            awbCancelled = true;
+            console.log(`[Logistics] Shiprocket AWB cancel ok for ${awb}`);
+          } catch (awbCancelErr: any) {
+            errors.push(`AWB cancel: ${awbCancelErr.message}`);
+            console.warn(`[Logistics] Shiprocket AWB cancel failed for ${awb}:`, awbCancelErr.message);
+          }
+        }
+
+        // 2) Always cancel Shiprocket ORDER (otherwise it stays NEW with no AWB)
+        if (orderCancelId) {
+          try {
+            await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
+              ids: [Number(orderCancelId) || orderCancelId],
+            });
+            orderCancelled = true;
+            console.log(`[Logistics] Shiprocket order cancel ok for id=${orderCancelId}`);
+          } catch (orderCancelErr: any) {
+            errors.push(`Order cancel: ${orderCancelErr.message}`);
+            console.warn(
+              `[Logistics] Shiprocket order cancel failed for ${orderCancelId}:`,
+              orderCancelErr.message
+            );
+          }
+        } else {
+          errors.push('No Shiprocket order_id on shipment — SR order may remain NEW');
+        }
+
+        if (!orderCancelled && !awbCancelled) {
+          throw new Error(errors.join('; ') || 'Shiprocket cancel failed');
+        }
+        if (!orderCancelled) {
+          throw new Error(
+            `Shipment/AWB may be cleared, but Shiprocket order was not cancelled: ${errors.join('; ')}`
+          );
+        }
       } else {
         await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
           ids: [trackingNumber],
@@ -849,7 +1450,7 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
       }
     } catch (err: any) {
       console.error(`[Logistics] Cancel shipment failed:`, err.message);
-      // Still mark as cancelled in DB
+      return { success: false, message: err.message || 'Cancel failed on carrier' };
     }
   }
 
@@ -857,6 +1458,32 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     where: { id: shipment.id },
     data: { status: 'cancelled' },
   });
+
+  if (shipment.orderId) {
+    await prisma.order.update({
+      where: { id: shipment.orderId },
+      data: { 
+        deliveryStatus: 'cancelled',
+        trackingNumber: null,
+      },
+    }).catch(() => {});
+
+    const targetOrder = await prisma.order.findUnique({
+      where: { id: shipment.orderId },
+      select: { internalOrderNumber: true, razorpayOrderId: true, shopifyOrderId: true },
+    }).catch(() => null);
+
+    const wsWhere: Array<Record<string, string>> = [];
+    if (targetOrder?.internalOrderNumber) wsWhere.push({ orderNumber: targetOrder.internalOrderNumber });
+    if (targetOrder?.razorpayOrderId) wsWhere.push({ razorpayOrderId: targetOrder.razorpayOrderId });
+    if (targetOrder?.shopifyOrderId) wsWhere.push({ shopifyOrderId: targetOrder.shopifyOrderId });
+    if (wsWhere.length) {
+      await prisma.webStoreOrder.updateMany({
+        where: { OR: wsWhere },
+        data: { deliveryStatus: 'cancelled' },
+      }).catch(() => {});
+    }
+  }
 
   return { success: true, message: 'Shipment cancelled successfully' };
 }

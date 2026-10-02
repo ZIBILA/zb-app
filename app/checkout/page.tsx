@@ -879,9 +879,12 @@ export default function CheckoutPage() {
 
   const shipping = 0;
 
-  // Checkout Session & Prefetch Guard
+  // One pending Order per browser checkout session
   const [checkoutSessionId] = useState(() => `cs_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
   const lastPrefetchKeyRef = useRef("");
+  const prefetchInFlightKeyRef = useRef<string | null>(null);
+  const pendingPrefetchKeyRef = useRef<string | null>(null);
+  const [prefetchKick, setPrefetchKick] = useState(0);
 
   // Coupon state
   const [couponCode, setCouponCode] = useState("");
@@ -941,14 +944,21 @@ export default function CheckoutPage() {
     fetchStoreCredits();
   }, [address.email, address.phone, session]);
 
-  // Background prefetch of the Razorpay order when entering Step 2 or changing payment configurations
+  // Prefetch Razorpay/COD order on step 2 (serialize overlapping requests)
   useEffect(() => {
     if (step === 2 && items.length > 0 && address.name && address.phone && finalTotal > 0) {
       const currentPrefetchKey = `${paymentMethod}_${finalTotal}_${codFee}_${couponValid ? couponCode : ''}_${couponDiscount}_${appliedStoreCredit}_${items.length}`;
-      if (lastPrefetchKeyRef.current === currentPrefetchKey && prefetchedOrder) {
+      // Freshness tracked via refs — do not depend on prefetchedOrder state (avoids feedback loops)
+      if (lastPrefetchKeyRef.current === currentPrefetchKey) {
         return;
       }
+      if (prefetchInFlightKeyRef.current) {
+        pendingPrefetchKeyRef.current = currentPrefetchKey;
+        return;
+      }
+      pendingPrefetchKeyRef.current = null;
       lastPrefetchKeyRef.current = currentPrefetchKey;
+      prefetchInFlightKeyRef.current = currentPrefetchKey;
 
       const prefetchRazorpayOrder = async () => {
         try {
@@ -997,15 +1007,31 @@ export default function CheckoutPage() {
             });
           } else {
             setPrefetchedOrder(null);
+            if (lastPrefetchKeyRef.current === currentPrefetchKey) {
+              lastPrefetchKeyRef.current = "";
+            }
           }
         } catch (e) {
           console.error("Failed to prefetch Razorpay order:", e);
+          setPrefetchedOrder(null);
+          if (lastPrefetchKeyRef.current === currentPrefetchKey) {
+            lastPrefetchKeyRef.current = "";
+          }
+        } finally {
+          if (prefetchInFlightKeyRef.current === currentPrefetchKey) {
+            prefetchInFlightKeyRef.current = null;
+          }
+          if (pendingPrefetchKeyRef.current) {
+            pendingPrefetchKeyRef.current = null;
+            lastPrefetchKeyRef.current = "";
+            setPrefetchKick((k) => k + 1);
+          }
         }
       };
 
       prefetchRazorpayOrder();
     }
-  }, [step, paymentMethod, total, codFee, address.name, address.email, address.phone, items.length, checkoutSessionId]);
+  }, [step, paymentMethod, finalTotal, codFee, couponValid, couponCode, couponDiscount, appliedStoreCredit, address.name, address.email, address.phone, items.length, checkoutSessionId, prefetchKick]);
 
   useEffect(() => {
     if (!cartLoaded || status === "loading") return;
@@ -1518,12 +1544,12 @@ export default function CheckoutPage() {
     }
   }, [activeCoupons, subtotal, paymentMethod, isManualCoupon, calculateCouponDiscount]);
 
-  // Re-validate coupon when payment method changes (for ALL coupons to ensure PREPAID_ONLY is never allowed for COD)
+  // Re-validate coupon when payment method or subtotal changes (ensures percentages scale with cart size and minOrderValue is re-checked)
   useEffect(() => {
     if (couponCode) {
       handleApplyCoupon(couponCode, paymentMethod, !isManualCoupon);
     }
-  }, [paymentMethod]);
+  }, [paymentMethod, subtotal]);
 
   const handlePlaceOrder = async () => {
     // Synchronous double-submit lock check

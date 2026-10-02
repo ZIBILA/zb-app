@@ -55,8 +55,12 @@ export async function GET(
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
-    // Determine if we should bypass auth (recent checkout confirmation)
-    const isRecent = Date.now() - new Date(order.createdAt).getTime() < 15 * 60 * 1000; // 15 mins
+    // Confirmation pages use unguessable cuid URLs. Allow a short post-checkout
+    // window without session (sessionStorage can be missing after Razorpay
+    // callback / new tab / hotspot). After that, require owner session.
+    const CONFIRMATION_BYPASS_MS = 24 * 60 * 60 * 1000; // 24h
+    const ageMs = Date.now() - new Date(order.createdAt).getTime();
+    const isRecent = ageMs >= 0 && ageMs < CONFIRMATION_BYPASS_MS;
     const shouldBypass = bypassAuth && isRecent;
 
     if (!shouldBypass) {

@@ -35,6 +35,7 @@ export default function OrderConfirmationPage() {
   const { data: session } = useSession();
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<"not_found" | "unauthorized" | null>(null);
   const [purchasedPixel, setPurchasedPixel] = useState(false);
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
@@ -155,17 +156,26 @@ export default function OrderConfirmationPage() {
   useEffect(() => {
     const fetchOrder = async () => {
       try {
-        const lastPlacedId = typeof window !== "undefined" ? sessionStorage.getItem("last_placed_order_id") : null;
-        const url = lastPlacedId === id 
-          ? `/api/orders/${id}?bypass_auth=true` 
-          : `/api/orders/${id}`;
-        const res = await fetch(url);
-        const data = await res.json();
+        // Always request confirmation bypass — Razorpay callbacks / new contexts
+        // often lack last_placed_order_id in sessionStorage.
+        const res = await fetch(`/api/orders/${id}?bypass_auth=true`);
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
           setOrder(data.order || data);
+          setFetchError(null);
+          try {
+            sessionStorage.setItem("last_placed_order_id", String(id));
+          } catch {
+            /* ignore */
+          }
+        } else if (res.status === 401 || res.status === 403) {
+          setFetchError("unauthorized");
+        } else {
+          setFetchError("not_found");
         }
       } catch (e) {
         console.error("Error fetching order", e);
+        setFetchError("not_found");
       } finally {
         setLoading(false);
       }
@@ -185,8 +195,30 @@ export default function OrderConfirmationPage() {
   if (!order) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background p-6 text-center space-y-4">
-        <h1 className="text-xl font-bold tracking-tight">Order not found</h1>
-        <Link href="/" className="text-[12px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors underline">Return Home</Link>
+        <h1 className="text-xl font-bold tracking-tight">
+          {fetchError === "unauthorized" ? "Sign in to view this order" : "Order not found"}
+        </h1>
+        <p className="text-sm text-muted-foreground max-w-sm">
+          {fetchError === "unauthorized"
+            ? "Your payment went through. Log in with the account/email used at checkout to see the confirmation."
+            : "We couldn’t load this confirmation link."}
+        </p>
+        <div className="flex flex-col gap-3 items-center">
+          {fetchError === "unauthorized" && (
+            <Link
+              href={`/login?callbackUrl=${encodeURIComponent(`/orders/${id}/confirmation`)}`}
+              className="text-[12px] font-bold uppercase tracking-widest text-foreground hover:opacity-80 transition-colors underline"
+            >
+              Sign in
+            </Link>
+          )}
+          <Link href="/profile?tab=orders" className="text-[12px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors underline">
+            My Orders
+          </Link>
+          <Link href="/" className="text-[12px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors underline">
+            Return Home
+          </Link>
+        </div>
       </div>
     );
   }

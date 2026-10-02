@@ -41,15 +41,25 @@ export async function POST(req: Request) {
               },
             });
 
-            // Update order delivery status if changed
-            if (status.status.toLowerCase() === 'delivered' && order.deliveryStatus !== 'delivered') {
+            // Update order delivery status for meaningful carrier states (incl. cancelled)
+            const mapped = status.status.toLowerCase();
+            let nextDelivery: string | null = null;
+            if (mapped === 'delivered') nextDelivery = 'delivered';
+            else if (mapped === 'cancelled' || mapped === 'canceled') nextDelivery = 'cancelled';
+            else if (mapped === 'out_for_delivery') nextDelivery = 'out_for_delivery';
+            else if (mapped === 'in_transit' || mapped === 'shipped') nextDelivery = 'shipped';
+            else if (mapped === 'pickup_scheduled' || mapped === 'picked_up') nextDelivery = 'pickup_scheduled';
+            else if (mapped === 'rto') nextDelivery = 'returned_to_origin';
+            else if (mapped === 'confirmed') nextDelivery = 'confirmed';
+
+            if (nextDelivery && order.deliveryStatus !== nextDelivery) {
               await prisma.order.update({
                 where: { id: order.id },
-                data: { deliveryStatus: 'delivered' },
+                data: { deliveryStatus: nextDelivery },
               });
             }
 
-            syncResults.push({ orderId: order.id, status: status.status });
+            syncResults.push({ orderId: order.id, status: status.status, deliveryStatus: nextDelivery });
           }
         } catch (err) {
           console.error(`Sync failed for order ${order.id}:`, err);
