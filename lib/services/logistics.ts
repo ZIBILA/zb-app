@@ -486,6 +486,21 @@ export async function shipOrder(
         const billingPincode = Number(String(address.zip || '').replace(/\D/g, '')) || 0;
         const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
 
+        const billingState = String(address.province || '').trim();
+        const billingCity = String(address.city || '').trim();
+        const billingAddress1 = String(address.address1 || '').trim();
+        const invalidState =
+          !billingState ||
+          /^unknown$/i.test(billingState) ||
+          billingState === '000000';
+        if (!billingAddress1 || !billingCity || invalidState || !billingPincode) {
+          throw new Error(
+            `Cannot book Shiprocket: incomplete shipping address ` +
+              `(state="${billingState || '(empty)'}", city="${billingCity || '(empty)'}", ` +
+              `pincode=${billingPincode || 0}). Fix the order address before booking.`
+          );
+        }
+
         const payload = {
           order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
@@ -493,10 +508,10 @@ export async function shipOrder(
             process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
           billing_customer_name: billingFirstName,
           billing_last_name: billingLastName,
-          billing_address: address.address1,
-          billing_city: address.city,
+          billing_address: billingAddress1,
+          billing_city: billingCity,
           billing_pincode: billingPincode,
-          billing_state: address.province,
+          billing_state: billingState,
           billing_country: address.country || 'India',
           billing_email:
             address.email || (dbOrder as any)?.customer?.email || undefined,

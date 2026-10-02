@@ -576,6 +576,11 @@ export async function POST(req: Request) {
       // Recalculate correct total: prefer server-verified totals when available
       const correctedTotal = orderTotalPrice;
 
+      const wasRazorpayRecovery =
+        (existingPreCreatedOrder.tags || '').includes('RazorpayRecovery') ||
+        existingPreCreatedOrder.shopifySyncStatus === 'needs_review' ||
+        (existingPreCreatedOrder.shopifySyncError || '').includes('pending manual');
+
       const updateData: any = {
         status: isCodOrder ? "open" : "approved",
         paymentStatus: orderPaymentStatus,
@@ -601,6 +606,9 @@ export async function POST(req: Request) {
         // Always refresh address on complete — pre-create may have been sparse / stale
         shippingAddress: JSON.stringify(normalizedAddress || address),
         billingAddress: JSON.stringify(normalizedAddress || address),
+        // Clear recovery hold so Shopify sync can run with real items/address
+        shopifySyncStatus: 'pending',
+        shopifySyncError: null,
       };
 
       localOrder = await prisma.order.update({
@@ -625,6 +633,36 @@ export async function POST(req: Request) {
         })),
       });
       console.log(`[Checkout Complete] Updated pre-created order ${localOrder.id} (${universalOrderNumber}) + refreshed ${resolvedItems.length} item(s)`);
+
+      // If a recovery placeholder already synced to Shopify, cancel it and clear the
+      // link so the choke-point below can create the real order.
+      if (
+        wasRazorpayRecovery &&
+        localOrder.shopifyOrderId &&
+        /^\d+$/.test(String(localOrder.shopifyOrderId))
+      ) {
+        try {
+          const { cancelOrder } = await import('@/lib/shopify-admin');
+          await cancelOrder(String(localOrder.shopifyOrderId), 'other');
+          console.warn(
+            `[Checkout Complete] Cancelled recovery Shopify order ${localOrder.shopifyOrderId} for ${localOrder.id}`
+          );
+        } catch (cancelErr: any) {
+          console.error(
+            `[Checkout Complete] Could not cancel recovery Shopify order ${localOrder.shopifyOrderId}:`,
+            cancelErr?.message
+          );
+        }
+        localOrder = await prisma.order.update({
+          where: { id: localOrder.id },
+          data: {
+            shopifyOrderId: null,
+            shopifyOrderName: null,
+            shopifySyncStatus: 'pending',
+            shopifySyncError: 'Cleared recovery Shopify placeholder for re-sync',
+          },
+        });
+      }
     } else {
       localOrder = await prisma.order.create({
         data: {

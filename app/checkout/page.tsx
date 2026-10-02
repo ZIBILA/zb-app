@@ -1031,7 +1031,7 @@ export default function CheckoutPage() {
 
       prefetchRazorpayOrder();
     }
-  }, [step, paymentMethod, finalTotal, codFee, couponValid, couponCode, couponDiscount, appliedStoreCredit, address.name, address.email, address.phone, items.length, checkoutSessionId, prefetchKick]);
+  }, [step, paymentMethod, finalTotal, codFee, couponValid, couponCode, couponDiscount, appliedStoreCredit, address.name, address.email, address.phone, address.street, address.houseNo, address.city, address.state, address.zip, items.length, checkoutSessionId, prefetchKick]);
 
   useEffect(() => {
     if (!cartLoaded || status === "loading") return;
