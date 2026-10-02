@@ -163,6 +163,14 @@ export async function retryFailedPaidShopifySyncs(limit = 10): Promise<SyncRetry
       shopifyOrderId: null,
       shopifySyncStatus: { in: ['failed', 'pending'] },
       paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] },
+      // Never auto-push Razorpay recovery placeholders (dummy address / unresolved SKU)
+      NOT: {
+        OR: [
+          { shopifySyncStatus: 'needs_review' },
+          { tags: { contains: 'RazorpayRecovery' } },
+          { items: { some: { sku: 'WEBHOOK-RECOVERED-PLACEHOLDER' } } },
+        ],
+      },
     },
     select: {
       id: true,

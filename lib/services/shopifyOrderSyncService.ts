@@ -79,6 +79,30 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
     };
   }
 
+  // Block Razorpay webhook recovery placeholders from creating Shopify orders
+  // until checkout/complete (or admin) replaces items + real address.
+  const reviewGate = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      shopifySyncStatus: true,
+      tags: true,
+      items: { select: { sku: true }, take: 5 },
+    },
+  });
+  const isRecoveryPlaceholder =
+    reviewGate?.shopifySyncStatus === 'needs_review' ||
+    (reviewGate?.tags || '').includes('RazorpayRecovery') ||
+    (reviewGate?.items || []).some((i: { sku: string | null }) => i.sku === 'WEBHOOK-RECOVERED-PLACEHOLDER');
+  if (isRecoveryPlaceholder) {
+    console.warn(
+      `[ShopifyOrderSync] Skipping order ${orderId}: Razorpay recovery placeholder (needs real items/address)`
+    );
+    return {
+      success: false,
+      error: 'Skipping Shopify sync: Razorpay recovery placeholder pending review',
+    };
+  }
+
   // Gate: never create Shopify orders for unpaid / abandoned checkouts
   if (!isShopifySyncEligiblePaymentStatus(existing.paymentStatus)) {
     console.log(

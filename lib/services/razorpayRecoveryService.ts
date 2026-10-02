@@ -224,8 +224,10 @@ export async function recoverOrphanedRazorpayOrder(options: RecoveryOptions): Pr
         orderType: 'WEB_STORE',
         tags: `WebStoreOrder, Web, Razorpay, ${recoveryTag}, zb-order-${universalOrderNumber}`,
         internalOrderNumber: universalOrderNumber,
-        shopifySyncStatus: 'failed',
-        shopifySyncError: 'Order recovered from Razorpay payment; pending manual item review',
+        // NEVER use 'failed'/'pending' here — cron retryFailedPaidShopifySyncs would
+        // push the placeholder to Shopify (dummy address + unresolved SKU).
+        shopifySyncStatus: 'needs_review',
+        shopifySyncError: 'Order recovered from Razorpay payment; pending manual item review — do not auto-sync',
         items: {
           create: lineItemsToCreate,
         },

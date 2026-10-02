@@ -172,15 +172,24 @@ export async function POST(req: Request) {
     let localOrderId: string | null = null;
     let universalOrderNumber: string | null = null;
 
+    // Checkout with items MUST pre-create a local Order linked to this Razorpay order
+    // before the client can pay. Silent pre-create failures cause webhook Path B
+    // (recoverOrphanedRazorpayOrder) → Shopify "Unresolved order" placeholders.
+    const mustPreCreateLocalOrder =
+      !!address && Array.isArray(items) && items.length > 0;
+
     // ─── Pre-Create or Update Pending Order & WebStoreOrder in Local DB ───
-    if (address && items && Array.isArray(items) && items.length > 0) {
+    if (mustPreCreateLocalOrder) {
       try {
         const shop = await prisma.shop.findFirst();
-        if (shop) {
-          // 1. Save Customer & Address (prefer logged-in session customer)
-          const session = await getServerSession(authOptions).catch(() => null);
-          const sessionUserId = (session?.user as any)?.id || null;
-          const { customer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
+        if (!shop) {
+          throw new Error('Shop record not found — cannot pre-create pending order');
+        }
+
+        // 1. Save Customer & Address (prefer logged-in session customer)
+        const session = await getServerSession(authOptions).catch(() => null);
+        const sessionUserId = (session?.user as any)?.id || null;
+        const { customer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
           // 2. Resolve Line Items
           const resolvedItems = await Promise.all(items.map(async (item: any, index: number) => {
@@ -417,9 +426,28 @@ export async function POST(req: Request) {
             maxWait: 10000,
             timeout: 20000,
           });
-        }
+
+          if (!localOrderId) {
+            throw new Error('Pending order upsert completed without localOrderId');
+          }
+
+          // Confirm the paid Razorpay order id is linked before returning to the client
+          const linked = await prisma.order.findFirst({
+            where: { id: localOrderId, razorpayOrderId: rzpOrder.id },
+            select: { id: true },
+          });
+          if (!linked) {
+            throw new Error(`Pending order ${localOrderId} missing razorpayOrderId ${rzpOrder.id}`);
+          }
       } catch (dbErr: any) {
-        console.warn("[Razorpay Pre-Create] Warning pre-creating order:", dbErr.message);
+        console.error("[Razorpay Pre-Create] FAILED — refusing chargeable order:", dbErr.message);
+        return NextResponse.json(
+          {
+            error: "Could not prepare your order for payment. Please try again.",
+            detail: process.env.NODE_ENV === 'development' ? dbErr.message : undefined,
+          },
+          { status: 500 }
+        );
       }
     }
 
