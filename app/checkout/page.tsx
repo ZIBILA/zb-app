@@ -1801,6 +1801,9 @@ export default function CheckoutPage() {
               cashbackAmount: fmtPrice(cashbackAmount).amount,
               storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
               guestId: getClientCookie("zb_device_id"),
+              fbp: getClientCookie("_fbp") || undefined,
+              fbc: getClientCookie("_fbc") || undefined,
+              externalId: getClientCookie("zb_external_id") || undefined,
             }),
           });
 

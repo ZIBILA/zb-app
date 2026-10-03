@@ -231,6 +231,69 @@ export async function POST(req: Request) {
 
         paymentLog('info', 'webhook', { message: `Order ${order.id} marked as ${targetPaymentStatus}`, orderId: order.id });
 
+        // Dispatch server-side Meta CAPI Purchase event (Item #30)
+        // Deduplicated with client browser pixel and checkout complete route via eventId = order.id
+        try {
+          const { sendCapiEvent } = await import('@/lib/metaCapi');
+          const orderWithDetails = await prisma.order.findUnique({
+            where: { id: order.id },
+            include: { customer: true, items: true },
+          });
+
+          if (orderWithDetails) {
+            let addr: any = null;
+            try {
+              addr = orderWithDetails.shippingAddress ? JSON.parse(orderWithDetails.shippingAddress) : null;
+            } catch {}
+
+            const metaContentIds = (orderWithDetails.items || []).map((it: any) => {
+              const raw = it.variantId || it.sku || it.productId || '';
+              const s = String(raw);
+              const stripped = s.startsWith('variant:') ? s.slice(8) : s;
+              const m = stripped.match(/(\d+)\s*$/);
+              return m ? m[1] : stripped;
+            });
+
+            const metaContents = (orderWithDetails.items || []).map((it: any, idx: number) => ({
+              id: metaContentIds[idx],
+              quantity: it.quantity || 1,
+              item_price: parseFloat(String(it.price || '0')),
+              title: it.title,
+            }));
+
+            sendCapiEvent({
+              eventName: 'Purchase',
+              eventId: order.id,
+              eventTime: Math.floor(Date.now() / 1000),
+              eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${order.id}/confirmation`,
+              userAgent: 'Razorpay-Webhook/1.0',
+              actionSource: 'website',
+              userData: {
+                em: orderWithDetails.customer?.email || addr?.email || undefined,
+                ph: orderWithDetails.customer?.phone || addr?.phone || undefined,
+                fn: (orderWithDetails.customer?.name || addr?.name || '').trim().split(/\s+/)[0] || undefined,
+                ln: (orderWithDetails.customer?.name || addr?.name || '').trim().split(/\s+/).slice(1).join(' ') || undefined,
+                ct: addr?.city || undefined,
+                st: addr?.state || undefined,
+                zp: addr?.zip || undefined,
+                country: addr?.country || 'in',
+                external_id: orderWithDetails.customerId || undefined,
+              },
+              customData: {
+                value: Number(orderWithDetails.totalPrice || payment.amount / 100),
+                currency: (orderWithDetails.currency || 'INR').toUpperCase(),
+                order_id: order.id,
+                content_type: 'product',
+                content_ids: metaContentIds,
+                contents: metaContents,
+                num_items: (orderWithDetails.items || []).reduce((s: number, it: any) => s + (it.quantity || 1), 0),
+              },
+            }).catch(() => {});
+          }
+        } catch (metaErr: any) {
+          console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr.message);
+        }
+
         // Link WebhookEvent to Order
         await prisma.webhookEvent.update({
           where: { id: webhookRecord.id },
