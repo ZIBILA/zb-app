@@ -1,6 +1,7 @@
 import prisma from '@/lib/db';
 import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
+import { toE164 } from '@/lib/shopify-phone';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -264,7 +265,8 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         const customerName = shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer';
         const nameParts = String(customerName).trim().split(/\s+/).filter(Boolean);
         const customerEmail = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
-        const customerPhone = shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
+        const rawCustomerPhone = shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
+        const customerPhone = toE164(rawCustomerPhone);
 
         const sCustomer = await createCustomer({
           first_name: nameParts[0] || 'Customer',
@@ -425,6 +427,11 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         .trim()
         .split(/\s+/)
         .filter(Boolean);
+      const addrPhone = toE164(
+        shippingAddress.phone ||
+        order.customer?.phone ||
+        webStoreOrder?.customerPhone
+      );
       const addrPayload = {
         first_name: nameParts[0] || 'Customer',
         last_name: nameParts.slice(1).join(' ') || '.',
@@ -434,18 +441,15 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         province: shippingAddress.province || '',
         zip: shippingAddress.zip || '',
         country: shippingAddress.country || 'India',
-        phone:
-          shippingAddress.phone ||
-          order.customer?.phone ||
-          webStoreOrder?.customerPhone ||
-          '',
+        ...(addrPhone ? { phone: addrPhone } : {}),
       };
       shopifyOrderPayload.shipping_address = addrPayload;
       shopifyOrderPayload.billing_address = addrPayload;
     }
 
-    const orderPhone =
-      shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
+    const orderPhone = toE164(
+      shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone
+    );
     if (orderPhone) {
       shopifyOrderPayload.phone = orderPhone;
     }

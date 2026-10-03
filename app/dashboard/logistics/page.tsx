@@ -20,6 +20,7 @@ import {
   CalendarClock,
   Ban,
   RotateCw,
+  AlertTriangle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -113,6 +114,7 @@ export default function LogisticsPage() {
   // Inline Actions
   const [manifestingOrderId, setManifestingOrderId] = useState<string | null>(null);
   const [cancellingAwb, setCancellingAwb] = useState<string | null>(null);
+  const [confirmCancelAwb, setConfirmCancelAwb] = useState<string | null>(null);
 
   // ─── Toast ───────────────────────────────────────────────────────
 
@@ -240,11 +242,14 @@ export default function LogisticsPage() {
 
   // ─── Inline Cancel ────────────────────────────────────────────────
 
-  const handleCancel = async (awb: string) => {
-    if (!window.confirm(`Cancel shipment ${awb}? This cannot be undone.`)) return;
+  const handleCancel = (awb: string) => {
+    setConfirmCancelAwb(awb);
+  };
+
+  const executeCancel = async (awb: string) => {
     setCancellingAwb(awb);
     try {
-      const res = await fetch("/api/delhivery/cancel", {
+      const res = await fetch("/api/admin/logistics/cancel-shipment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ awb }),
@@ -252,9 +257,10 @@ export default function LogisticsPage() {
       const data = await res.json();
       if (data.success) {
         showToast("Shipment cancelled");
+        setConfirmCancelAwb(null);
         fetchShipments();
       } else {
-        showToast(data.error || "Failed to cancel shipment", "error");
+        showToast(data.error || data.message || "Failed to cancel shipment", "error");
       }
     } catch {
       showToast("Failed to cancel shipment", "error");
@@ -881,6 +887,82 @@ export default function LogisticsPage() {
               )}
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── Cancel Shipment Modal ─────────────────────────────────────── */}
+      <AnimatePresence>
+        {confirmCancelAwb && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !cancellingAwb && setConfirmCancelAwb(null)}
+              className="absolute inset-0 bg-background/80 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 16 }}
+              className="relative w-full max-w-md p-8 md:p-10 rounded-[36px] bg-[#0C0C0C]/95 border border-foreground/10 shadow-2xl space-y-6 text-left z-10"
+            >
+              <div className="flex items-center gap-4 text-rose-500">
+                <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold uppercase tracking-tight text-foreground leading-none">
+                    Cancel Shipment
+                  </h3>
+                  <p className="text-[10px] text-rose-500/70 uppercase tracking-[0.2em] mt-1.5 font-bold">
+                    Logistics Command
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-[13px] text-foreground/80 leading-relaxed font-medium">
+                  Are you sure you want to cancel shipment for AWB{' '}
+                  <strong className="text-foreground font-mono bg-foreground/5 px-2 py-0.5 rounded border border-foreground/10">
+                    {confirmCancelAwb}
+                  </strong>
+                  ?
+                </p>
+                <div className="p-4 rounded-2xl bg-rose-500/5 border border-rose-500/10 space-y-2 text-[11px] text-rose-400/90 font-medium">
+                  <p>• The shipment will be voided with the logistics partner.</p>
+                  <p>• Wallet balance will be refunded where applicable.</p>
+                  <p>• This action cannot be reversed once confirmed.</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmCancelAwb(null)}
+                  disabled={Boolean(cancellingAwb)}
+                  className="flex-1 py-4 bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 text-foreground/60 hover:text-foreground text-[10px] font-bold uppercase tracking-widest rounded-2xl transition-all disabled:opacity-50"
+                >
+                  Keep Shipment
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeCancel(confirmCancelAwb)}
+                  disabled={Boolean(cancellingAwb)}
+                  className="flex-1 py-4 bg-rose-500 hover:bg-rose-600 text-white text-[10px] font-bold uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-rose-500/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
+                >
+                  {cancellingAwb ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Cancelling...
+                    </>
+                  ) : (
+                    'Confirm Cancel'
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
