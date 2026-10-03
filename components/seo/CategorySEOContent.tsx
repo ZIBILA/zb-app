@@ -248,37 +248,6 @@ export function CategorySEOContent({ slug }: CategorySEOContentProps) {
         <p style={{ opacity: 0.75, lineHeight: 1.7, maxWidth: '65ch', marginBottom: '2rem' }}>
           {c.intro}
         </p>
-
-        <div itemScope itemType="https://schema.org/FAQPage">
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem' }}>
-            Frequently Asked Questions
-          </h3>
-          {c.faqs.map((faq) => (
-            <div
-              key={faq.q}
-              itemScope
-              itemProp="mainEntity"
-              itemType="https://schema.org/Question"
-              style={{ marginBottom: '1.25rem' }}
-            >
-              <h4
-                itemProp="name"
-                style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.4rem' }}
-              >
-                {faq.q}
-              </h4>
-              <div
-                itemScope
-                itemProp="acceptedAnswer"
-                itemType="https://schema.org/Answer"
-              >
-                <p itemProp="text" style={{ opacity: 0.72, fontSize: '0.875rem', lineHeight: 1.7 }}>
-                  {faq.a}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
       </section>
     </>
   )
