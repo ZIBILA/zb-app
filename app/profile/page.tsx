@@ -33,6 +33,7 @@ import {
   AlertCircle,
   Heart,
   Wallet,
+  Coins,
 } from "lucide-react";
 import Link from "next/link";
 import AffiliateCreatorTab from "@/components/profile/AffiliateCreatorTab";
@@ -78,6 +79,7 @@ export default function ProfilePage() {
   
   // Preferences settings
   const [storeCreditPreference, setStoreCreditPreference] = useState(false);
+  const [showCoinsModal, setShowCoinsModal] = useState(false);
   const [emailOptedOut, setEmailOptedOut] = useState(false);
   const [whatsappOptedOut, setWhatsappOptedOut] = useState(false);
   const [smsOptedOut, setSmsOptedOut] = useState(false);
@@ -477,17 +479,27 @@ export default function ProfilePage() {
             {[
               { label: "ORDERS", value: totalOrders, icon: ShoppingBag },
               { label: "WISHLIST", value: mounted ? bookmarks.length : 0, icon: Heart },
-              { label: "STORE CREDIT", value: storeCredits > 0 ? `₹${storeCredits.toLocaleString("en-IN")}` : "₹0", icon: Wallet },
-            ].map(({ label, value, icon: Icon }, index) => (
+              { 
+                label: "STORE COINS", 
+                value: storeCredits > 0 ? `${storeCredits.toLocaleString("en-IN")} Coins` : "0 Coins", 
+                icon: Coins,
+                subtext: storeCredits > 0 ? `(₹${storeCredits.toLocaleString("en-IN")})` : undefined,
+                onClick: () => setShowCoinsModal(true)
+              },
+            ].map(({ label, value, icon: Icon, subtext, onClick }, index) => (
               <div
                 key={label}
+                onClick={onClick}
                 className={`flex flex-col items-center justify-center relative py-2 ${
+                  onClick ? "cursor-pointer hover:opacity-80 transition-opacity" : ""
+                } ${
                   index < 2 ? "after:content-[''] after:absolute after:right-0 after:top-1/4 after:h-1/2 after:w-[1px] after:bg-foreground/10" : ""
                 }`}
               >
                 <Icon className="w-5 h-5 text-foreground mb-1.5" strokeWidth={1.25} />
                 <p className="text-[8px] font-bold text-foreground/40 tracking-wider mb-2">{label}</p>
                 <p className="text-[14px] font-black text-foreground leading-none">{value}</p>
+                {subtext && <p className="text-[8.5px] text-amber-500 font-medium mt-1">{subtext}</p>}
               </div>
             ))}
           </div>
@@ -900,9 +912,12 @@ export default function ProfilePage() {
                   {/* Store Credit Preference */}
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/80">Refund to Store Credits</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/80">Refund to Store Coins</p>
+                        <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 font-semibold">1 Coin = ₹1</span>
+                      </div>
                       <p className="text-[8.5px] text-foreground/45 mt-0.5 leading-relaxed">
-                        Opt in to receive instant store credits for returned items instead of waiting for bank accounts refund.
+                        Opt in to receive instant store coins for returned items instead of waiting for bank refund. Store Coins can be redeemed exclusively in the Zica Bella mobile app.
                       </p>
                     </div>
                     <button
@@ -1212,6 +1227,55 @@ export default function ProfilePage() {
                   {savingAddress ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Save Address"}
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Store Coins Info & Redemption Modal */}
+      <AnimatePresence>
+        {showCoinsModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-md"
+            onClick={() => setShowCoinsModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm apple-glass-capsule p-6 rounded-3xl border border-border/40 shadow-2xl relative flex flex-col items-center text-center gap-4 bg-background/95"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 flex items-center justify-center text-amber-500">
+                <Coins className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-foreground">Store Coins Wallet</h3>
+                <p className="text-xs text-amber-500 font-semibold mt-1">
+                  Balance: {storeCredits.toLocaleString("en-IN")} Coins (₹{storeCredits.toLocaleString("en-IN")})
+                </p>
+                <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
+                  Store Coins are redeemable exclusively on the Zica Bella mobile app (1 Coin = ₹1). Open or download the app to redeem your coins towards any order!
+                </p>
+              </div>
+              <div className="flex flex-col w-full gap-2 pt-2">
+                <a
+                  href="/app"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <span>Download / Open App</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowCoinsModal(false)}
+                  className="w-full py-2.5 px-4 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground font-medium text-xs transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

@@ -88,6 +88,17 @@ export async function POST(req: Request) {
 
     const parsedStoreCredit = Number(storeCreditAmount) || 0;
 
+    // Item #25: Store coins can only be redeemed through the mobile app
+    if (parsedStoreCredit > 0 || paymentMethod === "store_credit" || paymentMethod === "STORE_CREDIT") {
+      return NextResponse.json(
+        {
+          error: "Store coins can only be redeemed through the Zica Bella mobile app. Please open or download the app to redeem your coins.",
+          appDownloadUrl: "/app"
+        },
+        { status: 400 }
+      );
+    }
+
     // Resolve COD upfront fee from dashboard config only — never trust client-supplied codFee
     // (Razorpay create-order also charges this same server value).
     const configuredCodFee = isCodOrder ? await getConfiguredCodUpfrontAmount() : 0;

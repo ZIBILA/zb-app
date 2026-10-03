@@ -120,6 +120,18 @@ export async function POST(req: Request) {
     const rawSubtotal = Number(subtotal || amount || 0);
     const rawShipping = Number(shipping || 0);
     const rawStoreCredit = Number(storeCreditAmount || 0);
+
+    // Item #25: Store coins can only be redeemed through the mobile app
+    if (rawStoreCredit > 0) {
+      return NextResponse.json(
+        {
+          error: "Store coins can only be redeemed through the Zica Bella mobile app. Please open or download the app to redeem your coins.",
+          appDownloadUrl: "/app"
+        },
+        { status: 400 }
+      );
+    }
+
     const calculatedTotal = Math.max(0, rawSubtotal + rawShipping - finalCouponDiscount - rawStoreCredit);
 
     // COD: always charge the dashboard-configured upfront fee (ignore client amount for safety).
