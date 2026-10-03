@@ -419,10 +419,12 @@ export async function shipOrder(
           include: { items: true, customer: { select: { email: true } } },
         });
 
-        const rawMethod = (dbOrder?.paymentMethod || '').toLowerCase();
-        const tagsLower = (dbOrder?.tags || '').toLowerCase();
-        const noteLower = (dbOrder?.note || '').toLowerCase();
-        const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
+        const isCodOrder = isShiprocketCodOrder({
+          paymentMethod: dbOrder?.paymentMethod,
+          paymentStatus: dbOrder?.paymentStatus,
+          tags: dbOrder?.tags,
+          note: dbOrder?.note,
+        });
 
         const {
           resolveStoredCodUpfrontPaid,
@@ -643,10 +645,12 @@ export async function shipOrder(
           }
         });
 
-        const rawMethod = (dbOrder?.paymentMethod || '').toLowerCase();
-        const tagsLower = (dbOrder?.tags || '').toLowerCase();
-        const noteLower = (dbOrder?.note || '').toLowerCase();
-        const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
+        const isCodOrder = isShiprocketCodOrder({
+          paymentMethod: dbOrder?.paymentMethod,
+          paymentStatus: dbOrder?.paymentStatus,
+          tags: dbOrder?.tags,
+          note: dbOrder?.note,
+        });
 
         let codUpfront = 0;
         if (isCodOrder) {
@@ -1154,6 +1158,30 @@ export function parseShiprocketMeta(raw: string | null | undefined): ShiprocketS
   }
 }
 
+/**
+ * Shared COD detection for courier serviceability + booking.
+ * Must stay in sync across getShiprocketCouriers / bookShiprocketOrderWithCourier / shipOrder.
+ */
+export function isShiprocketCodOrder(order: {
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
+  tags?: string | null;
+  note?: string | null;
+}): boolean {
+  const rawMethod = String(order.paymentMethod || '').toLowerCase().trim();
+  const status = String(order.paymentStatus || '').toLowerCase().trim();
+  const tagsLower = String(order.tags || '').toLowerCase();
+  const noteLower = String(order.note || '').toLowerCase();
+  return (
+    rawMethod === 'cod' ||
+    status === 'partially_paid' ||
+    status === 'cod_upfront_paid' ||
+    tagsLower.includes('cod') ||
+    noteLower.includes('cod order') ||
+    noteLower.includes('upfront fee paid')
+  );
+}
+
 async function getLatestShipmentForOrder(orderId: string) {
   return prisma.shipment.findFirst({
     where: { orderId },
@@ -1277,10 +1305,7 @@ export async function getShiprocketCouriers(
 
   const pickupPincode = await getShiprocketPickupPincode();
 
-  const isCodOrder = String(order.paymentMethod || '').toLowerCase().trim() === 'cod' ||
-    order.paymentStatus === 'partially_paid' ||
-    order.paymentStatus === 'cod_upfront_paid' ||
-    (order.tags || '').toLowerCase().includes('cod');
+  const isCodOrder = isShiprocketCodOrder(order);
   const codUpfront = Number((order as any).codUpfrontPaid || 0);
   const codAmount = isCodOrder ? Math.max(0, Number(order.totalPrice || 0) - codUpfront) : 0;
 
@@ -1331,8 +1356,82 @@ export async function getShiprocketCouriers(
 }
 
 /**
+ * Assign AWB to a chosen courier and update an existing local shipment row.
+ */
+async function assignCourierAwbAndPersist(
+  localOrderId: string,
+  shipmentRowId: string,
+  srShipmentId: string,
+  srOrderId: string | number | null | undefined,
+  courierId: number,
+  courierName: string
+): Promise<ShipmentResult> {
+  const assignData = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.assignAwb, 'POST', {
+    shipment_id: srShipmentId,
+    courier_id: courierId,
+  });
+  const assignPayload = assignData?.response?.data || assignData?.data || assignData;
+  const assignedAwb = String(assignPayload?.awb_code || '').trim();
+  const assignOk = assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
+  if (!assignOk || !assignedAwb) {
+    throw new Error(
+      `Shiprocket AWB assign failed for courier ${courierId} (${courierName}) on shipment ${srShipmentId}. ` +
+        `Local shipment is saved — retry booking with the same courier to resume. ` +
+        `Details: ${JSON.stringify(assignData).slice(0, 400)}`
+    );
+  }
+
+  const finalCourierName = assignPayload?.courier_name || courierName;
+  const meta: ShiprocketShipmentMeta = {
+    provider: 'shiprocket',
+    shipment_id: srShipmentId,
+    order_id: srOrderId ?? null,
+  };
+
+  await prisma.shipment.update({
+    where: { id: shipmentRowId },
+    data: {
+      awb: assignedAwb,
+      trackingNumber: assignedAwb,
+      trackingUrl: `https://shiprocket.co/tracking/${assignedAwb}`,
+      courier: finalCourierName,
+      status: 'confirmed',
+      rawDelhiveryResponse: JSON.stringify(meta),
+      events: JSON.stringify([
+        {
+          status: 'confirmed',
+          location: 'Warehouse',
+          timestamp: new Date().toISOString(),
+          description: `Shipment booked with AWB ${assignedAwb}`,
+        },
+      ]),
+    },
+  });
+  await prisma.order.update({
+    where: { id: localOrderId },
+    data: { deliveryStatus: 'confirmed' },
+  });
+
+  console.log(
+    `[Shiprocket] AWB ${assignedAwb} assigned via courier ${finalCourierName} for order ${localOrderId}`
+  );
+
+  return {
+    trackingNumber: assignedAwb,
+    trackingUrl: `https://shiprocket.co/tracking/${assignedAwb}`,
+    courier: finalCourierName,
+    shipmentId: String(srShipmentId),
+    shiprocketOrderId: srOrderId != null ? String(srOrderId) : undefined,
+    awb: assignedAwb,
+    status: 'confirmed',
+    deliveryStatus: 'confirmed',
+  };
+}
+
+/**
  * Create a Shiprocket order (without auto-assigning AWB) and then assign AWB
  * for a specific courier_id chosen by the operations team.
+ * Persists the Shiprocket shipment_id before AWB assign so failures can be resumed.
  */
 export async function bookShiprocketOrderWithCourier(
   orderId: string,
@@ -1346,32 +1445,57 @@ export async function bookShiprocketOrderWithCourier(
   }
 
   const preset = PROVIDER_PRESETS.shiprocket;
+  const { resolveLocalOrderId } = await import('@/lib/services/orderLifecycleService');
+  const localOrderId = (await resolveLocalOrderId(orderId)) || orderId;
 
   // Check for existing non-cancelled non-fake shipment
   const existing = await prisma.shipment.findFirst({
-    where: { orderId, status: { not: 'cancelled' } },
+    where: { orderId: localOrderId, status: { not: 'cancelled' } },
     orderBy: { createdAt: 'desc' },
   });
   const existingTn = existing?.trackingNumber || '';
   const isFakeExisting =
     !existingTn || existingTn.startsWith('MOCK') || String(existing?.courier || '').toLowerCase().includes('mock');
   if (existing && !isFakeExisting && existing.awb) {
-    console.log(`[Logistics] Shipment already booked for ${orderId} (AWB: ${existing.awb}) — returning existing`);
+    console.log(`[Logistics] Shipment already booked for ${localOrderId} (AWB: ${existing.awb}) — returning existing`);
     return {
       trackingNumber: existing.awb,
       trackingUrl: existing.trackingUrl || `https://shiprocket.co/tracking/${existing.awb}`,
       courier: existing.courier || courierName,
       awb: existing.awb,
-      shipmentId: undefined,
+      shipmentId: parseShiprocketMeta(existing.rawDelhiveryResponse)?.shipment_id
+        ? String(parseShiprocketMeta(existing.rawDelhiveryResponse)!.shipment_id)
+        : undefined,
       status: existing.status,
     };
   }
+
+  // Resume: Shiprocket order exists locally but AWB assign previously failed
+  if (existing && !isFakeExisting && !existing.awb) {
+    const meta = parseShiprocketMeta(existing.rawDelhiveryResponse);
+    if (meta?.shipment_id) {
+      console.log(
+        `[Shiprocket] Resuming AWB assign for ${localOrderId}: shipment=${meta.shipment_id} courier_id=${courierId}`
+      );
+      return assignCourierAwbAndPersist(
+        localOrderId,
+        existing.id,
+        String(meta.shipment_id),
+        meta.order_id,
+        courierId,
+        courierName
+      );
+    }
+  }
+
   if (existing && isFakeExisting) {
-    await prisma.shipment.deleteMany({ where: { orderId, trackingNumber: { startsWith: 'MOCK' } } });
+    await prisma.shipment.deleteMany({
+      where: { orderId: localOrderId, trackingNumber: { startsWith: 'MOCK' } },
+    });
   }
 
   const dbOrder = await prisma.order.findFirst({
-    where: { OR: [{ id: orderId }, { shopifyOrderId: orderId }] },
+    where: { OR: [{ id: orderId }, { id: localOrderId }, { shopifyOrderId: orderId }] },
     include: { items: true, customer: { select: { email: true } } },
   });
   if (!dbOrder) throw new Error(`Order ${orderId} not found`);
@@ -1399,9 +1523,7 @@ export async function bookShiprocketOrderWithCourier(
     );
   }
 
-  const rawMethod = (dbOrder.paymentMethod || '').toLowerCase();
-  const tagsLower = (dbOrder.tags || '').toLowerCase();
-  const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod');
+  const isCodOrder = isShiprocketCodOrder(dbOrder);
 
   const {
     resolveStoredCodUpfrontPaid,
@@ -1476,38 +1598,45 @@ export async function bookShiprocketOrderWithCourier(
   if (!srOrderId && !srShipmentId) {
     throw new Error(`Shiprocket create returned no order_id/shipment_id: ${JSON.stringify(createData).slice(0, 300)}`);
   }
-
-  console.log(`[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId} — assigning AWB to courier_id=${courierId} (${courierName})`);
-
-  // Assign AWB to the specific courier chosen by the team
-  const assignData = await logisticsApiFetch(preset.endpoints.assignAwb, 'POST', {
-    shipment_id: srShipmentId,
-    courier_id: courierId,
-  });
-  const assignPayload = assignData?.response?.data || assignData?.data || assignData;
-  const assignedAwb = String(assignPayload?.awb_code || '').trim();
-  const assignOk = assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
-  if (!assignOk || !assignedAwb) {
+  if (!srShipmentId) {
     throw new Error(
-      `Shiprocket AWB assign failed for courier ${courierId} (${courierName}): ${JSON.stringify(assignData).slice(0, 400)}`
+      `Shiprocket create returned order_id=${srOrderId} but no shipment_id — cannot assign AWB`
     );
   }
 
-  const finalCourierName = assignPayload?.courier_name || courierName;
-  const result: ShipmentResult = {
-    trackingNumber: assignedAwb,
-    trackingUrl: `https://shiprocket.co/tracking/${assignedAwb}`,
-    courier: finalCourierName,
-    shipmentId: srShipmentId != null ? String(srShipmentId) : undefined,
-    shiprocketOrderId: srOrderId != null ? String(srOrderId) : undefined,
-    awb: assignedAwb,
-    status: 'confirmed',
-    deliveryStatus: 'confirmed',
-  };
+  // Persist before AWB assign so a failed/timed-out assign can be resumed
+  const localId =
+    (await persistShipmentAndDeliveryStatus(localOrderId, {
+      trackingNumber: String(srShipmentId),
+      courier: courierName,
+      shipmentId: String(srShipmentId),
+      shiprocketOrderId: srOrderId != null ? String(srOrderId) : undefined,
+      awb: null,
+      status: 'new',
+      deliveryStatus: 'processing',
+    })) || localOrderId;
 
-  await persistShipmentAndDeliveryStatus(orderId, result);
-  console.log(`[Shiprocket] AWB ${assignedAwb} assigned via courier ${finalCourierName} for order ${orderId}`);
-  return result;
+  const pendingShipment = await prisma.shipment.findFirst({
+    where: { orderId: localId, status: { not: 'cancelled' } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!pendingShipment) {
+    throw new Error(`Failed to persist preliminary Shiprocket shipment for order ${localId}`);
+  }
+
+  console.log(
+    `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId} — ` +
+      `persisted locally as ${pendingShipment.id}; assigning AWB to courier_id=${courierId} (${courierName})`
+  );
+
+  return assignCourierAwbAndPersist(
+    localId,
+    pendingShipment.id,
+    String(srShipmentId),
+    srOrderId,
+    courierId,
+    courierName
+  );
 }
 
 /**

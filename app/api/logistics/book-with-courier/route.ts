@@ -33,9 +33,10 @@ export async function POST(req: Request) {
     const l = Number(length);
     const b = Number(breadth);
     const h = Number(height);
-    if (!w || !l || !b || !h) {
+    const isPositiveFinite = (n: number) => Number.isFinite(n) && n > 0;
+    if (![w, l, b, h].every(isPositiveFinite)) {
       return NextResponse.json(
-        { error: 'weight, length, breadth, and height are required and must be non-zero numbers' },
+        { error: 'weight, length, breadth, and height are required and must be positive finite numbers' },
         { status: 400 }
       );
     }
