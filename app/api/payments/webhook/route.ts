@@ -11,7 +11,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import crypto from "crypto";
 import prisma from "@/lib/db";
-import { shipOrder } from "@/lib/services/logistics";
 import { createCustomer } from "@/lib/shopify-admin";
 import { syncOrderToShopify } from "@/lib/services/shopifyOrderSyncService";
 import {
@@ -287,34 +286,11 @@ export async function POST(req: NextRequest) {
               }
             }
 
-            // Auto-create shipment after payment captured
-            try {
-              const shippingAddress = addressToUse || (order.shippingAddress ? JSON.parse(order.shippingAddress) : null);
-              if (shippingAddress) {
-                await shipOrder(
-                  order.id,
-                  order.items.map((i: any) => ({
-                    title: i.title,
-                    sku: i.sku || undefined,
-                    quantity: i.quantity,
-                    price: i.price,
-                  })),
-                  {
-                    name: shippingAddress.name || "",
-                    address1: shippingAddress.street || shippingAddress.address1 || "",
-                    city: shippingAddress.city || "",
-                    province: shippingAddress.state || "",
-                    zip: shippingAddress.zip || "",
-                    country: shippingAddress.country || "India",
-                    phone: shippingAddress.phone || "",
-                  }
-                );
-                console.log(`[Razorpay Webhook] Auto-shipment created for order ${order.id}`);
-              }
-            } catch (shipErr: any) {
-              // Payment is already confirmed — shipment failure should NOT rollback payment
-              console.error(`[Razorpay Webhook] Auto-shipment failed for order ${order.id}:`, shipErr.message);
-            }
+            // ─── AUTO-SHIPMENT DISABLED ───────────────────────────────────────────────
+            // Shiprocket AWB is no longer auto-assigned on payment capture.
+            // AWB must be generated manually from the Zica Bella dashboard
+            // after entering the correct parcel weight and dimensions.
+            console.log(`[Razorpay Webhook] Skipping auto-shipment for order ${order.id} — manual AWB required from dashboard.`);
           }
         }
       } else if (eventType === "payment.failed") {

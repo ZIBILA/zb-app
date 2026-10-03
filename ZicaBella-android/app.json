@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zica Bella",
     "slug": "zicabella-android",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "scheme": "zicabella",
     "icon": "./assets/zb-logo-icon.png",
@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.zicabella.app",
-      "versionCode": 3,
+      "versionCode": 4,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
