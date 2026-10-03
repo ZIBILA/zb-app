@@ -683,27 +683,27 @@ export default function CheckoutPage() {
       const validZip = data.zip && data.zip !== '0' && data.zip !== 'null' ? String(data.zip).trim() : '';
       const fallbackStreet = data.city || '';
 
-      if (autocompleteInputRef.current && data.city) {
+      if (autocompleteInputRef.current && data.city && !autocompleteInputRef.current.value) {
         autocompleteInputRef.current.value = `${data.city}${data.region ? `, ${data.region}` : ''}`;
       }
 
       setAddress(prev => ({
         ...prev,
         street: prev.street || fallbackStreet,
-        city: data.city || prev.city,
-        state: matchedState || prev.state || data.region,
-        zip: validZip || prev.zip,
-        country: data.country || prev.country,
-        countryCode: data.countryCode || prev.countryCode,
+        city: prev.city || data.city,
+        state: prev.state || matchedState || data.region,
+        zip: prev.zip || validZip,
+        country: prev.country || data.country,
+        countryCode: prev.countryCode || data.countryCode,
         lat: data.lat ?? prev.lat,
         lng: data.lng ?? prev.lng,
       }));
 
       setAddressErrors(prev => {
         const next = { ...prev };
-        if (data.city) delete next.city;
-        if (matchedState || data.region) delete next.state;
-        if (validZip) delete next.zip;
+        if (data.city || prev.city) delete next.city;
+        if (matchedState || data.region || prev.state) delete next.state;
+        if (validZip || prev.zip) delete next.zip;
         if (fallbackStreet || prev.street) delete next.street;
         return next;
       });
@@ -735,14 +735,11 @@ export default function CheckoutPage() {
       return false;
     };
 
-    // Helper for IP fallback
+    // Helper for IP fallback (returns boolean quietly)
     const applyIpFallback = async (): Promise<boolean> => {
       try {
         const ipOk = await fetchIpGeoFallback();
-        if (ipOk) {
-          toast.success("Location detected successfully!");
-          return true;
-        }
+        return ipOk;
       } catch (e) {
         console.warn("[Checkout] IP fallback error:", e);
       }
@@ -755,11 +752,9 @@ export default function CheckoutPage() {
         const perm = await navigator.permissions.query({ name: 'geolocation' as any });
         if (perm.state === 'denied') {
           console.log('[Checkout] Geolocation permission is denied. Using network location.');
-          const ok = await applyIpFallback();
+          await applyIpFallback();
           setLocating(false);
-          if (!ok) {
-            toast.info("Please enter your address details manually.");
-          }
+          toast.info("Location permission was denied. You can enter or correct your address manually below.");
           return;
         }
       } catch {
@@ -768,11 +763,9 @@ export default function CheckoutPage() {
     }
 
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      const ok = await applyIpFallback();
+      await applyIpFallback();
       setLocating(false);
-      if (!ok) {
-        toast.info("Please enter your address details manually.");
-      }
+      toast.info("Location detection is unavailable in this browser. Please enter your address manually below.");
       return;
     }
 
@@ -803,12 +796,15 @@ export default function CheckoutPage() {
       const success = await applyCoordinates(pos.coords.latitude, pos.coords.longitude);
       if (!success) {
         await applyIpFallback();
+        toast.info("Location resolved approximately. Please verify or complete your address details below.");
       }
-    } catch (geoErr) {
+    } catch (geoErr: any) {
       console.log("[Checkout] Geolocation falling back to network:", geoErr);
-      const ok = await applyIpFallback();
-      if (!ok) {
-        toast.info("Please enter your delivery address details below.");
+      await applyIpFallback();
+      if (geoErr?.message === "GEO_TIMEOUT") {
+        toast.info("GPS detection timed out. Please enter or verify your address manually below.");
+      } else {
+        toast.info("Could not detect precise GPS location. Please enter or verify your address manually below.");
       }
     } finally {
       setLocating(false);
@@ -824,12 +820,47 @@ export default function CheckoutPage() {
       if (/^\d{6}$/.test(cleanZip)) {
         setZipLoading(true);
         try {
-          const res = await fetch(`https://api.postalpincode.in/pincode/${cleanZip}`);
-          const data = await res.json();
-          if (data && data[0] && data[0].Status === "Success" && data[0].PostOffice && data[0].PostOffice[0]) {
-            const firstOffice = data[0].PostOffice[0];
-            const resolvedCity = firstOffice.District || firstOffice.Block || firstOffice.Name || "";
-            const resolvedState = matchIndianState(firstOffice.State) || firstOffice.State || "";
+          let resolvedCity = "";
+          let resolvedState = "";
+
+          // 1. Try fast internal Delhivery serviceability endpoint first
+          try {
+            const sRes = await fetch(`/api/logistics/serviceability?pincode=${cleanZip}`, {
+              signal: AbortSignal.timeout(3000)
+            });
+            if (sRes.ok) {
+              const sData = await sRes.json();
+              if (sData.district) resolvedCity = sData.district;
+              if (sData.state) {
+                resolvedState = matchIndianState(sData.state) || sData.state;
+              }
+            }
+          } catch (e) {
+            console.warn("[Checkout] Internal pincode lookup error:", e);
+          }
+
+          // 2. Fallback to public postalpincode API if city/state not resolved
+          if (!resolvedCity || !resolvedState) {
+            try {
+              const res = await fetch(`https://api.postalpincode.in/pincode/${cleanZip}`, {
+                signal: AbortSignal.timeout(4000)
+              });
+              const data = await res.json();
+              if (data && data[0] && data[0].Status === "Success" && data[0].PostOffice && data[0].PostOffice[0]) {
+                const firstOffice = data[0].PostOffice[0];
+                if (!resolvedCity) {
+                  resolvedCity = firstOffice.District || firstOffice.Block || firstOffice.Name || "";
+                }
+                if (!resolvedState) {
+                  resolvedState = matchIndianState(firstOffice.State) || firstOffice.State || "";
+                }
+              }
+            } catch (err) {
+              console.warn("[Checkout] Public pincode lookup error:", err);
+            }
+          }
+
+          if (resolvedCity || resolvedState) {
             setAddress(prev => ({
               ...prev,
               city: resolvedCity || prev.city,
@@ -2678,6 +2709,9 @@ export default function CheckoutPage() {
                           )}
                           <span>Detect my location</span>
                         </button>
+                        <p className="text-[11px] text-foreground/45 text-center -mt-1 font-medium">
+                          Or enter your delivery address details manually below
+                        </p>
                       </div>
 
                       {/* Section 1: Contact Details */}
