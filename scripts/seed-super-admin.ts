@@ -84,7 +84,7 @@ async function main() {
       'DASHBOARD_HOME', 'SUPPORT', 'ORDERS', 'MOBILE_ORDERS', 'CUSTOMERS',
       'PRODUCTS', 'INVENTORY', 'LOGISTICS', 'RETURNS_EXCHANGES', 'STOREFRONT',
       'COMMUNITY', 'MARKETING', 'MANUFACTURING', 'FINANCIAL', 'INTEGRATIONS',
-      'AI_SERVICES', 'SETTINGS', 'ADMIN_USERS', 'AUDIT_LOG'
+      'SETTINGS', 'ADMIN_USERS', 'AUDIT_LOG'
     ];
 
     console.log('🚀 Granting full permissions for all modules...');

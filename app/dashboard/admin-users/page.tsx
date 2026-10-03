@@ -43,7 +43,6 @@ const MODULES = [
   { id: 'MANUFACTURING', label: 'Manufacturing' },
   { id: 'FINANCIAL', label: 'Financial' },
   { id: 'INTEGRATIONS', label: 'Integrations' },
-  { id: 'AI_SERVICES', label: 'AI Services' },
   { id: 'SETTINGS', label: 'Settings' },
   { id: 'ADMIN_USERS', label: 'Admin Users' },
   { id: 'AUDIT_LOG', label: 'Audit Log' },
@@ -144,12 +143,6 @@ const MODULE_PAGES: Record<string, { name: string; href: string }[]> = {
     { name: "Live Shopping Carts", href: "/dashboard/live-carts" },
     { name: "App Logins Log", href: "/dashboard/app-logins" },
     { name: "Razorpay Gateway", href: "/dashboard/payments/razorpay" },
-  ],
-  AI_SERVICES: [
-    { name: "Zica AI Engine Hub", href: "/dashboard/ai" },
-    { name: "Admin AI Controller", href: "/dashboard/ai/admin" },
-    { name: "Customer-Facing AI Settings", href: "/dashboard/ai/user" },
-    { name: "Model Training Center", href: "/dashboard/ai/training" },
   ],
   SETTINGS: [
     { name: "General Settings", href: "/dashboard/settings" }
