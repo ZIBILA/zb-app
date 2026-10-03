@@ -44,7 +44,16 @@ export async function GET(req: Request) {
 
     const where: any = { OR: [] };
     if (customerId) where.OR.push({ id: customerId });
-    if (phone) where.OR.push({ phone });
+    if (phone) {
+      const phoneDigits = phone.replace(/\D/g, '');
+      const last10 = phoneDigits.slice(-10);
+      where.OR.push({ phone });
+      if (phoneDigits !== phone) where.OR.push({ phone: phoneDigits });
+      if (last10.length === 10) {
+        where.OR.push({ phoneLast10: last10 });
+        where.OR.push({ phone: { contains: last10 } });
+      }
+    }
     if (email) where.OR.push({ email });
 
     const customer = await prisma.customer.findFirst({

@@ -666,6 +666,7 @@ export const authOptions: AuthOptions = {
                         fulfillmentStatus: o.fulfillment_status || 'unfulfilled', createdAt: new Date(o.created_at),
                       },
                       update: {
+                        customerId: bgCustId,
                         status: 'active', totalPrice: parseFloat(o.total_price || '0'),
                         paymentStatus: o.financial_status || 'pending',
                         fulfillmentStatus: o.fulfillment_status || 'unfulfilled',

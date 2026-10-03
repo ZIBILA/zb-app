@@ -102,6 +102,20 @@ export async function GET(req: Request) {
       orderBy: { createdAt: "desc" },
     }) : [];
 
+    // Auto-link orphaned orders to primary customer so history is permanently unified
+    const primaryCustomerId = sessionUserId || customerIds[0];
+    if (primaryCustomerId && orders.length > 0) {
+      const orphanedOrderIds = orders
+        .filter((o: any) => o.customerId !== primaryCustomerId)
+        .map((o: any) => o.id);
+      if (orphanedOrderIds.length > 0) {
+        prisma.order.updateMany({
+          where: { id: { in: orphanedOrderIds } },
+          data: { customerId: primaryCustomerId }
+        }).catch((err: any) => console.error("[Orders] Auto-link orders error:", err));
+      }
+    }
+
     // Also query webStoreOrder table directly to catch web purchases
     const webOrClauses: any[] = [];
     if (customerEmails.length > 0) webOrClauses.push({ customerEmail: { in: customerEmails } });
