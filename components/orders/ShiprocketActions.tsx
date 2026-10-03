@@ -14,6 +14,7 @@ import {
   Star,
   Clock,
   IndianRupee,
+  AlertTriangle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -206,9 +207,15 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
     }
   };
 
-  const handleCancel = async () => {
+  const [showCancelModal, setShowCancelModal] = useState(false);
+
+  const handleCancel = () => {
     if (!awb && !trackingNumber) return;
-    if (!window.confirm('Cancel this Shiprocket shipment? Works until the courier has picked it up. Wallet may be refunded by Shiprocket.')) return;
+    setShowCancelModal(true);
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!awb && !trackingNumber) return;
     setLoading('cancel');
     setError(null);
     try {
@@ -219,7 +226,8 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || data.message || 'Failed to cancel');
-      setMessage('Shipment cancelled — click Sync status if panel still looks stale');
+      setMessage('Shipment cancelled — courier AWB has been voided.');
+      setShowCancelModal(false);
       onRefresh();
     } catch (err: any) {
       setError(err.message || 'Request failed');
@@ -301,13 +309,89 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             <button
               onClick={handleCancel}
               disabled={loading !== null}
-              className="flex items-center justify-center gap-2.5 py-4 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50"
+              className="flex items-center justify-center gap-2.5 py-4 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50 active:scale-95"
             >
               {loading === 'cancel' && <Loader2 className="w-4 h-4 animate-spin" />}
               Cancel Shipment
             </button>
           </div>
         </div>
+
+        {/* Custom Confirmation Modal */}
+        <AnimatePresence>
+          {showCancelModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => loading !== 'cancel' && setShowCancelModal(false)}
+                className="absolute inset-0 bg-background/80 backdrop-blur-md"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 16 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 16 }}
+                className="relative w-full max-w-md p-8 md:p-10 rounded-[36px] bg-[#0C0C0C]/95 border border-foreground/10 shadow-2xl space-y-6 text-left z-10"
+              >
+                <div className="flex items-center gap-4 text-rose-500">
+                  <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold uppercase tracking-tight text-foreground leading-none">
+                      Cancel Shipment
+                    </h3>
+                    <p className="text-[10px] text-rose-500/70 uppercase tracking-[0.2em] mt-1.5 font-bold">
+                      Shiprocket Logistics Hub
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-[13px] text-foreground/80 leading-relaxed font-medium">
+                    Are you sure you want to cancel the shipment for AWB{' '}
+                    <strong className="text-foreground font-mono bg-foreground/5 px-2 py-0.5 rounded border border-foreground/10">
+                      {awb || trackingNumber}
+                    </strong>
+                    ?
+                  </p>
+                  <div className="p-4 rounded-2xl bg-rose-500/5 border border-rose-500/10 space-y-2 text-[11px] text-rose-400/90 font-medium">
+                    <p>• The AWB will be immediately voided in Shiprocket.</p>
+                    <p>• Charged freight balance will be refunded to your Shiprocket wallet.</p>
+                    <p>• This action is available until courier physically picks up the package.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCancelModal(false)}
+                    disabled={loading === 'cancel'}
+                    className="flex-1 py-4 bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 text-foreground/60 hover:text-foreground text-[10px] font-bold uppercase tracking-widest rounded-2xl transition-all disabled:opacity-50"
+                  >
+                    Keep Shipment
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmCancel}
+                    disabled={loading === 'cancel'}
+                    className="flex-1 py-4 bg-rose-500 hover:bg-rose-600 text-white text-[10px] font-bold uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-rose-500/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
+                  >
+                    {loading === 'cancel' ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Cancelling...
+                      </>
+                    ) : (
+                      'Confirm Cancel'
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
