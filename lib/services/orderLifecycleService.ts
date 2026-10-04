@@ -153,31 +153,64 @@ export type SyncRetryBatchResult = {
   }>;
 };
 
+/** True when shopifyOrderId is missing or only a local placeholder (not a real Shopify id). */
+function isUnsyncedShopifyIdFilter() {
+  return {
+    OR: [
+      { shopifyOrderId: null },
+      { shopifyOrderId: { startsWith: 'local_' } },
+      { shopifyOrderId: { startsWith: 'app_pending_' } },
+    ],
+  };
+}
+
 /**
- * Retry Shopify sync for paid orders stuck in pending/failed.
- * Used by cron; safe to call from other recovery paths.
+ * Retry Shopify sync for paid orders stuck in pending/failed/not_synced,
+ * including historical failures and stale syncing locks.
+ * Used by cron every ~30 minutes; also safe from recovery paths.
+ *
+ * After ops fix bad data (phone, address, line items), the next cron pass
+ * re-pushes those orders automatically. Recovery placeholders stay excluded.
  */
 export async function retryFailedPaidShopifySyncs(limit = 10): Promise<SyncRetryBatchResult> {
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
   const failedOrders = await prisma.order.findMany({
     where: {
-      shopifyOrderId: null,
-      shopifySyncStatus: { in: ['failed', 'pending'] },
-      paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] },
-      // Never auto-push Razorpay recovery placeholders (dummy address / unresolved SKU)
-      NOT: {
-        OR: [
-          { shopifySyncStatus: 'needs_review' },
-          { tags: { contains: 'RazorpayRecovery' } },
-          { items: { some: { sku: 'WEBHOOK-RECOVERED-PLACEHOLDER' } } },
-        ],
-      },
+      AND: [
+        isUnsyncedShopifyIdFilter(),
+        {
+          OR: [
+            { shopifySyncStatus: { in: ['failed', 'pending', 'not_synced'] } },
+            // Reclaim orders stuck mid-sync (crash / timeout)
+            {
+              AND: [
+                { shopifySyncStatus: 'syncing' },
+                { updatedAt: { lt: tenMinutesAgo } },
+              ],
+            },
+          ],
+        },
+        { paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] } },
+        // Never auto-push Razorpay recovery placeholders (dummy address / unresolved SKU)
+        {
+          NOT: {
+            OR: [
+              { shopifySyncStatus: 'needs_review' },
+              { tags: { contains: 'RazorpayRecovery' } },
+              { items: { some: { sku: 'WEBHOOK-RECOVERED-PLACEHOLDER' } } },
+            ],
+          },
+        },
+      ],
     },
     select: {
       id: true,
       paymentStatus: true,
       shopifySyncStatus: true,
+      shopifyOrderId: true,
     },
-    orderBy: { createdAt: 'asc' },
+    orderBy: { createdAt: 'asc' }, // oldest historical failures first
     take: Math.min(Math.max(limit, 1), 50),
   });
 
@@ -185,6 +218,18 @@ export async function retryFailedPaidShopifySyncs(limit = 10): Promise<SyncRetry
 
   for (const order of failedOrders) {
     try {
+      // Clear local placeholders so the sync claim (shopifyOrderId: null) can proceed
+      if (order.shopifyOrderId && !/^\d+$/.test(String(order.shopifyOrderId))) {
+        await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            shopifyOrderId: null,
+            shopifySyncStatus:
+              order.shopifySyncStatus === 'syncing' ? 'pending' : order.shopifySyncStatus || 'pending',
+          },
+        });
+      }
+
       const syncRes: SyncResult = await syncOrderToShopify(order.id);
       results.push({
         id: order.id,
@@ -211,10 +256,15 @@ export async function markOrderForShopifySyncRetry(orderId: string, reason?: str
   await prisma.order.updateMany({
     where: {
       id: orderId,
-      shopifyOrderId: null,
       paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] },
+      OR: [
+        { shopifyOrderId: null },
+        { shopifyOrderId: { startsWith: 'local_' } },
+        { shopifyOrderId: { startsWith: 'app_pending_' } },
+      ],
     },
     data: {
+      shopifyOrderId: null,
       shopifySyncStatus: 'pending',
       shopifySyncError: reason || 'Queued for Shopify sync retry',
     },

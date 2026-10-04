@@ -116,19 +116,30 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
     };
   }
 
-  // 2. ATOMIC CLAIM: Only one caller can flip status -> 'syncing' while shopifyOrderId is null.
-  // Stale claim recovery: if an order got stuck in 'syncing' > 5 minutes ago, allow reclaiming.
+  // 2. ATOMIC CLAIM: Only one caller can flip status -> 'syncing' while unsynced.
+  // Treat null / local_ / app_pending_ ids as unsynced. Stale 'syncing' (>5 min) can be reclaimed.
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   const claim = await prisma.order.updateMany({
     where: {
       id: orderId,
-      shopifyOrderId: null,
-      OR: [
-        { shopifySyncStatus: { not: 'syncing' } },
-        { updatedAt: { lt: fiveMinutesAgo } },
+      AND: [
+        {
+          OR: [
+            { shopifyOrderId: null },
+            { shopifyOrderId: { startsWith: 'local_' } },
+            { shopifyOrderId: { startsWith: 'app_pending_' } },
+          ],
+        },
+        {
+          OR: [
+            { shopifySyncStatus: { not: 'syncing' } },
+            { updatedAt: { lt: fiveMinutesAgo } },
+          ],
+        },
       ],
     },
     data: {
+      shopifyOrderId: null,
       shopifySyncStatus: 'syncing',
       shopifySyncError: null,
     },
