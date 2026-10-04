@@ -1,58 +1,26 @@
-import type { MetadataRoute } from 'next'
+import type { MetadataRoute } from 'next';
 
 export default function robots(): MetadataRoute.Robots {
-  const baseUrl = 'https://zicabella.com';
-  const disallowedPaths = [
-    '/api/',
-    '/dashboard/',
-    '/web-store/',
-    '/portal/',
-    '/profile/',
-    '/orders/',
-    '/wishlist/',
-    '/checkout/',
-    '/cart',
-    '/login',
-    '/unauthorized',
-  ];
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://zicabella.com';
 
   return {
     rules: [
       {
         userAgent: '*',
         allow: '/',
-        disallow: disallowedPaths,
+        disallow: [
+          '/api/',
+          '/dashboard/',
+          '/checkout/',
+          '/cart',
+          '/orders/',
+          '/profile/',
+          '/login',
+          '/_next/',
+        ],
       },
-      {
-        userAgent: [
-          'GPTBot',
-          'ChatGPT-User',
-          'ClaudeBot',
-          'Claude-Web',
-          'PerplexityBot',
-          'Applebot',
-          'Amazonbot',
-          'cohere-ai',
-          'Google-Extended',
-          'Googlebot',
-          'Bingbot',
-          'OAI-SearchBot', // OpenAI SearchBot for SearchGPT/AEO search
-          'facebookexternalhit',
-        ],
-        allow: [
-          '/',
-          '/products/',
-          '/collections/',
-          '/search',
-          '/blogs/',
-          '/story',
-          '/faq',
-          '/policies/',
-        ],
-        disallow: disallowedPaths,
-      }
     ],
     sitemap: `${baseUrl}/sitemap.xml`,
     host: baseUrl,
-  }
+  };
 }

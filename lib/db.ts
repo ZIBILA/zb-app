@@ -105,24 +105,19 @@ const prismaClientSingleton = () => {
     throw new Error('[DB] Critical database configuration error: SUPABASE_DATABASE_URL / DATABASE_URL is missing or invalid!');
   }
 
-  // Log which URL we're connecting to (redact password)
-  const safeUrl = pgUrl.replace(/:([^@:]+)@/, ':****@');
-  console.log(`[DB] Connecting via: ${safeUrl}`);
-
   try {
     // Connection Pool Configuration:
-    // Configured for Supabase pooler (port 6543 / Supavisor transaction pooler).
-    // Uses max: 10 connections to allow parallel analytics queries without client queue starvation.
-    // statement_timeout = 12s gives aggregations enough headroom while protecting against deadlocks.
-    const poolMax = process.env.PG_POOL_MAX ? parseInt(process.env.PG_POOL_MAX) : 12;
+    // Sized for Supabase pooler — keep modest so concurrent dashboard polls don't starve.
+    const poolMax = process.env.PG_POOL_MAX ? parseInt(process.env.PG_POOL_MAX) : 8;
     const pool = new Pool({
       connectionString: pgUrl,
       ssl: { 
         rejectUnauthorized: false 
       },
       max: poolMax,
-      idleTimeoutMillis: 5000,
-      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 8_000,
+      allowExitOnIdle: true,
     });
 
     // Set statement_timeout on every new connection (12s cap)
@@ -247,10 +242,7 @@ const prismaClientSingleton = () => {
     });
 
     // IMPORTANT: The analytics page must never exceed pool capacity.
-    // This is guaranteed by: (1) client-side wave loading (max 2 routes at a time),
-    // (2) per-route pLimit(4) concurrency limiter, and (3) 30s in-process caching.
     // Do NOT raise poolMax above Supavisor's connection limit.
-    console.log(`[DB] Prisma Client initialized with PgAdapter (Pooler max:${poolMax}, statement_timeout:12s)`);
     return extendedClient as any;
   } catch (error: any) {
     console.error('[DB] Critical Prisma initialization error:', error.message);

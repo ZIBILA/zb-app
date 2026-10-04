@@ -15,14 +15,12 @@ export default function StorefrontLayout({ children, footer }: StorefrontLayoutP
   const pathname = usePathname();
   const [collections, setCollections] = useState<any[]>([]);
   const [isMobileApp, setIsMobileApp] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  
+
   useEffect(() => {
-    setMounted(true);
     fetch("/api/shopify/collections?location=header")
       .then(res => res.json())
       .then(data => setCollections(data))
-      .catch(err => console.error("Error fetching collections for header:", err));
+      .catch(() => {});
 
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -31,6 +29,15 @@ export default function StorefrontLayout({ children, footer }: StorefrontLayoutP
       }
     }
   }, []);
+
+  // Hide footer on these routes even before mount — avoids hydration/hook crashes on checkout
+  const hideFooter =
+    !pathname ||
+    pathname === "/login" ||
+    pathname === "/chat" ||
+    pathname === "/support" ||
+    pathname.startsWith("/checkout") ||
+    pathname.startsWith("/payment");
 
   return (
     <div className="liquid-glass-body min-h-screen max-w-full text-foreground selection:bg-white/10 transition-colors duration-500">
@@ -45,15 +52,7 @@ export default function StorefrontLayout({ children, footer }: StorefrontLayoutP
       </main>
 
       {/* ── Footer (passed from server) ── */}
-      {!isMobileApp && 
-        (!mounted || (
-          pathname !== "/login" && 
-          pathname !== "/chat" && 
-          pathname !== "/support" && 
-          !pathname.startsWith("/checkout") && 
-          !pathname.startsWith("/payment")
-        )) && 
-        footer}
+      {!isMobileApp && !hideFooter && footer}
     </div>
   );
 }

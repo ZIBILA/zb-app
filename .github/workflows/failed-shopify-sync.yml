@@ -1,0 +1,19 @@
+name: Failed Shopify Sync Retry
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping-failed-shopify-sync:
+    name: Ping Failed Shopify Sync Cron
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Retry failed Shopify order syncs
+        run: |
+          curl --retry 3 --retry-delay 10 --retry-all-errors --fail-with-body -sS -m 55 -X GET \
+            "https://app.zicabella.com/api/cron/sync-failed-shopify-orders?limit=25" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

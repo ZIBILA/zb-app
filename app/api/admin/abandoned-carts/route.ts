@@ -97,23 +97,167 @@ export async function GET(req: Request) {
     const statusFilter = searchParams.get("status") || "all"; // all, live, abandoned, converted, expired
     const sourceFilter = searchParams.get("source") || "all"; // all, webstore, app
     const searchQuery = searchParams.get("search") || "";
+    const dateRange = searchParams.get("dateRange") || "all"; // all, today, yesterday, last7days, last30days, custom
+    const customStartDate = searchParams.get("startDate");
+    const customEndDate = searchParams.get("endDate");
+    const followupFilter = searchParams.get("followup") || "all"; // all, today, tomorrow
     const page = parseInt(searchParams.get("page") || "1", 10);
     const limit = parseInt(searchParams.get("limit") || "20", 10);
     const skip = (page - 1) * limit;
 
-    const delaySetting = await prisma.whatsAppSetting.findFirst({
-      where: { key: "delay_abandoned_cart_step1" }
+    const [delay1Setting, delay2Setting, delay3Setting] = await Promise.all([
+      prisma.whatsAppSetting.findFirst({ where: { key: "delay_abandoned_cart_step1" } }),
+      prisma.whatsAppSetting.findFirst({ where: { key: "delay_abandoned_cart_step2" } }),
+      prisma.whatsAppSetting.findFirst({ where: { key: "delay_abandoned_cart_step3" } })
+    ]);
+    const rawDelay1 = delay1Setting ? (parseInt(delay1Setting.value, 10) || 15) : 15;
+    const delay1 = Math.max(rawDelay1, 15);
+    const delay2 = delay2Setting ? (parseInt(delay2Setting.value, 10) || 1440) : 1440;
+    const delay3 = delay3Setting ? (parseInt(delay3Setting.value, 10) || 10080) : 10080;
+    const abandonmentThreshold = new Date(Date.now() - delay1 * 60 * 1000);
+
+    // Calculate IST-aligned (UTC+5:30) date ranges
+    const now = new Date();
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+
+    const getUtcDayRange = (year: number, month: number, date: number) => {
+      const start = new Date(Date.UTC(year, month, date, 0, 0, 0, 0) - IST_OFFSET_MS);
+      const end = new Date(Date.UTC(year, month, date, 23, 59, 59, 999) - IST_OFFSET_MS);
+      return { start, end };
+    };
+
+    const curY = istNow.getUTCFullYear();
+    const curM = istNow.getUTCMonth();
+    const curD = istNow.getUTCDate();
+
+    const todayRange = getUtcDayRange(curY, curM, curD);
+    const yesterdayRange = getUtcDayRange(curY, curM, curD - 1);
+    const tomorrowRange = getUtcDayRange(curY, curM, curD + 1);
+
+    const computeNextFollowup = (c: any) => {
+      const phone = c.phone || c.customer?.phone;
+      if (!phone || c.status === "converted" || c.status === "expired" || c.convertedOrderId) {
+        return null;
+      }
+      const messages = c.whatsAppMessages || [];
+      const sentStages = new Set(
+        messages
+          .filter((m: any) => m.recoveryStage && m.status !== "failed")
+          .map((m: any) => m.recoveryStage)
+      );
+
+      const lastActivity = new Date(c.lastActivityAt || c.createdAt).getTime();
+      let nextStage: number | null = null;
+      let nextFollowupMs: number | null = null;
+      let label = "";
+
+      if (!sentStages.has(1)) {
+        nextStage = 1;
+        nextFollowupMs = lastActivity + delay1 * 60 * 1000;
+        label = "Step 1 Reminder";
+      } else if (!sentStages.has(2)) {
+        nextStage = 2;
+        nextFollowupMs = lastActivity + delay2 * 60 * 1000;
+        label = "Step 2 (Discount)";
+      } else if (!sentStages.has(3)) {
+        nextStage = 3;
+        nextFollowupMs = lastActivity + delay3 * 60 * 1000;
+        label = "Step 3 (Final)";
+      }
+
+      if (!nextFollowupMs || !nextStage) return null;
+
+      return {
+        stage: nextStage,
+        scheduledAt: new Date(nextFollowupMs).toISOString(),
+        label,
+        isOverdue: nextFollowupMs < Date.now()
+      };
+    };
+
+    // Calculate upcoming follow-up metrics across active candidate abandoned carts
+    const candidateCartsForFollowup = await prisma.cart.findMany({
+      where: {
+        items: { some: {} },
+        status: { in: ["active", "abandoned"] },
+        convertedOrderId: null,
+        OR: [
+          { phone: { not: null } },
+          { customer: { phone: { not: null } } }
+        ]
+      },
+      select: {
+        id: true,
+        lastActivityAt: true,
+        createdAt: true,
+        status: true,
+        convertedOrderId: true,
+        phone: true,
+        customer: { select: { phone: true } },
+        whatsAppMessages: {
+          select: { recoveryStage: true, status: true }
+        }
+      }
     });
-    const rawDelayMinutes = delaySetting ? (parseInt(delaySetting.value, 10) || 15) : 15;
-    // Enforce a 15-minute minimum floor so live browsing sessions
-    // are not prematurely classified as "abandoned" in the admin view.
-    const delayMinutes = Math.max(rawDelayMinutes, 15);
-    const abandonmentThreshold = new Date(Date.now() - delayMinutes * 60 * 1000);
+
+    let followupsTodayCount = 0;
+    let followupsTomorrowCount = 0;
+    const todayStartMs = todayRange.start.getTime();
+    const todayEndMs = todayRange.end.getTime();
+    const tomorrowStartMs = tomorrowRange.start.getTime();
+    const tomorrowEndMs = tomorrowRange.end.getTime();
+
+    const todayCartIds = new Set<string>();
+    const tomorrowCartIds = new Set<string>();
+
+    for (const c of candidateCartsForFollowup) {
+      const nf = computeNextFollowup(c);
+      if (nf) {
+        const schedMs = new Date(nf.scheduledAt).getTime();
+        if (schedMs >= todayStartMs && schedMs <= todayEndMs) {
+          followupsTodayCount++;
+          todayCartIds.add(c.id);
+        } else if (schedMs >= tomorrowStartMs && schedMs <= tomorrowEndMs) {
+          followupsTomorrowCount++;
+          tomorrowCartIds.add(c.id);
+        }
+      }
+    }
 
     const andClauses: any[] = [
       { items: { some: {} } },
       { status: { not: "merged" } }
     ];
+
+    // Filter by date range
+    if (dateRange === "today") {
+      andClauses.push({ createdAt: { gte: todayRange.start, lte: todayRange.end } });
+    } else if (dateRange === "yesterday") {
+      andClauses.push({ createdAt: { gte: yesterdayRange.start, lte: yesterdayRange.end } });
+    } else if (dateRange === "last7days") {
+      const start7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      andClauses.push({ createdAt: { gte: start7 } });
+    } else if (dateRange === "last30days") {
+      const start30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      andClauses.push({ createdAt: { gte: start30 } });
+    } else if (dateRange === "custom" && customStartDate) {
+      const [sy, sm, sd] = customStartDate.split("-").map(Number);
+      const start = new Date(Date.UTC(sy, sm - 1, sd, 0, 0, 0, 0) - IST_OFFSET_MS);
+      let end = now;
+      if (customEndDate) {
+        const [ey, em, ed] = customEndDate.split("-").map(Number);
+        end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59, 999) - IST_OFFSET_MS);
+      }
+      andClauses.push({ createdAt: { gte: start, lte: end } });
+    }
+
+    // Filter by scheduled follow-up activity
+    if (followupFilter === "today") {
+      andClauses.push({ id: { in: Array.from(todayCartIds) } });
+    } else if (followupFilter === "tomorrow") {
+      andClauses.push({ id: { in: Array.from(tomorrowCartIds) } });
+    }
 
     // Filter by source
     if (sourceFilter !== "all") {
@@ -188,6 +332,13 @@ export async function GET(req: Request) {
             }
           },
           items: true,
+          whatsAppMessages: {
+            select: {
+              recoveryStage: true,
+              status: true,
+              sentAt: true
+            }
+          },
           convertedOrder: {
             select: {
               id: true,
@@ -298,6 +449,7 @@ export async function GET(req: Request) {
           convertedOrderId: cart.convertedOrderId || (isValidConverted && order ? order.id : null),
           subtotal: recalcSubtotal || cart.subtotal || 0,
           computedStatus,
+          nextFollowup: computeNextFollowup(cart),
           previousConversion: previousConversionMap.get(cart.id) || null
         };
       });
@@ -346,7 +498,9 @@ export async function GET(req: Request) {
         convertedCount,
         expiredCount,
         convertedRevenue,
-        recoveryRate
+        recoveryRate,
+        followupsTodayCount,
+        followupsTomorrowCount
       }
     });
   } catch (error: any) {

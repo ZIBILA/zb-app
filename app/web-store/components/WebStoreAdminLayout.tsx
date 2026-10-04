@@ -23,7 +23,6 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ThemeToggle from "@/components/ThemeToggle";
-import ZicaAI from "@/components/ZicaAI";
 
 interface WebStoreAdminLayoutProps {
   children: React.ReactNode;
@@ -303,9 +302,6 @@ export default function WebStoreAdminLayout({ children, user }: WebStoreAdminLay
           <div className="max-w-[1400px] w-full mx-auto relative overflow-x-clip">{children}</div>
         </div>
       </main>
-
-      {/* Floating AI Command Center */}
-      <ZicaAI />
     </div>
   );
 }

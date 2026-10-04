@@ -34,11 +34,12 @@ export async function GET(req: Request) {
       select: { id: true, email: true, phone: true, phoneLast10: true }
     });
 
-    const customerIds = Array.from(new Set([
-      ...(userIdParam ? [userIdParam] : []),
-      ...(sessionUserId ? [sessionUserId] : []),
-      ...matchingCustomers.map((c: any) => c.id)
-    ])).filter(Boolean);
+    // Only real Customer row ids — never NextAuth ids that are not in Customer
+    const customerIds = matchingCustomers.map((c: any) => c.id as string);
+    const primaryCustomerId =
+      matchingCustomers.find((c: any) => c.id === sessionUserId || c.id === userIdParam)?.id ||
+      matchingCustomers[0]?.id ||
+      null;
 
     const customerEmails = Array.from(new Set([
       ...(sessionEmail ? [sessionEmail] : []),
@@ -101,6 +102,19 @@ export async function GET(req: Request) {
       },
       orderBy: { createdAt: "desc" },
     }) : [];
+
+    // Auto-link orphaned orders only onto a verified Customer id (FK-safe)
+    if (primaryCustomerId && orders.length > 0) {
+      const orphanedOrderIds = orders
+        .filter((o: any) => o.customerId && o.customerId !== primaryCustomerId)
+        .map((o: any) => o.id);
+      if (orphanedOrderIds.length > 0) {
+        prisma.order.updateMany({
+          where: { id: { in: orphanedOrderIds } },
+          data: { customerId: primaryCustomerId }
+        }).catch((err: any) => console.error("[Orders] Auto-link failed:", err?.code || err?.message));
+      }
+    }
 
     // Also query webStoreOrder table directly to catch web purchases
     const webOrClauses: any[] = [];

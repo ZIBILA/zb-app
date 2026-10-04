@@ -11,6 +11,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { debitStoreCredits } from "@/lib/storeCreditsHelper";
 import { assignUniversalOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
+import { sendCapiEvent } from "@/lib/metaCapi";
 import { sendSnapEvent } from '@/lib/snap-capi';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
@@ -87,6 +88,17 @@ export async function POST(req: Request) {
     }
 
     const parsedStoreCredit = Number(storeCreditAmount) || 0;
+
+    // Item #25: Store coins can only be redeemed through the mobile app
+    if (parsedStoreCredit > 0 || paymentMethod === "store_credit" || paymentMethod === "STORE_CREDIT") {
+      return NextResponse.json(
+        {
+          error: "Store coins can only be redeemed through the Zica Bella mobile app. Please open or download the app to redeem your coins.",
+          appDownloadUrl: "/app"
+        },
+        { status: 400 }
+      );
+    }
 
     // Resolve COD upfront fee from dashboard config only — never trust client-supplied codFee
     // (Razorpay create-order also charges this same server value).
@@ -748,6 +760,80 @@ export async function POST(req: Request) {
       }
     }
 
+    // ─── Authoritative server-side Meta CAPI Purchase (Item #30) ───
+    // Fires promptly and accurately when the order is confirmed, preserving campaign
+    // attribution (_fbp, _fbc) and permitted customer matching data.
+    // Uses eventId = localOrder.id to match the browser pixel's Purchase event for deduplication.
+    const resolvedOrderCurrency = (body.currency || 'INR').toUpperCase();
+    try {
+      const cookieHeader = req.headers.get('cookie') || '';
+      const parseCookie = (name: string): string | undefined => {
+        const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+        return match ? decodeURIComponent(match[1]) : undefined;
+      };
+
+      const fbp = body.fbp || parseCookie('_fbp');
+      const fbc = body.fbc || parseCookie('_fbc');
+      const externalId = body.externalId || parseCookie('zb_external_id') || localCustomer.id;
+      const clientIp = req.headers.get('do-connecting-ip')
+        || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
+        || req.headers.get('x-real-ip')
+        || parseCookie('zb_client_ip')
+        || undefined;
+
+      const toMetaItemId = (item: any): string => {
+        const raw = item.variantId || item.sku || item.productId || '';
+        const s = String(raw);
+        const stripped = s.startsWith('variant:') ? s.slice(8) : s;
+        const m = stripped.match(/(\d+)\s*$/);
+        return m ? m[1] : stripped;
+      };
+      const metaContentIds = items.map(toMetaItemId);
+      const metaContents = items.map((item: any, idx: number) => ({
+        id: metaContentIds[idx],
+        quantity: item.quantity || 1,
+        item_price: parseFloat(item.price || '0'),
+        title: item.title,
+      }));
+
+      sendCapiEvent({
+        eventName: 'Purchase',
+        eventId: localOrder.id,
+        eventTime: Math.floor(Date.now() / 1000),
+        eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${localOrder.id}/confirmation`,
+        userAgent: req.headers.get('user-agent') || '',
+        actionSource: 'website',
+        userData: {
+          client_ip_address: clientIp,
+          client_user_agent: req.headers.get('user-agent') || undefined,
+          fbp: fbp || undefined,
+          fbc: fbc || undefined,
+          external_id: externalId || undefined,
+          em: address.email || undefined,
+          ph: address.phone || undefined,
+          fn: address.name?.trim().split(/\s+/)[0] || undefined,
+          ln: address.name?.trim().split(/\s+/).slice(1).join(' ') || undefined,
+          ct: address.city || undefined,
+          st: address.state || undefined,
+          zp: address.zip || undefined,
+          country: address.country || undefined,
+        },
+        customData: {
+          value: Number(orderTotalPrice || total || 0),
+          currency: resolvedOrderCurrency,
+          order_id: localOrder.id,
+          content_type: 'product',
+          content_ids: metaContentIds,
+          contents: metaContents,
+          num_items: items.reduce((sum: number, it: any) => sum + (it.quantity || 1), 0),
+        },
+      }).catch((capiErr: any) => {
+        console.error('[Checkout Complete] Meta CAPI Purchase fire error:', capiErr?.message || capiErr);
+      });
+    } catch (metaErr: any) {
+      console.warn('[Checkout Complete] Meta CAPI Purchase dispatch failed:', metaErr.message);
+    }
+
     // ─── FIX 3: Authoritative server-side Snap CAPI Purchase ───
     // Fires exactly once when payment is verified, regardless of whether the
     // browser reaches the confirmation page. Uses eventId = localOrder.id to
@@ -782,7 +868,7 @@ export async function POST(req: Request) {
         },
         customData: {
           price: Number(total || 0),
-          currency: 'INR',
+          currency: resolvedOrderCurrency,
           item_ids: snapItemIds,
           transaction_id: localOrder.id,
           number_items: items.length || 1,
@@ -806,8 +892,8 @@ export async function POST(req: Request) {
           name: item.title,
           content_type: 'product' as const,
           quantity: item.quantity || 1,
-          amount: toMinorUnits(parseFloat(item.price || '0'), 'INR'),
-          currency: 'INR',
+          amount: toMinorUnits(parseFloat(item.price || '0'), resolvedOrderCurrency),
+          currency: resolvedOrderCurrency,
         };
       });
 
@@ -831,8 +917,8 @@ export async function POST(req: Request) {
         },
         data: {
           type: 'contents',
-          amount: toMinorUnits(Number(total || 0), 'INR'),
-          currency: 'INR',
+          amount: toMinorUnits(Number(total || 0), resolvedOrderCurrency),
+          currency: resolvedOrderCurrency,
           contents: openAiContents,
         },
       }).catch(() => {}); // fire-and-forget; never block order response

@@ -330,7 +330,7 @@ export function emailDailyBriefing(briefingText: string): { subject: string; htm
     <div style="background:rgba(255,255,255,0.03);border-radius:12px;padding:20px;border:1px solid rgba(255,255,255,0.06);margin-bottom:16px;">
       ${htmlContent}
     </div>
-    <a href="https://app.zicabella.com/dashboard/ai" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">Open AI Command Center →</a>
+    <a href="https://app.zicabella.com/dashboard" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">Open Dashboard →</a>
   `;
 
   return {

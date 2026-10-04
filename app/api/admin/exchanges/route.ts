@@ -15,6 +15,9 @@ export async function GET(req: Request) {
     const where = status && status !== 'all' ? { status } : {};
     const standaloneWhere = status && status !== 'all' ? { exchangeRequestId: null, status: status.toUpperCase() } : { exchangeRequestId: null };
 
+    // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
+    const rowCap = Math.min(Math.max(limit + offset, limit), 100);
+
     const [exchanges, total, statusGroups, standaloneExchanges, standaloneTotal, standaloneStatusGroups] = await Promise.all([
       prisma.exchangeRequest.findMany({
         where,
@@ -26,7 +29,8 @@ export async function GET(req: Request) {
             include: { customer: true }
           }
         },
-        orderBy: { createdAt: "desc" }
+        orderBy: { createdAt: "desc" },
+        take: rowCap,
       }),
       prisma.exchangeRequest.count({ where }),
       prisma.exchangeRequest.groupBy({
@@ -42,7 +46,8 @@ export async function GET(req: Request) {
             include: { customer: true }
           }
         },
-        orderBy: { createdAt: "desc" }
+        orderBy: { createdAt: "desc" },
+        take: rowCap,
       }),
       prisma.exchange.count({ where: standaloneWhere }),
       prisma.exchange.groupBy({
@@ -189,8 +194,8 @@ export async function GET(req: Request) {
       statusCounts
     });
   } catch (error: any) {
-    console.error("Fetch Admin Exchanges Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Fetch Admin Exchanges Error:", error?.message || "db error");
+    return NextResponse.json({ error: "Failed to fetch exchanges" }, { status: 500 });
   }
 }
 

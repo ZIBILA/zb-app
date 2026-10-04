@@ -69,6 +69,12 @@ interface Cart {
     totalPrice: number;
     convertedAt: string;
   } | null;
+  nextFollowup?: {
+    stage: number;
+    scheduledAt: string;
+    label: string;
+    isOverdue: boolean;
+  } | null;
 }
 
 function GlassCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -91,6 +97,10 @@ export default function AbandonedCartsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "live" | "abandoned" | "converted" | "expired">("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "webstore" | "app">("all");
+  const [dateRange, setDateRange] = useState<"all" | "today" | "yesterday" | "last7days" | "last30days" | "custom">("all");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [followupFilter, setFollowupFilter] = useState<"all" | "today" | "tomorrow">("all");
   const [selectedCart, setSelectedCart] = useState<Cart | null>(null);
   const [stats, setStats] = useState<any>(null);
   
@@ -117,6 +127,10 @@ export default function AbandonedCartsPage() {
         status: statusFilter,
         source: sourceFilter,
         search: searchQuery,
+        dateRange,
+        ...(dateRange === "custom" && customStartDate ? { startDate: customStartDate } : {}),
+        ...(dateRange === "custom" && customEndDate ? { endDate: customEndDate } : {}),
+        followup: followupFilter,
         page: String(page),
         limit: "15"
       });
@@ -149,7 +163,7 @@ export default function AbandonedCartsPage() {
       setLoading(false);
       if (!isSilent) setRefreshing(false);
     }
-  }, [statusFilter, sourceFilter, searchQuery, page]);
+  }, [statusFilter, sourceFilter, searchQuery, dateRange, customStartDate, customEndDate, followupFilter, page]);
 
   useEffect(() => {
     fetchCarts(false);
@@ -439,47 +453,151 @@ export default function AbandonedCartsPage() {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-center">
-        {/* Search */}
-        <div className="lg:col-span-2 relative group">
-          <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-foreground/20 group-focus-within:text-foreground/50 transition-colors" />
-          <input 
-            type="text" 
-            placeholder="Search by customer phone, email, or name..." 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-foreground/[0.03] border border-foreground/[0.08] rounded-[2rem] pl-16 pr-6 py-5 text-[13px] font-bold focus:outline-none focus:bg-foreground/[0.05] focus:border-foreground/20 transition-all shadow-sm placeholder:text-foreground/20"
-          />
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-center">
+          {/* Search */}
+          <div className="lg:col-span-2 relative group">
+            <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-foreground/20 group-focus-within:text-foreground/50 transition-colors" />
+            <input 
+              type="text" 
+              placeholder="Search by customer phone, email, or name..." 
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
+              className="w-full bg-foreground/[0.03] border border-foreground/[0.08] rounded-[2rem] pl-16 pr-6 py-4 text-[13px] font-bold focus:outline-none focus:bg-foreground/[0.05] focus:border-foreground/20 transition-all shadow-sm placeholder:text-foreground/20"
+            />
+          </div>
+
+          {/* Date Range Filter */}
+          <div className="flex items-center gap-3">
+            <Calendar className="w-4 h-4 text-foreground/40 shrink-0" />
+            <select 
+              value={dateRange}
+              onChange={(e: any) => { setDateRange(e.target.value); setPage(1); }}
+              className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-4 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
+            >
+              <option value="all">All Dates</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="last7days">Last 7 Days</option>
+              <option value="last30days">Last 30 Days</option>
+              <option value="custom">Custom Range</option>
+            </select>
+          </div>
+
+          {/* Status Filter */}
+          <div className="flex items-center gap-3">
+            <span className="text-[9px] font-black uppercase tracking-widest text-foreground/30">Status</span>
+            <select 
+              value={statusFilter}
+              onChange={(e: any) => { setStatusFilter(e.target.value); setPage(1); }}
+              className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-4 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
+            >
+              <option value="all">All Carts</option>
+              <option value="live">Live Only</option>
+              <option value="abandoned">Abandoned Only</option>
+              <option value="converted">Converted Only</option>
+              <option value="expired">Expired Only</option>
+            </select>
+          </div>
+
+          {/* Source Filter */}
+          <div className="flex items-center gap-3">
+            <span className="text-[9px] font-black uppercase tracking-widest text-foreground/30">Source</span>
+            <select 
+              value={sourceFilter}
+              onChange={(e: any) => { setSourceFilter(e.target.value); setPage(1); }}
+              className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-4 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
+            >
+              <option value="all">All Channels</option>
+              <option value="webstore">Web Store</option>
+              <option value="app">Mobile App</option>
+            </select>
+          </div>
         </div>
 
-        {/* Status Filter */}
-        <div className="flex items-center gap-3">
-          <span className="text-[9px] font-black uppercase tracking-widest text-foreground/30">Status</span>
-          <select 
-            value={statusFilter}
-            onChange={(e: any) => setStatusFilter(e.target.value)}
-            className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-5 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
+        {/* Custom Date Range Pickers (rendered when custom is active) */}
+        {dateRange === "custom" && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="flex items-center gap-4 bg-foreground/[0.02] border border-foreground/[0.08] px-6 py-4 rounded-[1.5rem] flex-wrap"
           >
-            <option value="all">All Carts</option>
-            <option value="live">Live Only</option>
-            <option value="abandoned">Abandoned Only</option>
-            <option value="converted">Converted Only</option>
-            <option value="expired">Expired Only</option>
-          </select>
-        </div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-foreground/50">Custom Range:</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-foreground/40">From</span>
+              <input 
+                type="date" 
+                value={customStartDate} 
+                onChange={(e) => { setCustomStartDate(e.target.value); setPage(1); }}
+                className="bg-foreground/[0.04] border border-foreground/10 rounded-xl px-3 py-1.5 text-xs text-foreground font-mono focus:outline-none focus:border-foreground/30"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-foreground/40">To</span>
+              <input 
+                type="date" 
+                value={customEndDate} 
+                onChange={(e) => { setCustomEndDate(e.target.value); setPage(1); }}
+                className="bg-foreground/[0.04] border border-foreground/10 rounded-xl px-3 py-1.5 text-xs text-foreground font-mono focus:outline-none focus:border-foreground/30"
+              />
+            </div>
+          </motion.div>
+        )}
 
-        {/* Source Filter */}
-        <div className="flex items-center gap-3">
-          <span className="text-[9px] font-black uppercase tracking-widest text-foreground/30">Source</span>
-          <select 
-            value={sourceFilter}
-            onChange={(e: any) => setSourceFilter(e.target.value)}
-            className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-5 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
-          >
-            <option value="all">All Channels</option>
-            <option value="webstore">Web Store</option>
-            <option value="app">Mobile App</option>
-          </select>
+        {/* Upcoming Scheduled Follow-up Activity Tabs */}
+        <div className="flex items-center justify-between gap-4 flex-wrap pt-2 border-t border-foreground/[0.05]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[9px] font-black uppercase tracking-widest text-foreground/40 mr-1 flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-foreground/40" />
+              Upcoming Follow-ups:
+            </span>
+            <button
+              onClick={() => { setFollowupFilter("all"); setPage(1); }}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                followupFilter === "all"
+                  ? "bg-foreground text-background shadow-md"
+                  : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
+              }`}
+            >
+              All Sessions
+            </button>
+            <button
+              onClick={() => { setFollowupFilter("today"); setPage(1); }}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${
+                followupFilter === "today"
+                  ? "bg-amber-500 text-white shadow-md shadow-amber-500/20"
+                  : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
+              }`}
+            >
+              <Clock className="w-3 h-3" />
+              <span>Today</span>
+              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                followupFilter === "today" ? "bg-white/20 text-white" : "bg-foreground/10 text-foreground/75"
+              }`}>
+                {stats?.followupsTodayCount || 0}
+              </span>
+            </button>
+            <button
+              onClick={() => { setFollowupFilter("tomorrow"); setPage(1); }}
+              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${
+                followupFilter === "tomorrow"
+                  ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
+                  : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
+              }`}
+            >
+              <Calendar className="w-3 h-3" />
+              <span>Tomorrow</span>
+              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                followupFilter === "tomorrow" ? "bg-white/20 text-white" : "bg-foreground/10 text-foreground/75"
+              }`}>
+                {stats?.followupsTomorrowCount || 0}
+              </span>
+            </button>
+          </div>
+
+          <div className="text-[10px] font-mono text-foreground/40">
+            Showing {carts.length} of {totalCarts} results
+          </div>
         </div>
       </div>
 
@@ -529,6 +647,23 @@ export default function AbandonedCartsPage() {
                           <span className="text-[8px] font-black uppercase tracking-widest text-foreground/30 px-2 py-0.5 rounded-full bg-foreground/[0.04] border border-foreground/5">
                             {cart.source === "app" ? "Mobile App" : "Web Store"}
                           </span>
+                          {cart.nextFollowup && (
+                            <span 
+                              className={`text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full flex items-center gap-1 border ${
+                                cart.nextFollowup.isOverdue
+                                  ? "bg-amber-500/10 border-amber-500/25 text-amber-500"
+                                  : "bg-blue-500/10 border-blue-500/25 text-blue-500"
+                              }`}
+                              title={`Follow-up Scheduled: ${new Date(cart.nextFollowup.scheduledAt).toLocaleString()}`}
+                            >
+                              <Clock className="w-2.5 h-2.5" />
+                              <span>Follow-up: {cart.nextFollowup.label}</span>
+                              <span className="opacity-70 font-mono">
+                                ({new Date(cart.nextFollowup.scheduledAt).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}{" "}
+                                {new Date(cart.nextFollowup.scheduledAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })})
+                              </span>
+                            </span>
+                          )}
                           {cart.previousConversion && (
                             <span 
                               className="text-[8px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full flex items-center gap-1"

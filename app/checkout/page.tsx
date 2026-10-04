@@ -40,7 +40,9 @@ import {
   Globe,
   Map,
   Folder,
-  Wallet
+  Wallet,
+  Coins,
+  ArrowUpRight,
 } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
@@ -683,27 +685,27 @@ export default function CheckoutPage() {
       const validZip = data.zip && data.zip !== '0' && data.zip !== 'null' ? String(data.zip).trim() : '';
       const fallbackStreet = data.city || '';
 
-      if (autocompleteInputRef.current && data.city) {
+      if (autocompleteInputRef.current && data.city && !autocompleteInputRef.current.value) {
         autocompleteInputRef.current.value = `${data.city}${data.region ? `, ${data.region}` : ''}`;
       }
 
       setAddress(prev => ({
         ...prev,
         street: prev.street || fallbackStreet,
-        city: data.city || prev.city,
-        state: matchedState || prev.state || data.region,
-        zip: validZip || prev.zip,
-        country: data.country || prev.country,
-        countryCode: data.countryCode || prev.countryCode,
+        city: prev.city || data.city,
+        state: prev.state || matchedState || data.region,
+        zip: prev.zip || validZip,
+        country: prev.country || data.country,
+        countryCode: prev.countryCode || data.countryCode,
         lat: data.lat ?? prev.lat,
         lng: data.lng ?? prev.lng,
       }));
 
       setAddressErrors(prev => {
         const next = { ...prev };
-        if (data.city) delete next.city;
-        if (matchedState || data.region) delete next.state;
-        if (validZip) delete next.zip;
+        if (data.city || prev.city) delete next.city;
+        if (matchedState || data.region || prev.state) delete next.state;
+        if (validZip || prev.zip) delete next.zip;
         if (fallbackStreet || prev.street) delete next.street;
         return next;
       });
@@ -735,14 +737,11 @@ export default function CheckoutPage() {
       return false;
     };
 
-    // Helper for IP fallback
+    // Helper for IP fallback (returns boolean quietly)
     const applyIpFallback = async (): Promise<boolean> => {
       try {
         const ipOk = await fetchIpGeoFallback();
-        if (ipOk) {
-          toast.success("Location detected successfully!");
-          return true;
-        }
+        return ipOk;
       } catch (e) {
         console.warn("[Checkout] IP fallback error:", e);
       }
@@ -755,11 +754,9 @@ export default function CheckoutPage() {
         const perm = await navigator.permissions.query({ name: 'geolocation' as any });
         if (perm.state === 'denied') {
           console.log('[Checkout] Geolocation permission is denied. Using network location.');
-          const ok = await applyIpFallback();
+          await applyIpFallback();
           setLocating(false);
-          if (!ok) {
-            toast.info("Please enter your address details manually.");
-          }
+          toast.info("Location permission was denied. You can enter or correct your address manually below.");
           return;
         }
       } catch {
@@ -768,11 +765,9 @@ export default function CheckoutPage() {
     }
 
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      const ok = await applyIpFallback();
+      await applyIpFallback();
       setLocating(false);
-      if (!ok) {
-        toast.info("Please enter your address details manually.");
-      }
+      toast.info("Location detection is unavailable in this browser. Please enter your address manually below.");
       return;
     }
 
@@ -803,12 +798,15 @@ export default function CheckoutPage() {
       const success = await applyCoordinates(pos.coords.latitude, pos.coords.longitude);
       if (!success) {
         await applyIpFallback();
+        toast.info("Location resolved approximately. Please verify or complete your address details below.");
       }
-    } catch (geoErr) {
+    } catch (geoErr: any) {
       console.log("[Checkout] Geolocation falling back to network:", geoErr);
-      const ok = await applyIpFallback();
-      if (!ok) {
-        toast.info("Please enter your delivery address details below.");
+      await applyIpFallback();
+      if (geoErr?.message === "GEO_TIMEOUT") {
+        toast.info("GPS detection timed out. Please enter or verify your address manually below.");
+      } else {
+        toast.info("Could not detect precise GPS location. Please enter or verify your address manually below.");
       }
     } finally {
       setLocating(false);
@@ -824,12 +822,47 @@ export default function CheckoutPage() {
       if (/^\d{6}$/.test(cleanZip)) {
         setZipLoading(true);
         try {
-          const res = await fetch(`https://api.postalpincode.in/pincode/${cleanZip}`);
-          const data = await res.json();
-          if (data && data[0] && data[0].Status === "Success" && data[0].PostOffice && data[0].PostOffice[0]) {
-            const firstOffice = data[0].PostOffice[0];
-            const resolvedCity = firstOffice.District || firstOffice.Block || firstOffice.Name || "";
-            const resolvedState = matchIndianState(firstOffice.State) || firstOffice.State || "";
+          let resolvedCity = "";
+          let resolvedState = "";
+
+          // 1. Try fast internal Delhivery serviceability endpoint first
+          try {
+            const sRes = await fetch(`/api/logistics/serviceability?pincode=${cleanZip}`, {
+              signal: AbortSignal.timeout(3000)
+            });
+            if (sRes.ok) {
+              const sData = await sRes.json();
+              if (sData.district) resolvedCity = sData.district;
+              if (sData.state) {
+                resolvedState = matchIndianState(sData.state) || sData.state;
+              }
+            }
+          } catch (e) {
+            console.warn("[Checkout] Internal pincode lookup error:", e);
+          }
+
+          // 2. Fallback to public postalpincode API if city/state not resolved
+          if (!resolvedCity || !resolvedState) {
+            try {
+              const res = await fetch(`https://api.postalpincode.in/pincode/${cleanZip}`, {
+                signal: AbortSignal.timeout(4000)
+              });
+              const data = await res.json();
+              if (data && data[0] && data[0].Status === "Success" && data[0].PostOffice && data[0].PostOffice[0]) {
+                const firstOffice = data[0].PostOffice[0];
+                if (!resolvedCity) {
+                  resolvedCity = firstOffice.District || firstOffice.Block || firstOffice.Name || "";
+                }
+                if (!resolvedState) {
+                  resolvedState = matchIndianState(firstOffice.State) || firstOffice.State || "";
+                }
+              }
+            } catch (err) {
+              console.warn("[Checkout] Public pincode lookup error:", err);
+            }
+          }
+
+          if (resolvedCity || resolvedState) {
             setAddress(prev => ({
               ...prev,
               city: resolvedCity || prev.city,
@@ -897,14 +930,14 @@ export default function CheckoutPage() {
   const [activeCoupons, setActiveCoupons] = useState<any[]>([]);
   const [isManualCoupon, setIsManualCoupon] = useState(false);
 
-  // Store Credit Wallet state
+  // Store Credit Wallet state (Item #25: visible on web, redemption exclusive to mobile app)
   const [availableStoreCredit, setAvailableStoreCredit] = useState(0);
-  const [useStoreCredit, setUseStoreCredit] = useState(false);
+  const [showCoinsModal, setShowCoinsModal] = useState(false);
 
-  // Calculate totals including Store Credit deduction
+  // Store coins redemption is exclusive to mobile app (per brief item #25)
+  const appliedStoreCredit = 0;
   const totalBeforeStoreCredit = subtotal - (applyAsStoreCredit ? 0 : couponDiscount) + shipping;
-  const appliedStoreCredit = useStoreCredit ? Math.min(availableStoreCredit, totalBeforeStoreCredit) : 0;
-  const finalTotal = Math.max(0, totalBeforeStoreCredit - appliedStoreCredit);
+  const finalTotal = Math.max(0, totalBeforeStoreCredit);
   const total = finalTotal;
 
   // Calculate COD upfront fee:
@@ -1642,8 +1675,8 @@ export default function CheckoutPage() {
       }
 
       const effectiveTotalBeforeSC = subtotal - (applyAsStoreCredit ? 0 : activeCouponDiscount) + shipping;
-      const effectiveSC = useStoreCredit ? Math.min(availableStoreCredit, effectiveTotalBeforeSC) : 0;
-      const effectiveFinalTotal = Math.max(0, effectiveTotalBeforeSC - effectiveSC);
+      const effectiveSC = 0;
+      const effectiveFinalTotal = Math.max(0, effectiveTotalBeforeSC);
 
       const convertedItems = items.map(item => ({
         ...item,
@@ -1768,6 +1801,9 @@ export default function CheckoutPage() {
               cashbackAmount: fmtPrice(cashbackAmount).amount,
               storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
               guestId: getClientCookie("zb_device_id"),
+              fbp: getClientCookie("_fbp") || undefined,
+              fbc: getClientCookie("_fbc") || undefined,
+              externalId: getClientCookie("zb_external_id") || undefined,
             }),
           });
 
@@ -2084,39 +2120,42 @@ export default function CheckoutPage() {
           ))}
         </div>
 
-        {/* Store Credit Wallet Card (Domestic India only) */}
+        {/* Store Coins Wallet Card (Domestic India only) - Item #25 */}
         {!isInternational && availableStoreCredit > 0 && (
-          <div className="apple-glass-capsule p-3.5 rounded-2xl flex flex-col gap-2.5 transition-all duration-300 border-emerald-500/20 bg-emerald-500/[0.04]">
+          <div className="apple-glass-capsule p-3.5 rounded-2xl flex flex-col gap-2.5 transition-all duration-300 border-amber-500/20 bg-amber-500/[0.04]">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 shrink-0">
-                  <Wallet className="w-4 h-4" />
+                <div className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-500 shrink-0">
+                  <Coins className="w-4 h-4" />
                 </div>
                 <div>
                   <h4 className="text-[10px] font-semibold text-foreground tracking-wide leading-none">
-                    Store Credit Wallet
+                    Store Coins Balance
                   </h4>
-                  <p className="text-[8.5px] text-emerald-400 font-light mt-0.5">
-                    Available: ₹{availableStoreCredit.toLocaleString('en-IN')}
+                  <p className="text-[8.5px] text-amber-500 font-medium mt-0.5">
+                    {availableStoreCredit.toLocaleString('en-IN')} Coins (₹{availableStoreCredit.toLocaleString('en-IN')})
                   </p>
                 </div>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useStoreCredit}
-                  onChange={(e) => setUseStoreCredit(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-8 h-4.5 bg-foreground/15 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-emerald-500"></div>
-              </label>
+              <button
+                type="button"
+                onClick={() => setShowCoinsModal(true)}
+                className="px-2.5 py-1 text-[9px] font-semibold rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <span>Redeem Coins</span>
+              </button>
             </div>
-            {useStoreCredit && appliedStoreCredit > 0 && (
-              <div className="text-[8.5px] font-light text-emerald-400/90 flex justify-between items-center pt-1 border-t border-emerald-500/10">
-                <span>Store Credit Discount</span>
-                <span className="font-semibold">- ₹{appliedStoreCredit.toLocaleString('en-IN')}</span>
-              </div>
-            )}
+            <div className="text-[8px] text-foreground/50 flex items-center justify-between pt-1 border-t border-amber-500/10">
+              <span>Redeemable only on the mobile app</span>
+              <a
+                href="/app"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber-500 hover:underline font-medium inline-flex items-center gap-0.5"
+              >
+                Get App <ArrowUpRight className="w-2.5 h-2.5" />
+              </a>
+            </div>
           </div>
         )}
 
@@ -2678,6 +2717,9 @@ export default function CheckoutPage() {
                           )}
                           <span>Detect my location</span>
                         </button>
+                        <p className="text-[11px] text-foreground/45 text-center -mt-1 font-medium">
+                          Or enter your delivery address details manually below
+                        </p>
                       </div>
 
                       {/* Section 1: Contact Details */}
@@ -3035,6 +3077,58 @@ export default function CheckoutPage() {
           </div>
         </div>
       </div>
+
+      {/* Store Coins App-Only Redemption Modal */}
+      <AnimatePresence>
+        {showCoinsModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-md"
+            onClick={() => setShowCoinsModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm apple-glass-capsule p-6 rounded-3xl border border-border/40 shadow-2xl relative flex flex-col items-center text-center gap-4 bg-background/95"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 flex items-center justify-center text-amber-500">
+                <Coins className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-foreground">Redeem Store Coins</h3>
+                <p className="text-xs text-amber-500 font-semibold mt-1">
+                  Available: {availableStoreCredit.toLocaleString('en-IN')} Coins (₹{availableStoreCredit.toLocaleString('en-IN')})
+                </p>
+                <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
+                  Store Coins can only be redeemed through the Zica Bella mobile app. Open or download the app to use your coins towards this order!
+                </p>
+              </div>
+              <div className="flex flex-col w-full gap-2 pt-2">
+                <a
+                  href="/app"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <span>Download / Open App</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowCoinsModal(false)}
+                  className="w-full py-2.5 px-4 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground font-medium text-xs transition-colors cursor-pointer"
+                >
+                  Continue on Web
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

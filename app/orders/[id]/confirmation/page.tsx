@@ -44,13 +44,25 @@ export default function OrderConfirmationPage() {
   useEffect(() => {
     if (order) {
       const storageKey = `meta_purchase_fired_${order.id}`;
-      const hasFired = typeof window !== 'undefined' ? sessionStorage.getItem(storageKey) : null;
-      if (!hasFired) {
+      // Prevent duplicate events across sessions/tabs and prevent re-firing on stale order receipts
+      const alreadyFired = typeof window !== 'undefined'
+        ? (localStorage.getItem(storageKey) === 'true' || sessionStorage.getItem(storageKey) === 'true')
+        : false;
+      const orderAgeHours = order.createdAt
+        ? (Date.now() - new Date(order.createdAt).getTime()) / (1000 * 60 * 60)
+        : 0;
+      const isFreshOrder = orderAgeHours < 24;
+
+      if (!alreadyFired && isFreshOrder) {
         if (typeof window !== 'undefined') {
-          sessionStorage.setItem(storageKey, 'true');
+          try {
+            localStorage.setItem(storageKey, 'true');
+            sessionStorage.setItem(storageKey, 'true');
+          } catch {}
         }
 
         const val = parseFloat(order.totalPrice || "0");
+        const orderCurrency = (order.currency || "INR").toUpperCase();
 
         // FIX 2: Prefer Shopify variant ID for Snap catalog/DPA matching.
         // OrderItem.sku often holds 'variant:NUMERIC_ID' or the raw Shopify variant ID.
@@ -106,8 +118,8 @@ export default function OrderConfirmationPage() {
           title: item.title
         })) || [];
 
-        trackPurchase(order.id, val, 'INR', contentIds, userData, storedCategory, contents);
-        trackSnapPurchase(order.id, val, 'INR', contentIds, userData, storedCategory, contents.length);
+        trackPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents);
+        trackSnapPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents.length);
 
         // OpenAI Ads — order_created with minor-unit amounts
         const openAiContents = order.items?.map((item: any) => ({
@@ -115,12 +127,12 @@ export default function OrderConfirmationPage() {
           name: item.title,
           content_type: 'product' as const,
           quantity: item.quantity || 1,
-          amount: toMinorUnits(parseFloat(item.price || '0'), 'INR'),
-          currency: 'INR',
+          amount: toMinorUnits(parseFloat(item.price || '0'), orderCurrency),
+          currency: orderCurrency,
         })) || [];
-        trackOpenAiOrderCreated(order.id, val, 'INR', openAiContents, userData);
+        trackOpenAiOrderCreated(order.id, val, orderCurrency, openAiContents, userData);
 
-        zbTrackPurchase(order.id, val, { num_items: contentIds.length, currency: 'INR' });
+        zbTrackPurchase(order.id, val, { num_items: contentIds.length, currency: orderCurrency });
 
         // FIX 1b: After a guest purchase, reset identity so the next guest
         // on this device gets a fresh external_id and no stale PII cookies.
@@ -133,6 +145,7 @@ export default function OrderConfirmationPage() {
         setPurchasedPixel(true);
 
         const val = parseFloat(order.totalPrice || "0");
+        const orderCurrency = (order.currency || "INR").toUpperCase();
 
         const isCod = order.isCod || (order.paymentMethod || "").toUpperCase() === "COD";
         const eventName = isCod ? "COD Order Placed" : "Purchase Completed";
@@ -143,7 +156,7 @@ export default function OrderConfirmationPage() {
           orderId: order.id,
           metadata: {
             value: val,
-            currency: "INR",
+            currency: orderCurrency,
             content_ids: order.items?.map((item: any) => item.productId || item.variantId) || [],
             num_items: order.items?.length || 0,
             paymentMethod: order.paymentMethod

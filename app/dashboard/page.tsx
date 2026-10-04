@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -125,10 +125,6 @@ const PAGE_NAMES: Record<string, string> = {
   "/dashboard/live-carts": "Live Shoppers",
   "/dashboard/app-logins": "App Sessions",
   "/dashboard/payments/razorpay": "Razorpay Settings",
-  "/dashboard/ai": "AI Assistant Hub",
-  "/dashboard/ai/admin": "AI Model Settings",
-  "/dashboard/ai/user": "AI User Prompts",
-  "/dashboard/ai/training": "AI Dataset Training",
   "/dashboard/settings": "General Settings",
   "/dashboard/admin-users": "Administrators Panel",
   "/dashboard/audit-log": "System Audit Trail",
@@ -153,30 +149,34 @@ export default function DashboardOverview() {
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
   const hasDashboardHome = isSuperAdmin || permissions.some((p: any) => p.module === "DASHBOARD_HOME" && p.canView);
 
+  const refreshInFlight = useRef(false);
+  const lastRefreshAt = useRef(0);
+
   const fetchStats = async (silent = false) => {
     if (!silent && !stats) setLoading(true);
     try {
-      const [ordersRes, productsRes, customersRes] = await Promise.all([
-        fetch("/api/shopify/orders?limit=50"),
-        fetch("/api/shopify/products?limit=250"),
-        fetch("/api/shopify/customers?limit=50"),
-      ]);
+      // Sequential fetches avoid DB/Shopify connection stampedes on poll
+      const orderLimit = silent ? 10 : 50;
+      const productLimit = silent ? 50 : 100;
+      const customerLimit = silent ? 20 : 50;
 
+      const ordersRes = await fetch(`/api/shopify/orders?limit=${orderLimit}`);
       const ordersData = await ordersRes.json();
-      const productsData = await productsRes.json();
-      const customersData = await customersRes.json();
-
       const orders = ordersData.orders || [];
+
+      const productsRes = await fetch(`/api/shopify/products?limit=${productLimit}`);
+      const productsData = await productsRes.json();
       const products = productsData.products || [];
+
+      const customersRes = await fetch(`/api/shopify/customers?limit=${customerLimit}`);
+      const customersData = await customersRes.json();
       const customers = customersData.customers || [];
 
-      // Calculate revenue from orders
       const totalRevenue = orders.reduce(
         (sum: number, o: any) => sum + parseFloat(o.total_price || "0"),
         0
       );
 
-      // Find low stock variants
       const lowStockProducts: DashboardStats["lowStockProducts"] = [];
       for (const p of products) {
         for (const v of p.variants || []) {
@@ -202,7 +202,7 @@ export default function DashboardOverview() {
         lowStockProducts: lowStockProducts.slice(0, 6),
       });
     } catch (err) {
-      console.error("Dashboard fetch error:", err);
+      console.error("Dashboard fetch error");
     } finally {
       setLoading(false);
     }
@@ -262,18 +262,16 @@ export default function DashboardOverview() {
 
   const fetchServiceSummary = async () => {
     try {
-      const [returnsRes, exchangesRes] = await Promise.all([
-        fetch("/api/admin/returns?status=all"),
-        fetch("/api/admin/exchanges?status=all"),
-      ]);
-
+      // Small page size — counts come from statusCounts; avoid loading full history
+      const returnsRes = await fetch("/api/admin/returns?status=all&limit=10");
       const returnsData = await returnsRes.json();
+      const exchangesRes = await fetch("/api/admin/exchanges?status=all&limit=10");
       const exchangesData = await exchangesRes.json();
 
       const returns = returnsData.returns || [];
       const exchanges = exchangesData.exchanges || [];
-      const returnsSummary = returnsData.summary || {};
-      const exchangesSummary = exchangesData.summary || {};
+      const returnsSummary = returnsData.statusCounts || returnsData.summary || {};
+      const exchangesSummary = exchangesData.statusCounts || exchangesData.summary || {};
 
       // Build recent activity feed (last 10)
       const activity: ServiceSummary["recentActivity"] = [];
@@ -321,54 +319,9 @@ export default function DashboardOverview() {
 
   const fetchServiceSummaryOnly = async () => {
     try {
-      const [returnsRes, exchangesRes] = await Promise.all([
-        fetch("/api/admin/returns?status=all"),
-        fetch("/api/admin/exchanges?status=all"),
-      ]);
-
-      const returnsData = await returnsRes.json();
-      const exchangesData = await exchangesRes.json();
-
-      const returns = returnsData.returns || [];
-      const exchanges = exchangesData.exchanges || [];
-
-      const activity: ServiceSummary["recentActivity"] = [];
-
-      for (const r of returns.slice(0, 5)) {
-        activity.push({
-          id: r.id,
-          type: "return",
-          status: r.status,
-          productTitle: r.product?.title || "Unknown",
-          customerName: r.customer?.name || "Unknown",
-          date: r.requestedAt || r.updatedAt,
-          orderId: r.order?.shopifyOrderId || "",
-        });
-      }
-
-      for (const e of exchanges.slice(0, 5)) {
-        activity.push({
-          id: e.id,
-          type: "exchange",
-          status: e.status,
-          productTitle: `${e.originalProduct?.title || "?"} → ${e.newProduct?.title || "?"}`,
-          customerName: e.order?.customer?.name || "Unknown",
-          date: e.createdAt || e.updatedAt,
-          orderId: e.order?.shopifyOrderId || "",
-        });
-      }
-
-      activity.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-      setServiceSummary({
-        pendingReturns: 0,
-        pendingExchanges: 0,
-        totalReturns: returns.length,
-        totalExchanges: exchanges.length,
-        recentActivity: activity.slice(0, 8),
-      });
-    } catch (err) {
-      console.error("Failed to fetch returns/exchanges feed:", err);
+      await fetchServiceSummary();
+    } catch {
+      // fetchServiceSummary already handles errors
     }
   };
 
@@ -413,9 +366,18 @@ export default function DashboardOverview() {
 
   useEffect(() => {
     if (!hasDashboardHome) return;
-    const handleSyncEvent = () => {
-      fetchStats(true);
-      fetchServiceSummary();
+    const handleSyncEvent = async () => {
+      const now = Date.now();
+      // Throttle: skip if a refresh is running or last refresh was < 45s ago
+      if (refreshInFlight.current || now - lastRefreshAt.current < 45_000) return;
+      refreshInFlight.current = true;
+      lastRefreshAt.current = now;
+      try {
+        await fetchStats(true);
+        await fetchServiceSummary();
+      } finally {
+        refreshInFlight.current = false;
+      }
     };
     window.addEventListener("realtime-sync", handleSyncEvent);
     return () => window.removeEventListener("realtime-sync", handleSyncEvent);

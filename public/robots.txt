@@ -1,7 +1,0 @@
-User-agent: *
-Allow: /
-Disallow: /dashboard/
-Disallow: /api/
-Disallow: /auth/
-Disallow: /_next/
-Sitemap: https://zicabella.com/sitemap.xml

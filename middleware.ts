@@ -75,12 +75,6 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/dashboard/payments/razorpay",
     "/dashboard/global-store",
   ],
-  AI_SERVICES: [
-    "/dashboard/ai",
-    "/dashboard/ai/admin",
-    "/dashboard/ai/user",
-    "/dashboard/ai/training",
-  ],
   SETTINGS: ["/dashboard/settings"],
   ADMIN_USERS: ["/dashboard/admin-users"],
   AUDIT_LOG: ["/dashboard/audit-log"],
@@ -108,6 +102,11 @@ export default withAuth(
     // Allow login page to load without checks to avoid redirect loop
     if (pathname === '/dashboard/login') {
       return NextResponse.next();
+    }
+
+    // Developer Brief #26: admin-dashboard AI UI removed (customer-facing Zica AI stays)
+    if (pathname === '/dashboard/ai' || pathname.startsWith('/dashboard/ai/')) {
+      return NextResponse.redirect(new URL('/dashboard', req.url));
     }
 
     // Allow webhook / payment-provider callbacks through without auth or CSRF.

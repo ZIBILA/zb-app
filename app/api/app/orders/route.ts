@@ -53,6 +53,7 @@ export async function GET(req: Request) {
     }
 
     let customerIds: string[] = [];
+    let appOrClauses: any[] = [];
 
     if (orderId) {
       // Direct order lookup – no need for customer resolution
@@ -68,6 +69,7 @@ export async function GET(req: Request) {
         customerWhere.OR.push({ phone });
         if (phoneDigits !== phone) customerWhere.OR.push({ phone: phoneDigits });
         if (last10.length === 10) {
+          customerWhere.OR.push({ phoneLast10: last10 });
           customerWhere.OR.push({ phone: { contains: last10 } });
         }
       }
@@ -80,13 +82,32 @@ export async function GET(req: Request) {
 
       const customers = await prisma.customer.findMany({
         where: customerWhere,
-        select: { id: true },
+        select: { id: true, email: true, phone: true, phoneLast10: true },
       });
 
       if (customers.length === 0) {
         return NextResponse.json({ orders: [] }, { headers: corsHeaders });
       }
       customerIds = customers.map((c: { id: string }) => c.id);
+
+      const matchedEmails = Array.from(new Set([
+        ...(email ? [email] : []),
+        ...customers.map((c: any) => c.email).filter(Boolean) as string[]
+      ]));
+      const matchedPhones = Array.from(new Set([
+        ...(phone ? [phone] : []),
+        ...customers.map((c: any) => c.phone).filter(Boolean) as string[]
+      ]));
+      const matchedPhoneLast10s = Array.from(new Set([
+        ...(phone && phone.replace(/\D/g, '').length >= 10 ? [phone.replace(/\D/g, '').slice(-10)] : []),
+        ...customers.map((c: any) => c.phoneLast10).filter(Boolean) as string[]
+      ])).filter(Boolean);
+
+      appOrClauses = [];
+      if (customerIds.length > 0) appOrClauses.push({ customerId: { in: customerIds } });
+      if (matchedEmails.length > 0) appOrClauses.push({ customer: { email: { in: matchedEmails } } });
+      if (matchedPhones.length > 0) appOrClauses.push({ customer: { phone: { in: matchedPhones } } });
+      if (matchedPhoneLast10s.length > 0) appOrClauses.push({ customer: { phoneLast10: { in: matchedPhoneLast10s } } });
     }
 
     const orders = await prisma.order.findMany({
@@ -97,7 +118,7 @@ export async function GET(req: Request) {
           { tags: { contains: 'AppOrder' } }
         ]
       } : (orderId ? { id: orderId } : { 
-        customerId: { in: customerIds },
+        OR: appOrClauses && appOrClauses.length > 0 ? appOrClauses : [{ customerId: { in: customerIds } }],
         NOT: {
           OR: [
             { status: { in: ['failed', 'FAILED', 'payment_failed', 'payment_pending'] } },
@@ -130,6 +151,20 @@ export async function GET(req: Request) {
       orderBy: { createdAt: 'desc' },
       ...(limit ? { skip: offset, take: limit } : {}),
     });
+
+    // Auto-link only onto a verified Customer id from the lookup above (FK-safe)
+    const targetCustomerId = customerIds.find((id) => id === customerId) || customerIds[0];
+    if (targetCustomerId && orders.length > 0) {
+      const orphanedIds = orders
+        .filter((o: any) => o.customerId && o.customerId !== targetCustomerId)
+        .map((o: any) => o.id);
+      if (orphanedIds.length > 0) {
+        prisma.order.updateMany({
+          where: { id: { in: orphanedIds } },
+          data: { customerId: targetCustomerId }
+        }).catch((err: any) => console.error('[App Orders] Auto-link failed:', err?.code || err?.message));
+      }
+    }
 
     const formatted = orders.map((o: any) => {
       const latestShipment = o.shipments?.sort(

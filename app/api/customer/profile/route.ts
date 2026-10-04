@@ -12,36 +12,38 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const whereClause: any = { OR: [] };
-    if (session.user.email) {
-      whereClause.OR.push({ email: session.user.email });
+    const sessionUserId = (session.user as any)?.id || (session as any)?.customer?.id || null;
+    const sessionEmail = session.user?.email ? session.user.email.trim().toLowerCase() : null;
+    const sessionPhone = (session.user as any)?.phone ? String((session.user as any).phone).trim() : null;
+    const phoneDigits = sessionPhone ? sessionPhone.replace(/\D/g, '') : null;
+    const phoneLast10 = phoneDigits && phoneDigits.length >= 10 ? phoneDigits.slice(-10) : null;
+
+    const customerWhereClauses: any[] = [];
+    if (sessionUserId) customerWhereClauses.push({ id: sessionUserId });
+    if (sessionEmail) customerWhereClauses.push({ email: sessionEmail });
+    if (sessionPhone) {
+      customerWhereClauses.push({ phone: sessionPhone });
+      if (phoneDigits && phoneDigits !== sessionPhone) {
+        customerWhereClauses.push({ phone: phoneDigits });
+      }
     }
-    const userId = (session.user as any).id;
-    if (userId) {
-      whereClause.OR.push({ id: userId });
+    if (phoneLast10) {
+      customerWhereClauses.push({ phoneLast10: phoneLast10 });
+      customerWhereClauses.push({ phone: { contains: phoneLast10 } });
     }
 
-    if (whereClause.OR.length === 0) {
+    if (customerWhereClauses.length === 0) {
       return NextResponse.json({ error: "No valid user identifier" }, { status: 400 });
     }
 
-    let customer = await prisma.customer.findFirst({
-      where: whereClause,
+    const matchingCustomers = await prisma.customer.findMany({
+      where: { OR: customerWhereClauses },
       include: {
-        orders: {
-          include: {
-            items: {
-              include: {
-                product: true
-              }
-            }
-          },
-          orderBy: { createdAt: "desc" },
-          take: 5
-        },
         communityMember: true
       }
     });
+
+    let customer = matchingCustomers.find((c: any) => c.id === sessionUserId) || matchingCustomers[0] || null;
 
     // If customer has no name or orders, try a quick sync from Shopify
     if (customer && (!customer.name || customer.name === 'New User') && customer.phone) {
@@ -58,17 +60,6 @@ export async function GET() {
               totalSpent: parseFloat(shopifyCustomer.total_spent || "0"),
             },
             include: {
-              orders: {
-                include: {
-                  items: {
-                    include: {
-                      product: true
-                    }
-                  }
-                },
-                orderBy: { createdAt: "desc" },
-                take: 5
-              },
               communityMember: true
             }
           });
@@ -82,9 +73,91 @@ export async function GET() {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
     }
 
+    // Only verified Customer row ids (never raw session ids that may not exist in Customer)
+    const customerIds = Array.from(new Set([
+      ...matchingCustomers.map((c: any) => c.id),
+      customer.id
+    ])).filter(Boolean);
+
+    const customerEmails = Array.from(new Set([
+      ...(sessionEmail ? [sessionEmail] : []),
+      ...matchingCustomers.map((c: any) => c.email).filter(Boolean) as string[],
+      ...(customer.email ? [customer.email] : [])
+    ]));
+
+    const customerPhones = Array.from(new Set([
+      ...(sessionPhone ? [sessionPhone] : []),
+      ...matchingCustomers.map((c: any) => c.phone).filter(Boolean) as string[],
+      ...(customer.phone ? [customer.phone] : [])
+    ]));
+
+    const customerPhoneLast10s = Array.from(new Set([
+      ...(phoneLast10 ? [phoneLast10] : []),
+      ...matchingCustomers.map((c: any) => c.phoneLast10).filter(Boolean) as string[],
+      ...(customer.phoneLast10 ? [customer.phoneLast10] : [])
+    ]));
+
+    // Query master orders with broad identity matching (capturing guest and past checkouts)
+    const masterOrClauses: any[] = [];
+    if (customerIds.length > 0) masterOrClauses.push({ customerId: { in: customerIds } });
+    if (customerEmails.length > 0) masterOrClauses.push({ customer: { email: { in: customerEmails } } });
+    if (customerPhones.length > 0) masterOrClauses.push({ customer: { phone: { in: customerPhones } } });
+    if (customerPhoneLast10s.length > 0) masterOrClauses.push({ customer: { phoneLast10: { in: customerPhoneLast10s } } });
+
+    const customerOrders = masterOrClauses.length > 0 ? await prisma.order.findMany({
+      where: {
+        OR: masterOrClauses,
+        NOT: {
+          OR: [
+            {
+              AND: [
+                { internalOrderNumber: { startsWith: 'ZBPP' } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'PAID'] } },
+              ],
+            },
+            {
+              AND: [
+                { internalOrderNumber: { startsWith: 'ZBPF' } },
+                { paymentStatus: { notIn: ['paid', 'partially_paid', 'cod_upfront_paid', 'PAID'] } },
+              ],
+            },
+            { paymentStatus: { in: ['failed', 'FAILED', 'voided'] } },
+            { status: { in: ['payment_failed', 'failed', 'FAILED', 'payment_pending'] } }
+          ]
+        }
+      },
+      include: {
+        items: {
+          include: {
+            product: true
+          }
+        },
+        shipments: true
+      },
+      orderBy: { createdAt: "desc" }
+    }) : [];
+
+    // Auto-link orphaned orders onto the resolved Customer row (FK-safe)
+    const orphanedOrderIds = customerOrders
+      .filter((o: any) => o.customerId && o.customerId !== customer.id)
+      .map((o: any) => o.id);
+    if (orphanedOrderIds.length > 0) {
+      prisma.order.updateMany({
+        where: { id: { in: orphanedOrderIds } },
+        data: { customerId: customer.id }
+      }).catch((err: any) => console.error("[Profile] Auto-link failed:", err?.code || err?.message));
+    }
+
+    const orderIds = customerOrders.map((o: any) => o.id);
+
     // Load active and historic return & exchange requests for the customer
     const returnRequests = await prisma.returnRequest.findMany({
-      where: { customerId: customer.id },
+      where: {
+        OR: [
+          { customerId: { in: customerIds } },
+          ...(orderIds.length > 0 ? [{ orderId: { in: orderIds } }] : [])
+        ]
+      },
       include: {
         order: {
           include: {
@@ -100,7 +173,12 @@ export async function GET() {
     });
 
     const exchangeRequests = await prisma.exchangeRequest.findMany({
-      where: { customerId: customer.id },
+      where: {
+        OR: [
+          { customerId: { in: customerIds } },
+          ...(orderIds.length > 0 ? [{ orderId: { in: orderIds } }] : [])
+        ]
+      },
       include: {
         order: {
           include: {
@@ -147,7 +225,7 @@ export async function GET() {
 
     // Enrich all customer orders
     const enrichedOrders = await Promise.all(
-      (customer.orders || []).map(async (o: any) => {
+      (customerOrders || []).map(async (o: any) => {
         const orderNumber = await enrichOrderNumber(o);
         return { ...o, orderNumber };
       })
@@ -205,21 +283,32 @@ export async function PATCH(req: Request) {
     const body = await req.json();
     const { name, email, phone, region, image, storeCreditPreference, emailOptedOut, whatsappOptedOut, smsOptedOut } = body;
 
-    const whereClause: any = { OR: [] };
-    if (session.user.email) {
-      whereClause.OR.push({ email: session.user.email });
+    const sessionUserId = (session.user as any)?.id || (session as any)?.customer?.id || null;
+    const sessionEmail = session.user?.email ? session.user.email.trim().toLowerCase() : null;
+    const sessionPhone = (session.user as any)?.phone ? String((session.user as any).phone).trim() : null;
+    const phoneDigits = sessionPhone ? sessionPhone.replace(/\D/g, '') : null;
+    const phoneLast10 = phoneDigits && phoneDigits.length >= 10 ? phoneDigits.slice(-10) : null;
+
+    const customerWhereClauses: any[] = [];
+    if (sessionUserId) customerWhereClauses.push({ id: sessionUserId });
+    if (sessionEmail) customerWhereClauses.push({ email: sessionEmail });
+    if (sessionPhone) {
+      customerWhereClauses.push({ phone: sessionPhone });
+      if (phoneDigits && phoneDigits !== sessionPhone) {
+        customerWhereClauses.push({ phone: phoneDigits });
+      }
     }
-    const userId = (session.user as any).id;
-    if (userId) {
-      whereClause.OR.push({ id: userId });
+    if (phoneLast10) {
+      customerWhereClauses.push({ phoneLast10: phoneLast10 });
+      customerWhereClauses.push({ phone: { contains: phoneLast10 } });
     }
 
-    if (whereClause.OR.length === 0) {
+    if (customerWhereClauses.length === 0) {
       return NextResponse.json({ error: "No valid user identifier" }, { status: 400 });
     }
 
     const customer = await prisma.customer.findFirst({
-      where: whereClause
+      where: { OR: customerWhereClauses }
     });
 
     if (!customer) {

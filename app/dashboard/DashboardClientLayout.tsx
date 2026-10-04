@@ -43,8 +43,6 @@ import {
   History,
   Heart,
   Wallet,
-  Bot,
-  GraduationCap,
   Database,
   ShieldCheck,
   Search,
@@ -57,7 +55,6 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { useRealtimeSync } from "@/lib/hooks/useRealtime";
 import ThemeToggle from "@/components/ThemeToggle";
-import ZicaAI from "@/components/ZicaAI";
 import AdminPolarisProvider from "@/components/AdminPolarisProvider";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -70,7 +67,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const navScrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLAnchorElement>(null);
-  useRealtimeSync();
+  // Keep infrequent — dashboard pages refetch Shopify/DB on this signal
+  useRealtimeSync(60_000);
 
   const [dbStatus, setDbStatus] = useState<{ status: string; isMock?: boolean; mockReason?: string | null; error: string | null; hint?: string | null } | null>(null);
 
@@ -252,15 +250,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Razorpay", href: "/dashboard/payments/razorpay", icon: CreditCard, module: 'INTEGRATIONS' },
     { name: "Global Store", href: "/dashboard/global-store", icon: Globe, module: 'INTEGRATIONS' },
   ];
-
-  const intelligenceNav = [
-    { name: "Zica AI Hub", href: "/dashboard/ai", icon: Sparkles, module: 'AI_SERVICES' },
-    { name: "Zica AI - Admin", href: "/dashboard/ai/admin", icon: Settings, module: 'AI_SERVICES' },
-    { name: "Zica AI - User", href: "/dashboard/ai/user", icon: Bot, module: 'AI_SERVICES' },
-    { name: "Zica AI - Training", href: "/dashboard/ai/training", icon: GraduationCap, module: 'AI_SERVICES' },
-  ];
-
-
 
   const marketingNav = [
     { name: "SEO Dashboard", href: "/dashboard/marketing/seo", icon: Search, module: 'MARKETING' },
@@ -537,22 +526,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             )}
 
-            {filterNav(intelligenceNav).length > 0 && (
-              <div>
-                <div className="mb-2 px-5 flex items-center gap-2">
-                  <Sparkles className="w-3 h-3 text-violet-400" strokeWidth={2} />
-                  <span className="text-[10px] font-semibold text-foreground/40 uppercase tracking-wider font-inter">
-                    Intelligence
-                  </span>
-                </div>
-                <div className="space-y-0.5">
-                  {filterNav(intelligenceNav).map((item) => (
-                    <NavLink key={item.name} item={item} />
-                  ))}
-                </div>
-              </div>
-            )}
-
             {filterNav(marketingNav).length > 0 && (
               <div>
                 <div className="mb-2 px-5 flex items-center gap-2">
@@ -790,9 +763,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="max-w-[1400px] w-full mx-auto relative overflow-x-clip">{children}</div>
         </div>
       </main>
-
-      {/* Zica AI — Floating Command Center */}
-      <ZicaAI />
     </div>
   </AdminPolarisProvider>
   );
