@@ -211,18 +211,22 @@ export default function OrdersPage() {
     return () => clearTimeout(timer);
   }, [fetchOrders]);
 
-  // Background SWR auto-refresh every 15 seconds for live order sync (only when tab is visible)
+  // Background refresh — keep infrequent to avoid DB/Shopify stampedes
   useEffect(() => {
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         fetchOrders(true);
       }
-    }, 15_000);
+    }, 45_000);
     return () => clearInterval(interval);
   }, [fetchOrders]);
 
   useEffect(() => {
+    let last = 0;
     const handleSync = () => {
+      const now = Date.now();
+      if (now - last < 45_000) return;
+      last = now;
       fetchOrders(true);
     };
     window.addEventListener("realtime-sync", handleSync);

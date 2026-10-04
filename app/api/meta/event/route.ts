@@ -98,15 +98,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Issue 4 diagnostics (no session dependency — runs before fast path)
-    if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
-      const headersObj: Record<string, string> = {};
-      req.headers.forEach((value, key) => {
-        headersObj[key] = value;
-      });
-      console.log(`[Meta CAPI Route IP Diagnostics] Event: ${eventName} | Raw Headers:`, JSON.stringify(headersObj));
-    }
-
     // Extract request-scoped data (synchronous — no I/O)
     const ip = req.cookies.get('zb_client_ip')?.value || getClientIP(req);
 
@@ -213,11 +204,6 @@ export async function POST(req: NextRequest) {
       checkDuplicatePii('em', mergedUserData.em as string, mergedUserData.external_id as string);
       checkDuplicatePii('ph', mergedUserData.ph as string, mergedUserData.external_id as string);
 
-      const presentKeys = Object.entries(mergedUserData)
-        .filter(([_, value]) => value !== undefined && value !== null && value !== '')
-        .map(([key]) => key);
-      console.log(`[Meta CAPI Event Received] ${eventName} — Deduplication ID: ${eventId} — Customer Identifiers Present: [${presentKeys.join(', ')}]`);
-
       // Fire CAPI send in background — do NOT await before responding
       sendCapiEvent({
         eventName,
@@ -229,7 +215,7 @@ export async function POST(req: NextRequest) {
         customData: adjustedCustomData,
         actionSource: actionSource ?? 'website',
       }).catch((err: any) => {
-        console.error(`[Meta CAPI Background ${eventName}] eventId=${eventId} Error:`, err);
+        console.error(`[Meta CAPI] ${eventName} send failed:`, err?.message || 'error');
       });
 
       return NextResponse.json({
@@ -333,12 +319,6 @@ export async function POST(req: NextRequest) {
       delete mergedUserData.fb_login_id;
     }
 
-    // Log identifier coverage summary (what identifiers are present, not the actual values)
-    const presentKeys = Object.entries(mergedUserData)
-      .filter(([_, value]) => value !== undefined && value !== null && value !== '')
-      .map(([key]) => key);
-    console.log(`[Meta CAPI Event Received] ${eventName} — Deduplication ID: ${eventId} — Customer Identifiers Present: [${presentKeys.join(', ')}]`);
-
     const result = await sendCapiEvent({
       eventName,
       eventId,
@@ -350,9 +330,14 @@ export async function POST(req: NextRequest) {
       actionSource: actionSource ?? 'website',
     });
 
+    // Missing Meta token / config: skip quietly (200) so storefront polls stay clean
+    if (!result.success && result.skipped) {
+      return NextResponse.json({ success: true, skipped: true });
+    }
+
     return NextResponse.json({ ...result }, { status: result.success ? 200 : 400 });
   } catch (err: any) {
-    console.error('[Meta CAPI Route Error]', err);
-    return NextResponse.json({ success: false, error: err.message || 'Internal server error' }, { status: 500 });
+    console.error('[Meta CAPI Route Error]', err?.message || 'error');
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 });
   }
 }

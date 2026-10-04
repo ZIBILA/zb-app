@@ -73,9 +73,8 @@ export async function GET() {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
     }
 
-    // Collect all matched customer identities to fetch complete order history
+    // Only verified Customer row ids (never raw session ids that may not exist in Customer)
     const customerIds = Array.from(new Set([
-      ...(sessionUserId ? [sessionUserId] : []),
       ...matchingCustomers.map((c: any) => c.id),
       customer.id
     ])).filter(Boolean);
@@ -138,15 +137,15 @@ export async function GET() {
       orderBy: { createdAt: "desc" }
     }) : [];
 
-    // Auto-link orphaned orders to primary customer so history is permanently unified
+    // Auto-link orphaned orders onto the resolved Customer row (FK-safe)
     const orphanedOrderIds = customerOrders
-      .filter((o: any) => o.customerId !== customer.id)
+      .filter((o: any) => o.customerId && o.customerId !== customer.id)
       .map((o: any) => o.id);
     if (orphanedOrderIds.length > 0) {
       prisma.order.updateMany({
         where: { id: { in: orphanedOrderIds } },
         data: { customerId: customer.id }
-      }).catch((err: any) => console.error("[Profile] Auto-link orders error:", err));
+      }).catch((err: any) => console.error("[Profile] Auto-link failed:", err?.code || err?.message));
     }
 
     const orderIds = customerOrders.map((o: any) => o.id);

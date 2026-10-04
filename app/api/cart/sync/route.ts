@@ -400,7 +400,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, count: syncedCount }, { headers: corsHeaders });
   } catch (error: any) {
-    console.error("Cart sync error:", error);
+    console.error("Cart sync error:", error?.code || error?.message || "error");
     return NextResponse.json({ error: "Failed to sync cart", details: error.message }, { status: 500, headers: corsHeaders });
   }
 }

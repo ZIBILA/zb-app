@@ -14,6 +14,9 @@ export async function GET(req: Request) {
     const where = status && status !== 'all' ? { status } : {};
     const standaloneWhere = status && status !== 'all' ? { returnRequestId: null, status: status.toUpperCase() } : { returnRequestId: null };
 
+    // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
+    const rowCap = Math.min(Math.max(limit + offset, limit), 100);
+
     const [returns, total, statusGroups, standaloneReturns, standaloneTotal, standaloneStatusGroups] = await Promise.all([
       prisma.returnRequest.findMany({
         where,
@@ -25,7 +28,8 @@ export async function GET(req: Request) {
             include: { customer: true }
           }
         },
-        orderBy: { createdAt: "desc" }
+        orderBy: { createdAt: "desc" },
+        take: rowCap,
       }),
       prisma.returnRequest.count({ where }),
       prisma.returnRequest.groupBy({
@@ -41,7 +45,8 @@ export async function GET(req: Request) {
             include: { customer: true }
           }
         },
-        orderBy: { requestedAt: "desc" }
+        orderBy: { requestedAt: "desc" },
+        take: rowCap,
       }),
       prisma.return.count({ where: standaloneWhere }),
       prisma.return.groupBy({
@@ -143,8 +148,8 @@ export async function GET(req: Request) {
       statusCounts
     });
   } catch (error: any) {
-    console.error("Fetch Admin Returns Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Fetch Admin Returns Error:", error?.message || "db error");
+    return NextResponse.json({ error: "Failed to fetch returns" }, { status: 500 });
   }
 }
 

@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
-import { fetchAllProducts, fetchCollectionByHandle } from '@/lib/shopify-admin';
+import { fetchProducts, fetchCollectionByHandle } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const pageSize = parseInt(url.searchParams.get('pageSize') || '250', 10);
+    const rawLimit = url.searchParams.get('limit') || url.searchParams.get('pageSize') || '50';
+    const pageSize = Math.min(Math.max(parseInt(rawLimit, 10) || 50, 1), 250);
     const collectionHandle = url.searchParams.get('collection');
 
     let products = [];
@@ -14,15 +15,15 @@ export async function GET(req: Request) {
       const { products: collectionProducts } = await fetchCollectionByHandle(collectionHandle, pageSize);
       products = collectionProducts;
     } else {
-      products = await fetchAllProducts(pageSize);
+      // Single page only — do not walk the full Shopify product catalog on every poll
+      products = await fetchProducts(pageSize);
     }
 
     return NextResponse.json({ products }, { status: 200 });
   } catch (error: any) {
-    // eslint-disable-next-line no-console
-    console.error('Shopify Products API Error:', error.message);
+    console.error('Shopify Products API Error:', error?.message || 'fetch failed');
     return NextResponse.json(
-      { products: [], error: error.message },
+      { products: [], error: 'Failed to fetch products' },
       { status: 200 },
     );
   }

@@ -67,7 +67,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const navScrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLAnchorElement>(null);
-  useRealtimeSync();
+  // Keep infrequent — dashboard pages refetch Shopify/DB on this signal
+  useRealtimeSync(60_000);
 
   const [dbStatus, setDbStatus] = useState<{ status: string; isMock?: boolean; mockReason?: string | null; error: string | null; hint?: string | null } | null>(null);
 

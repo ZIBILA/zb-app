@@ -134,25 +134,21 @@ async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, stri
   let allResults: any[] = [];
 
   while (currentUrl) {
-    console.log(`[Shopify Sync] Fetching page: ${currentUrl}`);
     const pageData: { data: any; nextPageUrl?: string } = await shopifyFetchPage<any>(currentUrl);
-    
-    if (!pageData.data) {
-      console.warn(`[Shopify Sync] No data returned for URL: ${currentUrl}`);
-      break;
-    }
+
+    if (!pageData.data) break;
 
     // Shopify returns data wrapped in a key like { orders: [...] }
-    const items = dataKey && pageData.data[dataKey] 
-      ? pageData.data[dataKey] 
+    const items = dataKey && pageData.data[dataKey]
+      ? pageData.data[dataKey]
       : (typeof pageData.data === 'object' ? Object.values(pageData.data)[0] : null);
 
     if (Array.isArray(items)) {
       allResults = allResults.concat(items);
     } else {
-      console.warn(`[Shopify Sync] Items at ${dataKey || 'first key'} is not an array:`, items);
+      break;
     }
-    
+
     currentUrl = pageData.nextPageUrl;
   }
   
@@ -653,7 +649,6 @@ export async function fetchEnabledCollections(location: 'header' | 'page' | 'men
       });
 
     if (!shop) {
-      console.log(`[Shopify Admin] No shop config found for ${shopDomain || 'default'}, returning all ${allCollections.length} collections`);
       return allCollections;
     }
 
@@ -666,27 +661,20 @@ export async function fetchEnabledCollections(location: 'header' | 'page' | 'men
     const fieldName = fieldMap[location] as keyof typeof shop;
     const jsonValue = shop[fieldName] as string | null | undefined;
 
-    console.log(`[Shopify Admin] Fetching for location: ${location}, field: ${String(fieldName)}`);
-
     if (jsonValue === null || jsonValue === undefined) {
-      console.log(`[Shopify Admin] No config for ${location}, showing all ${allCollections.length}`);
       return allCollections;
     }
 
     const enabledHandles: string[] = JSON.parse(jsonValue).map((h: string) => h.trim().toLowerCase());
-    
+
     if (enabledHandles.length === 0) {
-      console.log(`[Shopify Admin] Config for ${location} is explicitly empty, returning empty list`);
       return [];
     }
-    
-    const filtered = allCollections.filter((c: any) => {
+
+    return allCollections.filter((c: any) => {
       const handle = c.handle?.trim().toLowerCase();
       return enabledHandles.includes(handle);
     });
-
-    console.log(`[Shopify Admin] Filtered results for ${location}: ${filtered.length} of ${allCollections.length} enabled`);
-    return filtered;
   } catch (e) {
     // Database connection failed, return all collections as fallback
     return allCollections;
@@ -1419,10 +1407,8 @@ export async function fetchProducts(limit = 250): Promise<ShopifyProduct[]> {
     if (data && Array.isArray(data.products) && data.products.length > 0) {
       return data.products;
     }
-    console.warn('[Shopify Admin] fetchProducts returned empty array, returning fallback products.');
     return FALLBACK_PRODUCTS;
-  } catch (err: any) {
-    console.error('[Shopify Admin] fetchProducts error:', err.message);
+  } catch {
     return FALLBACK_PRODUCTS;
   }
 }
@@ -1439,10 +1425,8 @@ export async function fetchAllProducts(
     if (products && Array.isArray(products) && products.length > 0) {
       return products;
     }
-    console.warn('[Shopify Admin] fetchAllProducts returned 0 products');
     return allowFallback ? FALLBACK_PRODUCTS : [];
-  } catch (err: any) {
-    console.error('[Shopify Admin] fetchAllProducts error:', err.message);
+  } catch {
     return allowFallback ? FALLBACK_PRODUCTS : [];
   }
 }

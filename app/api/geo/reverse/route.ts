@@ -172,7 +172,7 @@ export async function GET(req: NextRequest) {
         }
       }
     } catch (nomErr) {
-      console.warn("[ReverseGeo] Nominatim failed, trying BigDataCloud:", nomErr);
+      console.warn("[ReverseGeo] Nominatim failed, trying BigDataCloud");
     }
 
     // ── Strategy 3: BigDataCloud Client-Free Reverse Geocode ───────────
@@ -211,7 +211,7 @@ export async function GET(req: NextRequest) {
         }
       }
     } catch (bdcErr) {
-      console.warn("[ReverseGeo] BigDataCloud failed:", bdcErr);
+      console.warn("[ReverseGeo] BigDataCloud failed");
     }
 
     // ── Strategy 4: Resilient Fallback ─────────────────────────────────

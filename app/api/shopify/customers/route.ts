@@ -1,21 +1,22 @@
 import { NextResponse } from 'next/server';
-import { fetchAllCustomers } from '@/lib/shopify-admin';
+import { fetchCustomers } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const pageSize = parseInt(url.searchParams.get('pageSize') || '250', 10);
+    const rawLimit = url.searchParams.get('limit') || url.searchParams.get('pageSize') || '50';
+    const pageSize = Math.min(Math.max(parseInt(rawLimit, 10) || 50, 1), 250);
 
-    const customers = await fetchAllCustomers(pageSize);
+    // Single page only — do not walk the full customer list on every poll
+    const customers = await fetchCustomers(pageSize);
 
     return NextResponse.json({ customers }, { status: 200 });
   } catch (error: any) {
-    // eslint-disable-next-line no-console
-    console.error('Shopify Customers API Error:', error.message);
+    console.error('Shopify Customers API Error:', error?.message || 'fetch failed');
     return NextResponse.json(
-      { customers: [], error: error.message },
+      { customers: [], error: 'Failed to fetch customers' },
       { status: 200 },
     );
   }

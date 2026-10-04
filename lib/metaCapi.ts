@@ -99,20 +99,26 @@ const normalizeGeneric = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9
 const normalizeEmail = (e: string) => e.trim().toLowerCase();
 const normalizeDob = (d: string) => d.trim().replace(/\D/g, "");
 
-export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ success: boolean; data?: any; error?: any; fbtrace_id?: string }> {
-  // Pre-request validation
+let metaConfigWarned = false;
+
+export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ success: boolean; data?: any; error?: any; fbtrace_id?: string; skipped?: boolean }> {
+  // Pre-request validation — missing local Meta env is common in dev; skip quietly
   const tokenErr = validateTokenFormat(ACCESS_TOKEN);
   if (tokenErr) {
-    console.error('[Meta CAPI] Token validation failed:', tokenErr);
-    console.error('[Meta CAPI CONFIG ERROR]', tokenErr, '— check DigitalOcean App Platform env vars');
-    return { success: false, error: tokenErr };
+    if (!metaConfigWarned && process.env.META_DEBUG === '1') {
+      metaConfigWarned = true;
+      console.warn('[Meta CAPI] Skipping events: META_CAPI_ACCESS_TOKEN not configured');
+    }
+    return { success: false, skipped: true, error: tokenErr };
   }
 
   const pixelErr = validatePixelIdFormat(PIXEL_ID);
   if (pixelErr) {
-    console.error('[Meta CAPI] Pixel ID validation failed:', pixelErr);
-    console.error('[Meta CAPI CONFIG ERROR]', pixelErr, '— check DigitalOcean App Platform env vars');
-    return { success: false, error: pixelErr };
+    if (!metaConfigWarned && process.env.META_DEBUG === '1') {
+      metaConfigWarned = true;
+      console.warn('[Meta CAPI] Skipping events: META_PIXEL_ID not configured');
+    }
+    return { success: false, skipped: true, error: pixelErr };
   }
 
   // Validate event time

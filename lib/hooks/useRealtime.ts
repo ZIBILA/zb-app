@@ -3,21 +3,21 @@
 import { useEffect } from 'react';
 
 /**
- * A custom hook to simulate real-time updates on Vercel without WebSockets.
- * It uses a smart polling mechanism to dispatch a synchronization event
- * periodically or when the window regains focus, allowing pages to update
- * their data silently in the background.
+ * Lightweight dashboard sync signal without WebSockets.
+ * Dispatches `realtime-sync` on an interval and when the tab becomes visible.
+ * Keep this infrequent — listeners often trigger heavy Shopify/DB fetches.
  */
-export function useRealtimeSync(intervalMs = 15000) {
+export function useRealtimeSync(intervalMs = 60_000) {
   useEffect(() => {
     const triggerSync = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
       window.dispatchEvent(new CustomEvent("realtime-sync"));
     };
 
-    // Polling interval
     const intervalId = setInterval(triggerSync, intervalMs);
 
-    // Refresh instantly when the user comes back to the tab
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         triggerSync();
@@ -32,4 +32,3 @@ export function useRealtimeSync(intervalMs = 15000) {
     };
   }, [intervalMs]);
 }
-

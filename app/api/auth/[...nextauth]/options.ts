@@ -1096,6 +1096,7 @@ export const authOptions: AuthOptions = {
         token.id = id;
         token.role = role;
         token.permissions = permissions;
+        token.permissionsFetchedAt = Math.floor(Date.now() / 1000);
         token.loginTime = Math.floor(Date.now() / 1000);
         token.lastActivity = Math.floor(Date.now() / 1000);
         token.needsPasswordChange = (user as any).needsPasswordChange ?? null;
@@ -1141,6 +1142,28 @@ export const authOptions: AuthOptions = {
 
         // Bump lastActivity on each token refresh (triggered by getSession/useSession)
         token.lastActivity = currentTime;
+
+        // Refresh permissions at most every 5 minutes in the JWT callback —
+        // never on every session() call (storefront polls session heavily).
+        const fiveMin = 5 * 60;
+        const lastPerms = (token.permissionsFetchedAt as number) || 0;
+        if (currentTime - lastPerms > fiveMin) {
+          try {
+            const freshPermissions = await prisma.permission.findMany({
+              where: { userId: token.id as string },
+            });
+            token.permissions = freshPermissions.map((p: any) => ({
+              module: p.module,
+              canView: p.canView,
+              canEdit: p.canEdit,
+              canDelete: p.canDelete,
+              pages: p.pages,
+            }));
+            token.permissionsFetchedAt = currentTime;
+          } catch {
+            // Keep existing token.permissions on transient DB errors
+          }
+        }
       }
 
       return token;
@@ -1153,24 +1176,10 @@ export const authOptions: AuthOptions = {
         (session.user as any).phone = token.phone ?? null;
         (session.user as any).email = token.email || session.user.email || null;
         (session.user as any).image = token.image || session.user.image || null;
-        
-        // Fetch fresh permissions from DB in real-time for administrators
+
+        // Use JWT-cached permissions — no DB hit on every /api/auth/session
         if (token.role === "ADMIN" || token.role === "SUPER_ADMIN") {
-          try {
-            const freshPermissions = await prisma.permission.findMany({
-              where: { userId: token.id as string }
-            });
-            (session.user as any).permissions = freshPermissions.map((p: any) => ({
-              module: p.module,
-              canView: p.canView,
-              canEdit: p.canEdit,
-              canDelete: p.canDelete,
-              pages: p.pages,
-            }));
-          } catch (err) {
-            console.error("[Session fresh permissions] Error fetching fresh permissions:", err);
-            (session.user as any).permissions = token.permissions ?? null;
-          }
+          (session.user as any).permissions = token.permissions ?? null;
         } else {
           (session.user as any).permissions = null;
         }

@@ -152,15 +152,17 @@ export async function GET(req: Request) {
       ...(limit ? { skip: offset, take: limit } : {}),
     });
 
-    // Auto-link orphaned orders to primary customer so history is permanently unified
-    const targetCustomerId = customerId || customerIds[0];
+    // Auto-link only onto a verified Customer id from the lookup above (FK-safe)
+    const targetCustomerId = customerIds.find((id) => id === customerId) || customerIds[0];
     if (targetCustomerId && orders.length > 0) {
-      const orphanedIds = orders.filter((o: any) => o.customerId !== targetCustomerId).map((o: any) => o.id);
+      const orphanedIds = orders
+        .filter((o: any) => o.customerId && o.customerId !== targetCustomerId)
+        .map((o: any) => o.id);
       if (orphanedIds.length > 0) {
         prisma.order.updateMany({
           where: { id: { in: orphanedIds } },
           data: { customerId: targetCustomerId }
-        }).catch((err: any) => console.error('[App Orders] Auto-link orders error:', err));
+        }).catch((err: any) => console.error('[App Orders] Auto-link failed:', err?.code || err?.message));
       }
     }
 

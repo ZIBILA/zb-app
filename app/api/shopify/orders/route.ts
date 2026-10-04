@@ -3,7 +3,7 @@ import {
   adminUrl,
   headers,
   ShopifyOrder,
-  fetchAllOrders,
+  fetchOrders,
 } from '@/lib/shopify-admin';
 import prisma from '@/lib/db';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
@@ -41,9 +41,9 @@ export async function POST(request: Request) {
 
     if (!res.ok) {
       const text = await res.text();
-      console.error('Shopify Create Order Error:', res.status, text);
+      console.error('Shopify Create Order Error:', res.status);
       return NextResponse.json(
-        { error: 'Failed to create order on Shopify', details: text },
+        { error: 'Failed to create order on Shopify' },
         { status: res.status }
       );
     }
@@ -54,7 +54,7 @@ export async function POST(request: Request) {
     if (error?.message === '401' || error?.message === '403') {
       return handleAuthError(error);
     }
-    console.error('Error in create order route:', error);
+    console.error('Error in create order route:', error?.message || error);
     return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
   }
 }
@@ -65,28 +65,26 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status') || 'any';
-    
-    // Fetch all orders for the given status (paginated under the hood)
-    const orders = await fetchAllOrders(250, status) || [];
-    
+    const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '50', 10) || 50, 1), 100);
+
+    // Single-page fetch only — never pull the full Shopify order history on dashboard polls
+    const orders = await fetchOrders(limit, status) || [];
+
     if (!Array.isArray(orders)) {
-      console.error('[Orders API] fetchAllOrders did not return an array:', orders);
       return NextResponse.json({ orders: [] });
     }
 
     // Enrich with local delivery status
     const shopifyOrderIds = orders.map(o => String(o.id));
-    console.log('[Orders API] Shopify Order IDs:', shopifyOrderIds);
-    
+
     let localOrders: any[] = [];
     try {
       localOrders = await prisma.order.findMany({
         where: { shopifyOrderId: { in: shopifyOrderIds } },
         select: { shopifyOrderId: true, deliveryStatus: true }
       });
-    } catch (prismaErr) {
-      console.error('[Orders API] Prisma findMany Error:', prismaErr);
-      // Fallback to empty if prisma fails, but don't crash
+    } catch (prismaErr: any) {
+      console.error('[Orders API] Local enrichment failed:', prismaErr?.message || 'db error');
     }
     
     const deliveryMap = Object.fromEntries(localOrders.map(o => [o.shopifyOrderId, o.deliveryStatus]));
@@ -100,7 +98,8 @@ export async function GET(request: Request) {
     if (error?.message === '401' || error?.message === '403') {
       return handleAuthError(error);
     }
-    console.error('Error fetching orders:', error);
-    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
+    // Shopify network blips are common in local/dev — return empty list, not a stack dump
+    console.warn('[Orders API] Shopify fetch failed:', error?.cause?.code || error?.message || 'error');
+    return NextResponse.json({ orders: [], error: 'shopify_unavailable' }, { status: 200 });
   }
 }
