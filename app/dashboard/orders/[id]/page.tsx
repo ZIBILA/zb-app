@@ -823,20 +823,38 @@ export default function OrderDetailPage() {
             {(() => {
               const activeShipment = (order as any).shipments?.[0];
               const externalId = activeShipment?.trackingNumber || null;
-              const awb = activeShipment?.awb || order.delhivery_awb || null;
+              const awb = activeShipment?.awb || null;
               const courier = activeShipment?.courier || (order.delhivery_awb ? 'Delhivery Logistics' : 'Courier Logistics Hub');
               const trackingUrl =
                 activeShipment?.trackingUrl ||
                 (awb ? `https://shiprocket.co/tracking/${awb}` : null);
-              const isDelhivery =
-                Boolean(order.delhivery_awb) ||
-                (Boolean(courier) && courier.toLowerCase().includes('delhivery'));
+              // Shiprocket often assigns a *Delhivery* courier (e.g. "Delhivery Surface 5kg").
+              // Never treat courier name alone as native Delhivery — that wrongly swaps in
+              // DelhiveryActions and hides the Shiprocket resume/book flow.
+              let isShiprocketShipment = false;
+              try {
+                const raw = activeShipment?.rawDelhiveryResponse;
+                if (raw) {
+                  const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                  isShiprocketShipment =
+                    meta?.provider === 'shiprocket' || Boolean(meta?.shipment_id);
+                }
+              } catch { /* ignore */ }
+              if (!isShiprocketShipment && externalId && !awb && !order.delhivery_awb) {
+                // Preliminary Shiprocket row stores shipment_id as trackingNumber before AWB
+                isShiprocketShipment = true;
+              }
+              const isNativeDelhivery =
+                !isShiprocketShipment &&
+                (Boolean(order.delhivery_awb) ||
+                  (Boolean(courier) &&
+                    courier.toLowerCase().includes('delhivery') &&
+                    !String(courier).toLowerCase().includes('shiprocket')));
               const displayStatus =
                 activeShipment?.status || order.deliveryStatus || 'pending';
-              const awbPending = Boolean(externalId) && !awb;
-              // Default new orders → Shiprocket ops; keep Delhivery panel only for Delhivery AWBs
-              const showShiprocketActions = !isDelhivery;
-              const showDelhiveryActions = isDelhivery;
+              const awbPending = Boolean(externalId || isShiprocketShipment) && !awb;
+              const showShiprocketActions = !isNativeDelhivery;
+              const showDelhiveryActions = isNativeDelhivery;
 
               return (
                 <>

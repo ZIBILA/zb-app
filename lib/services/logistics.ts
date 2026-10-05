@@ -1473,10 +1473,37 @@ async function assignCourierAwbAndPersist(
   const assignedAwb = String(assignPayload?.awb_code || '').trim();
   const assignOk = assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
   if (!assignOk || !assignedAwb) {
+    const pkg =
+      assignPayload?.packages?.[0] ||
+      assignData?.response?.data?.packages?.[0] ||
+      null;
+    const carrierReason =
+      pkg?.err_code ||
+      pkg?.remarks ||
+      pkg?.reason ||
+      pkg?.status ||
+      assignPayload?.awb_assign_error ||
+      assignData?.message ||
+      'rejected';
+    console.error('[Shiprocket] AWB assign rejected', {
+      courierId,
+      courierName,
+      shipmentId: srShipmentId,
+      carrierReason,
+      package: {
+        status: pkg?.status,
+        err_code: pkg?.err_code,
+        remarks: pkg?.remarks,
+        payment: pkg?.payment,
+        cod_amount: pkg?.cod_amount,
+        serviceable: pkg?.serviceable,
+        refnum: pkg?.refnum,
+      },
+    });
     throw new Error(
-      `Shiprocket AWB assign failed for courier ${courierId} (${courierName}) on shipment ${srShipmentId}. ` +
-        `Local shipment is saved — retry booking with the same courier to resume. ` +
-        `Details: ${JSON.stringify(assignData).slice(0, 400)}`
+      `${courierName} could not assign an AWB for this shipment. ` +
+        `Try a different courier (another provider often works when one rejects). ` +
+        `Shipment is saved — you can retry without recreating the order.`
     );
   }
 
