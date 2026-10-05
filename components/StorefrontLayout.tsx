@@ -5,6 +5,7 @@ import StorefrontHeader from "./StorefrontHeader";
 import StorefrontNav from "./StorefrontNav";
 import { useEffect, useState, Suspense } from "react";
 import PageLoader from "./PageLoader";
+import { fetchHeaderCollections } from "@/lib/storefront-fetch";
 
 interface StorefrontLayoutProps {
   children: React.ReactNode;
@@ -17,9 +18,8 @@ export default function StorefrontLayout({ children, footer }: StorefrontLayoutP
   const [isMobileApp, setIsMobileApp] = useState(false);
 
   useEffect(() => {
-    fetch("/api/shopify/collections?location=header")
-      .then(res => res.json())
-      .then(data => setCollections(data))
+    fetchHeaderCollections()
+      .then((data) => setCollections(data))
       .catch(() => {});
 
     if (typeof window !== 'undefined') {

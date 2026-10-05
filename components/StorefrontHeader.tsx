@@ -12,6 +12,7 @@ import { useBookmarks } from "@/lib/bookmark-context";
 import { useRouter, usePathname } from "next/navigation";
 import { useShakeToCart } from "@/lib/hooks/useShakeToCart";
 import { useTheme } from "next-themes";
+import { fetchHeaderCollections } from "@/lib/storefront-fetch";
 
 export default function StorefrontHeader({ collections: initialCollections = [] }: { collections?: any[] }) {
   const router = useRouter();
@@ -59,18 +60,15 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
   useShakeToCart(toggleCart);
 
   useEffect(() => {
-    if (initialCollections.length === 0) {
-      fetch("/api/shopify/collections?location=header", { cache: 'no-store' })
-        .then(res => res.json())
-        .then(data => {
-          if (Array.isArray(data)) {
-            setCollections(data);
-          }
-        })
-        .catch(err => console.error("Error fetching collections:", err));
-    } else {
+    if (initialCollections.length > 0) {
       setCollections(initialCollections);
+      return;
     }
+    fetchHeaderCollections()
+      .then((data) => {
+        if (Array.isArray(data)) setCollections(data);
+      })
+      .catch(() => {});
   }, [initialCollections]);
 
   const [orderNumberOverride, setOrderNumberOverride] = useState<string | null>(null);

@@ -41,11 +41,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid event name' }, { status: 400 });
     }
 
-    // IP Extraction & Server Geolocation Lookup
+    // IP Extraction & Server Geolocation Lookup — only when client sent no country signal
     const ip = getClientIP(req);
-    const ipGeo = (!rawCountryCode || !rawCountry || !rawCity || rawLat == null || rawLng == null)
-      ? await lookupIpGeo(ip, req)
-      : null;
+    const needsIpGeo = !rawCountryCode && !rawCountry;
+    const ipGeo = needsIpGeo ? await lookupIpGeo(ip, req) : null;
 
     // Determine normalized location fields (Client GPS wins over IP Geo)
     const finalCountryCode = (
@@ -63,7 +62,7 @@ export async function POST(req: Request) {
     // Upsert session (if sessionId and anonymousId provided)
     if (sessionId && anonymousId) {
       try {
-        const existing = await prisma.analyticsSession.findFirst({
+        const existing = await prisma.analyticsSession.findUnique({
           where: { id: sessionId },
         });
 
@@ -100,39 +99,54 @@ export async function POST(req: Request) {
             },
           });
         } else {
-          // Check if this is a new visitor
-          const prevSessionCount = await prisma.analyticsSession.count({
-            where: { anonymousId },
-          });
-
-          await prisma.analyticsSession.create({
-            data: {
-              id: sessionId,
-              anonymousId,
-              customerId: customerId || null,
-              platform: platform || 'web',
-              landingPage: pageUrl || null,
-              currentPage: pageUrl || null,
-              pageViews: eventName === 'page_view' ? 1 : 0,
-              deviceType: deviceType || null,
-              browser: browser || null,
-              os: os || null,
-              referrer: referrer || null,
-              utmSource: utmSource || null,
-              utmMedium: utmMedium || null,
-              utmCampaign: utmCampaign || null,
-              countryCode: finalCountryCode,
-              country: finalCountry,
-              region: finalRegion,
-              city: finalCity,
-              lat: finalLat,
-              lng: finalLng,
-              isNew: prevSessionCount === 0,
-            },
-          });
+          try {
+            await prisma.analyticsSession.create({
+              data: {
+                id: sessionId,
+                anonymousId,
+                customerId: customerId || null,
+                platform: platform || 'web',
+                landingPage: pageUrl || null,
+                currentPage: pageUrl || null,
+                pageViews: eventName === 'page_view' ? 1 : 0,
+                deviceType: deviceType || null,
+                browser: browser || null,
+                os: os || null,
+                referrer: referrer || null,
+                utmSource: utmSource || null,
+                utmMedium: utmMedium || null,
+                utmCampaign: utmCampaign || null,
+                countryCode: finalCountryCode,
+                country: finalCountry,
+                region: finalRegion,
+                city: finalCity,
+                lat: finalLat,
+                lng: finalLng,
+                // Approximate: first session row for this browser session id.
+                // Avoids an extra count(*) under concurrent page_view storms.
+                isNew: true,
+              },
+            });
+          } catch (createErr: any) {
+            if (createErr?.code === 'P2002') {
+              await prisma.analyticsSession.update({
+                where: { id: sessionId },
+                data: {
+                  lastActiveAt: new Date(),
+                  currentPage: pageUrl || undefined,
+                  pageViews: eventName === 'page_view' ? { increment: 1 } : undefined,
+                  customerId: customerId || undefined,
+                },
+              });
+            } else {
+              throw createErr;
+            }
+          }
         }
       } catch (sessionErr: any) {
-        console.warn('[Analytics] Session upsert failed:', sessionErr.message);
+        if (sessionErr?.code !== 'P2002') {
+          console.warn('[Analytics] Session upsert failed:', sessionErr?.message || 'error');
+        }
       }
     }
 

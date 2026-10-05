@@ -43,7 +43,10 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    console.log('[App API] Order creation request body:', JSON.stringify(body).slice(0, 500));
+    // verbose body dump removed — use APP_DEBUG=1 if needed
+    if (process.env.APP_DEBUG === '1') {
+      console.log('[App API] Order create keys:', Object.keys(body || {}));
+    }
 
     // Map fields from different naming conventions.
     // Prefer auth.customerId so paid orders always attach to the logged-in account.

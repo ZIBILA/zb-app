@@ -119,7 +119,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setIsProfileOpen(false);
   }, [pathname]);
 
-  // Poll unread notification count
+  // Poll unread notification count (infrequent — not on every route change)
   useEffect(() => {
     const fetchUnread = async () => {
       if (document.visibilityState !== 'visible') return;
@@ -132,9 +132,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       } catch {}
     };
     fetchUnread();
-    const interval = setInterval(fetchUnread, 30000);
+    const interval = setInterval(fetchUnread, 60_000);
     return () => clearInterval(interval);
-  }, [pathname]);
+  }, []);
 
   // Click outside to close profile dropdown
   useEffect(() => {

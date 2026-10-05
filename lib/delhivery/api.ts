@@ -65,8 +65,6 @@ export async function createShipment(order: DelhiveryOrder): Promise<{ awb: stri
     formData.append('format', 'json');
     formData.append('data', JSON.stringify(payload));
 
-    console.log('[Delhivery API] Outgoing payload:', JSON.stringify(payload, null, 2));
-
     const res = await fetch(`${BASE_URL}/api/cmu/create.json`, {
       method: 'POST',
       headers: {
@@ -78,12 +76,14 @@ export async function createShipment(order: DelhiveryOrder): Promise<{ awb: stri
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error('[Delhivery API] Response error status:', res.status, 'body:', errText);
-      return { awb: '', status: 'error', error: `HTTP ${res.status}: ${errText}` };
+      console.error('[Delhivery API] Response error status:', res.status, 'body:', errText.slice(0, 200));
+      return { awb: '', status: 'error', error: `HTTP ${res.status}` };
     }
 
     const data = await res.json();
-    console.log('[Delhivery API] Response body:', JSON.stringify(data, null, 2));
+    if (process.env.LOGISTICS_DEBUG === '1') {
+      console.log('[Delhivery API] Response:', JSON.stringify(data).slice(0, 300));
+    }
 
     // Handle standard failure responses
     if (data.success === false || data.error === true) {

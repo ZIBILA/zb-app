@@ -1,6 +1,6 @@
 'use client';
 import { usePathname } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import {
   initPixel,
@@ -42,6 +42,9 @@ function cleanStringNoSpaces(val: string | undefined): string {
 export function MetaPixelRouteTracker() {
   const pathname = usePathname();
   const { data: session } = useSession();
+  const sessionKey =
+    (session?.user as any)?.id || session?.user?.email || (session ? 'anon-session' : 'no-session');
+  const lastPageViewRef = useRef<{ path: string; at: number } | null>(null);
 
   useEffect(() => {
     // Don't fire any pixel/CAPI events on admin dashboard or admin routes
@@ -78,20 +81,32 @@ export function MetaPixelRouteTracker() {
     // 4. Note: Client IP resolution relies on server CAPI proxy headers (x-forwarded-for) 
     // to avoid redundant client-side network calls and CSP violations.
 
+    // Deduplicate PageView when session hydration re-runs the effect on the same route
+    const now = Date.now();
+    const recentSamePath =
+      lastPageViewRef.current?.path === pathname &&
+      now - lastPageViewRef.current.at < 2500;
+    const shouldFirePageView = !recentSamePath;
+    if (shouldFirePageView) {
+      lastPageViewRef.current = { path: pathname, at: now };
+    }
+
     // ─── STEP 2: Fire PageView IMMEDIATELY with sync-available data ───
 
     const eventId = 'pv.' + uuidv4();
     const eventTime = Math.floor(Date.now() / 1000);
 
-    // Client-side pixel PageView — fires NOW, no awaits
-    withFbq((fbq) => {
-      const options: Record<string, any> = { eventID: eventId };
-      const testCode = process.env.NEXT_PUBLIC_META_TEST_EVENT_CODE;
-      if (testCode) {
-        options.test_event_code = testCode;
-      }
-      fbq('track', 'PageView', {}, options);
-    }, 'PageView');
+    if (shouldFirePageView) {
+      // Client-side pixel PageView — fires NOW, no awaits
+      withFbq((fbq) => {
+        const options: Record<string, any> = { eventID: eventId };
+        const testCode = process.env.NEXT_PUBLIC_META_TEST_EVENT_CODE;
+        if (testCode) {
+          options.test_event_code = testCode;
+        }
+        fbq('track', 'PageView', {}, options);
+      }, 'PageView');
+    }
 
     // Server-side CAPI PageView — fires NOW with sync-available identity data
     // Use the shared builder for consistent empty-value filtering and demo blocking.
@@ -127,25 +142,27 @@ export function MetaPixelRouteTracker() {
     // Include piiOwner so the server can verify PII cookie identity binding
     builtIdentity.piiOwner = getClientCookie('zb_pii_owner') || undefined;
 
-    fetch('/api/meta/event', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        eventName: 'PageView',
-        eventId,
-        eventTime,
-        eventSourceUrl: window.location.href,
-        userAgent: navigator.userAgent,
-        actionSource: 'website',
-        userData: builtIdentity,
-      }),
-    }).catch(err => console.warn('[Tracker Client] PageView CAPI failed:', err));
+    if (shouldFirePageView) {
+      fetch('/api/meta/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventName: 'PageView',
+          eventId,
+          eventTime,
+          eventSourceUrl: window.location.href,
+          userAgent: navigator.userAgent,
+          actionSource: 'website',
+          userData: builtIdentity,
+        }),
+      }).catch(err => console.warn('[Tracker Client] PageView CAPI failed:', err));
 
-    // GA PageView
-    trackGAPageView(pathname);
+      // GA PageView
+      trackGAPageView(pathname);
 
-    // ZB First-Party Analytics PageView
-    trackZBPageView(pathname);
+      // ZB First-Party Analytics PageView
+      trackZBPageView(pathname);
+    }
 
     // ─── STEP 3: Async identity enrichment (runs AFTER PageView) ───
     // This improves identity data for the NEXT event on this page (ViewContent, AddToCart, etc.)
@@ -256,7 +273,9 @@ export function MetaPixelRouteTracker() {
     });
 
 
-  }, [session, pathname]);
+  }, [sessionKey, pathname, session]);
+  // `session` kept so enrichment sees latest user fields when sessionKey flips (login).
+  // PageView itself is deduped above so session object churn won't double-fire CAPI.
 
   return null;
 }

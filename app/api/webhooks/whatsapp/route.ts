@@ -150,7 +150,9 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    console.log('[WhatsApp Webhook Payload Received]:', JSON.stringify(body, null, 2));
+    if (process.env.WHATSAPP_DEBUG === '1') {
+      console.log('[WhatsApp Webhook] event:', body?.entry?.[0]?.changes?.[0]?.field || 'unknown');
+    }
 
     if (body.object !== 'whatsapp_business_account') {
       return NextResponse.json({ error: 'Unsupported webhook object type' }, { status: 400 });

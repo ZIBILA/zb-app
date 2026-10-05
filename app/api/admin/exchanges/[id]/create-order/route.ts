@@ -331,11 +331,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       shopifyOrderPayload.shipping_address = shippingAddress;
     }
 
-    console.log(`[Exchange Create Order] Shopify payload:`, JSON.stringify({
-      line_items: shopifyOrderPayload.line_items,
-      financial_status: shopifyOrderPayload.financial_status,
-      total_discounts: shopifyOrderPayload.total_discounts,
-    }));
+    if (process.env.LOGISTICS_DEBUG === '1') {
+      console.log(`[Exchange Create Order] line_items=${shopifyOrderPayload.line_items?.length || 0}`);
+    }
 
     let shopifyOrder: any = null;
     let shopifyOrderId: string | null = null;

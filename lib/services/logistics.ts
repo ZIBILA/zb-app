@@ -128,7 +128,7 @@ async function refreshShiprocketToken(email: string, password: string): Promise<
 
     if (!res.ok) {
       const text = await res.text();
-      console.error('[Shiprocket Auth] Login failed:', text);
+    console.error(`[Shiprocket Auth] Login failed: ${String(text).slice(0, 200)}`);
       return null;
     }
 
@@ -265,7 +265,7 @@ async function logisticsApiFetch(
 
   if (!res.ok) {
     const text = await res.text();
-    console.error(`[Logistics API] ${method} ${url} → ${res.status}: ${text}`);
+    console.error(`[Logistics API] ${method} ${endpoint} → ${res.status}: ${text.slice(0, 200)}`);
     throw new Error(`Logistics API ${res.status}: ${text.slice(0, 200)}`);
   }
 
@@ -515,10 +515,6 @@ export async function shipOrder(
         }
 
         const orderItems = buildShiprocketOrderItems(shipItems, defaultHsn);
-        console.log(
-          `[Shiprocket] order_items SKUs for ${shiprocketOrderId}: ` +
-            orderItems.map((i) => `${i.name}=${i.sku}`).join(' | ')
-        );
 
         const payload = {
           order_id: shiprocketOrderId,
@@ -548,13 +544,6 @@ export async function shipOrder(
           weight: 0.5,
         };
 
-        console.log(
-          `[Shiprocket] Booking ${shiprocketOrderId}: method=${paymentFields.payment_method} ` +
-            `total=₹${calculatedTotalPrice} upfront=₹${paymentFields.upfrontPaid} ` +
-            `sub_total=₹${paymentFields.sub_total} total_discount=₹${paymentFields.total_discount ?? 0} ` +
-            `→ Shiprocket collects ₹${paymentFields.shiprocketCollectable}`
-        );
-
         data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', payload);
 
         const srOrderId = data?.order_id ?? data?.payload?.order_id;
@@ -563,17 +552,12 @@ export async function shipOrder(
         let awbCode = String(data?.awb_code ?? data?.payload?.awb_code ?? '').trim();
         let courierName = data?.courier_name || data?.payload?.courier_name || '';
 
-        console.log(
-          `[Shiprocket] Create response for ${shiprocketOrderId}:`,
-          JSON.stringify({
-            order_id: srOrderId,
-            shipment_id: srShipmentId,
-            status_code: statusCode,
-            status: data?.status,
-            awb_code: awbCode || null,
-            message: data?.message,
-          })
-        );
+        if (process.env.LOGISTICS_DEBUG === '1') {
+          console.log(
+            `[Shiprocket] Create ${shiprocketOrderId}: order=${srOrderId} shipment=${srShipmentId} ` +
+              `status=${statusCode} awb=${awbCode || 'none'} method=${paymentFields.payment_method}`
+          );
+        }
 
         if (!srOrderId && !srShipmentId) {
           throw new Error(
@@ -583,9 +567,6 @@ export async function shipOrder(
 
         // Assign AWB (create alone leaves NEW with null awb_code). No auto-pickup.
         if (!awbCode && srShipmentId && preset.endpoints.assignAwb) {
-          console.log(
-            `[Shiprocket] Assigning AWB for shipment_id=${srShipmentId} (order ${shiprocketOrderId})`
-          );
           const assignData = await logisticsApiFetch(preset.endpoints.assignAwb, 'POST', {
             shipment_id: srShipmentId,
           });
@@ -594,21 +575,13 @@ export async function shipOrder(
           const assignOk =
             assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
 
-          console.log(
-            `[Shiprocket] AWB assign for ${shiprocketOrderId}:`,
-            JSON.stringify({
-              awb_assign_status: assignData?.awb_assign_status,
-              awb_code: assignedAwb || null,
-              courier_name: assignPayload?.courier_name || null,
-              message: assignData?.message,
-              error: assignPayload?.awb_assign_error || assignData?.response?.data?.awb_assign_error,
-            })
-          );
-
           if (!assignOk || !assignedAwb) {
+            console.error(
+              `[Shiprocket] AWB assign failed for ${shiprocketOrderId} shipment=${srShipmentId} ` +
+                `status=${assignData?.awb_assign_status}`
+            );
             throw new Error(
-              `Shiprocket AWB assign failed for shipment ${srShipmentId}: ` +
-                `${JSON.stringify(assignData).slice(0, 400)}`
+              `Shiprocket AWB assign failed for shipment ${srShipmentId}`
             );
           }
 
@@ -1708,10 +1681,6 @@ export async function bookShiprocketOrderWithCourier(
     })),
     defaultHsn
   );
-  console.log(
-    `[Shiprocket] order_items SKUs for ${shiprocketOrderId}: ` +
-      orderItems.map((i) => `${i.name}=${i.sku}`).join(' | ')
-  );
 
   const payload = {
     order_id: shiprocketOrderId,
@@ -1770,8 +1739,7 @@ export async function bookShiprocketOrderWithCourier(
   }
 
   console.log(
-    `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId} — ` +
-      `persisted locally as ${pendingShipment.id}; assigning AWB to courier_id=${courierId} (${courierName})`
+    `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId}`
   );
 
   return assignCourierAwbAndPersist(

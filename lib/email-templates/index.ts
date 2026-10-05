@@ -527,7 +527,9 @@ export async function renderDBTemplate(
 ): Promise<{ subject: string; html: string }> {
   try {
     const normalizedTrigger = normalizeTrigger(trigger);
-    console.log(`[renderDBTemplate] Looking up template for trigger: "${trigger}" → normalized: "${normalizedTrigger}"`);
+    if (process.env.EMAIL_DEBUG === '1') {
+      console.log(`[renderDBTemplate] Looking up template for trigger: "${trigger}" → normalized: "${normalizedTrigger}"`);
+    }
 
     const template = await prisma.emailTemplate.findFirst({
       where: {
@@ -544,7 +546,9 @@ export async function renderDBTemplate(
       };
     }
 
-    console.log(`[renderDBTemplate] ✓ Found DB template "${template.name}" (id: ${template.id}) for trigger "${normalizedTrigger}"`);
+    if (process.env.EMAIL_DEBUG === '1') {
+      console.log(`[renderDBTemplate] ✓ Found DB template "${template.name}" (id: ${template.id}) for trigger "${normalizedTrigger}"`);
+    }
 
     const enrichedVars = enrichEmailVariables(variables);
     let subject = template.subject;

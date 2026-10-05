@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import NextImage from "next/image";
 import { ShopifyProduct } from "@/lib/shopify-admin";
+import { fetchStorefrontProducts } from "@/lib/storefront-fetch";
 
 export default function SpotlightSection({ 
   title = "AUTHENTIC STREETWEAR", 
@@ -20,16 +21,12 @@ export default function SpotlightSection({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // If specific product IDs are provided, fetch them; otherwise fetch by collection
-    const url = productIds && productIds.trim() 
-      ? `/api/shopify/products?ids=${encodeURIComponent(productIds)}`
-      : `/api/shopify/products?pageSize=6&collection=${collection || 'tshirts'}`;
+    const query = productIds && productIds.trim()
+      ? `ids=${encodeURIComponent(productIds)}`
+      : `pageSize=6&collection=${collection || 'tshirts'}`;
 
-    fetch(url)
-      .then(res => res.json())
-      .then(data => {
-        if (data.products) setProducts(data.products);
-      })
+    fetchStorefrontProducts(query)
+      .then((list) => setProducts(list))
       .finally(() => setLoading(false));
   }, [collection, productIds]);
 
