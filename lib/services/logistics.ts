@@ -46,6 +46,7 @@ export type ShiprocketShipmentMeta = {
   shipment_id: string | number | null;
   order_id: string | number | null;
   pickup_scheduled_at?: string | null;
+  invoice_url?: string | null;
 };
 
 export interface LogisticsConfig {
@@ -65,6 +66,7 @@ export const PROVIDER_PRESETS: Record<string, { baseUrl: string; endpoints: Reco
       assignAwb: '/courier/assign/awb',
       generatePickup: '/courier/generate/pickup',
       generateLabel: '/courier/generate/label',
+      generateInvoice: '/orders/print/invoice',
       trackAwb: '/courier/track/awb',
       trackShipment: '/courier/track/shipment',
       createReturn: '/orders/create/return',
@@ -451,12 +453,21 @@ export async function shipOrder(
         const shipItems =
           dbOrder?.items && dbOrder.items.length > 0
             ? dbOrder.items.map((i: any) => ({
+                id: i.id,
                 title: i.title,
                 sku: i.sku || undefined,
                 quantity: i.quantity,
                 price: Number(i.price),
+                variantId: i.variantId || undefined,
+                variantTitle: i.variantTitle || undefined,
               }))
-            : items;
+            : items.map((i, index) => ({
+                id: `fallback-${index + 1}`,
+                title: i.title,
+                sku: i.sku || undefined,
+                quantity: i.quantity,
+                price: Number(i.price),
+              }));
 
         const itemsSubtotal = shipItems.reduce(
           (s: number, i: any) => s + Number(i.price) * Number(i.quantity),
@@ -503,6 +514,12 @@ export async function shipOrder(
           );
         }
 
+        const orderItems = buildShiprocketOrderItems(shipItems, defaultHsn);
+        console.log(
+          `[Shiprocket] order_items SKUs for ${shiprocketOrderId}: ` +
+            orderItems.map((i) => `${i.name}=${i.sku}`).join(' | ')
+        );
+
         const payload = {
           order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
@@ -519,13 +536,7 @@ export async function shipOrder(
             address.email || (dbOrder as any)?.customer?.email || undefined,
           billing_phone: billingPhone ? Number(billingPhone) : undefined,
           shipping_is_billing: true,
-          order_items: shipItems.map((i: { title: string; sku?: string; quantity: number; price: number }) => ({
-            name: i.title,
-            sku: i.sku || `sku-${shiprocketOrderId}`.slice(0, 40),
-            units: i.quantity,
-            selling_price: i.price,
-            hsn: defaultHsn,
-          })),
+          order_items: orderItems,
           payment_method: paymentFields.payment_method,
           ...(paymentFields.total_discount != null
             ? { total_discount: paymentFields.total_discount }
@@ -1152,6 +1163,7 @@ export function parseShiprocketMeta(raw: string | null | undefined): ShiprocketS
       shipment_id: parsed.shipment_id ?? null,
       order_id: parsed.order_id ?? null,
       pickup_scheduled_at: parsed.pickup_scheduled_at ?? null,
+      invoice_url: parsed.invoice_url ?? null,
     };
   } catch {
     return null;
@@ -1180,6 +1192,66 @@ export function isShiprocketCodOrder(order: {
     noteLower.includes('cod order') ||
     noteLower.includes('upfront fee paid')
   );
+}
+
+/**
+ * Build Shiprocket order_items with unique SKUs.
+ * Shiprocket rejects payloads where the same SKU appears on multiple lines
+ * ("SKU cannot be repeated"). Missing or duplicate SKUs are uniquified using
+ * variantId / line-item id / index — never a shared order-level fallback.
+ */
+export function buildShiprocketOrderItems(
+  items: Array<{
+    id?: string | null;
+    title: string;
+    sku?: string | null;
+    quantity: number;
+    price: number | string;
+    variantId?: string | null;
+    variantTitle?: string | null;
+  }>,
+  defaultHsn: number
+): Array<{ name: string; sku: string; units: number; selling_price: number; hsn: number }> {
+  const used = new Set<string>();
+
+  const takeUnique = (candidate: string): string => {
+    const base = (candidate || 'item').replace(/\s+/g, '-').slice(0, 40) || 'item';
+    const key = base.toLowerCase();
+    if (!used.has(key)) {
+      used.add(key);
+      return base;
+    }
+    let n = 2;
+    while (true) {
+      const suffix = `-${n}`;
+      const next = `${base.slice(0, Math.max(1, 40 - suffix.length))}${suffix}`;
+      const nextKey = next.toLowerCase();
+      if (!used.has(nextKey)) {
+        used.add(nextKey);
+        return next;
+      }
+      n += 1;
+    }
+  };
+
+  return items.map((item, index) => {
+    const rawSku = String(item.sku || '').trim();
+    const variantId = String(item.variantId || '').trim();
+    const lineId = String(item.id || '').trim();
+    const preferred =
+      rawSku ||
+      (variantId ? `v-${variantId}` : '') ||
+      (lineId ? `li-${lineId}` : '') ||
+      `item-${index + 1}`;
+
+    return {
+      name: item.title,
+      sku: takeUnique(preferred),
+      units: item.quantity,
+      selling_price: Number(item.price),
+      hsn: defaultHsn,
+    };
+  });
 }
 
 async function getLatestShipmentForOrder(orderId: string) {
@@ -1214,6 +1286,33 @@ async function resolveShiprocketShipmentId(shipment: {
     throw new Error(`Could not resolve Shiprocket shipment_id for AWB ${awb}`);
   }
   return String(shipmentId);
+}
+
+async function resolveShiprocketOrderId(shipment: {
+  awb: string | null;
+  trackingNumber: string | null;
+  rawDelhiveryResponse: string | null;
+}): Promise<string> {
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  if (meta?.order_id) return String(meta.order_id);
+
+  const awb = shipment.awb || shipment.trackingNumber;
+  if (!awb) {
+    throw new Error('No Shiprocket order_id or AWB on this order');
+  }
+
+  const track = await logisticsApiFetch(
+    `${PROVIDER_PRESETS.shiprocket.endpoints.trackAwb}?awb_code=${encodeURIComponent(awb)}`,
+    'GET'
+  );
+  const orderId =
+    track?.tracking_data?.order_id ||
+    track?.order_id ||
+    track?.tracking_data?.shipment_track?.[0]?.order_id;
+  if (!orderId) {
+    throw new Error(`Could not resolve Shiprocket order_id for AWB ${awb}`);
+  }
+  return String(orderId);
 }
 
 // ─── Types for courier selection ────────────────────────────────────────────
@@ -1562,6 +1661,31 @@ export async function bookShiprocketOrderWithCourier(
   const billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
   const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
 
+  const orderItems = buildShiprocketOrderItems(
+    dbOrder.items.map((i: {
+      id: string;
+      title: string;
+      sku?: string | null;
+      quantity: number;
+      price: any;
+      variantId?: string | null;
+      variantTitle?: string | null;
+    }) => ({
+      id: i.id,
+      title: i.title,
+      sku: i.sku,
+      quantity: i.quantity,
+      price: i.price,
+      variantId: i.variantId,
+      variantTitle: i.variantTitle,
+    })),
+    defaultHsn
+  );
+  console.log(
+    `[Shiprocket] order_items SKUs for ${shiprocketOrderId}: ` +
+      orderItems.map((i) => `${i.name}=${i.sku}`).join(' | ')
+  );
+
   const payload = {
     order_id: shiprocketOrderId,
     order_date: new Date().toISOString().split('T')[0],
@@ -1576,13 +1700,7 @@ export async function bookShiprocketOrderWithCourier(
     billing_email: address.email || (dbOrder as any)?.customer?.email || undefined,
     billing_phone: billingPhone ? Number(billingPhone) : undefined,
     shipping_is_billing: true,
-    order_items: dbOrder.items.map((i: { title: string; sku?: string | null; quantity: number; price: any }) => ({
-      name: i.title,
-      sku: i.sku || `sku-${shiprocketOrderId}`.slice(0, 40),
-      units: i.quantity,
-      selling_price: Number(i.price),
-      hsn: defaultHsn,
-    })),
+    order_items: orderItems,
     payment_method: paymentFields.payment_method,
     ...(paymentFields.total_discount != null ? { total_discount: paymentFields.total_discount } : {}),
     sub_total: paymentFields.sub_total,
@@ -1808,6 +1926,60 @@ export async function generateShiprocketLabel(orderId: string): Promise<{ labelU
   });
 
   return { labelUrl: String(labelUrl) };
+}
+
+/**
+ * Generate invoice PDF URL from Shiprocket (POST /orders/print/invoice).
+ */
+export async function generateShiprocketInvoice(orderId: string): Promise<{ invoiceUrl: string }> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+
+  const shipment = await getLatestShipmentForOrder(orderId);
+  if (!shipment) {
+    throw new Error('No shipment found for this order');
+  }
+  if (!shipment.awb) {
+    throw new Error('AWB not assigned yet — cannot print invoice');
+  }
+
+  const existingMeta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  if (existingMeta?.invoice_url) {
+    return { invoiceUrl: String(existingMeta.invoice_url) };
+  }
+
+  const srOrderId = await resolveShiprocketOrderId(shipment);
+  const numericId = Number(srOrderId);
+  const data = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.generateInvoice, 'POST', {
+    ids: [Number.isFinite(numericId) ? numericId : srOrderId],
+  });
+
+  const invoiceUrl =
+    data?.invoice_url ||
+    data?.invoice_url?.[0] ||
+    data?.response?.invoice_url ||
+    (Array.isArray(data) ? data[0]?.invoice_url : null);
+
+  if (!invoiceUrl) {
+    throw new Error(`Shiprocket invoice generation failed: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+
+  const meta: ShiprocketShipmentMeta = existingMeta || {
+    provider: 'shiprocket',
+    shipment_id: null,
+    order_id: srOrderId,
+  };
+  meta.order_id = meta.order_id ?? srOrderId;
+  meta.invoice_url = String(invoiceUrl);
+
+  await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: { rawDelhiveryResponse: JSON.stringify(meta) },
+  });
+
+  return { invoiceUrl: String(invoiceUrl) };
 }
 
 /**

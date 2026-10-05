@@ -15,6 +15,8 @@ import {
   Clock,
   IndianRupee,
   AlertTriangle,
+  Printer,
+  FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -277,11 +279,29 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
           </div>
 
           <div className="flex flex-col gap-3 justify-center">
+            <a
+              href={`/api/logistics/label?order_id=${order.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all group"
+            >
+              <Printer className="w-4 h-4" />
+              Download Shipping Label
+            </a>
+            <a
+              href={`/api/logistics/invoice?order_id=${order.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+            >
+              <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
+              Download Invoice
+            </a>
             {!pickupDone && (
               <button
                 onClick={handlePickup}
                 disabled={blocked || loading !== null}
-                className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50"
+                className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
               >
                 {loading === 'pickup' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
                 Generate Pickup
