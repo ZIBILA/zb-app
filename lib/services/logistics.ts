@@ -515,12 +515,12 @@ export async function shipOrder(
         }
 
         const orderItems = buildShiprocketOrderItems(shipItems, defaultHsn);
+        const pickup = await resolveShiprocketPickupLocation();
 
         const payload = {
           order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
-          pickup_location:
-            process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
+          pickup_location: pickup.name,
           billing_customer_name: billingFirstName,
           billing_last_name: billingLastName,
           billing_address: billingAddress1,
@@ -1303,6 +1303,86 @@ export interface CourierOption {
 }
 
 let cachedPickupPincode: { pincode: string; expiresAt: number } | null = null;
+let cachedPickupLocation: { name: string; pincode: string; expiresAt: number } | null = null;
+
+type ShiprocketPickupAddress = {
+  pickup_location?: string;
+  pin_code?: string | number;
+  is_primary_location?: number | boolean;
+  status?: number | string;
+};
+
+/**
+ * Resolve Shiprocket pickup location for new orders/AWBs.
+ * Always prefer the Primary address. Never fall back to a hard-coded "warehouse"
+ * name — that inactive location was causing courier calls to the old address.
+ */
+export async function resolveShiprocketPickupLocation(preferredName?: string): Promise<{
+  name: string;
+  pincode: string;
+}> {
+  const envName = (preferredName || process.env.SHIPROCKET_PICKUP_LOCATION || '').trim();
+  const envPin = (process.env.SHIPROCKET_PICKUP_PINCODE || '').trim();
+
+  if (cachedPickupLocation && cachedPickupLocation.expiresAt > Date.now()) {
+    // If env forces a specific name and cache matches, reuse; otherwise refresh when env differs
+    if (!envName || cachedPickupLocation.name.toLowerCase() === envName.toLowerCase()) {
+      return { name: cachedPickupLocation.name, pincode: cachedPickupLocation.pincode };
+    }
+  }
+
+  try {
+    const data = await logisticsApiFetch('/settings/company/pickup', 'GET', undefined, true);
+    const addresses: ShiprocketPickupAddress[] = data?.data?.shipping_address || [];
+    const active = addresses.filter((a) => {
+      const status = a.status;
+      // Shiprocket uses 1/active for usable locations; keep unknowns
+      if (status === 0 || status === '0' || status === 'Inactive' || status === 'inactive') return false;
+      return true;
+    });
+    const pool = active.length > 0 ? active : addresses;
+
+    const byName = (name: string) =>
+      pool.find((a) => String(a.pickup_location || '').toLowerCase().trim() === name.toLowerCase());
+
+    // 1) Explicit env name (if set and still active)
+    let matched = envName ? byName(envName) : undefined;
+
+    // 2) Primary location
+    if (!matched) {
+      matched = pool.find((a) => a.is_primary_location === 1 || a.is_primary_location === true);
+    }
+
+    // 3) First active address — never invent "warehouse"
+    if (!matched && pool.length > 0) {
+      matched = pool[0];
+    }
+
+    const name = String(matched?.pickup_location || envName || '').trim();
+    const pin = String(matched?.pin_code || envPin || process.env.WAREHOUSE_PIN || '').trim();
+
+    if (!name) {
+      throw new Error(
+        'No active Shiprocket pickup location found. Mark a Primary address in Shiprocket, or set SHIPROCKET_PICKUP_LOCATION.'
+      );
+    }
+
+    if (pin && pin.length >= 6) {
+      cachedPickupLocation = { name, pincode: pin, expiresAt: Date.now() + 3600 * 1000 };
+      cachedPickupPincode = { pincode: pin, expiresAt: Date.now() + 3600 * 1000 };
+    }
+
+    return { name, pincode: pin || (process.env.WAREHOUSE_PIN || '121002').trim() };
+  } catch (err: any) {
+    console.warn('[Logistics] Could not resolve Shiprocket pickup locations:', err?.message || err);
+    if (envName) {
+      return { name: envName, pincode: envPin || (process.env.WAREHOUSE_PIN || '121002').trim() };
+    }
+    throw new Error(
+      'Shiprocket pickup location unavailable. Ensure Primary address is active in Shiprocket dashboard.'
+    );
+  }
+}
 
 export async function getShiprocketPickupPincode(pickupLocationName?: string): Promise<string> {
   const envPin = (process.env.SHIPROCKET_PICKUP_PINCODE || '').trim();
@@ -1314,33 +1394,8 @@ export async function getShiprocketPickupPincode(pickupLocationName?: string): P
     return cachedPickupPincode.pincode;
   }
 
-  try {
-    const data = await logisticsApiFetch('/settings/company/pickup', 'GET', undefined, true);
-    const addresses: any[] = data?.data?.shipping_address || [];
-    const targetName = (pickupLocationName || process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse').toLowerCase().trim();
-
-    let matched = addresses.find(
-      (a: any) => String(a.pickup_location || '').toLowerCase().trim() === targetName
-    );
-
-    if (!matched) {
-      matched = addresses.find((a: any) => a.is_primary_location === 1);
-    }
-
-    if (!matched && addresses.length > 0) {
-      matched = addresses[0];
-    }
-
-    const pin = String(matched?.pin_code || '').trim();
-    if (pin && pin.length >= 6) {
-      cachedPickupPincode = { pincode: pin, expiresAt: Date.now() + 3600 * 1000 };
-      return pin;
-    }
-  } catch (err: any) {
-    console.warn('[Logistics] Could not fetch Shiprocket pickup locations:', err.message);
-  }
-
-  return (process.env.WAREHOUSE_PIN || '121002').trim();
+  const resolved = await resolveShiprocketPickupLocation(pickupLocationName);
+  return resolved.pincode;
 }
 
 export interface CourierServiceabilityResult {
@@ -1682,10 +1737,12 @@ export async function bookShiprocketOrderWithCourier(
     defaultHsn
   );
 
+  const pickup = await resolveShiprocketPickupLocation();
+
   const payload = {
     order_id: shiprocketOrderId,
     order_date: new Date().toISOString().split('T')[0],
-    pickup_location: process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
+    pickup_location: pickup.name,
     billing_customer_name: nameParts[0] || 'Customer',
     billing_last_name: nameParts.slice(1).join(' ') || '.',
     billing_address: billingAddress1,
