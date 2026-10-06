@@ -375,11 +375,11 @@ export function useRazorpay(): UseRazorpayReturn {
           name: 'Zica Bella',
           description: `Order ${orderId}`,
           email,
-          contact: contact || '9999999999',
+          contact: contact || '9876543210',
           prefill: {
             name,
             email,
-            contact: contact || '9999999999',
+            contact: contact || '9876543210',
           },
           notes: opts.notes || {},
         };

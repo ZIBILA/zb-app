@@ -44,7 +44,7 @@ export async function POST(req: Request) {
       order_id,
       method,
       email: email || 'customer@zicabella.com',
-      contact: contact || '9999999999',
+      contact: contact || '9876543210',
       customer_name: name || 'Zica Customer',
     };
 

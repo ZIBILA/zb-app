@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const { eventType, customerPhone = '919999999999', customerName = 'Meta Reviewer' } = await req.json();
+    const { eventType, customerPhone = '919876543210', customerName = 'Meta Reviewer' } = await req.json();
 
     const sampleCustomerId = 'meta_reviewer_id_123';
     const sampleProductId = 'prod_graphics_tee_001';

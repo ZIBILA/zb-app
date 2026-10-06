@@ -7,6 +7,7 @@ import { searchCustomerByPhone, fetchOrdersByCustomerId } from "@/lib/shopify-ad
 import bcrypt from "bcryptjs";
 import { SmsService } from "@/lib/services/sms.service";
 import { resolveEventGeoFromIp, ClientGeoInput } from "@/lib/resolve-event-geo";
+import { DEMO_OTP, isDemoPhone } from "@/lib/demo-auth";
 
 // Shopify Storefront API customer access token
 async function shopifyCustomerLogin(email: string, password: string) {
@@ -220,8 +221,8 @@ export const authOptions: AuthOptions = {
 
           let isVerified = false;
 
-          // Special case: Demo User Bypass
-          if (normalizedPhone === "9999999999" && providedOtp === "123456") {
+          // Special case: Demo User Bypass (format-valid Indian mobile)
+          if (isDemoPhone(normalizedPhone) && providedOtp === DEMO_OTP) {
             isVerified = true;
           }
 

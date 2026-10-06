@@ -136,11 +136,11 @@ export async function openRazorpayCheckout(
     name: 'Zica Bella',
     order_id: orderJson.order_id,
     email: orderData.email || 'support@zicabella.com',
-    contact: contact || '9999999999',
+    contact: contact || '9876543210',
     prefill: {
       name: orderData.name || 'Zica Customer',
       email: orderData.email || 'support@zicabella.com',
-      contact: contact || '9999999999',
+      contact: contact || '9876543210',
     },
   };
 
