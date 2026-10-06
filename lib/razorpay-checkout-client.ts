@@ -80,46 +80,11 @@ export function validateRazorpayOpenOptions(opts: {
 }
 
 /**
- * Expanded domestic payment methods layout for Standard Checkout.
- * Goal: open the full methods screen (not the compact "More Options" view)
- * without narrowing what Razorpay already enables on the account.
- *
- * Do NOT whitelist UPI apps — omitting `apps` keeps every UPI app Razorpay
- * supports for this merchant. Methods that aren't enabled on the account are
- * simply ignored by Checkout.
- */
-export function getFullPaymentOptionsDisplayConfig(): {
-  display: Record<string, unknown>;
-} {
-  return {
-    display: {
-      blocks: {
-        all_methods: {
-          name: "Payment Options",
-          instruments: [
-            // No `apps` filter → all UPI apps available on the account (GPay, PhonePe, etc.)
-            { method: "upi", flows: ["intent", "collect", "qr"] },
-            { method: "card" },
-            { method: "netbanking" },
-            { method: "wallet" },
-            { method: "emi" },
-            { method: "paylater" },
-            { method: "app", providers: ["cred"] },
-          ],
-        },
-      },
-      sequence: ["block.all_methods"],
-      preferences: {
-        // Custom block only — expands methods up front instead of "More Options"
-        show_default_blocks: false,
-      },
-    },
-  };
-}
-
-/**
  * Open Standard Checkout. Throws if SDK/options invalid.
  * Caller owns lock/loading UI; use onOpened to clear "opening" state once modal is up.
+ *
+ * Do not inject a custom `config.display` here — that replaces Razorpay's native
+ * "Recommended" + "All Payment Options" layout with a stripped category list.
  */
 export async function openRazorpayStandardCheckout(
   options: RazorpayOpenOptions,
@@ -137,22 +102,9 @@ export async function openRazorpayStandardCheckout(
   });
   if (validationError) throw new Error(validationError);
 
-  const currency = String(options.currency || "INR").toUpperCase();
-  const prefillMethod = String(
-    (options.prefill as Record<string, unknown> | undefined)?.method || ""
-  ).toLowerCase();
-  // Domestic INR: expand full options. Skip when caller already set config, or forced card-only.
-  const shouldExpandFullOptions =
-    !options.config &&
-    currency === "INR" &&
-    prefillMethod !== "card";
-
   // Soft backdrop — heavy rgba overlays have been reported to steal clicks from Pay
   const safeOptions: RazorpayOpenOptions = {
     ...options,
-    ...(shouldExpandFullOptions
-      ? { config: getFullPaymentOptionsDisplayConfig() }
-      : {}),
     theme: {
       color: "#000000",
       ...(options.theme || {}),

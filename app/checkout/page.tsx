@@ -9,12 +9,7 @@ import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zbTrackPaymentInitiated } from "@/lib/analytics-tracker";
-import {
-  openRazorpayStandardCheckout,
-  waitForRazorpaySdk,
-  validateRazorpayOpenOptions,
-  getFullPaymentOptionsDisplayConfig,
-} from "@/lib/razorpay-checkout-client";
+import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -1922,9 +1917,6 @@ export default function CheckoutPage() {
             contact: address.phone,
             ...(isInternational ? { method: "card" } : {}),
           },
-          // Domestic: open full Payment Options (UPI apps + cards/netbanking/wallets)
-          // instead of Razorpay's compact view that hides the rest behind "More Options".
-          ...(!isInternational ? { config: getFullPaymentOptionsDisplayConfig() } : {}),
           theme: {
             color: "#000000",
             backdrop_color: "rgba(0,0,0,0.6)",
