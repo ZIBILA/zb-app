@@ -50,6 +50,7 @@ export default function OrderDetailsPage() {
   const { data: session, status } = useSession();
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<"not_found" | "forbidden" | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -79,32 +80,79 @@ export default function OrderDetailsPage() {
   }, [order]);
 
   useEffect(() => {
-    if (status === "unauthenticated" && !loading) {
-      router.push(`/login?callbackUrl=/orders/${id}`);
-    }
-  }, [status, loading, router, id]);
-
-  useEffect(() => {
-    fetchOrder();
-  }, [id]);
-
-  useEffect(() => {
     if (order?.orderNumber) {
       const event = new CustomEvent("update-header-order-number", { detail: order.orderNumber });
       window.dispatchEvent(event);
     }
   }, [order]);
 
+  const sessionUserId = (session?.user as any)?.id || null;
+  const sessionUserEmail = session?.user?.email || null;
+  const sessionUserPhone = (session?.user as any)?.phone || null;
+
+  // Wait for session. Guests must sign in — do not spam /api/orders (401 loop with
+  // stale/expired cookies bouncing login ↔ order page).
+  useEffect(() => {
+    if (status === "loading") return;
+
+    const isSignedIn =
+      status === "authenticated" &&
+      Boolean(sessionUserId || sessionUserEmail || sessionUserPhone);
+
+    if (!isSignedIn) {
+      setLoading(false);
+      router.replace(`/login?callbackUrl=${encodeURIComponent(`/orders/${id}`)}`);
+      return;
+    }
+
+    let cancelled = false;
+    const load = async () => {
+      try {
+        setLoadError(null);
+        const res = await fetch(`/api/orders/${id}`);
+        if (cancelled) return;
+        if (res.status === 401) {
+          router.replace(`/login?callbackUrl=${encodeURIComponent(`/orders/${id}`)}`);
+          return;
+        }
+        const data = await res.json();
+        if (res.ok) {
+          setOrder(data.order);
+        } else if (res.status === 403) {
+          setLoadError("forbidden");
+        } else {
+          setLoadError("not_found");
+          console.warn("[OrderDetails] fetch failed", res.status, data?.error);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError("not_found");
+          console.error("Error fetching order", e);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    setLoading(true);
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, status, sessionUserId, sessionUserEmail, sessionUserPhone, router]);
+
   const fetchOrder = async () => {
     try {
       const res = await fetch(`/api/orders/${id}`);
       if (res.status === 401) {
-        router.push(`/login?callbackUrl=/orders/${id}`);
+        router.replace(`/login?callbackUrl=${encodeURIComponent(`/orders/${id}`)}`);
         return;
       }
       const data = await res.json();
       if (res.ok) {
         setOrder(data.order);
+      } else {
+        console.warn("[OrderDetails] fetch failed", res.status, data?.error);
       }
     } catch (e) {
       console.error("Error fetching order", e);
@@ -297,8 +345,14 @@ export default function OrderDetailsPage() {
           <AlertCircle className="w-6 h-6 text-red-500/50" />
         </div>
         <div className="space-y-1">
-          <h2 className="text-[12px] font-heading uppercase tracking-widest text-foreground">Order Not Found</h2>
-          <p className="text-[9px] text-foreground/50">The requested order could not be located.</p>
+          <h2 className="text-[12px] font-heading uppercase tracking-widest text-foreground">
+            {loadError === "forbidden" ? "Access Denied" : "Order Not Found"}
+          </h2>
+          <p className="text-[9px] text-foreground/50">
+            {loadError === "forbidden"
+              ? "This order is not linked to your account."
+              : "The requested order could not be located."}
+          </p>
         </div>
         <Link href="/orders" className="glass-cta px-8 py-3 text-[9px]">
              Back to Orders

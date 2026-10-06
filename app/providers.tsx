@@ -6,7 +6,7 @@ import { ThemeProvider } from '../components/ThemeProvider';
 import { CartProvider } from '../lib/cart-context';
 import { BookmarkProvider } from '../lib/bookmark-context';
 import { RecentlyViewedProvider } from '../lib/recently-viewed-context';
-import { SessionProvider } from "next-auth/react";
+import { SessionProvider, signOut, useSession } from "next-auth/react";
 
 function AppBridgeWrapper({ children }: { children: React.ReactNode }) {
   const searchParams = useSearchParams();
@@ -16,6 +16,24 @@ function AppBridgeWrapper({ children }: { children: React.ReactNode }) {
   }, [searchParams]);
 
   return <>{children}</>;
+}
+
+/** Clear soft-invalid / emptied sessions so expired admin JWTs don't keep bouncing pages. */
+function InvalidSessionCleaner() {
+  const { data: session, status } = useSession();
+
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const user = session?.user as { id?: string | null; email?: string | null } | undefined;
+    const hasIdentity = Boolean(user?.id || user?.email);
+    const expired =
+      session?.expires != null && new Date(session.expires).getTime() <= Date.now();
+    if (!hasIdentity || expired) {
+      signOut({ redirect: false }).catch(() => {});
+    }
+  }, [status, session]);
+
+  return null;
 }
 
 function SmartSessionProvider({ children }: { children: React.ReactNode }) {
@@ -31,6 +49,7 @@ function SmartSessionProvider({ children }: { children: React.ReactNode }) {
       refetchOnWindowFocus={Boolean(isDashboard)}
       refetchInterval={isDashboard ? 5 * 60 : 0}
     >
+      <InvalidSessionCleaner />
       {children}
     </SessionProvider>
   );
