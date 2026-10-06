@@ -27,6 +27,7 @@
         "NSFaceIDUsageDescription": "Verify your identity to access your profile",
         "NSCameraUsageDescription": "Allow camera access to update your profile photo",
         "NSPhotoLibraryUsageDescription": "Allow photo library access to update your profile photo",
+        "NSLocationWhenInUseUsageDescription": "Zica Bella uses your location to fill your delivery address when you tap Use Current Location.",
         "UIBackgroundModes": [
           "remote-notification"
         ],
@@ -72,7 +73,13 @@
         }
       ],
       "expo-asset",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Zica Bella uses your location to fill your delivery address when you tap Use Current Location."
+        }
+      ]
     ],
     "extra": {
       "eas": {

@@ -2144,9 +2144,16 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     }
   }
 
+  // Clear AWB/tracking on the row so admin UI cannot keep showing a voided label.
+  // This cancels the *courier shipment* only — customer order stays ACTIVE so ops can rebook.
   await prisma.shipment.update({
     where: { id: shipment.id },
-    data: { status: 'cancelled' },
+    data: {
+      status: 'cancelled',
+      awb: null,
+      trackingUrl: null,
+      labelUrl: null,
+    },
   });
 
   if (shipment.orderId) {
@@ -2155,6 +2162,7 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
       data: { 
         deliveryStatus: 'cancelled',
         trackingNumber: null,
+        delhivery_awb: null,
       },
     }).catch(() => {});
 

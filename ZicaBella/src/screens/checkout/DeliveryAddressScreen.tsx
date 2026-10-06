@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { useAuthStore } from '../../store/authStore';
 import { haptics } from '../../utils/haptics';
 import { config } from '../../constants/config';
+import { getFreshDeviceCoordinates, requestDeviceLocationPermission } from '../../utils/deviceLocation';
 
 export default function DeliveryAddressScreen() {
   const insets = useSafeAreaInsets();
@@ -27,6 +28,7 @@ export default function DeliveryAddressScreen() {
   const [isEditing, setIsEditing] = useState(!shippingAddress);
   const [savedAddresses, setSavedAddresses] = useState<any[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
+  const [detectingLocation, setDetectingLocation] = useState(false);
   const [address, setAddress] = useState({
     name: shippingAddress?.name || user?.name || '',
     email: shippingAddress?.email || user?.email || '',
@@ -134,6 +136,59 @@ export default function DeliveryAddressScreen() {
     }
   };
 
+  const handleUseCurrentLocation = async () => {
+    setDetectingLocation(true);
+    try {
+      const permission = await requestDeviceLocationPermission();
+      if (permission !== 'granted') {
+        Alert.alert(
+          'Location permission needed',
+          'Allow location access so we can fill your delivery address from your current position.'
+        );
+        haptics.error();
+        return;
+      }
+
+      const coords = await getFreshDeviceCoordinates();
+      const res = await fetch(
+        `${config.appUrl}/api/geo/reverse?lat=${coords.latitude}&lng=${coords.longitude}`
+      );
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        Alert.alert('Could not detect address', 'Please enter your delivery address manually.');
+        haptics.error();
+        return;
+      }
+
+      const stateKey = String(data.state || '').trim().toUpperCase();
+      const stateName = STATE_CODE_TO_NAME[stateKey] || data.state || '';
+      const zipDigits = String(data.zip || '').replace(/\D/g, '').slice(0, 6);
+      const line1 =
+        data.street ||
+        data.landmark ||
+        (typeof data.formattedAddress === 'string' ? data.formattedAddress.split(',')[0].trim() : '');
+
+      setAddress(prev => ({
+        ...prev,
+        line1: line1 || prev.line1,
+        city: data.city || prev.city,
+        state: stateName || prev.state,
+        pincode: zipDigits || prev.pincode,
+      }));
+      setIsEditing(true);
+      haptics.success();
+    } catch (e) {
+      console.warn('Current location detection failed:', e);
+      Alert.alert(
+        'Location unavailable',
+        'We could not get a fresh GPS fix. Please enter your address manually or try again outdoors.'
+      );
+      haptics.error();
+    } finally {
+      setDetectingLocation(false);
+    }
+  };
+
   const handlePincodeChange = (v: string) => {
     const cleaned = v.replace(/[^0-9]/g, '').slice(0, 6);
     setAddress({ ...address, pincode: cleaned });
@@ -228,6 +283,33 @@ export default function DeliveryAddressScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <Typography size={22} weight="700" color={colors.text} style={styles.title}>Where should we send your pieces?</Typography>
+
+        <TouchableOpacity
+          onPress={() => { haptics.buttonTap(); handleUseCurrentLocation(); }}
+          disabled={detectingLocation}
+          activeOpacity={0.85}
+          style={{
+            marginBottom: 24,
+            paddingVertical: 14,
+            borderRadius: 18,
+            borderWidth: 1,
+            borderColor: colors.borderLight,
+            backgroundColor: colors.surface,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+          }}
+        >
+          {detectingLocation ? (
+            <ActivityIndicator size="small" color={colors.foreground} />
+          ) : (
+            <Ionicons name="navigate-outline" size={18} color={colors.text} />
+          )}
+          <Typography size={9} weight="800" color={colors.text} style={{ letterSpacing: 2 }}>
+            {detectingLocation ? 'DETECTING LOCATION…' : 'USE CURRENT LOCATION'}
+          </Typography>
+        </TouchableOpacity>
 
         {!isEditing && shippingAddress && (
           <View>

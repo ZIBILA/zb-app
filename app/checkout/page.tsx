@@ -50,6 +50,7 @@ import { useTheme } from "next-themes";
 import { useCountry } from "@/lib/country-context";
 import { toast } from "sonner";
 import { loadGoogleMaps, dismissGoogleMapsErrors, resetGoogleMaps, getLoadedLibrary, hasGoogleMapsAuthFailed } from "@/lib/googleMapsLoader";
+import { getExplicitBrowserPosition } from "@/lib/browser-geolocation";
 import { formatPriceString } from "@/lib/global-pricing-client";
 import {
   COUNTRIES,
@@ -771,29 +772,10 @@ export default function CheckoutPage() {
       return;
     }
 
-    // Try browser geolocation with a snappy 2000ms hard timer so user experience is instant
+    // Fresh high-accuracy GPS (Android needs longer timeout than network/cached fixes)
     try {
-      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        const hardTimer = setTimeout(() => {
-          reject(new Error("GEO_TIMEOUT"));
-        }, 2000);
-
-        navigator.geolocation.getCurrentPosition(
-          (p) => {
-            clearTimeout(hardTimer);
-            resolve(p);
-          },
-          (err) => {
-            clearTimeout(hardTimer);
-            reject(err);
-          },
-          {
-            enableHighAccuracy: false,
-            timeout: 1800,
-            maximumAge: 120000,
-          }
-        );
-      });
+      resetGoogleMaps();
+      const pos = await getExplicitBrowserPosition();
 
       const success = await applyCoordinates(pos.coords.latitude, pos.coords.longitude);
       if (!success) {

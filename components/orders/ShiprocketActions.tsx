@@ -74,10 +74,14 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [step, setStep] = useState<FlowStep>('idle');
 
-  const activeShipment = order.shipments?.find((s) => s.status !== 'cancelled') || order.shipments?.[0];
-  const isShipmentCancelled = activeShipment?.status === 'cancelled' || order.deliveryStatus === 'cancelled';
+  // Never fall back to a cancelled row — that kept showing the old AWB after cancel.
+  const activeShipment = order.shipments?.find((s) => (s.status || '').toLowerCase() !== 'cancelled') || null;
+  const isShipmentCancelled =
+    !activeShipment &&
+    (order.deliveryStatus === 'cancelled' ||
+      Boolean(order.shipments?.some((s) => (s.status || '').toLowerCase() === 'cancelled')));
   const shipment = isShipmentCancelled ? null : activeShipment;
-  const awb = shipment?.awb || (isShipmentCancelled ? null : order.delhivery_awb) || null;
+  const awb = shipment?.awb || (!isShipmentCancelled ? order.delhivery_awb : null) || null;
   const trackingNumber = shipment?.trackingNumber || null;
   const status = isShipmentCancelled ? 'cancelled' : (shipment?.status || order.deliveryStatus || 'pending');
   const trackingUrl =
