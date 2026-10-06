@@ -101,7 +101,10 @@ function isRealValue(val: string | undefined | null): val is string {
 }
 
 export const DEMO_PHONE_HASHES = [
-  '5a15bf8887c41bb21f3b33a5bf1a06064711a6495cbbd97ddb92995d5df8b1b5'
+  // +919876543210 / 9876543210 (current demo)
+  '92b5072176e723878b5e06ff3ca61898e4eb74e8c46642a0f2db800b17364ab0',
+  // +919999999999 / 9999999999 (legacy demo — keep blocked)
+  '5a15bf8887c41bb21f3b33a5bf1a06064711a6495cbbd97ddb92995d5df8b1b5',
 ];
 
 export const DEMO_EMAIL_HASHES = [

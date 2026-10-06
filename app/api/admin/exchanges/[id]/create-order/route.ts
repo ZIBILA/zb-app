@@ -331,11 +331,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       shopifyOrderPayload.shipping_address = shippingAddress;
     }
 
-    console.log(`[Exchange Create Order] Shopify payload:`, JSON.stringify({
-      line_items: shopifyOrderPayload.line_items,
-      financial_status: shopifyOrderPayload.financial_status,
-      total_discounts: shopifyOrderPayload.total_discounts,
-    }));
+    if (process.env.LOGISTICS_DEBUG === '1') {
+      console.log(`[Exchange Create Order] line_items=${shopifyOrderPayload.line_items?.length || 0}`);
+    }
 
     let shopifyOrder: any = null;
     let shopifyOrderId: string | null = null;
@@ -469,7 +467,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       const name = addrObj.name || (addrObj.first_name ? `${addrObj.first_name} ${addrObj.last_name || ''}`.trim() : customer?.name || 'Customer');
       const add = addrObj.add || addrObj.address1 || addrObj.street || addrObj.fullAddress || (typeof shippingRaw === 'string' ? shippingRaw : 'Address Not Specified');
       const pin = addrObj.pin || addrObj.zip || addrObj.pincode || addrObj.postalCode || '110001';
-      const phone = addrObj.phone || customer?.phone || '9999999999';
+      const phone = addrObj.phone || customer?.phone || '9876543210';
       const prodDesc = exchangeRequest.exchanges.map((ex: any) => {
         const size = (ex as any).newSize || '';
         return `${ex.newProduct?.sku || 'Replacement Item'}${size ? ` (${size})` : ''}`;

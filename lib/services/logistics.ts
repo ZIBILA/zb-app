@@ -46,6 +46,7 @@ export type ShiprocketShipmentMeta = {
   shipment_id: string | number | null;
   order_id: string | number | null;
   pickup_scheduled_at?: string | null;
+  invoice_url?: string | null;
 };
 
 export interface LogisticsConfig {
@@ -65,6 +66,7 @@ export const PROVIDER_PRESETS: Record<string, { baseUrl: string; endpoints: Reco
       assignAwb: '/courier/assign/awb',
       generatePickup: '/courier/generate/pickup',
       generateLabel: '/courier/generate/label',
+      generateInvoice: '/orders/print/invoice',
       trackAwb: '/courier/track/awb',
       trackShipment: '/courier/track/shipment',
       createReturn: '/orders/create/return',
@@ -126,7 +128,7 @@ async function refreshShiprocketToken(email: string, password: string): Promise<
 
     if (!res.ok) {
       const text = await res.text();
-      console.error('[Shiprocket Auth] Login failed:', text);
+    console.error(`[Shiprocket Auth] Login failed: ${String(text).slice(0, 200)}`);
       return null;
     }
 
@@ -263,7 +265,7 @@ async function logisticsApiFetch(
 
   if (!res.ok) {
     const text = await res.text();
-    console.error(`[Logistics API] ${method} ${url} → ${res.status}: ${text}`);
+    console.error(`[Logistics API] ${method} ${endpoint} → ${res.status}: ${text.slice(0, 200)}`);
     throw new Error(`Logistics API ${res.status}: ${text.slice(0, 200)}`);
   }
 
@@ -451,12 +453,21 @@ export async function shipOrder(
         const shipItems =
           dbOrder?.items && dbOrder.items.length > 0
             ? dbOrder.items.map((i: any) => ({
+                id: i.id,
                 title: i.title,
                 sku: i.sku || undefined,
                 quantity: i.quantity,
                 price: Number(i.price),
+                variantId: i.variantId || undefined,
+                variantTitle: i.variantTitle || undefined,
               }))
-            : items;
+            : items.map((i, index) => ({
+                id: `fallback-${index + 1}`,
+                title: i.title,
+                sku: i.sku || undefined,
+                quantity: i.quantity,
+                price: Number(i.price),
+              }));
 
         const itemsSubtotal = shipItems.reduce(
           (s: number, i: any) => s + Number(i.price) * Number(i.quantity),
@@ -503,11 +514,13 @@ export async function shipOrder(
           );
         }
 
+        const orderItems = buildShiprocketOrderItems(shipItems, defaultHsn);
+        const pickup = await resolveShiprocketPickupLocation();
+
         const payload = {
           order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
-          pickup_location:
-            process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
+          pickup_location: pickup.name,
           billing_customer_name: billingFirstName,
           billing_last_name: billingLastName,
           billing_address: billingAddress1,
@@ -519,13 +532,7 @@ export async function shipOrder(
             address.email || (dbOrder as any)?.customer?.email || undefined,
           billing_phone: billingPhone ? Number(billingPhone) : undefined,
           shipping_is_billing: true,
-          order_items: shipItems.map((i: { title: string; sku?: string; quantity: number; price: number }) => ({
-            name: i.title,
-            sku: i.sku || `sku-${shiprocketOrderId}`.slice(0, 40),
-            units: i.quantity,
-            selling_price: i.price,
-            hsn: defaultHsn,
-          })),
+          order_items: orderItems,
           payment_method: paymentFields.payment_method,
           ...(paymentFields.total_discount != null
             ? { total_discount: paymentFields.total_discount }
@@ -537,13 +544,6 @@ export async function shipOrder(
           weight: 0.5,
         };
 
-        console.log(
-          `[Shiprocket] Booking ${shiprocketOrderId}: method=${paymentFields.payment_method} ` +
-            `total=₹${calculatedTotalPrice} upfront=₹${paymentFields.upfrontPaid} ` +
-            `sub_total=₹${paymentFields.sub_total} total_discount=₹${paymentFields.total_discount ?? 0} ` +
-            `→ Shiprocket collects ₹${paymentFields.shiprocketCollectable}`
-        );
-
         data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', payload);
 
         const srOrderId = data?.order_id ?? data?.payload?.order_id;
@@ -552,17 +552,12 @@ export async function shipOrder(
         let awbCode = String(data?.awb_code ?? data?.payload?.awb_code ?? '').trim();
         let courierName = data?.courier_name || data?.payload?.courier_name || '';
 
-        console.log(
-          `[Shiprocket] Create response for ${shiprocketOrderId}:`,
-          JSON.stringify({
-            order_id: srOrderId,
-            shipment_id: srShipmentId,
-            status_code: statusCode,
-            status: data?.status,
-            awb_code: awbCode || null,
-            message: data?.message,
-          })
-        );
+        if (process.env.LOGISTICS_DEBUG === '1') {
+          console.log(
+            `[Shiprocket] Create ${shiprocketOrderId}: order=${srOrderId} shipment=${srShipmentId} ` +
+              `status=${statusCode} awb=${awbCode || 'none'} method=${paymentFields.payment_method}`
+          );
+        }
 
         if (!srOrderId && !srShipmentId) {
           throw new Error(
@@ -572,9 +567,6 @@ export async function shipOrder(
 
         // Assign AWB (create alone leaves NEW with null awb_code). No auto-pickup.
         if (!awbCode && srShipmentId && preset.endpoints.assignAwb) {
-          console.log(
-            `[Shiprocket] Assigning AWB for shipment_id=${srShipmentId} (order ${shiprocketOrderId})`
-          );
           const assignData = await logisticsApiFetch(preset.endpoints.assignAwb, 'POST', {
             shipment_id: srShipmentId,
           });
@@ -583,21 +575,13 @@ export async function shipOrder(
           const assignOk =
             assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
 
-          console.log(
-            `[Shiprocket] AWB assign for ${shiprocketOrderId}:`,
-            JSON.stringify({
-              awb_assign_status: assignData?.awb_assign_status,
-              awb_code: assignedAwb || null,
-              courier_name: assignPayload?.courier_name || null,
-              message: assignData?.message,
-              error: assignPayload?.awb_assign_error || assignData?.response?.data?.awb_assign_error,
-            })
-          );
-
           if (!assignOk || !assignedAwb) {
+            console.error(
+              `[Shiprocket] AWB assign failed for ${shiprocketOrderId} shipment=${srShipmentId} ` +
+                `status=${assignData?.awb_assign_status}`
+            );
             throw new Error(
-              `Shiprocket AWB assign failed for shipment ${srShipmentId}: ` +
-                `${JSON.stringify(assignData).slice(0, 400)}`
+              `Shiprocket AWB assign failed for shipment ${srShipmentId}`
             );
           }
 
@@ -1152,6 +1136,7 @@ export function parseShiprocketMeta(raw: string | null | undefined): ShiprocketS
       shipment_id: parsed.shipment_id ?? null,
       order_id: parsed.order_id ?? null,
       pickup_scheduled_at: parsed.pickup_scheduled_at ?? null,
+      invoice_url: parsed.invoice_url ?? null,
     };
   } catch {
     return null;
@@ -1180,6 +1165,66 @@ export function isShiprocketCodOrder(order: {
     noteLower.includes('cod order') ||
     noteLower.includes('upfront fee paid')
   );
+}
+
+/**
+ * Build Shiprocket order_items with unique SKUs.
+ * Shiprocket rejects payloads where the same SKU appears on multiple lines
+ * ("SKU cannot be repeated"). Missing or duplicate SKUs are uniquified using
+ * variantId / line-item id / index — never a shared order-level fallback.
+ */
+export function buildShiprocketOrderItems(
+  items: Array<{
+    id?: string | null;
+    title: string;
+    sku?: string | null;
+    quantity: number;
+    price: number | string;
+    variantId?: string | null;
+    variantTitle?: string | null;
+  }>,
+  defaultHsn: number
+): Array<{ name: string; sku: string; units: number; selling_price: number; hsn: number }> {
+  const used = new Set<string>();
+
+  const takeUnique = (candidate: string): string => {
+    const base = (candidate || 'item').replace(/\s+/g, '-').slice(0, 40) || 'item';
+    const key = base.toLowerCase();
+    if (!used.has(key)) {
+      used.add(key);
+      return base;
+    }
+    let n = 2;
+    while (true) {
+      const suffix = `-${n}`;
+      const next = `${base.slice(0, Math.max(1, 40 - suffix.length))}${suffix}`;
+      const nextKey = next.toLowerCase();
+      if (!used.has(nextKey)) {
+        used.add(nextKey);
+        return next;
+      }
+      n += 1;
+    }
+  };
+
+  return items.map((item, index) => {
+    const rawSku = String(item.sku || '').trim();
+    const variantId = String(item.variantId || '').trim();
+    const lineId = String(item.id || '').trim();
+    const preferred =
+      rawSku ||
+      (variantId ? `v-${variantId}` : '') ||
+      (lineId ? `li-${lineId}` : '') ||
+      `item-${index + 1}`;
+
+    return {
+      name: item.title,
+      sku: takeUnique(preferred),
+      units: item.quantity,
+      selling_price: Number(item.price),
+      hsn: defaultHsn,
+    };
+  });
 }
 
 async function getLatestShipmentForOrder(orderId: string) {
@@ -1216,6 +1261,33 @@ async function resolveShiprocketShipmentId(shipment: {
   return String(shipmentId);
 }
 
+async function resolveShiprocketOrderId(shipment: {
+  awb: string | null;
+  trackingNumber: string | null;
+  rawDelhiveryResponse: string | null;
+}): Promise<string> {
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  if (meta?.order_id) return String(meta.order_id);
+
+  const awb = shipment.awb || shipment.trackingNumber;
+  if (!awb) {
+    throw new Error('No Shiprocket order_id or AWB on this order');
+  }
+
+  const track = await logisticsApiFetch(
+    `${PROVIDER_PRESETS.shiprocket.endpoints.trackAwb}?awb_code=${encodeURIComponent(awb)}`,
+    'GET'
+  );
+  const orderId =
+    track?.tracking_data?.order_id ||
+    track?.order_id ||
+    track?.tracking_data?.shipment_track?.[0]?.order_id;
+  if (!orderId) {
+    throw new Error(`Could not resolve Shiprocket order_id for AWB ${awb}`);
+  }
+  return String(orderId);
+}
+
 // ─── Types for courier selection ────────────────────────────────────────────
 
 export interface CourierOption {
@@ -1231,6 +1303,86 @@ export interface CourierOption {
 }
 
 let cachedPickupPincode: { pincode: string; expiresAt: number } | null = null;
+let cachedPickupLocation: { name: string; pincode: string; expiresAt: number } | null = null;
+
+type ShiprocketPickupAddress = {
+  pickup_location?: string;
+  pin_code?: string | number;
+  is_primary_location?: number | boolean;
+  status?: number | string;
+};
+
+/**
+ * Resolve Shiprocket pickup location for new orders/AWBs.
+ * Always prefer the Primary address. Never fall back to a hard-coded "warehouse"
+ * name — that inactive location was causing courier calls to the old address.
+ */
+export async function resolveShiprocketPickupLocation(preferredName?: string): Promise<{
+  name: string;
+  pincode: string;
+}> {
+  const envName = (preferredName || process.env.SHIPROCKET_PICKUP_LOCATION || '').trim();
+  const envPin = (process.env.SHIPROCKET_PICKUP_PINCODE || '').trim();
+
+  if (cachedPickupLocation && cachedPickupLocation.expiresAt > Date.now()) {
+    // If env forces a specific name and cache matches, reuse; otherwise refresh when env differs
+    if (!envName || cachedPickupLocation.name.toLowerCase() === envName.toLowerCase()) {
+      return { name: cachedPickupLocation.name, pincode: cachedPickupLocation.pincode };
+    }
+  }
+
+  try {
+    const data = await logisticsApiFetch('/settings/company/pickup', 'GET', undefined, true);
+    const addresses: ShiprocketPickupAddress[] = data?.data?.shipping_address || [];
+    const active = addresses.filter((a) => {
+      const status = a.status;
+      // Shiprocket uses 1/active for usable locations; keep unknowns
+      if (status === 0 || status === '0' || status === 'Inactive' || status === 'inactive') return false;
+      return true;
+    });
+    const pool = active.length > 0 ? active : addresses;
+
+    const byName = (name: string) =>
+      pool.find((a) => String(a.pickup_location || '').toLowerCase().trim() === name.toLowerCase());
+
+    // 1) Explicit env name (if set and still active)
+    let matched = envName ? byName(envName) : undefined;
+
+    // 2) Primary location
+    if (!matched) {
+      matched = pool.find((a) => a.is_primary_location === 1 || a.is_primary_location === true);
+    }
+
+    // 3) First active address — never invent "warehouse"
+    if (!matched && pool.length > 0) {
+      matched = pool[0];
+    }
+
+    const name = String(matched?.pickup_location || envName || '').trim();
+    const pin = String(matched?.pin_code || envPin || process.env.WAREHOUSE_PIN || '').trim();
+
+    if (!name) {
+      throw new Error(
+        'No active Shiprocket pickup location found. Mark a Primary address in Shiprocket, or set SHIPROCKET_PICKUP_LOCATION.'
+      );
+    }
+
+    if (pin && pin.length >= 6) {
+      cachedPickupLocation = { name, pincode: pin, expiresAt: Date.now() + 3600 * 1000 };
+      cachedPickupPincode = { pincode: pin, expiresAt: Date.now() + 3600 * 1000 };
+    }
+
+    return { name, pincode: pin || (process.env.WAREHOUSE_PIN || '121002').trim() };
+  } catch (err: any) {
+    console.warn('[Logistics] Could not resolve Shiprocket pickup locations:', err?.message || err);
+    if (envName) {
+      return { name: envName, pincode: envPin || (process.env.WAREHOUSE_PIN || '121002').trim() };
+    }
+    throw new Error(
+      'Shiprocket pickup location unavailable. Ensure Primary address is active in Shiprocket dashboard.'
+    );
+  }
+}
 
 export async function getShiprocketPickupPincode(pickupLocationName?: string): Promise<string> {
   const envPin = (process.env.SHIPROCKET_PICKUP_PINCODE || '').trim();
@@ -1242,33 +1394,8 @@ export async function getShiprocketPickupPincode(pickupLocationName?: string): P
     return cachedPickupPincode.pincode;
   }
 
-  try {
-    const data = await logisticsApiFetch('/settings/company/pickup', 'GET', undefined, true);
-    const addresses: any[] = data?.data?.shipping_address || [];
-    const targetName = (pickupLocationName || process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse').toLowerCase().trim();
-
-    let matched = addresses.find(
-      (a: any) => String(a.pickup_location || '').toLowerCase().trim() === targetName
-    );
-
-    if (!matched) {
-      matched = addresses.find((a: any) => a.is_primary_location === 1);
-    }
-
-    if (!matched && addresses.length > 0) {
-      matched = addresses[0];
-    }
-
-    const pin = String(matched?.pin_code || '').trim();
-    if (pin && pin.length >= 6) {
-      cachedPickupPincode = { pincode: pin, expiresAt: Date.now() + 3600 * 1000 };
-      return pin;
-    }
-  } catch (err: any) {
-    console.warn('[Logistics] Could not fetch Shiprocket pickup locations:', err.message);
-  }
-
-  return (process.env.WAREHOUSE_PIN || '121002').trim();
+  const resolved = await resolveShiprocketPickupLocation(pickupLocationName);
+  return resolved.pincode;
 }
 
 export interface CourierServiceabilityResult {
@@ -1374,10 +1501,37 @@ async function assignCourierAwbAndPersist(
   const assignedAwb = String(assignPayload?.awb_code || '').trim();
   const assignOk = assignData?.awb_assign_status === 1 || Boolean(assignedAwb);
   if (!assignOk || !assignedAwb) {
+    const pkg =
+      assignPayload?.packages?.[0] ||
+      assignData?.response?.data?.packages?.[0] ||
+      null;
+    const carrierReason =
+      pkg?.err_code ||
+      pkg?.remarks ||
+      pkg?.reason ||
+      pkg?.status ||
+      assignPayload?.awb_assign_error ||
+      assignData?.message ||
+      'rejected';
+    console.error('[Shiprocket] AWB assign rejected', {
+      courierId,
+      courierName,
+      shipmentId: srShipmentId,
+      carrierReason,
+      package: {
+        status: pkg?.status,
+        err_code: pkg?.err_code,
+        remarks: pkg?.remarks,
+        payment: pkg?.payment,
+        cod_amount: pkg?.cod_amount,
+        serviceable: pkg?.serviceable,
+        refnum: pkg?.refnum,
+      },
+    });
     throw new Error(
-      `Shiprocket AWB assign failed for courier ${courierId} (${courierName}) on shipment ${srShipmentId}. ` +
-        `Local shipment is saved — retry booking with the same courier to resume. ` +
-        `Details: ${JSON.stringify(assignData).slice(0, 400)}`
+      `${courierName} could not assign an AWB for this shipment. ` +
+        `Try a different courier (another provider often works when one rejects). ` +
+        `Shipment is saved — you can retry without recreating the order.`
     );
   }
 
@@ -1562,10 +1716,33 @@ export async function bookShiprocketOrderWithCourier(
   const billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
   const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
 
+  const orderItems = buildShiprocketOrderItems(
+    dbOrder.items.map((i: {
+      id: string;
+      title: string;
+      sku?: string | null;
+      quantity: number;
+      price: any;
+      variantId?: string | null;
+      variantTitle?: string | null;
+    }) => ({
+      id: i.id,
+      title: i.title,
+      sku: i.sku,
+      quantity: i.quantity,
+      price: i.price,
+      variantId: i.variantId,
+      variantTitle: i.variantTitle,
+    })),
+    defaultHsn
+  );
+
+  const pickup = await resolveShiprocketPickupLocation();
+
   const payload = {
     order_id: shiprocketOrderId,
     order_date: new Date().toISOString().split('T')[0],
-    pickup_location: process.env.SHIPROCKET_PICKUP_LOCATION || 'warehouse',
+    pickup_location: pickup.name,
     billing_customer_name: nameParts[0] || 'Customer',
     billing_last_name: nameParts.slice(1).join(' ') || '.',
     billing_address: billingAddress1,
@@ -1576,13 +1753,7 @@ export async function bookShiprocketOrderWithCourier(
     billing_email: address.email || (dbOrder as any)?.customer?.email || undefined,
     billing_phone: billingPhone ? Number(billingPhone) : undefined,
     shipping_is_billing: true,
-    order_items: dbOrder.items.map((i: { title: string; sku?: string | null; quantity: number; price: any }) => ({
-      name: i.title,
-      sku: i.sku || `sku-${shiprocketOrderId}`.slice(0, 40),
-      units: i.quantity,
-      selling_price: Number(i.price),
-      hsn: defaultHsn,
-    })),
+    order_items: orderItems,
     payment_method: paymentFields.payment_method,
     ...(paymentFields.total_discount != null ? { total_discount: paymentFields.total_discount } : {}),
     sub_total: paymentFields.sub_total,
@@ -1625,8 +1796,7 @@ export async function bookShiprocketOrderWithCourier(
   }
 
   console.log(
-    `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId} — ` +
-      `persisted locally as ${pendingShipment.id}; assigning AWB to courier_id=${courierId} (${courierName})`
+    `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId}`
   );
 
   return assignCourierAwbAndPersist(
@@ -1808,6 +1978,60 @@ export async function generateShiprocketLabel(orderId: string): Promise<{ labelU
   });
 
   return { labelUrl: String(labelUrl) };
+}
+
+/**
+ * Generate invoice PDF URL from Shiprocket (POST /orders/print/invoice).
+ */
+export async function generateShiprocketInvoice(orderId: string): Promise<{ invoiceUrl: string }> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+
+  const shipment = await getLatestShipmentForOrder(orderId);
+  if (!shipment) {
+    throw new Error('No shipment found for this order');
+  }
+  if (!shipment.awb) {
+    throw new Error('AWB not assigned yet — cannot print invoice');
+  }
+
+  const existingMeta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  if (existingMeta?.invoice_url) {
+    return { invoiceUrl: String(existingMeta.invoice_url) };
+  }
+
+  const srOrderId = await resolveShiprocketOrderId(shipment);
+  const numericId = Number(srOrderId);
+  const data = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.generateInvoice, 'POST', {
+    ids: [Number.isFinite(numericId) ? numericId : srOrderId],
+  });
+
+  const invoiceUrl =
+    data?.invoice_url ||
+    data?.invoice_url?.[0] ||
+    data?.response?.invoice_url ||
+    (Array.isArray(data) ? data[0]?.invoice_url : null);
+
+  if (!invoiceUrl) {
+    throw new Error(`Shiprocket invoice generation failed: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+
+  const meta: ShiprocketShipmentMeta = existingMeta || {
+    provider: 'shiprocket',
+    shipment_id: null,
+    order_id: srOrderId,
+  };
+  meta.order_id = meta.order_id ?? srOrderId;
+  meta.invoice_url = String(invoiceUrl);
+
+  await prisma.shipment.update({
+    where: { id: shipment.id },
+    data: { rawDelhiveryResponse: JSON.stringify(meta) },
+  });
+
+  return { invoiceUrl: String(invoiceUrl) };
 }
 
 /**

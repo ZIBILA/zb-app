@@ -7,6 +7,7 @@ import { searchCustomerByPhone, fetchOrdersByCustomerId } from "@/lib/shopify-ad
 import bcrypt from "bcryptjs";
 import { SmsService } from "@/lib/services/sms.service";
 import { resolveEventGeoFromIp, ClientGeoInput } from "@/lib/resolve-event-geo";
+import { DEMO_OTP, isDemoPhone } from "@/lib/demo-auth";
 
 // Shopify Storefront API customer access token
 async function shopifyCustomerLogin(email: string, password: string) {
@@ -220,8 +221,8 @@ export const authOptions: AuthOptions = {
 
           let isVerified = false;
 
-          // Special case: Demo User Bypass
-          if (normalizedPhone === "9999999999" && providedOtp === "123456") {
+          // Special case: Demo User Bypass (format-valid Indian mobile)
+          if (isDemoPhone(normalizedPhone) && providedOtp === DEMO_OTP) {
             isVerified = true;
           }
 
@@ -1128,7 +1129,7 @@ export const authOptions: AuthOptions = {
         const eightHoursInSeconds = 8 * 60 * 60;
         if (token.loginTime && (currentTime - (token.loginTime as number)) > eightHoursInSeconds) {
           console.log(`[AUTH] Admin session expired (8h absolute limit) for user ${token.id}`);
-          return null as any; // Invalidates the token
+          return { ...token, invalid: true, exp: currentTime - 30 } as any;
         }
 
         // 2. Inactivity timeout: 1 hour
@@ -1137,7 +1138,7 @@ export const authOptions: AuthOptions = {
         const oneHourInSeconds = 60 * 60;
         if (token.lastActivity && (currentTime - (token.lastActivity as number)) > oneHourInSeconds) {
           console.log(`[AUTH] Admin session expired (1h inactivity) for user ${token.id}`);
-          return null as any; // Invalidates the token
+          return { ...token, invalid: true, exp: currentTime - 30 } as any;
         }
 
         // Bump lastActivity on each token refresh (triggered by getSession/useSession)
@@ -1169,6 +1170,10 @@ export const authOptions: AuthOptions = {
       return token;
     },
     async session({ session, token }) {
+      if ((token as any)?.invalid) {
+        // Soft-invalidate without returning null from jwt (avoids JWT Claims Set encode errors)
+        return { ...session, user: undefined as any, expires: new Date(0).toISOString() } as any;
+      }
       if (token && session.user) {
         (session.user as any).id = token.id ?? null;
         (session.user as any).role = token.role ?? "CUSTOMER";

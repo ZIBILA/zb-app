@@ -6,7 +6,12 @@ export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.en
  * hash from appearing across many distinct external_id/fbp pairs, which
  * triggers Meta's "duplicate client email/phone" warning.
  */
-export const DEMO_PHONES_RAW = ['919999999999', '9999999999', '+919999999999'];
+export const DEMO_PHONES_RAW = [
+  // Current demo login (format-valid Indian mobile — Shiprocket-safe)
+  '919876543210', '9876543210', '+919876543210',
+  // Legacy demo number (keep blocked from Meta)
+  '919999999999', '9999999999', '+919999999999',
+];
 export const DEMO_EMAILS_RAW = ['demo@zicabella.com', 'demo@example.com'];
 export const DEMO_NAMES_RAW = ['demo user'];
 

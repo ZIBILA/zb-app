@@ -948,14 +948,14 @@ export default function CheckoutPage() {
   const codFee = isInternational ? codFeeDisplay.amount : configuredCodFee;
   const codFeeFormatted = isInternational ? codFeeDisplay.formatted : `₹${configuredCodFee.toLocaleString("en-IN")}`;
 
-  // Fetch available store credit balance when customer email/phone or session changes
+  // Fetch available store credit balance (debounced — typing email/phone shouldn't spam)
   useEffect(() => {
-    const fetchStoreCredits = async () => {
-      try {
-        const email = address.email || (session?.user as any)?.email;
-        const phone = address.phone;
-        if (!email && !phone) return;
+    const email = address.email || (session?.user as any)?.email;
+    const phone = address.phone;
+    if (!email && !phone) return;
 
+    const timer = setTimeout(async () => {
+      try {
         const params = new URLSearchParams();
         if (email) params.set('email', email);
         if (phone) params.set('phone', phone);
@@ -972,9 +972,9 @@ export default function CheckoutPage() {
       } catch (err) {
         console.error('[Checkout] Error fetching store credits:', err);
       }
-    };
+    }, 800);
 
-    fetchStoreCredits();
+    return () => clearTimeout(timer);
   }, [address.email, address.phone, session]);
 
   // Prefetch Razorpay/COD order on step 2 (serialize overlapping requests)

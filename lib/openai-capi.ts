@@ -241,7 +241,7 @@ export async function sendOpenAiEvent(payload: OpenAiCapiPayload): Promise<OpenA
     if (res.ok) {
       return { success: true, data: resData };
     } else {
-      console.warn(`[OpenAI CAPI Error] HTTP ${res.status}:`, resData);
+      console.warn(`[OpenAI CAPI Error] HTTP ${res.status}:`, (resData as any)?.error || (resData as any)?.message || 'error');
       return { success: false, error: resData };
     }
   } catch (err: any) {

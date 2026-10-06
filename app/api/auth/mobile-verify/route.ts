@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
 import { checkRateLimit, rateLimit } from "@/lib/rate-limit";
 import { getClientIP } from "@/lib/ip-geo";
 import { resolveEventGeo } from "@/lib/resolve-event-geo";
+import { DEMO_OTP, isDemoPhone } from "@/lib/demo-auth";
 
 async function autoOptInCustomer(phone: string, customerId: string) {
   try {
@@ -117,12 +118,12 @@ export async function POST(req: Request) {
     let isVerified = false;
 
     // Special case: Demo User Bypass
-    if (normalizedPhone === "9999999999" && otp === "123456") {
+    if (isDemoPhone(normalizedPhone) && otp === DEMO_OTP) {
       isVerified = true;
     }
 
     // Per-phone failed verification lockout (max 5 failed attempts per 10 minutes)
-    if (process.env.NODE_ENV === "production" && normalizedPhone !== "9999999999") {
+    if (process.env.NODE_ENV === "production" && !isDemoPhone(normalizedPhone)) {
       const lockKey = `otp-verify-failures:${normalizedPhone}`;
       const failCountResult: any[] = await prisma.$queryRawUnsafe(
         `SELECT COUNT(*)::int as count FROM "RateLimitLog" WHERE "key" = $1 AND "timestamp" >= $2`,
@@ -190,7 +191,7 @@ export async function POST(req: Request) {
 
     if (!isVerified) {
       // Record failed attempt for per-phone lockout
-      if (process.env.NODE_ENV === "production" && normalizedPhone !== "9999999999") {
+      if (process.env.NODE_ENV === "production" && !isDemoPhone(normalizedPhone)) {
         await rateLimit(`otp-verify-failures:${normalizedPhone}`, { maxRequests: 5, windowMs: 10 * 60 * 1000 }).catch(() => {});
       }
 

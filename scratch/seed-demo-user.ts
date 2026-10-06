@@ -15,7 +15,7 @@ async function main() {
   }
 
   // Demo user data
-  const phone = '+919999999999';
+  const phone = '+919876543210';
 
   let customer = await prisma.customer.findFirst({
     where: { phone },

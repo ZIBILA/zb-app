@@ -44,7 +44,7 @@ export async function POST(req: Request) {
       order_id,
       method,
       email: email || 'customer@zicabella.com',
-      contact: contact || '9999999999',
+      contact: contact || '9876543210',
       customer_name: name || 'Zica Customer',
     };
 
@@ -79,7 +79,7 @@ export async function POST(req: Request) {
     }
 
     if (!response.ok) {
-      console.error('Razorpay process error:', JSON.stringify(data));
+      console.error('Razorpay process error:', data?.error?.description || data?.error?.code || 'unknown');
       const msg = source 
         ? `${data.error?.description || 'Authentication error'} (Source: ${source})`
         : data.error?.description || 'Payment initiation failed';

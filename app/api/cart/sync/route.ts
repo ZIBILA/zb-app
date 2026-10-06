@@ -136,7 +136,7 @@ export async function POST(req: Request) {
               ...(customerId ? { customerId } : {}),
             },
           });
-          console.log(`[Cart Sync] Merged ${otherIds.length} duplicate cart(s) into canonical ${mergedCanonicalCart.id}`);
+          console.log(`[Cart Sync] Merged ${otherIds.length} cart(s) → ${mergedCanonicalCart.id}`);
         }
 
         // Ensure canonical cart has latest identity fields
@@ -289,32 +289,21 @@ export async function POST(req: Request) {
           }
         });
       } catch (createErr: any) {
-        // If unique constraint collision happens on sessionToken, release token and retry creation
-        if (createErr.code === 'P2002' && guestId) {
-          await prisma.cart.updateMany({
+        // Concurrent syncs often race on session_token — adopt the winner instead of
+        // clearing the token and creating again (which can race a second time).
+        if (createErr?.code === 'P2002' && guestId) {
+          const raced = await prisma.cart.findUnique({
             where: { sessionToken: guestId },
-            data: { sessionToken: null }
           });
-          const retryPhone = phone || customerPhone || null;
-          cart = await prisma.cart.create({
-            data: {
-              customerId: customerId || null,
-              sessionToken: guestId,
-              source: cartSource,
-              status: "active",
-              phone: retryPhone,
-              phoneLast10: getPhoneLast10(retryPhone),
-              email: email || customerEmail || null,
-              subtotal: calculatedSubtotal,
-              lastActivityAt: new Date(),
-              city: finalCity,
-              state: finalState,
-              zip: finalZip,
-              country: finalCountry,
-              latitude: finalLat,
-              longitude: finalLng,
-            }
-          });
+          if (raced) {
+            cart = raced;
+          } else if (customerId) {
+            cart = await prisma.cart.findFirst({
+              where: { customerId, status: 'active' },
+              orderBy: { updatedAt: 'desc' },
+            });
+          }
+          if (!cart) throw createErr;
         } else {
           throw createErr;
         }

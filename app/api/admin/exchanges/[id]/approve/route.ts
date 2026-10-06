@@ -84,7 +84,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         const name = addrObj.name || (addrObj.first_name ? `${addrObj.first_name} ${addrObj.last_name || ''}`.trim() : customer?.name || 'Customer');
         const add = addrObj.add || addrObj.address1 || addrObj.street || addrObj.fullAddress || (typeof shippingRaw === 'string' ? shippingRaw : 'Address Not Specified');
         const pin = addrObj.pin || addrObj.zip || addrObj.pincode || addrObj.postalCode || '110001';
-        const phone = addrObj.phone || customer?.phone || '9999999999';
+        const phone = addrObj.phone || customer?.phone || '9876543210';
         const prodDesc = exchangeRequest.exchanges.map((ex: any) => ex.originalProduct?.sku || 'Item').join(', ');
 
         const pickupRes = await createReversePickup({

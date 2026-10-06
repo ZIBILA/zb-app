@@ -10,7 +10,7 @@ import {
 import { toast } from "sonner";
 
 export default function MetaReviewPage() {
-  const [phone, setPhone] = useState("919999999999");
+  const [phone, setPhone] = useState("919876543210");
   const [name, setName] = useState("Meta App Reviewer");
   const [settings, setSettings] = useState<any>({
     enable_meta_events: false,
@@ -213,7 +213,7 @@ export default function MetaReviewPage() {
               type="text"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="e.g. 919999999999"
+              placeholder="e.g. 919876543210"
               className="glass-input w-full"
             />
             <p className="text-[10px] text-muted-foreground">Must be a valid digits string. Used for hashing comparisons in Conversions API payloads.</p>

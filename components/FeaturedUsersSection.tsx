@@ -35,7 +35,7 @@ export default function FeaturedUsersSection({
       return;
     }
     const url = allFeatured ? "/api/featured-users" : "/api/featured-users?isTopFeatured=true";
-    fetch(url, { cache: 'no-store' })
+    fetch(url)
       .then(res => res.json())
       .then(data => {
         if (data.users) {

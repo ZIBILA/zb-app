@@ -147,7 +147,7 @@ export async function fetchMetaApi(
 
   if (hasError) {
     console.warn(`[Meta API] ${method} ${cleanEndpoint} — ERROR ${data.error.code} (${elapsed}ms): ${data.error.message}`);
-  } else {
+  } else if (process.env.META_DEBUG === '1') {
     console.log(`[Meta API] ${method} ${cleanEndpoint} — ${httpStatus} OK (${elapsed}ms)`);
   }
 

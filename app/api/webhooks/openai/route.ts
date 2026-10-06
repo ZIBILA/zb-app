@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     }
 
     const eventType = payload.type || payload.event || "unknown";
-    console.log(`[OpenAI Webhook] Received event: ${eventType}`, JSON.stringify(payload).substring(0, 500));
+    console.log(`[OpenAI Webhook] Received event: ${eventType}`);
 
     // Handle different event types
     switch (eventType) {

@@ -82,6 +82,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [isLoaded, setIsLoaded] = useState(false);
   const restoredRef = useRef(false);
   const hydratedRef = useRef(false);
+  const syncInFlightRef = useRef(false);
 
   useEffect(() => {
     if (hydratedRef.current) return;
@@ -145,6 +146,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   // Synchronize cart with backend on updates (debounced)
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Checkout owns contact-enriched sync — avoid duplicate /api/cart/sync there
+    if (window.location.pathname.startsWith("/checkout")) return;
 
     let deviceId = getClientCookie("zb_device_id");
     if (!deviceId) {
@@ -153,6 +156,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }
 
     const syncCartWithBackend = async () => {
+      if (syncInFlightRef.current) return;
+      syncInFlightRef.current = true;
       try {
         let geoDetails = {};
         try {
@@ -200,6 +205,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         });
       } catch (err) {
         console.error("Cart background sync failed:", err);
+      } finally {
+        syncInFlightRef.current = false;
       }
     };
 
@@ -207,8 +214,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     // the DB cart with stale local-only data before merge finishes
     if (status === "authenticated" && !restoredRef.current) return;
 
-    // Fast 300ms debounce for near-instant real-time cart tracking in admin dashboard
-    const timer = setTimeout(syncCartWithBackend, 300);
+    // 1s debounce + single-flight avoids session_token unique races under rapid UI updates
+    const timer = setTimeout(syncCartWithBackend, 1000);
     return () => clearTimeout(timer);
   }, [items, status]);
 

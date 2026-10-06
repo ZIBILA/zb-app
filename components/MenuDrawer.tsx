@@ -3,10 +3,11 @@
 import { X, User, Package, Info, Users, BookOpen, Handshake, ChevronRight, Search, RotateCcw, Globe, ChevronDown, ChevronUp, Check } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useCountry } from "@/lib/country-context";
 import { lockScroll, unlockScroll } from "@/lib/utils/scroll-lock";
+import { fetchMenuCollections } from "@/lib/storefront-fetch";
 
 interface MenuDrawerProps {
   isOpen: boolean;
@@ -48,6 +49,8 @@ export default function MenuDrawer({ isOpen, onClose }: MenuDrawerProps) {
   const { data: session } = useSession();
   const profileImage = session?.user?.image || (session as any)?.customer?.image;
 
+  const menuFetchedRef = useRef(false);
+
   useEffect(() => {
     if (isOpen) {
       lockScroll();
@@ -56,16 +59,15 @@ export default function MenuDrawer({ isOpen, onClose }: MenuDrawerProps) {
   }, [isOpen]);
 
   useEffect(() => {
-    if (isOpen) {
-      setLoading(true);
-      fetch("/api/shopify/collections?location=menu")
-        .then(res => res.ok ? res.json() : Promise.reject())
-        .then(data => {
-          if (Array.isArray(data) && data.length > 0) setCollections(data);
-        })
-        .catch(() => {})
-        .finally(() => setLoading(false));
-    }
+    if (!isOpen || menuFetchedRef.current) return;
+    menuFetchedRef.current = true;
+    setLoading(true);
+    fetchMenuCollections()
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) setCollections(data);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [isOpen]);
 
   return (

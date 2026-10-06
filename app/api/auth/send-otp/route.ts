@@ -28,6 +28,7 @@ function checkRateLimit(phone: string): boolean {
 
 import { checkRateLimit as checkIpRateLimit, rateLimit } from "@/lib/rate-limit";
 import { resolveEventGeo } from "@/lib/resolve-event-geo";
+import { DEMO_PHONE_LAST10, isDemoPhone } from "@/lib/demo-auth";
 
 export async function POST(req: Request) {
   const geo = await resolveEventGeo(req);
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
     }
 
     // Rate limit check: in-memory fast-check + persistent DB sliding-window limiter
-    if (process.env.NODE_ENV === "production" && digits.slice(-10) !== "9999999999") {
+    if (process.env.NODE_ENV === "production" && !isDemoPhone(digits)) {
       const phoneLast10 = digits.slice(-10);
       if (!checkRateLimit(phoneLast10)) {
         return NextResponse.json(
@@ -68,13 +69,13 @@ export async function POST(req: Request) {
       }
     }
 
-    // Special case: Demo User Bypass
-    if (digits.slice(-10) === '9999999999') {
+    // Special case: Demo User Bypass (format-valid Indian mobile for logistics testing)
+    if (isDemoPhone(digits)) {
       return NextResponse.json({ 
         success: true, 
         message: "OTP sent successfully (Demo Mode)",
         provider: "demo",
-        phone: "+91******9999"
+        phone: `+91******${DEMO_PHONE_LAST10.slice(-4)}`
       });
     }
 

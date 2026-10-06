@@ -65,8 +65,8 @@ async function shopifyFetchPage<T>(urlStr: string): Promise<{ data: T; nextPageU
 
     if (!res.ok) {
       const text = await res.text();
-      console.error(`Shopify Admin API error [${res.status}]: ${text}`);
-      throw new Error(`Shopify API ${res.status}: ${text}`);
+      console.error(`Shopify Admin API error [${res.status}]: ${text.slice(0, 200)}`);
+      throw new Error(`Shopify API ${res.status}`);
     }
 
     const data = await res.json();
@@ -199,7 +199,7 @@ async function shopifyPost<T>(endpoint: string, body: unknown, customHeaders?: R
     }
 
     const text = await res.text();
-    console.error(`Shopify Admin API POST error [${res.status}]: ${text}`);
+    console.error(`Shopify Admin API POST error [${res.status}]: ${String(text).slice(0, 200)}`);
     throw new Error(`Shopify API ${res.status}: ${text}`);
   }
   throw new Error('Shopify API: exhausted retries for POST');
@@ -234,7 +234,7 @@ async function shopifyPatch<T>(endpoint: string, body: unknown): Promise<T> {
     }
 
     const text = await res.text();
-    console.error(`Shopify Admin API PUT error [${res.status}]: ${text}`);
+    console.error(`Shopify Admin API PUT error [${res.status}]: ${String(text).slice(0, 200)}`);
     throw new Error(`Shopify API ${res.status}: ${text}`);
   }
   throw new Error('Shopify API: exhausted retries for PUT');
@@ -2103,7 +2103,9 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
       const sorted = matching
         .sort((a: ShopifyProduct, b: ShopifyProduct) => productRelevancyScore(b, q) - productRelevancyScore(a, q));
 
-      console.log(`[Search] GraphQL returned ${products.length} products, ${matching.length} met threshold for query "${q}"`);
+      if (process.env.SEARCH_DEBUG === '1') {
+        console.log(`[Search] GraphQL ${matching.length}/${products.length} matches for "${q}"`);
+      }
       return sorted.slice(0, limit);
     }
 
@@ -2144,7 +2146,10 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
         })
       );
 
-      console.log(`[Search] REST fallback: ${resolved.length} matches out of ${allProducts.length} products for "${q}"`);
+      // REST fallback matches — keep quiet unless SEARCH_DEBUG=1
+      if (process.env.SEARCH_DEBUG === '1') {
+        console.log(`[Search] REST fallback: ${resolved.length}/${allProducts.length} for "${q}"`);
+      }
       return resolved;
     } catch (restError) {
       console.error('[Search] REST fallback also failed:', restError);
@@ -2279,10 +2284,9 @@ export async function fetchMenus(): Promise<any[]> {
     `;
     const data = await shopifyGraphqlFetch<any>(query);
     const menus = data.menus?.edges.map((e: any) => e.node) || [];
-    console.log(`[Shopify Menus] Successfully fetched ${menus.length} menus`);
     return menus;
   } catch (e) {
-    console.error('[Shopify Menus] fetchMenus error:', e);
+    console.error('[Shopify Menus] fetchMenus error:', (e as Error)?.message || e);
     return [];
   }
 }
@@ -2298,15 +2302,13 @@ export async function fetchMenu(handle: string): Promise<any | null> {
     const allMenus = await fetchMenus();
     const menu = allMenus.find(m => m.handle === handle);
     
-    if (menu) {
-      console.log(`[Shopify Menu] Found menu "${handle}": ${menu.title} (${menu.items?.length || 0} items)`);
-    } else {
+    if (!menu) {
       console.warn(`[Shopify Menu] No menu found with handle: "${handle}"`);
     }
     
     return menu;
   } catch (e) {
-    console.error(`[Shopify Menu] Error looking up menu "${handle}":`, e);
+    console.error(`[Shopify Menu] Error looking up menu "${handle}":`, (e as Error)?.message || e);
     return null;
   }
 }

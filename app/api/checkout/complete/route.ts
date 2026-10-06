@@ -21,6 +21,11 @@ export async function POST(req: Request) {
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
   }
+  const requestStartedAt = Date.now();
+  // Non-critical work (Shopify sync, analytics, cart cleanup, profile writes) runs
+  // AFTER the response is returned so the customer isn't stuck on "Payment successful".
+  // Safe on a long-running Node server (Render / next start): the process outlives the request.
+  const deferredTasks: Array<{ name: string; run: () => Promise<void> }> = [];
   try {
     const body = await req.json();
     const {
@@ -724,15 +729,20 @@ export async function POST(req: Request) {
     }
 
     // ─── ONE AND ONLY ONE SHOPIFY-CREATE CHOKE POINT (FIX 1) ───
-    try {
-      const syncRes = await syncOrderToShopify(localOrder.id);
-      if (syncRes.success && syncRes.shopifyOrderId) {
-        localOrder.shopifyOrderId = syncRes.shopifyOrderId;
-        localOrder.shopifyOrderName = syncRes.shopifyOrderName || null;
-      }
-    } catch (syncErr: any) {
-      console.error('[Checkout Complete] Shopify order sync error (will be retried):', syncErr.message);
-    }
+    // Deferred: syncOrderToShopify is idempotent (atomic claim + Shopify idempotency key) and is
+    // also retried by the Razorpay webhook / recovery jobs, so it must not block the customer.
+    // Runs after the WebStoreOrder upsert below, and updates that row's notes itself.
+    const localOrderIdForSync = localOrder.id;
+    deferredTasks.push({
+      name: 'shopify-order-sync',
+      run: async () => {
+        try {
+          await syncOrderToShopify(localOrderIdForSync);
+        } catch (syncErr: any) {
+          console.error('[Checkout Complete] Shopify order sync error (will be retried):', syncErr.message);
+        }
+      },
+    });
 
     // ─── AUTO-SHIPMENT DISABLED ───────────────────────────────────────────────
     // Shiprocket AWB is no longer auto-assigned on checkout completion.
@@ -742,12 +752,20 @@ export async function POST(req: Request) {
     // This gives full control over courier selection and avoids weight mismatches.
     console.log(`[Checkout Complete] Skipping auto-shipment for ${localOrder.id} — manual AWB required from dashboard.`);
 
-    // ─── AFFILIATE / CREATOR ATTRIBUTION ───
-    try {
-      const { attributeOrder } = await import('@/lib/affiliate/attribution');
-      await attributeOrder({ orderId: localOrder.id, req });
-    } catch (affErr: any) {
-      console.warn('[Checkout Complete] Affiliate attribution failed non-fatally:', affErr.message);
+    // ─── AFFILIATE / CREATOR ATTRIBUTION (deferred; non-fatal) ───
+    {
+      const attributionOrderId = localOrder.id;
+      deferredTasks.push({
+        name: 'affiliate-attribution',
+        run: async () => {
+          try {
+            const { attributeOrder } = await import('@/lib/affiliate/attribution');
+            await attributeOrder({ orderId: attributionOrderId, req });
+          } catch (affErr: any) {
+            console.warn('[Checkout Complete] Affiliate attribution failed non-fatally:', affErr.message);
+          }
+        },
+      });
     }
 
     // ─── DEBIT STORE CREDITS FROM CUSTOMER WALLET ───
@@ -926,80 +944,90 @@ export async function POST(req: Request) {
       console.warn('[Checkout Complete] OpenAI CAPI order_created fire failed:', oaiErr.message);
     }
 
-    // Record purchase event in analytics
-    try {
-      await prisma.analyticsEvent.create({
-        data: {
-          eventId: `purchase_${localOrder.id}`,
-          eventName: 'purchase',
-          customerId: localCustomer.id,
-          anonymousId: body.guestId || null,
-          sessionId: null,
-          platform: 'web',
-          orderId: localOrder.id,
-          value: total,
-          currency: localOrder.currency || body.currency || 'INR',
-          quantity: items.reduce((sum: number, i: any) => sum + (i.quantity || 1), 0),
-          pageUrl: '/checkout/complete',
-          metadata: {
-            paymentMethod: finalPaymentMethod,
-            orderNumber: universalOrderNumber,
-            couponCode: finalCouponCode || null,
-            discountAmount: Number(finalCouponDiscount) || 0,
-            storeCreditAmount: parsedStoreCredit,
-          },
-        },
-      });
-    } catch (analyticsErr: any) {
-      if (analyticsErr.code !== 'P2002') {
-        console.warn('[Checkout Analytics] Failed to record purchase event:', analyticsErr.message);
-      }
-    }
-
-    // Mark active or abandoned cart converted
-    try {
-      const cleanPhone = address.phone ? address.phone.replace(/\D/g, "") : null;
-      const last10Phone = cleanPhone && cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
-      const rawCartId = body.cartId || body.cart_id;
-
-      const matchingCarts = await prisma.cart.findMany({
-        where: {
-          convertedOrderId: null,
-          status: { notIn: ["converted"] },
-          OR: [
-            ...(rawCartId ? [{ id: rawCartId }, { sessionToken: rawCartId }] : []),
-            ...(body.guestId ? [{ sessionToken: body.guestId }] : []),
-            ...(localCustomer?.id ? [{ customerId: localCustomer.id }] : []),
-            ...(address.phone ? [{ phone: address.phone }] : []),
-            ...(last10Phone ? [{ phone: { contains: last10Phone } }] : []),
-            ...(address.email ? [{ email: { equals: address.email, mode: "insensitive" as const } }] : [])
-          ]
-        },
-        orderBy: { lastActivityAt: "desc" }
-      });
-
-      if (matchingCarts.length > 0) {
-        const primaryCart = matchingCarts[0];
-        await prisma.cart.update({
-          where: { id: primaryCart.id },
-          data: {
-            status: "converted",
-            convertedOrderId: localOrder.id
-          }
-        });
-
-        if (matchingCarts.length > 1) {
-          const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
-          await prisma.cart.updateMany({
-            where: { id: { in: extraCartIds } },
-            data: { status: "merged" }
+    // Record purchase event in analytics (deferred; non-fatal)
+    deferredTasks.push({
+      name: 'analytics-purchase-event',
+      run: async () => {
+        try {
+          await prisma.analyticsEvent.create({
+            data: {
+              eventId: `purchase_${localOrder.id}`,
+              eventName: 'purchase',
+              customerId: localCustomer.id,
+              anonymousId: body.guestId || null,
+              sessionId: null,
+              platform: 'web',
+              orderId: localOrder.id,
+              value: total,
+              currency: localOrder.currency || body.currency || 'INR',
+              quantity: items.reduce((sum: number, i: any) => sum + (i.quantity || 1), 0),
+              pageUrl: '/checkout/complete',
+              metadata: {
+                paymentMethod: finalPaymentMethod,
+                orderNumber: universalOrderNumber,
+                couponCode: finalCouponCode || null,
+                discountAmount: Number(finalCouponDiscount) || 0,
+                storeCreditAmount: parsedStoreCredit,
+              },
+            },
           });
+        } catch (analyticsErr: any) {
+          if (analyticsErr.code !== 'P2002') {
+            console.warn('[Checkout Analytics] Failed to record purchase event:', analyticsErr.message);
+          }
         }
-        console.log(`[Checkout] Marked cart converted: ${primaryCart.id} for order: ${localOrder.id}`);
-      }
-    } catch (cartErr: any) {
-      console.error("[Checkout] Failed to mark cart converted:", cartErr.message);
-    }
+      },
+    });
+
+    // Mark active or abandoned cart converted (deferred; non-fatal)
+    deferredTasks.push({
+      name: 'cart-converted',
+      run: async () => {
+        try {
+          const cleanPhone = address.phone ? address.phone.replace(/\D/g, "") : null;
+          const last10Phone = cleanPhone && cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone;
+          const rawCartId = body.cartId || body.cart_id;
+
+          const matchingCarts = await prisma.cart.findMany({
+            where: {
+              convertedOrderId: null,
+              status: { notIn: ["converted"] },
+              OR: [
+                ...(rawCartId ? [{ id: rawCartId }, { sessionToken: rawCartId }] : []),
+                ...(body.guestId ? [{ sessionToken: body.guestId }] : []),
+                ...(localCustomer?.id ? [{ customerId: localCustomer.id }] : []),
+                ...(address.phone ? [{ phone: address.phone }] : []),
+                ...(last10Phone ? [{ phone: { contains: last10Phone } }] : []),
+                ...(address.email ? [{ email: { equals: address.email, mode: "insensitive" as const } }] : [])
+              ]
+            },
+            orderBy: { lastActivityAt: "desc" }
+          });
+
+          if (matchingCarts.length > 0) {
+            const primaryCart = matchingCarts[0];
+            await prisma.cart.update({
+              where: { id: primaryCart.id },
+              data: {
+                status: "converted",
+                convertedOrderId: localOrder.id
+              }
+            });
+
+            if (matchingCarts.length > 1) {
+              const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
+              await prisma.cart.updateMany({
+                where: { id: { in: extraCartIds } },
+                data: { status: "merged" }
+              });
+            }
+            console.log(`[Checkout] Marked cart converted: ${primaryCart.id} for order: ${localOrder.id}`);
+          }
+        } catch (cartErr: any) {
+          console.error("[Checkout] Failed to mark cart converted:", cartErr.message);
+        }
+      },
+    });
 
     // Increment coupon usedCount if coupon was applied
     if (finalCouponCode) {
@@ -1288,68 +1316,105 @@ export async function POST(req: Request) {
       console.error('[WhatsApp Trigger Setup Error]:', waSetupErr.message);
     }
 
-    // Update customer name, phone, and address for next time
-    await prisma.customer.update({
-      where: { id: localCustomer.id },
-      data: {
-        name: address.name,
-        phone: address.phone,
-        defaultAddress: JSON.stringify(address)
-      }
+    // Update customer name/phone/address for next time, save the address book entry and
+    // refresh the Shopify customer (deferred; none of this is needed to show the confirmation).
+    deferredTasks.push({
+      name: 'customer-profile-and-address',
+      run: async () => {
+        try {
+          await prisma.customer.update({
+            where: { id: localCustomer.id },
+            data: {
+              name: address.name,
+              phone: address.phone,
+              defaultAddress: JSON.stringify(address)
+            }
+          });
+        } catch (profileErr: any) {
+          console.error("[Checkout] Failed to update customer profile:", profileErr.message);
+        }
+
+        // Save shipping address to Address table
+        try {
+          const existingAddr = await prisma.address.findFirst({
+            where: {
+              customerId: localCustomer.id,
+              address1: address.street,
+              city: address.city,
+              zip: address.zip,
+              phone: address.phone || ""
+            }
+          });
+
+          if (!existingAddr) {
+            const addressesCount = await prisma.address.count({
+              where: { customerId: localCustomer.id }
+            });
+
+            await prisma.address.create({
+              data: {
+                customerId: localCustomer.id,
+                name: address.name,
+                phone: address.phone || "",
+                email: address.email || "",
+                address1: address.street,
+                address2: address.apartment || "",
+                city: address.city,
+                state: address.state,
+                zip: address.zip,
+                country: address.country || "India",
+                isDefault: addressesCount === 0,
+                lat: address.lat != null ? parseFloat(address.lat) : null,
+                lng: address.lng != null ? parseFloat(address.lng) : null,
+                placeId: address.placeId || null,
+              }
+            });
+            console.log(`[Checkout] Saved new shipping address for customer: ${localCustomer.id}`);
+          }
+        } catch (addrErr: any) {
+          console.error("[Checkout] Error saving shipping address to Address table:", addrErr.message);
+        }
+
+        try {
+          await updateCustomer(shopifyCustomerId, {
+            first_name: address.name.split(' ')[0],
+            last_name: address.name.split(' ').slice(1).join(' ') || '.',
+            phone: address.phone,
+          });
+        } catch (e: any) {
+          // Shopify 422 "phone has already been taken" is expected for returning customers.
+          console.warn("[Checkout] Shopify customer name update skipped:", e?.message || e);
+        }
+      },
     });
 
-    // Save shipping address to Address table
-    try {
-      const existingAddr = await prisma.address.findFirst({
-        where: {
-          customerId: localCustomer.id,
-          address1: address.street,
-          city: address.city,
-          zip: address.zip,
-          phone: address.phone || ""
-        }
-      });
+    const orderIdToReturn = localOrder.id;
+    const respondedInMs = Date.now() - requestStartedAt;
 
-      if (!existingAddr) {
-        const addressesCount = await prisma.address.count({
-          where: { customerId: localCustomer.id }
-        });
-
-        await prisma.address.create({
-          data: {
-            customerId: localCustomer.id,
-            name: address.name,
-            phone: address.phone || "",
-            email: address.email || "",
-            address1: address.street,
-            address2: address.apartment || "",
-            city: address.city,
-            state: address.state,
-            zip: address.zip,
-            country: address.country || "India",
-            isDefault: addressesCount === 0,
-            lat: address.lat != null ? parseFloat(address.lat) : null,
-            lng: address.lng != null ? parseFloat(address.lng) : null,
-            placeId: address.placeId || null,
+    // Fire the deferred queue AFTER the response is built. Tasks are independent, so they
+    // run in parallel; each handles its own errors and can never fail the checkout.
+    void (async () => {
+      const queueStartedAt = Date.now();
+      const results = await Promise.allSettled(
+        deferredTasks.map(async (task) => {
+          const taskStartedAt = Date.now();
+          try {
+            await task.run();
+          } finally {
+            console.log(`[Checkout Complete][deferred] ${task.name} finished in ${Date.now() - taskStartedAt}ms`);
           }
-        });
-        console.log(`[Checkout] Saved new shipping address for customer: ${localCustomer.id}`);
-      }
-    } catch (addrErr: any) {
-      console.error("[Checkout] Error saving shipping address to Address table:", addrErr.message);
-    }
+        })
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      console.log(
+        `[Checkout Complete][deferred] order ${orderIdToReturn}: ${deferredTasks.length} task(s) done in ` +
+        `${Date.now() - queueStartedAt}ms (${failed} failed); response was sent after ${respondedInMs}ms`
+      );
+    })().catch((queueErr: any) => {
+      console.error('[Checkout Complete][deferred] queue error:', queueErr?.message || queueErr);
+    });
 
-    try {
-      await updateCustomer(shopifyCustomerId, {
-        first_name: address.name.split(' ')[0],
-        last_name: address.name.split(' ').slice(1).join(' ') || '.',
-        phone: address.phone,
-      });
-    } catch (e) {
-        console.error("Shopify Customer Name Update Error:", e);
-    }
-
-    return NextResponse.json({ orderId: localOrder.id });
+    return NextResponse.json({ orderId: orderIdToReturn });
   } catch (error: any) {
     console.error("Order Completion Error:", error);
     return NextResponse.json({ error: error.message || "Order completion failed" }, { status: 500 });

@@ -6,6 +6,7 @@ import { ArrowRight, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import Link from "next/link";
 import NextImage from "next/image";
 import { handleImageError } from "./ImagePlaceholder";
+import { fetchStorefrontProducts } from "@/lib/storefront-fetch";
 
 export interface RingItem {
   id: string;
@@ -42,31 +43,23 @@ export default function RingCarouselSection({ title, itemsConfig }: RingCarousel
             handle = itemsConfig;
           }
         }
-        const res = await fetch(`/api/shopify/products?collection=${handle}&limit=12`);
-        if (res.ok) {
-          const data = await res.json();
-          let products = Array.isArray(data) ? data : data.products || [];
-          if (products.length === 0) {
-            const fallbackRes = await fetch("/api/shopify/products?limit=6");
-            if (fallbackRes.ok) {
-              const fallbackData = await fallbackRes.json();
-              products = Array.isArray(fallbackData) ? fallbackData : fallbackData.products || [];
-            }
-          }
-          if (products.length > 0) {
-            const mapped: RingItem[] = products.map((p: any) => ({
-              id: p.id?.toString() || `ring-${Math.random()}`,
-              image: p.images?.[0]?.src || p.image?.src || "",
-              link: `/products/${p.handle || p.id}`,
-              title: p.title,
-              price: p.variants?.[0]?.price,
-              handle: p.handle || p.id?.toString(),
-            })).filter((r: RingItem) => r.image);
-            if (mapped.length > 0) {
-              setItems(mapped.slice(0, 12));
-              setLoading(false);
-              return;
-            }
+        let products = await fetchStorefrontProducts(`collection=${encodeURIComponent(handle)}&limit=12`);
+        if (products.length === 0) {
+          products = await fetchStorefrontProducts('limit=6');
+        }
+        if (products.length > 0) {
+          const mapped: RingItem[] = products.map((p: any) => ({
+            id: p.id?.toString() || `ring-${Math.random()}`,
+            image: p.images?.[0]?.src || p.image?.src || "",
+            link: `/products/${p.handle || p.id}`,
+            title: p.title,
+            price: p.variants?.[0]?.price,
+            handle: p.handle || p.id?.toString(),
+          })).filter((r: RingItem) => r.image);
+          if (mapped.length > 0) {
+            setItems(mapped.slice(0, 12));
+            setLoading(false);
+            return;
           }
         }
       } catch (e) {

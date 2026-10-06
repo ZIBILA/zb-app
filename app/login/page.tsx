@@ -11,6 +11,7 @@ import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { getClientCookie } from "@/lib/metaPixel";
+import { DEMO_PHONE_E164 } from "@/lib/demo-auth";
 
 
 /* ────────────────────────────────────────────
@@ -264,7 +265,7 @@ export default function LoginPage() {
 
     const fullPhone = country.code + cleaned;
     
-    if (fullPhone === "+919999999999") {
+    if (fullPhone === DEMO_PHONE_E164) {
       setName("Demo User");
       setStep("OTP");
       try {

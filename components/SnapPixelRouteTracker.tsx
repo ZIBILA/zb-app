@@ -88,7 +88,7 @@ export function SnapPixelRouteTracker() {
       }),
     }).catch(err => console.warn('[Snap Tracker Client] PAGE_VIEW CAPI failed:', err));
 
-  }, [session, pathname]);
+  }, [pathname]);
 
   return null;
 }

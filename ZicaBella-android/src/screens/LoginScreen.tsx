@@ -118,7 +118,7 @@ export default function LoginScreen() {
 
     const fullPhone = country.code + cleaned;
     
-    if (fullPhone === '+919999999999') {
+    if (fullPhone === '+919876543210') {
       setName('Demo User');
       setStep('OTP');
       haptics.success();
@@ -268,12 +268,12 @@ export default function LoginScreen() {
       
       const fullPhone = country.code + cleanedPhone;
       
-      if (fullPhone === '+919999999999' && finalOtp === '123456') {
+      if (fullPhone === '+919876543210' && finalOtp === '123456') {
         const demoUser = {
           id: 'demo_user_001',
           name: 'Demo User',
           email: 'demo@zicabella.com',
-          phone: '+919999999999',
+          phone: '+919876543210',
           isDemo: true,
         } as any;
         login(demoUser, 'demo_token_123');

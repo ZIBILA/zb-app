@@ -200,7 +200,7 @@ export async function sendSnapEvent(payload: SnapCapiEventPayload): Promise<{ su
     if (res.ok && resData.status !== 'INVALID' && resData.status !== 'FAILED') {
       return { success: true, data: resData };
     } else {
-      console.warn(`[Snap CAPI Error] HTTP ${res.status}:`, resData);
+      console.warn(`[Snap CAPI Error] HTTP ${res.status}:`, (resData as any)?.error || (resData as any)?.message || 'error');
       return { success: false, error: resData };
     }
   } catch (err: any) {

@@ -29,17 +29,15 @@ export default function CartPage() {
 
   const recoverId = searchParams.get("recover");
 
-  // Once authenticated, fetch cart from database
+  // Only hit /api/cart/me when recovering an abandoned cart — CartProvider already restores on login
   useEffect(() => {
-    if (status !== "authenticated" || dbLoadedRef.current) return;
+    if (status !== "authenticated" || !recoverId || dbLoadedRef.current) return;
     dbLoadedRef.current = true;
 
     const fetchCartFromDB = async () => {
       setDbLoading(true);
       try {
-        const url = recoverId
-          ? `/api/cart/me?recover=${encodeURIComponent(recoverId)}`
-          : "/api/cart/me";
+        const url = `/api/cart/me?recover=${encodeURIComponent(recoverId)}`;
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
@@ -51,10 +49,8 @@ export default function CartPage() {
         console.error("Failed to load cart from database:", err);
       } finally {
         setDbLoading(false);
-        // Clean recover param from URL after loading
-        if (recoverId && typeof window !== "undefined") {
-          const newUrl = window.location.pathname;
-          window.history.replaceState({}, document.title, newUrl);
+        if (typeof window !== "undefined") {
+          window.history.replaceState({}, document.title, window.location.pathname);
         }
       }
     };

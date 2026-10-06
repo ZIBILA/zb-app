@@ -15,6 +15,8 @@ import {
   Clock,
   IndianRupee,
   AlertTriangle,
+  Printer,
+  FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -161,7 +163,16 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       setStep('booked');
       onRefresh();
     } catch (err: any) {
-      setError(err.message || 'Failed to book shipment');
+      const raw = String(err.message || '');
+      if (/awb assign failed|could not assign an awb|try a different courier/i.test(raw)) {
+        setError(
+          raw.includes('Try a different courier')
+            ? raw
+            : 'This courier could not assign an AWB. Choose another courier/provider and try again — the shipment is already saved.'
+        );
+      } else {
+        setError(raw || 'Failed to book shipment');
+      }
     } finally {
       setLoading(null);
     }
@@ -277,15 +288,38 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
           </div>
 
           <div className="flex flex-col gap-3 justify-center">
+            <a
+              href={`/api/logistics/label?order_id=${order.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all group"
+            >
+              <Printer className="w-4 h-4" />
+              Download Shipping Label
+            </a>
+            <a
+              href={`/api/logistics/invoice?order_id=${order.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+            >
+              <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
+              Download Invoice
+            </a>
             {!pickupDone && (
-              <button
-                onClick={handlePickup}
-                disabled={blocked || loading !== null}
-                className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50"
-              >
-                {loading === 'pickup' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
-                Generate Pickup
-              </button>
+              <div className="space-y-2">
+                <button
+                  onClick={handlePickup}
+                  disabled={blocked || loading !== null}
+                  className="w-full flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+                >
+                  {loading === 'pickup' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
+                  Generate Pickup
+                </button>
+                <p className="text-[11px] text-foreground/40 px-1 leading-relaxed">
+                  AWB only reserves the waybill. Click this when the parcel is packed so the courier schedules a warehouse pickup.
+                </p>
+              </div>
             )}
             <button
               onClick={handleSync}
@@ -401,6 +435,19 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   return (
     <div className="space-y-6">
       <Alerts error={error} message={message} onClearError={() => setError(null)} />
+
+      {trackingNumber && !awb && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-1">
+          <p className="text-[11px] font-bold text-amber-400 uppercase tracking-widest">
+            Shiprocket shipment {trackingNumber} — AWB pending
+          </p>
+          <p className="text-[12px] text-foreground/60">
+            Order already exists in Shiprocket. Re-enter dimensions, pick a courier that fits the weight
+            (avoid Surface 5kg if the parcel is heavier), and book again to resume AWB assign — do not
+            use the old Delhivery panel.
+          </p>
+        </div>
+      )}
 
       {/* Step 1: Dimensions Form */}
       <div className="border border-dashed border-foreground/10 rounded-[32px] p-8 space-y-6">
