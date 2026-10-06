@@ -219,7 +219,13 @@ export default function OrderDetailsPage() {
     const s = (order.status || '').toLowerCase();
     return !['open', 'awaiting_approval', 'payment_pending'].includes(s);
   }, [order]);
-  const isCancelled = useMemo(() => (order?.status || '').toLowerCase().includes('cancel'), [order]);
+  const isCancelled = useMemo(() => {
+    if (!order) return false;
+    const s = String(order.status || '').toLowerCase();
+    const d = String(order.deliveryStatus || '').toLowerCase();
+    const f = String(order.fulfillmentStatus || '').toLowerCase();
+    return s.includes('cancel') || d.includes('cancel') || f.includes('cancel');
+  }, [order]);
   const isDelivered = useMemo(() => {
     const ds = (order?.deliveryStatus || '').toLowerCase();
     const s = (order?.status || '').toLowerCase();
@@ -284,7 +290,11 @@ export default function OrderDetailsPage() {
   const currentStepIndex = getCurrentStepIndex();
 
   const displayLabel = useMemo(() => {
-    if (isCancelled) return "Order Cancelled";
+    if (isCancelled) {
+      return String(order?.cancelledBy || '').toLowerCase() === 'admin'
+        ? 'Cancelled by Zica Bella'
+        : 'Order Cancelled';
+    }
     const s = (order?.status || '').toLowerCase();
     const ds = (order?.deliveryStatus || '').toLowerCase();
     
@@ -318,15 +328,26 @@ export default function OrderDetailsPage() {
     if (!order) return false;
     const s = (order.status || '').toLowerCase();
     const f = (order.fulfillmentStatus || '').toLowerCase();
-    
-    if (s.includes('cancel') || ['payment_failed', 'failed'].includes(s)) {
-      return false;
-    }
-    if (['fulfilled', 'shipped', 'dispatched', 'delivered'].includes(f)) {
-      return false;
-    }
-    
-    return (f === 'unfulfilled' || f === 'pending' || f === '') && !isDelivered;
+    const d = (order.deliveryStatus || '').toLowerCase();
+
+    if (s.includes('cancel') || d.includes('cancel') || f.includes('cancel')) return false;
+    if (['payment_failed', 'failed'].includes(s)) return false;
+    if (['fulfilled', 'shipped', 'dispatched', 'delivered'].includes(f)) return false;
+    if (['confirmed', 'shipped', 'in_transit', 'out_for_delivery', 'delivered'].includes(d)) return false;
+    if (isDelivered) return false;
+
+    // Once AWB / shipment is booked, only Zica Bella admin can cancel
+    const hasAwb =
+      Boolean(order.delhivery_awb || order.trackingNumber) ||
+      (Array.isArray(order.shipments) &&
+        order.shipments.some((sh: any) => {
+          const st = String(sh?.status || '').toLowerCase();
+          if (st.includes('cancel')) return false;
+          return Boolean(sh?.awb || sh?.trackingNumber);
+        }));
+    if (hasAwb) return false;
+
+    return f === 'unfulfilled' || f === 'pending' || f === '';
   }, [order, isDelivered]);
 
   if (loading) {
@@ -448,7 +469,7 @@ export default function OrderDetailsPage() {
         {isCancelled && (
           <div className="mb-10 p-5 rounded-2xl glass-panel border-red-500/20 text-center space-y-2">
             <AlertCircle className="w-6 h-6 text-red-500 mx-auto" />
-            <p className="text-[12px] font-bold text-red-500 uppercase tracking-wider">Order Cancelled</p>
+            <p className="text-[12px] font-bold text-red-500 uppercase tracking-wider">{displayLabel}</p>
           </div>
         )}
 

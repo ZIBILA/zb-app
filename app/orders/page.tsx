@@ -210,7 +210,18 @@ export default function OrdersPage() {
         ) : (
           <div className="space-y-4 max-w-4xl mx-auto">
             {orders.map((order, idx) => {
-              const statusConfig = getStatusConfig(order.deliveryStatus || order.status || 'pending');
+              const isCancelled =
+                String(order.status || '').toLowerCase().includes('cancel') ||
+                String(order.deliveryStatus || '').toLowerCase().includes('cancel') ||
+                String(order.fulfillmentStatus || '').toLowerCase().includes('cancel');
+              const statusKey = isCancelled
+                ? 'cancelled'
+                : (order.deliveryStatus || order.status || 'pending');
+              const statusConfig = getStatusConfig(statusKey);
+              const statusLabel =
+                isCancelled && String(order.cancelledBy || '').toLowerCase() === 'admin'
+                  ? 'Cancelled by Zica Bella'
+                  : statusConfig.label;
               const StatusIcon = statusConfig.icon;
               const orderItems = order.items || [];
               const awbNumber = order.shipments?.[0]?.trackingNumber || order.delhivery_awb;
@@ -221,7 +232,16 @@ export default function OrdersPage() {
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: idx * 0.05 }}
-                  className="group relative rounded-3xl p-5 transition-all duration-500 overflow-hidden glass-panel hover:translate-y-[-1px] shadow-xl border border-foreground/5"
+                  onClick={() => router.push(`/orders/${order.id}`)}
+                  role="link"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      router.push(`/orders/${order.id}`);
+                    }
+                  }}
+                  className="group relative rounded-3xl p-5 transition-all duration-500 overflow-hidden glass-panel hover:translate-y-[-1px] shadow-xl border border-foreground/5 cursor-pointer"
                 >
                   {/* Header Info */}
                   <div className="flex justify-between items-start mb-4">
@@ -242,7 +262,7 @@ export default function OrdersPage() {
                     <div className="flex items-center gap-2">
                       <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[7px] font-black uppercase tracking-widest ${statusConfig.bg}`}>
                         <StatusIcon className={`w-3.5 h-3.5 ${statusConfig.color}`} />
-                        <span className={statusConfig.color}>{statusConfig.label}</span>
+                        <span className={statusConfig.color}>{statusLabel}</span>
                       </div>
                     </div>
                   </div>
@@ -289,9 +309,9 @@ export default function OrdersPage() {
                           </button>
                         )}
 
-                        <Link href={`/orders/${order.id}`} className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-wider text-foreground/40 hover:text-foreground transition-colors">
+                        <span className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-wider text-foreground/40 group-hover:text-foreground transition-colors">
                           Details <ChevronRight className="w-3 h-3" />
-                        </Link>
+                        </span>
                       </div>
                     </div>
                   </div>

@@ -90,6 +90,13 @@ export async function GET(
       });
     }
 
+    if (!order) {
+      order = await prisma.order.findFirst({
+        where: { previousOrderNumbers: { contains: orderId } },
+        include: includeRelations,
+      });
+    }
+
     // Orders list also links WebStoreOrder UUIDs for standalone web purchases.
     // Resolve those → local Order when possible, otherwise return a WSO-shaped payload.
     // WebStoreOrder.id is Postgres UUID — querying with a cuid throws, so wrap in try/catch.
@@ -234,11 +241,17 @@ export async function GET(
       const { getCodBalanceDue } = await import("@/lib/cod-upfront");
       const totalPrice = Number(wso.totalAmount || 0);
 
+      const fulfillment = String(wso.fulfillmentStatus || "").toLowerCase();
+      const delivery = String(wso.deliveryStatus || "").toLowerCase();
+      const isCancelled = fulfillment.includes("cancel") || delivery.includes("cancel");
+      const isDelivered = !isCancelled && (fulfillment === "delivered" || delivery === "delivered");
+      const derivedStatus = isCancelled ? "cancelled" : isDelivered ? "delivered" : "active";
+
       return NextResponse.json({
         order: {
           id: wso.id,
           orderNumber: wso.orderNumber,
-          status: wso.fulfillmentStatus === "delivered" ? "delivered" : "active",
+          status: derivedStatus,
           paymentStatus: wso.paymentStatus,
           paymentMethod: isCodOrder ? "COD" : String(wso.paymentMethod || "razorpay").toUpperCase(),
           isCod: isCodOrder,
@@ -252,8 +265,8 @@ export async function GET(
           currency: "INR",
           createdAt: wso.createdAt,
           updatedAt: wso.updatedAt,
-          deliveryStatus: wso.deliveryStatus || wso.fulfillmentStatus || "pending",
-          fulfillmentStatus: wso.fulfillmentStatus || "unfulfilled",
+          deliveryStatus: isCancelled ? "cancelled" : (wso.deliveryStatus || wso.fulfillmentStatus || "pending"),
+          fulfillmentStatus: isCancelled ? "cancelled" : (wso.fulfillmentStatus || "unfulfilled"),
           shippingAddress: wso.shippingAddress ? JSON.stringify(wso.shippingAddress) : null,
           items,
           shipments: wso.trackingNumber

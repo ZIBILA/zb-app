@@ -113,7 +113,12 @@ export default function OrderHistoryScreen() {
       const timeline = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
       const deliveredAt = timeline.find((t: any) => t.step === 'delivered')?.completedAt;
       
-      const isCancelled = mainStatus.includes('cancel');
+      const deliveryStatus = getVal(o.deliveryStatus);
+      const fulfillmentStatus = getVal(o.fulfillmentStatus);
+      const isCancelled =
+        mainStatus.includes('cancel') ||
+        deliveryStatus.includes('cancel') ||
+        fulfillmentStatus.includes('cancel');
       const isDelivered = !!deliveredAt;
       const isReturnActive = ['return_initiated', 'return_approved', 'exchange_initiated', 'exchange_approved'].includes(mainStatus) ||
                              o.returnRequests?.some((r: any) => !['cancelled', 'rejected', 'refunded'].includes(r.status)) ||
@@ -129,7 +134,8 @@ export default function OrderHistoryScreen() {
     
     switch (label) {
       case 'Cancelled':
-        return { color: '#FF3B30', bg: 'rgba(255,59,48,0.06)', label: 'Cancelled', icon: 'close-circle' as const };
+      case 'Cancelled by Zica Bella':
+        return { color: '#FF3B30', bg: 'rgba(255,59,48,0.06)', label, icon: 'close-circle' as const };
       case 'Return Requested':
       case 'Exchange Requested':
       case 'Return / Exchange Requested':
@@ -321,7 +327,9 @@ export default function OrderHistoryScreen() {
       
       const timeline = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
       const deliveredAt = timeline.find((t: any) => t.step === 'delivered')?.completedAt;
-      const isCancelled = s.includes('cancel');
+      const d = getVal(o.deliveryStatus);
+      const f = getVal(o.fulfillmentStatus);
+      const isCancelled = s.includes('cancel') || d.includes('cancel') || f.includes('cancel');
       const isDelivered = !!deliveredAt;
       const isReturnActive = ['return_initiated', 'return_approved', 'exchange_initiated', 'exchange_approved'].includes(s) ||
                              o.returnRequests?.some((r: any) => !['cancelled', 'rejected', 'refunded'].includes(r.status)) ||

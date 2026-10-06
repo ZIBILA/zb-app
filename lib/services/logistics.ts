@@ -2157,11 +2157,12 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
   });
 
   if (shipment.orderId) {
+    // Reset delivery to pending — shipment cancel is not an order cancel.
+    // Customer Order History must stay Active until admin cancels the order itself.
     await prisma.order.update({
       where: { id: shipment.orderId },
       data: { 
-        deliveryStatus: 'cancelled',
-        trackingNumber: null,
+        deliveryStatus: 'pending',
         delhivery_awb: null,
       },
     }).catch(() => {});
@@ -2178,7 +2179,7 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     if (wsWhere.length) {
       await prisma.webStoreOrder.updateMany({
         where: { OR: wsWhere },
-        data: { deliveryStatus: 'cancelled' },
+        data: { deliveryStatus: 'pending', trackingNumber: null, trackingUrl: null },
       }).catch(() => {});
     }
   }

@@ -59,10 +59,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Order ID is required' }, { status: 400, headers: corsHeaders });
     }
 
-    // Find order and check ownership
+    // Find order and check ownership (include shipments so AWB booking blocks cancel)
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      include: { customer: true }
+      include: { customer: true, shipments: true }
     });
 
     if (!order) {
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized: not your order' }, { status: 403, headers: corsHeaders });
     }
 
-    // Only allow cancellation if order is not already processed/shipped/fulfilled
+    // Block customer cancel once AWB / shipment is booked (admin cancel remains separate)
     const { assertOrderCancellable } = await import('@/lib/services/orderLifecycleService');
     try {
       assertOrderCancellable(order);
@@ -103,6 +103,26 @@ export async function POST(req: Request) {
         updatedAt: new Date(),
       }
     });
+
+    // Keep WebStoreOrder in sync so Order History never keeps a stale "active" row
+    try {
+      const wsWhere: Array<Record<string, string>> = [];
+      if (order.razorpayOrderId) wsWhere.push({ razorpayOrderId: order.razorpayOrderId });
+      if (order.internalOrderNumber) wsWhere.push({ orderNumber: order.internalOrderNumber });
+      if (order.shopifyOrderId) wsWhere.push({ shopifyOrderId: order.shopifyOrderId });
+      if (wsWhere.length > 0) {
+        await prisma.webStoreOrder.updateMany({
+          where: { OR: wsWhere },
+          data: {
+            fulfillmentStatus: 'cancelled',
+            deliveryStatus: 'cancelled',
+            paymentStatus: order.paymentStatus === 'paid' ? order.paymentStatus : 'cancelled',
+          },
+        });
+      }
+    } catch (wsErr: any) {
+      console.warn('[Cancel Order] WebStoreOrder sync failed:', wsErr?.message);
+    }
 
     // 2. Trigger Auto Refund Service
     try {
