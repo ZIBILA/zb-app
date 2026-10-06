@@ -60,9 +60,8 @@ export default function OrderDetailsScreen() {
   const isCancelledMemo = useMemo(() => {
     if (!order) return false;
     const s = String(order.status || '').toLowerCase();
-    const d = String(order.deliveryStatus || '').toLowerCase();
     const f = String(order.fulfillmentStatus || '').toLowerCase();
-    return s.includes('cancel') || d.includes('cancel') || f.includes('cancel');
+    return Boolean(order.cancelledBy) || s.includes('cancel') || f.includes('cancel');
   }, [order]);
 
   const steps = useMemo(() => {
@@ -302,8 +301,8 @@ export default function OrderDetailsScreen() {
   if (!order) return null;
 
   const isCancelled =
+    Boolean(order.cancelledBy) ||
     String(order.status || '').toLowerCase().includes('cancel') ||
-    String(order.deliveryStatus || '').toLowerCase().includes('cancel') ||
     String(order.fulfillmentStatus || '').toLowerCase().includes('cancel');
   const isDelivered = (order.deliveryStatus || '').toLowerCase() === 'delivered';
   const orderNumber = order.orderNumber || order.id?.slice(0, 8);

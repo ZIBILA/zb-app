@@ -210,9 +210,10 @@ export default function OrdersPage() {
         ) : (
           <div className="space-y-4 max-w-4xl mx-auto">
             {orders.map((order, idx) => {
+              // Order cancel only — ignore shipment/delivery void (that was painting Active orders as CANCELLED)
               const isCancelled =
+                Boolean(order.cancelledBy) ||
                 String(order.status || '').toLowerCase().includes('cancel') ||
-                String(order.deliveryStatus || '').toLowerCase().includes('cancel') ||
                 String(order.fulfillmentStatus || '').toLowerCase().includes('cancel');
               const statusKey = isCancelled
                 ? 'cancelled'

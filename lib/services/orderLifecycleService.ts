@@ -14,6 +14,7 @@ export type OrderCancelFields = {
   status?: string | null;
   fulfillmentStatus?: string | null;
   deliveryStatus?: string | null;
+  cancelledBy?: string | null;
   delhivery_awb?: string | null;
   trackingNumber?: string | null;
   shipments?: Array<{
@@ -22,6 +23,32 @@ export type OrderCancelFields = {
     status?: string | null;
   }> | null;
 };
+
+/**
+ * Customer-facing "order cancelled" — NOT the same as a voided courier shipment.
+ * Shipment cancel alone must not paint the whole order as Cancelled in History.
+ */
+export function isOrderCancelledForCustomer(order: {
+  status?: string | null;
+  fulfillmentStatus?: string | null;
+  cancelledBy?: string | null;
+}): boolean {
+  if (order.cancelledBy) return true;
+  const status = String(order.status || '').toLowerCase();
+  const fulfillment = String(order.fulfillmentStatus || '').toLowerCase();
+  return status.includes('cancel') || fulfillment.includes('cancel');
+}
+
+export function getCustomerCancelLabel(order: {
+  status?: string | null;
+  fulfillmentStatus?: string | null;
+  cancelledBy?: string | null;
+}): string | null {
+  if (!isOrderCancelledForCustomer(order)) return null;
+  return String(order.cancelledBy || '').toLowerCase() === 'admin'
+    ? 'Cancelled by Zica Bella'
+    : 'Cancelled';
+}
 
 /** True when a live AWB / courier booking exists (ignores cancelled shipment rows). */
 export function hasActiveShipmentBooking(order: OrderCancelFields): boolean {

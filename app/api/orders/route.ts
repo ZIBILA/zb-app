@@ -216,7 +216,8 @@ export async function GET(req: Request) {
 
       const fulfillment = String(wso.fulfillmentStatus || '').toLowerCase();
       const delivery = String(wso.deliveryStatus || '').toLowerCase();
-      const isCancelled = fulfillment.includes('cancel') || delivery.includes('cancel');
+      // Order cancel only (fulfillment) — delivery cancel is shipment void, not order cancel
+      const isCancelled = fulfillment.includes('cancel');
       const isDelivered = !isCancelled && (fulfillment === 'delivered' || delivery === 'delivered');
       const deliveredTimestamp = wso.updatedAt || wso.createdAt;
       const diffDays = isDelivered ? Math.ceil(Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)) : 999;
@@ -236,7 +237,7 @@ export async function GET(req: Request) {
         totalPrice: Number(wso.totalAmount || 0),
         currency: "INR",
         createdAt: wso.createdAt,
-        deliveryStatus: isCancelled ? 'cancelled' : (wso.deliveryStatus || wso.fulfillmentStatus || 'pending'),
+        deliveryStatus: isCancelled ? 'cancelled' : (delivery === 'cancelled' ? 'pending' : (wso.deliveryStatus || wso.fulfillmentStatus || 'pending')),
         fulfillmentStatus: wso.fulfillmentStatus || 'unfulfilled',
         items,
         shipments: wso.trackingNumber ? [{ trackingNumber: wso.trackingNumber, trackingUrl: wso.trackingUrl }] : [],

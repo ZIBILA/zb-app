@@ -221,10 +221,11 @@ export default function OrderDetailsPage() {
   }, [order]);
   const isCancelled = useMemo(() => {
     if (!order) return false;
+    // Match list card: real order cancel only — not a voided Shiprocket shipment
+    if (order.cancelledBy) return true;
     const s = String(order.status || '').toLowerCase();
-    const d = String(order.deliveryStatus || '').toLowerCase();
     const f = String(order.fulfillmentStatus || '').toLowerCase();
-    return s.includes('cancel') || d.includes('cancel') || f.includes('cancel');
+    return s.includes('cancel') || f.includes('cancel');
   }, [order]);
   const isDelivered = useMemo(() => {
     const ds = (order?.deliveryStatus || '').toLowerCase();
@@ -330,7 +331,7 @@ export default function OrderDetailsPage() {
     const f = (order.fulfillmentStatus || '').toLowerCase();
     const d = (order.deliveryStatus || '').toLowerCase();
 
-    if (s.includes('cancel') || d.includes('cancel') || f.includes('cancel')) return false;
+    if (order.cancelledBy || s.includes('cancel') || f.includes('cancel')) return false;
     if (['payment_failed', 'failed'].includes(s)) return false;
     if (['fulfilled', 'shipped', 'dispatched', 'delivered'].includes(f)) return false;
     if (['confirmed', 'shipped', 'in_transit', 'out_for_delivery', 'delivered'].includes(d)) return false;
@@ -519,15 +520,19 @@ export default function OrderDetailsPage() {
           </div>
         )}
 
-        {/* SHIPMENT DETAILS CARD */}
+        {/* SHIPMENT DETAILS CARD — hide voided/cancelled courier rows so they don't contradict order status */}
         {(() => {
-          const s = order.shipments?.[0];
-          const awb = s?.trackingNumber || s?.awb || order.trackingNumber || order.delhivery_awb;
+          const activeShipment = (order.shipments || []).find((sh: any) => {
+            const st = String(sh?.status || '').toLowerCase();
+            return !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
+          });
+          const s = activeShipment || null;
+          const awb = s?.trackingNumber || s?.awb || (!isCancelled ? (order.trackingNumber || order.delhivery_awb) : null);
           const courier = s?.courier || order.courier || (order.delhivery_awb ? 'Delhivery' : 'Standard Express');
           const status = s?.status || order.deliveryStatus || order.fulfillmentStatus || 'Shipped';
           const trackUrl = s?.trackingUrl || order.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
 
-          if (!awb) return null;
+          if (!awb || String(status || '').toLowerCase().includes('cancel')) return null;
 
           return (
             <div className="mb-8 p-5 rounded-3xl glass-panel overflow-hidden relative group">

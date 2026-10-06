@@ -500,6 +500,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         );
       }
 
+      // Force terminal cancelled fields (never leave status=active with cancelledBy set)
+      body.status = 'cancelled';
       body.paymentStatus = ['paid', 'cod_upfront_paid', 'refunded', 'approved', 'success'].includes(oldOrder.paymentStatus) ? oldOrder.paymentStatus : 'cancelled';
       body.fulfillmentStatus = 'cancelled';
       body.deliveryStatus = 'cancelled';

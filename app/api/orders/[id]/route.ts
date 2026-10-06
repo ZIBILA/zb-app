@@ -243,7 +243,8 @@ export async function GET(
 
       const fulfillment = String(wso.fulfillmentStatus || "").toLowerCase();
       const delivery = String(wso.deliveryStatus || "").toLowerCase();
-      const isCancelled = fulfillment.includes("cancel") || delivery.includes("cancel");
+      // Order cancel only — delivery/shipment cancel must not flip the whole order
+      const isCancelled = fulfillment.includes("cancel");
       const isDelivered = !isCancelled && (fulfillment === "delivered" || delivery === "delivered");
       const derivedStatus = isCancelled ? "cancelled" : isDelivered ? "delivered" : "active";
 
@@ -265,7 +266,7 @@ export async function GET(
           currency: "INR",
           createdAt: wso.createdAt,
           updatedAt: wso.updatedAt,
-          deliveryStatus: isCancelled ? "cancelled" : (wso.deliveryStatus || wso.fulfillmentStatus || "pending"),
+          deliveryStatus: isCancelled ? "cancelled" : (delivery === "cancelled" ? "pending" : (wso.deliveryStatus || wso.fulfillmentStatus || "pending")),
           fulfillmentStatus: isCancelled ? "cancelled" : (wso.fulfillmentStatus || "unfulfilled"),
           shippingAddress: wso.shippingAddress ? JSON.stringify(wso.shippingAddress) : null,
           items,

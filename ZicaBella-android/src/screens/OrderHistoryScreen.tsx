@@ -113,11 +113,10 @@ export default function OrderHistoryScreen() {
       const timeline = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
       const deliveredAt = timeline.find((t: any) => t.step === 'delivered')?.completedAt;
       
-      const deliveryStatus = getVal(o.deliveryStatus);
       const fulfillmentStatus = getVal(o.fulfillmentStatus);
       const isCancelled =
+        Boolean(o.cancelledBy) ||
         mainStatus.includes('cancel') ||
-        deliveryStatus.includes('cancel') ||
         fulfillmentStatus.includes('cancel');
       const isDelivered = !!deliveredAt;
       const isReturnActive = ['return_initiated', 'return_approved', 'exchange_initiated', 'exchange_approved'].includes(mainStatus) ||
@@ -327,9 +326,8 @@ export default function OrderHistoryScreen() {
       
       const timeline = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
       const deliveredAt = timeline.find((t: any) => t.step === 'delivered')?.completedAt;
-      const d = getVal(o.deliveryStatus);
       const f = getVal(o.fulfillmentStatus);
-      const isCancelled = s.includes('cancel') || d.includes('cancel') || f.includes('cancel');
+      const isCancelled = Boolean(o.cancelledBy) || s.includes('cancel') || f.includes('cancel');
       const isDelivered = !!deliveredAt;
       const isReturnActive = ['return_initiated', 'return_approved', 'exchange_initiated', 'exchange_approved'].includes(s) ||
                              o.returnRequests?.some((r: any) => !['cancelled', 'rejected', 'refunded'].includes(r.status)) ||
