@@ -59,7 +59,9 @@ export default function OrderDetailsScreen() {
   // Guard inside the callback if `order` might be null.
   const isCancelledMemo = useMemo(() => {
     if (!order) return false;
-    return (order.status || '').toLowerCase().includes('cancel');
+    const s = String(order.status || '').toLowerCase();
+    const f = String(order.fulfillmentStatus || '').toLowerCase();
+    return Boolean(order.cancelledBy) || s.includes('cancel') || f.includes('cancel');
   }, [order]);
 
   const steps = useMemo(() => {
@@ -298,7 +300,10 @@ export default function OrderDetailsScreen() {
 
   if (!order) return null;
 
-  const isCancelled = (order.status || '').toLowerCase().includes('cancel');
+  const isCancelled =
+    Boolean(order.cancelledBy) ||
+    String(order.status || '').toLowerCase().includes('cancel') ||
+    String(order.fulfillmentStatus || '').toLowerCase().includes('cancel');
   const isDelivered = (order.deliveryStatus || '').toLowerCase() === 'delivered';
   const orderNumber = order.orderNumber || order.id?.slice(0, 8);
   const displayLabel = resolveOrderDisplayStatus(order);
@@ -397,8 +402,8 @@ export default function OrderDetailsScreen() {
           <View style={{ flex: 1 }}>
             <Typography size={10} weight="700" color={colors.textExtraLight} style={{ letterSpacing: 0.5, marginBottom: 4 }}>STATUS</Typography>
             <Typography size={17} weight="800" color={colors.text}>
-              {isCancelled 
-                ? 'Order Cancelled' 
+              {isCancelled
+                ? displayLabel
                 : (['payment_failed', 'payment_pending', 'failed', 'pending'].includes((order.status || '').toLowerCase()) || (order.status || '').toLowerCase().includes('failed'))
                   ? 'Payment Failed'
                   : displayLabel}

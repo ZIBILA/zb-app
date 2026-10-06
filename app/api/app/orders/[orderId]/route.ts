@@ -121,6 +121,12 @@ function statusTimeline(order: any) {
   ];
 }
 
+function extractLocalOrderIdFromNotes(notes: string | null | undefined): string | null {
+  if (!notes) return null;
+  const m = String(notes).match(/Local:\s*([a-zA-Z0-9_-]+)/i);
+  return m?.[1] || null;
+}
+
 export async function GET(req: Request, { params }: { params: { orderId: string } }) {
   const url = new URL(req.url);
   const qCustomerId = url.searchParams.get('customerId');
@@ -130,22 +136,77 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
   const auth = getAppAuthFromRequest(req);
   
   try {
-    const order = await prisma.order.findUnique({
-      where: { id: params.orderId },
-      include: {
-        items: {
-          include: {
-            product: {
-              select: { id: true, shopifyProductId: true, title: true, featuredImage: true, handle: true }
-            }
+    const includeRelations = {
+      items: {
+        include: {
+          product: {
+            select: { id: true, shopifyProductId: true, title: true, featuredImage: true, handle: true }
           }
-        },
-        shipments: true,
-        customer: true,
-        returnRequests: true,
-        exchangeRequests: true,
+        }
       },
+      shipments: true,
+      customer: true,
+      returnRequests: true,
+      exchangeRequests: true,
+    } as const;
+
+    let order = await prisma.order.findUnique({
+      where: { id: params.orderId },
+      include: includeRelations,
     });
+
+    // Resolve by internal / previous numbers (ZBCC renumber after admin cancel)
+    if (!order) {
+      order = await prisma.order.findFirst({
+        where: {
+          OR: [
+            { internalOrderNumber: params.orderId },
+            { shopifyOrderId: params.orderId },
+            { previousOrderNumbers: { contains: params.orderId } },
+          ],
+        },
+        include: includeRelations,
+      });
+    }
+
+    // Resolve WebStoreOrder UUID → local Order (list may still surface WSO ids)
+    if (!order) {
+      try {
+        const wso = await prisma.webStoreOrder.findFirst({
+          where: {
+            OR: [{ id: params.orderId }, { orderNumber: params.orderId }],
+          },
+        });
+        if (wso) {
+          const linkedLocalId = extractLocalOrderIdFromNotes(wso.notes);
+          if (linkedLocalId) {
+            order = await prisma.order.findUnique({
+              where: { id: linkedLocalId },
+              include: includeRelations,
+            });
+          }
+          if (!order && wso.razorpayOrderId) {
+            order = await prisma.order.findFirst({
+              where: { razorpayOrderId: wso.razorpayOrderId },
+              include: includeRelations,
+            });
+          }
+          if (!order && wso.orderNumber) {
+            order = await prisma.order.findFirst({
+              where: {
+                OR: [
+                  { internalOrderNumber: wso.orderNumber },
+                  { previousOrderNumbers: { contains: wso.orderNumber } },
+                ],
+              },
+              include: includeRelations,
+            });
+          }
+        }
+      } catch (wsoErr: any) {
+        console.warn('[App API] WebStoreOrder lookup skipped:', wsoErr?.message || wsoErr);
+      }
+    }
 
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404, headers: corsHeaders });
 
@@ -206,13 +267,16 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
       order: {
         id: order.id,
         orderId: order.id,
-        orderNumber: orderNumberFromOrder(order),
+        orderNumber: order.internalOrderNumber || orderNumberFromOrder(order),
         createdAt: order.createdAt,
         status: order.status,
+        cancelledBy: order.cancelledBy || null,
+        cancelledAt: order.cancelledAt || null,
         paymentMethod: paymentMethodFromOrder(order),
         paymentStatus: paymentStatusFromOrder(order),
         fulfillmentStatus: order.fulfillmentStatus || 'unfulfilled',
         deliveryStatus: order.deliveryStatus || 'pending',
+        delhivery_awb: order.delhivery_awb || null,
         items: (order.items || []).map(formatItem),
         lineItems: (order.items || []).map(formatItem),
         total: order.totalPrice,

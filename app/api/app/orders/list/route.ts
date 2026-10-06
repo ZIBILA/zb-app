@@ -184,6 +184,8 @@ export async function GET(req: Request) {
         orderNumber: orderNumberFromOrder(o),
         createdAt: o.createdAt,
         status: o.status,
+        cancelledBy: o.cancelledBy || null,
+        cancelledAt: o.cancelledAt || null,
         paymentMethod: paymentMethodFromOrder(o),
         paymentStatus: paymentStatusFromOrder(o),
         fulfillmentStatus: o.fulfillmentStatus || 'unfulfilled',

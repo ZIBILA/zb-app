@@ -92,7 +92,8 @@ export function getOrderStatusProgressStep(statusOrLabel: string | null | undefi
     : getOrderStatusLabel(statusOrLabel);
   
   if (
-    label === 'Cancelled' || 
+    label === 'Cancelled' ||
+    label === 'Cancelled by Zica Bella' ||
     label === 'Return Requested' ||
     label === 'Exchange Requested' ||
     label === 'Return / Exchange Requested' ||
@@ -131,10 +132,13 @@ export function getOrderStatusProgressStep(statusOrLabel: string | null | undefi
 export function resolveOrderDisplayStatus(order: any): string {
   if (!order) return "Processing";
   
-  const mainStatus = String(order.status || '').toLowerCase();
+  const mainStatus = String(order.status || order.rawStatus || '').toLowerCase();
+  const fulfillmentStatus = String(order.fulfillmentStatus || '').toLowerCase();
+  const cancelledBy = String(order.cancelledBy || '').toLowerCase();
   
-  // 1. Check Cancelled
-  if (mainStatus.includes('cancel')) {
+  // 1. Real order cancel only — ignore shipment/delivery void (that is not order cancel)
+  if (cancelledBy || mainStatus.includes('cancel') || fulfillmentStatus.includes('cancel')) {
+    if (cancelledBy === 'admin') return 'Cancelled by Zica Bella';
     return 'Cancelled';
   }
 

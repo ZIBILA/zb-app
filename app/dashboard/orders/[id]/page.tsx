@@ -821,10 +821,27 @@ export default function OrderDetailPage() {
           {/* Logistics Terminal */}
           <div className={`p-10 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-8 ${(order.status === 'cancelled' || order.status === 'payment_failed') ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
             {(() => {
-              const activeShipment = (order as any).shipments?.[0];
+              const allShipments = ((order as any).shipments || []) as Array<{
+                status?: string | null;
+                trackingNumber?: string | null;
+                awb?: string | null;
+                courier?: string | null;
+                trackingUrl?: string | null;
+                rawDelhiveryResponse?: string | null;
+              }>;
+              // Prefer a live shipment; never surface AWB/tracking from a cancelled row
+              // (that left Logistics showing CANCELLED while the old AWB badge stayed visible).
+              const activeShipment =
+                allShipments.find((s) => (s.status || '').toLowerCase() !== 'cancelled') || null;
+              const logisticsCancelled =
+                !activeShipment &&
+                (order.deliveryStatus === 'cancelled' ||
+                  allShipments.some((s) => (s.status || '').toLowerCase() === 'cancelled'));
               const externalId = activeShipment?.trackingNumber || null;
               const awb = activeShipment?.awb || null;
-              const courier = activeShipment?.courier || (order.delhivery_awb ? 'Delhivery Logistics' : 'Courier Logistics Hub');
+              const courier = logisticsCancelled
+                ? 'Courier Logistics Hub'
+                : activeShipment?.courier || (order.delhivery_awb ? 'Delhivery Logistics' : 'Courier Logistics Hub');
               const trackingUrl =
                 activeShipment?.trackingUrl ||
                 (awb ? `https://shiprocket.co/tracking/${awb}` : null);
@@ -850,8 +867,9 @@ export default function OrderDetailPage() {
                   (Boolean(courier) &&
                     courier.toLowerCase().includes('delhivery') &&
                     !String(courier).toLowerCase().includes('shiprocket')));
-              const displayStatus =
-                activeShipment?.status || order.deliveryStatus || 'pending';
+              const displayStatus = logisticsCancelled
+                ? 'cancelled'
+                : activeShipment?.status || order.deliveryStatus || 'pending';
               const awbPending = Boolean(externalId || isShiprocketShipment) && !awb;
               const showShiprocketActions = !isNativeDelhivery;
               const showDelhiveryActions = isNativeDelhivery;

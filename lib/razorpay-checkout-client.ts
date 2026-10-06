@@ -82,6 +82,9 @@ export function validateRazorpayOpenOptions(opts: {
 /**
  * Open Standard Checkout. Throws if SDK/options invalid.
  * Caller owns lock/loading UI; use onOpened to clear "opening" state once modal is up.
+ *
+ * Do not inject a custom `config.display` here — that replaces Razorpay's native
+ * "Recommended" + "All Payment Options" layout with a stripped category list.
  */
 export async function openRazorpayStandardCheckout(
   options: RazorpayOpenOptions,

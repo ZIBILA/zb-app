@@ -488,16 +488,20 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     // Auto-cancel sub-statuses if status is set to cancelled
     if (body.status === 'cancelled' && oldOrder.status !== 'cancelled') {
-      const { assertOrderCancellable } = await import('@/lib/services/orderLifecycleService');
+      // Admin may cancel after AWB once ops have checked the carrier.
+      // Customer cancel remains blocked separately via assertOrderCancellable.
+      const { assertAdminOrderCancellable } = await import('@/lib/services/orderLifecycleService');
       try {
-        assertOrderCancellable(oldOrder);
+        assertAdminOrderCancellable(oldOrder);
       } catch (cancelErr: any) {
         return NextResponse.json(
-          { success: false, error: cancelErr?.message || 'Cannot cancel order that is already shipped or delivered' },
+          { success: false, error: cancelErr?.message || 'Cannot cancel this order' },
           { status: 400 }
         );
       }
 
+      // Force terminal cancelled fields (never leave status=active with cancelledBy set)
+      body.status = 'cancelled';
       body.paymentStatus = ['paid', 'cod_upfront_paid', 'refunded', 'approved', 'success'].includes(oldOrder.paymentStatus) ? oldOrder.paymentStatus : 'cancelled';
       body.fulfillmentStatus = 'cancelled';
       body.deliveryStatus = 'cancelled';
@@ -520,11 +524,22 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
             body.tags = `${body.tags}, zb-order-${cancelledNumber}`;
           }
           console.log(`[Admin Order PATCH] Renumbered cancelled order: ${oldNumber} → ${cancelledNumber}`);
-          // Sync WebStoreOrder to keep orderNumber in lockstep with the ZBCC number
+          // Sync WebStoreOrder number + cancelled statuses so customer Order History updates
+          const wsCancelData: any = {
+            orderNumber: cancelledNumber,
+            fulfillmentStatus: 'cancelled',
+            deliveryStatus: 'cancelled',
+          };
           if (oldNumber) {
             await prisma.webStoreOrder.updateMany({
               where: { orderNumber: oldNumber },
-              data: { orderNumber: cancelledNumber },
+              data: wsCancelData,
+            });
+          }
+          if (oldOrder.razorpayOrderId) {
+            await prisma.webStoreOrder.updateMany({
+              where: { razorpayOrderId: oldOrder.razorpayOrderId },
+              data: wsCancelData,
             });
           }
         } catch (renumberErr) {
@@ -610,6 +625,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
           }
           if (body.fulfillmentStatus) {
             webStoreUpdate.fulfillmentStatus = body.fulfillmentStatus;
+          }
+          if (body.deliveryStatus) {
+            webStoreUpdate.deliveryStatus = body.deliveryStatus;
+          }
+          if (body.internalOrderNumber) {
+            webStoreUpdate.orderNumber = body.internalOrderNumber;
           }
           if (body.note) {
             webStoreUpdate.notes = body.note;

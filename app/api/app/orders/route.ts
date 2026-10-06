@@ -280,6 +280,8 @@ export async function GET(req: Request) {
         updatedAt: o.updatedAt,
         status: normalizedStatus,
         rawStatus: o.status,
+        cancelledBy: o.cancelledBy || null,
+        cancelledAt: o.cancelledAt || null,
         paymentStatus: o.paymentStatus,
         fulfillmentStatus: o.fulfillmentStatus,
         deliveryStatus: o.deliveryStatus,

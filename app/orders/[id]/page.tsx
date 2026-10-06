@@ -50,6 +50,7 @@ export default function OrderDetailsPage() {
   const { data: session, status } = useSession();
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<"not_found" | "forbidden" | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -79,32 +80,79 @@ export default function OrderDetailsPage() {
   }, [order]);
 
   useEffect(() => {
-    if (status === "unauthenticated" && !loading) {
-      router.push(`/login?callbackUrl=/orders/${id}`);
-    }
-  }, [status, loading, router, id]);
-
-  useEffect(() => {
-    fetchOrder();
-  }, [id]);
-
-  useEffect(() => {
     if (order?.orderNumber) {
       const event = new CustomEvent("update-header-order-number", { detail: order.orderNumber });
       window.dispatchEvent(event);
     }
   }, [order]);
 
+  const sessionUserId = (session?.user as any)?.id || null;
+  const sessionUserEmail = session?.user?.email || null;
+  const sessionUserPhone = (session?.user as any)?.phone || null;
+
+  // Wait for session. Guests must sign in — do not spam /api/orders (401 loop with
+  // stale/expired cookies bouncing login ↔ order page).
+  useEffect(() => {
+    if (status === "loading") return;
+
+    const isSignedIn =
+      status === "authenticated" &&
+      Boolean(sessionUserId || sessionUserEmail || sessionUserPhone);
+
+    if (!isSignedIn) {
+      setLoading(false);
+      router.replace(`/login?callbackUrl=${encodeURIComponent(`/orders/${id}`)}`);
+      return;
+    }
+
+    let cancelled = false;
+    const load = async () => {
+      try {
+        setLoadError(null);
+        const res = await fetch(`/api/orders/${id}`);
+        if (cancelled) return;
+        if (res.status === 401) {
+          router.replace(`/login?callbackUrl=${encodeURIComponent(`/orders/${id}`)}`);
+          return;
+        }
+        const data = await res.json();
+        if (res.ok) {
+          setOrder(data.order);
+        } else if (res.status === 403) {
+          setLoadError("forbidden");
+        } else {
+          setLoadError("not_found");
+          console.warn("[OrderDetails] fetch failed", res.status, data?.error);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError("not_found");
+          console.error("Error fetching order", e);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    setLoading(true);
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, status, sessionUserId, sessionUserEmail, sessionUserPhone, router]);
+
   const fetchOrder = async () => {
     try {
       const res = await fetch(`/api/orders/${id}`);
       if (res.status === 401) {
-        router.push(`/login?callbackUrl=/orders/${id}`);
+        router.replace(`/login?callbackUrl=${encodeURIComponent(`/orders/${id}`)}`);
         return;
       }
       const data = await res.json();
       if (res.ok) {
         setOrder(data.order);
+      } else {
+        console.warn("[OrderDetails] fetch failed", res.status, data?.error);
       }
     } catch (e) {
       console.error("Error fetching order", e);
@@ -171,7 +219,14 @@ export default function OrderDetailsPage() {
     const s = (order.status || '').toLowerCase();
     return !['open', 'awaiting_approval', 'payment_pending'].includes(s);
   }, [order]);
-  const isCancelled = useMemo(() => (order?.status || '').toLowerCase().includes('cancel'), [order]);
+  const isCancelled = useMemo(() => {
+    if (!order) return false;
+    // Match list card: real order cancel only — not a voided Shiprocket shipment
+    if (order.cancelledBy) return true;
+    const s = String(order.status || '').toLowerCase();
+    const f = String(order.fulfillmentStatus || '').toLowerCase();
+    return s.includes('cancel') || f.includes('cancel');
+  }, [order]);
   const isDelivered = useMemo(() => {
     const ds = (order?.deliveryStatus || '').toLowerCase();
     const s = (order?.status || '').toLowerCase();
@@ -236,7 +291,11 @@ export default function OrderDetailsPage() {
   const currentStepIndex = getCurrentStepIndex();
 
   const displayLabel = useMemo(() => {
-    if (isCancelled) return "Order Cancelled";
+    if (isCancelled) {
+      return String(order?.cancelledBy || '').toLowerCase() === 'admin'
+        ? 'Cancelled by Zica Bella'
+        : 'Order Cancelled';
+    }
     const s = (order?.status || '').toLowerCase();
     const ds = (order?.deliveryStatus || '').toLowerCase();
     
@@ -270,15 +329,26 @@ export default function OrderDetailsPage() {
     if (!order) return false;
     const s = (order.status || '').toLowerCase();
     const f = (order.fulfillmentStatus || '').toLowerCase();
-    
-    if (s.includes('cancel') || ['payment_failed', 'failed'].includes(s)) {
-      return false;
-    }
-    if (['fulfilled', 'shipped', 'dispatched', 'delivered'].includes(f)) {
-      return false;
-    }
-    
-    return (f === 'unfulfilled' || f === 'pending' || f === '') && !isDelivered;
+    const d = (order.deliveryStatus || '').toLowerCase();
+
+    if (order.cancelledBy || s.includes('cancel') || f.includes('cancel')) return false;
+    if (['payment_failed', 'failed'].includes(s)) return false;
+    if (['fulfilled', 'shipped', 'dispatched', 'delivered'].includes(f)) return false;
+    if (['confirmed', 'shipped', 'in_transit', 'out_for_delivery', 'delivered'].includes(d)) return false;
+    if (isDelivered) return false;
+
+    // Once AWB / shipment is booked, only Zica Bella admin can cancel
+    const hasAwb =
+      Boolean(order.delhivery_awb || order.trackingNumber) ||
+      (Array.isArray(order.shipments) &&
+        order.shipments.some((sh: any) => {
+          const st = String(sh?.status || '').toLowerCase();
+          if (st.includes('cancel')) return false;
+          return Boolean(sh?.awb || sh?.trackingNumber);
+        }));
+    if (hasAwb) return false;
+
+    return f === 'unfulfilled' || f === 'pending' || f === '';
   }, [order, isDelivered]);
 
   if (loading) {
@@ -297,8 +367,14 @@ export default function OrderDetailsPage() {
           <AlertCircle className="w-6 h-6 text-red-500/50" />
         </div>
         <div className="space-y-1">
-          <h2 className="text-[12px] font-heading uppercase tracking-widest text-foreground">Order Not Found</h2>
-          <p className="text-[9px] text-foreground/50">The requested order could not be located.</p>
+          <h2 className="text-[12px] font-heading uppercase tracking-widest text-foreground">
+            {loadError === "forbidden" ? "Access Denied" : "Order Not Found"}
+          </h2>
+          <p className="text-[9px] text-foreground/50">
+            {loadError === "forbidden"
+              ? "This order is not linked to your account."
+              : "The requested order could not be located."}
+          </p>
         </div>
         <Link href="/orders" className="glass-cta px-8 py-3 text-[9px]">
              Back to Orders
@@ -394,7 +470,7 @@ export default function OrderDetailsPage() {
         {isCancelled && (
           <div className="mb-10 p-5 rounded-2xl glass-panel border-red-500/20 text-center space-y-2">
             <AlertCircle className="w-6 h-6 text-red-500 mx-auto" />
-            <p className="text-[12px] font-bold text-red-500 uppercase tracking-wider">Order Cancelled</p>
+            <p className="text-[12px] font-bold text-red-500 uppercase tracking-wider">{displayLabel}</p>
           </div>
         )}
 
@@ -444,15 +520,19 @@ export default function OrderDetailsPage() {
           </div>
         )}
 
-        {/* SHIPMENT DETAILS CARD */}
+        {/* SHIPMENT DETAILS CARD — hide voided/cancelled courier rows so they don't contradict order status */}
         {(() => {
-          const s = order.shipments?.[0];
-          const awb = s?.trackingNumber || s?.awb || order.trackingNumber || order.delhivery_awb;
+          const activeShipment = (order.shipments || []).find((sh: any) => {
+            const st = String(sh?.status || '').toLowerCase();
+            return !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
+          });
+          const s = activeShipment || null;
+          const awb = s?.trackingNumber || s?.awb || (!isCancelled ? (order.trackingNumber || order.delhivery_awb) : null);
           const courier = s?.courier || order.courier || (order.delhivery_awb ? 'Delhivery' : 'Standard Express');
           const status = s?.status || order.deliveryStatus || order.fulfillmentStatus || 'Shipped';
           const trackUrl = s?.trackingUrl || order.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
 
-          if (!awb) return null;
+          if (!awb || String(status || '').toLowerCase().includes('cancel')) return null;
 
           return (
             <div className="mb-8 p-5 rounded-3xl glass-panel overflow-hidden relative group">

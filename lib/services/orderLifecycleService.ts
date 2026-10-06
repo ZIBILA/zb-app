@@ -14,13 +14,62 @@ export type OrderCancelFields = {
   status?: string | null;
   fulfillmentStatus?: string | null;
   deliveryStatus?: string | null;
+  cancelledBy?: string | null;
+  delhivery_awb?: string | null;
+  trackingNumber?: string | null;
+  shipments?: Array<{
+    awb?: string | null;
+    trackingNumber?: string | null;
+    status?: string | null;
+  }> | null;
 };
 
-/** True when the order has progressed far enough that cancel must be blocked. */
+/**
+ * Customer-facing "order cancelled" — NOT the same as a voided courier shipment.
+ * Shipment cancel alone must not paint the whole order as Cancelled in History.
+ */
+export function isOrderCancelledForCustomer(order: {
+  status?: string | null;
+  fulfillmentStatus?: string | null;
+  cancelledBy?: string | null;
+}): boolean {
+  if (order.cancelledBy) return true;
+  const status = String(order.status || '').toLowerCase();
+  const fulfillment = String(order.fulfillmentStatus || '').toLowerCase();
+  return status.includes('cancel') || fulfillment.includes('cancel');
+}
+
+export function getCustomerCancelLabel(order: {
+  status?: string | null;
+  fulfillmentStatus?: string | null;
+  cancelledBy?: string | null;
+}): string | null {
+  if (!isOrderCancelledForCustomer(order)) return null;
+  return String(order.cancelledBy || '').toLowerCase() === 'admin'
+    ? 'Cancelled by Zica Bella'
+    : 'Cancelled';
+}
+
+/** True when a live AWB / courier booking exists (ignores cancelled shipment rows). */
+export function hasActiveShipmentBooking(order: OrderCancelFields): boolean {
+  if (order.delhivery_awb || order.trackingNumber) return true;
+  const shipments = Array.isArray(order.shipments) ? order.shipments : [];
+  return shipments.some((s) => {
+    const st = String(s?.status || '').toLowerCase();
+    if (st.includes('cancel')) return false;
+    return Boolean(s?.awb || s?.trackingNumber);
+  });
+}
+
+/** True when the order has progressed far enough that customer cancel must be blocked. */
 export function isOrderNonCancellable(order: OrderCancelFields): boolean {
   const status = String(order.status || '').toLowerCase();
   const fulfillment = String(order.fulfillmentStatus || '').toLowerCase();
   const delivery = String(order.deliveryStatus || '').toLowerCase();
+
+  if (status.includes('cancel') || fulfillment.includes('cancel') || delivery.includes('cancel')) {
+    return true;
+  }
 
   const blockedFulfillment = [
     'fulfilled',
@@ -42,13 +91,34 @@ export function isOrderNonCancellable(order: OrderCancelFields): boolean {
   return (
     blockedFulfillment.includes(fulfillment) ||
     blockedDelivery.includes(delivery) ||
-    blockedStatus.includes(status)
+    blockedStatus.includes(status) ||
+    hasActiveShipmentBooking(order)
   );
 }
 
+/** Customer-facing cancel gate (includes AWB / shipment booking). */
 export function assertOrderCancellable(order: OrderCancelFields): void {
   if (isOrderNonCancellable(order)) {
-    throw new Error('Order cannot be cancelled after fulfillment or shipment');
+    throw new Error(
+      hasActiveShipmentBooking(order)
+        ? 'Order cannot be cancelled after shipment has been booked. Please contact support.'
+        : 'Order cannot be cancelled after fulfillment or shipment'
+    );
+  }
+}
+
+/**
+ * Admin cancel gate — ops may cancel after AWB once they have checked the carrier.
+ * Only hard-block terminal customer-facing states.
+ */
+export function assertAdminOrderCancellable(order: OrderCancelFields): void {
+  const status = String(order.status || '').toLowerCase();
+  const delivery = String(order.deliveryStatus || '').toLowerCase();
+  if (status.includes('cancel')) {
+    throw new Error('Order is already cancelled');
+  }
+  if (delivery === 'delivered' || status === 'delivered') {
+    throw new Error('Delivered orders cannot be cancelled');
   }
 }
 

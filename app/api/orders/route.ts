@@ -214,20 +214,31 @@ export async function GET(req: Request) {
         size: i.size || null
       })) : [];
 
-      const isDelivered = String(wso.fulfillmentStatus || '').toLowerCase() === 'delivered';
+      const fulfillment = String(wso.fulfillmentStatus || '').toLowerCase();
+      const delivery = String(wso.deliveryStatus || '').toLowerCase();
+      // Order cancel only (fulfillment) — delivery cancel is shipment void, not order cancel
+      const isCancelled = fulfillment.includes('cancel');
+      const isDelivered = !isCancelled && (fulfillment === 'delivered' || delivery === 'delivered');
       const deliveredTimestamp = wso.updatedAt || wso.createdAt;
       const diffDays = isDelivered ? Math.ceil(Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)) : 999;
       const isWithin15Days = isDelivered && diffDays <= 15;
+      const derivedStatus = isCancelled
+        ? 'cancelled'
+        : isDelivered
+          ? 'delivered'
+          : 'active';
 
       return {
         id: wso.id,
         orderNumber: wso.orderNumber,
-        status: wso.fulfillmentStatus === 'delivered' ? 'delivered' : 'active',
+        status: derivedStatus,
         paymentStatus: wso.paymentStatus,
         paymentMethod: wso.paymentMethod,
         totalPrice: Number(wso.totalAmount || 0),
         currency: "INR",
         createdAt: wso.createdAt,
+        deliveryStatus: isCancelled ? 'cancelled' : (delivery === 'cancelled' ? 'pending' : (wso.deliveryStatus || wso.fulfillmentStatus || 'pending')),
+        fulfillmentStatus: wso.fulfillmentStatus || 'unfulfilled',
         items,
         shipments: wso.trackingNumber ? [{ trackingNumber: wso.trackingNumber, trackingUrl: wso.trackingUrl }] : [],
         returnRequests: [],
@@ -239,7 +250,7 @@ export async function GET(req: Request) {
         hasActiveRequest: false,
         isDelivered,
         isWithin15Days,
-        isEligible: isWithin15Days,
+        isEligible: isWithin15Days && !isCancelled,
         remainingDays: Math.max(0, 15 - diffDays)
       };
     });

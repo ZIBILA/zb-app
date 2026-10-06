@@ -101,10 +101,14 @@ export default function LoginPage() {
   };
 
   useEffect(() => {
-    if (status === "authenticated") {
+    // Soft-invalid / expired JWTs can still report "authenticated" with no user —
+    // only bounce away when there is a real logged-in identity.
+    const userId = (session?.user as any)?.id;
+    const userEmail = session?.user?.email;
+    if (status === "authenticated" && (userId || userEmail)) {
       safeRedirect(callbackUrl);
     }
-  }, [status, callbackUrl]);
+  }, [status, callbackUrl, session]);
 
   // Set initial error from search params (NextAuth redirects)
   useEffect(() => {
