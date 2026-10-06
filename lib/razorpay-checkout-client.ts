@@ -80,6 +80,49 @@ export function validateRazorpayOpenOptions(opts: {
 }
 
 /**
+ * Full domestic payment methods layout for Standard Checkout.
+ * Without this, Razorpay often opens a compact "Recommended" screen that hides
+ * Cards / Netbanking / Wallets behind a "More Options" tap.
+ */
+export function getFullPaymentOptionsDisplayConfig(): {
+  display: Record<string, unknown>;
+} {
+  return {
+    display: {
+      blocks: {
+        upi_apps: {
+          name: "UPI Apps",
+          instruments: [
+            {
+              method: "upi",
+              flows: ["intent", "collect", "qr"],
+              apps: ["google_pay", "phonepe", "paytm", "bhim"],
+            },
+            {
+              method: "app",
+              providers: ["cred"],
+            },
+          ],
+        },
+        other_methods: {
+          name: "Cards, Netbanking & Wallets",
+          instruments: [
+            { method: "card" },
+            { method: "netbanking" },
+            { method: "wallet" },
+          ],
+        },
+      },
+      sequence: ["block.upi_apps", "block.other_methods"],
+      preferences: {
+        // Only our blocks — avoids Razorpay's collapsed default + "More Options"
+        show_default_blocks: false,
+      },
+    },
+  };
+}
+
+/**
  * Open Standard Checkout. Throws if SDK/options invalid.
  * Caller owns lock/loading UI; use onOpened to clear "opening" state once modal is up.
  */
@@ -99,9 +142,22 @@ export async function openRazorpayStandardCheckout(
   });
   if (validationError) throw new Error(validationError);
 
+  const currency = String(options.currency || "INR").toUpperCase();
+  const prefillMethod = String(
+    (options.prefill as Record<string, unknown> | undefined)?.method || ""
+  ).toLowerCase();
+  // Domestic INR: expand full options. Skip when caller already set config, or forced card-only.
+  const shouldExpandFullOptions =
+    !options.config &&
+    currency === "INR" &&
+    prefillMethod !== "card";
+
   // Soft backdrop — heavy rgba overlays have been reported to steal clicks from Pay
   const safeOptions: RazorpayOpenOptions = {
     ...options,
+    ...(shouldExpandFullOptions
+      ? { config: getFullPaymentOptionsDisplayConfig() }
+      : {}),
     theme: {
       color: "#000000",
       ...(options.theme || {}),
