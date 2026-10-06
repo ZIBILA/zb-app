@@ -80,9 +80,13 @@ export function validateRazorpayOpenOptions(opts: {
 }
 
 /**
- * Full domestic payment methods layout for Standard Checkout.
- * Without this, Razorpay often opens a compact "Recommended" screen that hides
- * Cards / Netbanking / Wallets behind a "More Options" tap.
+ * Expanded domestic payment methods layout for Standard Checkout.
+ * Goal: open the full methods screen (not the compact "More Options" view)
+ * without narrowing what Razorpay already enables on the account.
+ *
+ * Do NOT whitelist UPI apps — omitting `apps` keeps every UPI app Razorpay
+ * supports for this merchant. Methods that aren't enabled on the account are
+ * simply ignored by Checkout.
  */
 export function getFullPaymentOptionsDisplayConfig(): {
   display: Record<string, unknown>;
@@ -90,32 +94,23 @@ export function getFullPaymentOptionsDisplayConfig(): {
   return {
     display: {
       blocks: {
-        upi_apps: {
-          name: "UPI Apps",
+        all_methods: {
+          name: "Payment Options",
           instruments: [
-            {
-              method: "upi",
-              flows: ["intent", "collect", "qr"],
-              apps: ["google_pay", "phonepe", "paytm", "bhim"],
-            },
-            {
-              method: "app",
-              providers: ["cred"],
-            },
-          ],
-        },
-        other_methods: {
-          name: "Cards, Netbanking & Wallets",
-          instruments: [
+            // No `apps` filter → all UPI apps available on the account (GPay, PhonePe, etc.)
+            { method: "upi", flows: ["intent", "collect", "qr"] },
             { method: "card" },
             { method: "netbanking" },
             { method: "wallet" },
+            { method: "emi" },
+            { method: "paylater" },
+            { method: "app", providers: ["cred"] },
           ],
         },
       },
-      sequence: ["block.upi_apps", "block.other_methods"],
+      sequence: ["block.all_methods"],
       preferences: {
-        // Only our blocks — avoids Razorpay's collapsed default + "More Options"
+        // Custom block only — expands methods up front instead of "More Options"
         show_default_blocks: false,
       },
     },
