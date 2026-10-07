@@ -346,6 +346,34 @@ export function savePersistentSettings(updatedData: Record<string, any>) {
   }
 }
 
+/** Make Prisma field values safe to pass Server → Client Components (no Decimal/Date). */
+function serializeShopField(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'object' && value !== null) {
+    const v = value as {
+      toNumber?: () => number;
+      constructor?: { name?: string };
+      d?: unknown;
+      e?: unknown;
+      s?: unknown;
+    };
+    // Prisma.Decimal / Decimal.js
+    if (typeof v.toNumber === 'function') {
+      const n = v.toNumber();
+      return Number.isFinite(n) ? n : Number(String(value));
+    }
+    if (
+      v.constructor?.name === 'Decimal' ||
+      (typeof v.e === 'number' && typeof v.s === 'number' && Array.isArray(v.d))
+    ) {
+      const n = Number(String(value));
+      return Number.isFinite(n) ? n : 0;
+    }
+  }
+  if (value instanceof Date) return value.toISOString();
+  return value;
+}
+
 export async function getShopSettings() {
   try {
     const isMock = (prisma as any)._isMock;
@@ -359,7 +387,7 @@ export async function getShopSettings() {
       const cleanShop: Record<string, any> = {};
       for (const [k, v] of Object.entries(shop)) {
         if (v !== null && v !== undefined) {
-          cleanShop[k] = v;
+          cleanShop[k] = serializeShopField(v);
         }
       }
       return { ...DEFAULT_SHOP_SETTINGS, ...persistent, ...cleanShop };

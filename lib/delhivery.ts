@@ -203,9 +203,21 @@ export async function createReversePickup(params: ReversePickupParams): Promise<
   }
 
   const waybillData = await waybillResponse.json();
-  const waybillNumber = waybillData?.waybill;
-  if (!waybillNumber) {
-    throw new Error('Delhivery waybill API returned no waybill number. Response: ' + JSON.stringify(waybillData));
+  // Delhivery may return a bare string, { waybill }, or nested shapes
+  const waybillNumber =
+    (typeof waybillData === 'string' && waybillData.trim()) ||
+    waybillData?.waybill ||
+    waybillData?.Waybill ||
+    waybillData?.data?.waybill ||
+    waybillData?.packages?.[0]?.waybill ||
+    null;
+  if (!waybillNumber || typeof waybillNumber !== 'string') {
+    const hint =
+      waybillData?.error ||
+      waybillData?.rmk ||
+      waybillData?.message ||
+      (typeof waybillData === 'object' ? Object.keys(waybillData).join(',') : typeof waybillData);
+    throw new Error(`Delhivery waybill API returned no waybill number (${hint})`);
   }
 
   // 2. Create the reverse shipment order using CMU API with pt=DTO (Door-To-Origin)

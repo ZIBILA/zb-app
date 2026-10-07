@@ -32,7 +32,6 @@ export async function POST(req: Request) {
       lat: rawLat, lng: rawLng, metadata,
     } = body;
 
-    // Validate required fields
     if (!eventId || !eventName) {
       return NextResponse.json({ error: 'eventId and eventName are required' }, { status: 400 });
     }
@@ -41,12 +40,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid event name' }, { status: 400 });
     }
 
-    // IP Extraction & Server Geolocation Lookup — only when client sent no country signal
     const ip = getClientIP(req);
     const needsIpGeo = !rawCountryCode && !rawCountry;
     const ipGeo = needsIpGeo ? await lookupIpGeo(ip, req) : null;
 
-    // Determine normalized location fields (Client GPS wins over IP Geo)
     const finalCountryCode = (
       rawCountryCode ||
       ipGeo?.countryCode ||
@@ -59,101 +56,67 @@ export async function POST(req: Request) {
     const finalLat = rawLat != null ? parseFloat(String(rawLat)) : (ipGeo?.lat ?? null);
     const finalLng = rawLng != null ? parseFloat(String(rawLng)) : (ipGeo?.lng ?? null);
 
-    // Upsert session (if sessionId and anonymousId provided)
+    // Upsert avoids find→create races that spam prisma:error P2002
     if (sessionId && anonymousId) {
       try {
-        const existing = await prisma.analyticsSession.findUnique({
-          where: { id: sessionId },
-        });
-
-        if (existing) {
-          // Update existing session: only set location fields if currently null,
-          // or if client GPS provided direct precise coords.
-          const updateLocationData: Record<string, any> = {};
-
-          if (finalCountryCode && !existing.countryCode) updateLocationData.countryCode = finalCountryCode;
-          if (finalCountry && !existing.country) updateLocationData.country = finalCountry;
-          if (finalRegion && !existing.region) updateLocationData.region = finalRegion;
-          if (finalCity && !existing.city) updateLocationData.city = finalCity;
-          if (finalLat != null && existing.lat == null) updateLocationData.lat = finalLat;
-          if (finalLng != null && existing.lng == null) updateLocationData.lng = finalLng;
-
-          // GPS override
-          if (rawLat != null && rawLng != null) {
-            updateLocationData.lat = parseFloat(String(rawLat));
-            updateLocationData.lng = parseFloat(String(rawLng));
-            if (finalCountryCode) updateLocationData.countryCode = finalCountryCode;
-            if (finalCountry) updateLocationData.country = finalCountry;
-            if (finalRegion) updateLocationData.region = finalRegion;
-            if (finalCity) updateLocationData.city = finalCity;
-          }
-
-          await prisma.analyticsSession.update({
-            where: { id: existing.id },
-            data: {
-              lastActiveAt: new Date(),
-              currentPage: pageUrl || existing.currentPage,
-              pageViews: eventName === 'page_view' ? { increment: 1 } : undefined,
-              customerId: customerId || existing.customerId,
-              ...updateLocationData,
-            },
-          });
-        } else {
-          try {
-            await prisma.analyticsSession.create({
-              data: {
-                id: sessionId,
-                anonymousId,
-                customerId: customerId || null,
-                platform: platform || 'web',
-                landingPage: pageUrl || null,
-                currentPage: pageUrl || null,
-                pageViews: eventName === 'page_view' ? 1 : 0,
-                deviceType: deviceType || null,
-                browser: browser || null,
-                os: os || null,
-                referrer: referrer || null,
-                utmSource: utmSource || null,
-                utmMedium: utmMedium || null,
-                utmCampaign: utmCampaign || null,
-                countryCode: finalCountryCode,
-                country: finalCountry,
-                region: finalRegion,
-                city: finalCity,
-                lat: finalLat,
-                lng: finalLng,
-                // Approximate: first session row for this browser session id.
-                // Avoids an extra count(*) under concurrent page_view storms.
-                isNew: true,
-              },
-            });
-          } catch (createErr: any) {
-            if (createErr?.code === 'P2002') {
-              await prisma.analyticsSession.update({
-                where: { id: sessionId },
-                data: {
-                  lastActiveAt: new Date(),
-                  currentPage: pageUrl || undefined,
-                  pageViews: eventName === 'page_view' ? { increment: 1 } : undefined,
-                  customerId: customerId || undefined,
-                },
-              });
-            } else {
-              throw createErr;
-            }
-          }
+        const updateLocationData: Record<string, any> = {};
+        if (finalCountryCode) updateLocationData.countryCode = finalCountryCode;
+        if (finalCountry) updateLocationData.country = finalCountry;
+        if (finalRegion) updateLocationData.region = finalRegion;
+        if (finalCity) updateLocationData.city = finalCity;
+        if (finalLat != null) updateLocationData.lat = finalLat;
+        if (finalLng != null) updateLocationData.lng = finalLng;
+        if (rawLat != null && rawLng != null) {
+          updateLocationData.lat = parseFloat(String(rawLat));
+          updateLocationData.lng = parseFloat(String(rawLng));
         }
+
+        await prisma.analyticsSession.upsert({
+          where: { id: sessionId },
+          create: {
+            id: sessionId,
+            anonymousId,
+            customerId: customerId || null,
+            platform: platform || 'web',
+            landingPage: pageUrl || null,
+            currentPage: pageUrl || null,
+            pageViews: eventName === 'page_view' ? 1 : 0,
+            deviceType: deviceType || null,
+            browser: browser || null,
+            os: os || null,
+            referrer: referrer || null,
+            utmSource: utmSource || null,
+            utmMedium: utmMedium || null,
+            utmCampaign: utmCampaign || null,
+            countryCode: finalCountryCode,
+            country: finalCountry,
+            region: finalRegion,
+            city: finalCity,
+            lat: finalLat,
+            lng: finalLng,
+            isNew: true,
+          },
+          update: {
+            lastActiveAt: new Date(),
+            currentPage: pageUrl || undefined,
+            pageViews: eventName === 'page_view' ? { increment: 1 } : undefined,
+            customerId: customerId || undefined,
+            ...updateLocationData,
+          },
+        });
       } catch (sessionErr: any) {
+        // Non-fatal — never block event ingest
         if (sessionErr?.code !== 'P2002') {
           console.warn('[Analytics] Session upsert failed:', sessionErr?.message || 'error');
         }
       }
     }
 
-    // Insert event with deduplication via unique eventId
+    // Upsert with empty update = silent dedupe (no prisma:error on unique eventId)
     try {
-      await prisma.analyticsEvent.create({
-        data: {
+      await prisma.analyticsEvent.upsert({
+        where: { eventId },
+        create: {
           eventId,
           eventName,
           sessionId: sessionId || null,
@@ -185,9 +148,10 @@ export async function POST(req: Request) {
           lng: finalLng,
           metadata: metadata || null,
         },
+        update: {},
       });
     } catch (eventErr: any) {
-      if (eventErr.code === 'P2002') {
+      if (eventErr?.code === 'P2002') {
         return NextResponse.json({ ok: true, dedup: true });
       }
       throw eventErr;

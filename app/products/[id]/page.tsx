@@ -214,9 +214,22 @@ export default async function ProductPage({ params }: { params: { id: string } }
           ]}
         />
       </div>
-      <ProductDetailsClient 
-        product={product} 
-        shopSettings={shop as any} 
+      <ProductDetailsClient
+        product={product}
+        shopSettings={
+          shop
+            ? {
+                showProductVideo: Boolean((shop as any).showProductVideo ?? true),
+                showSizeChart: Boolean((shop as any).showSizeChart ?? true),
+                showBrand: Boolean((shop as any).showBrand ?? true),
+                showShippingReturn: Boolean((shop as any).showShippingReturn ?? true),
+                showCare: Boolean((shop as any).showCare ?? true),
+                showSizeFit: Boolean((shop as any).showSizeFit ?? true),
+                showDetails: Boolean((shop as any).showDetails ?? true),
+                pdpBackground: (shop as any).pdpBackground || undefined,
+              }
+            : null
+        }
         recommendedProducts={recommendedProducts}
         allImages={images}
       />

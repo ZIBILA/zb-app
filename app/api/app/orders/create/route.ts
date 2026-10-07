@@ -455,15 +455,9 @@ export async function POST(req: Request) {
         });
 
         if (matchingCarts.length > 0) {
+          const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
           const primaryCart = matchingCarts[0];
-          await prisma.cart.update({
-            where: { id: primaryCart.id },
-            data: {
-              status: "converted",
-              convertedOrderId: updated.id
-            }
-          });
-
+          await linkCartToOrderSafe(primaryCart.id, updated.id);
           if (matchingCarts.length > 1) {
             const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
             await prisma.cart.updateMany({
@@ -471,7 +465,6 @@ export async function POST(req: Request) {
               data: { status: "merged" }
             });
           }
-          console.log(`[MobileCheckout] Marked cart converted: ${primaryCart.id} for customer: ${resolvedCustomerId}`);
         }
       } catch (cartErr: any) {
         console.error("[MobileCheckout] Failed to mark cart converted:", cartErr.message);
@@ -693,15 +686,9 @@ export async function POST(req: Request) {
       });
 
       if (matchingCarts.length > 0) {
+        const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
         const primaryCart = matchingCarts[0];
-        await prisma.cart.update({
-          where: { id: primaryCart.id },
-          data: {
-            status: "converted",
-            convertedOrderId: created.id
-          }
-        });
-
+        await linkCartToOrderSafe(primaryCart.id, created.id);
         if (matchingCarts.length > 1) {
           const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
           await prisma.cart.updateMany({
@@ -709,7 +696,6 @@ export async function POST(req: Request) {
             data: { status: "merged" }
           });
         }
-        console.log(`[MobileCheckout] Marked cart converted: ${primaryCart.id} for customer: ${resolvedCustomerId}`);
       }
     } catch (cartErr: any) {
       console.error("[MobileCheckout] Failed to mark cart converted:", cartErr.message);

@@ -5,7 +5,7 @@ import Script from "next/script";
 import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
-import StorefrontFooter from "@/components/StorefrontFooter";
+import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
 import { Toaster } from "sonner";
 import MetaPixelRouteTracker from "@/components/MetaPixelRouteTracker";
 import FacebookSDKInit from "@/components/FacebookSDKInit";
@@ -135,7 +135,7 @@ export const metadata: Metadata = {
 };
 
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
@@ -145,6 +145,7 @@ export default function RootLayout({
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
   const adminGtmId = process.env.NEXT_PUBLIC_ADMIN_GTM_ID || "GTM-TDGKF386";
+  const footerData = await getStorefrontFooterData();
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -297,7 +298,7 @@ export default function RootLayout({
           <FacebookSDKInit />
           <SnapPixelRouteTracker />
           <OpenAiPixelRouteTracker />
-          <LayoutWrapper footer={<StorefrontFooter />}>
+          <LayoutWrapper footerData={footerData}>
             {children}
           </LayoutWrapper>
           <Toaster position="top-right" />

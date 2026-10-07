@@ -655,10 +655,11 @@ async function getPaymentDetails(orderIdOrNumber: string, principal?: Principal)
     });
   } else {
     // If not found in Order table, check WebStoreOrder directly
+    const { isUuid } = await import('@/lib/is-uuid');
     webStoreOrder = await prisma.webStoreOrder.findFirst({
       where: {
         OR: [
-          { id: searchTerm },
+          ...(isUuid(searchTerm) ? [{ id: searchTerm }] : []),
           { orderNumber: searchTerm },
           { orderNumber: { contains: searchTerm, mode: 'insensitive' } },
           { razorpayOrderId: searchTerm },

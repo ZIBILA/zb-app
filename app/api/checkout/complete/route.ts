@@ -1017,15 +1017,9 @@ export async function POST(req: Request) {
           });
 
           if (matchingCarts.length > 0) {
+            const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
             const primaryCart = matchingCarts[0];
-            await prisma.cart.update({
-              where: { id: primaryCart.id },
-              data: {
-                status: "converted",
-                convertedOrderId: localOrder.id
-              }
-            });
-
+            await linkCartToOrderSafe(primaryCart.id, localOrder.id);
             if (matchingCarts.length > 1) {
               const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
               await prisma.cart.updateMany({
@@ -1033,10 +1027,11 @@ export async function POST(req: Request) {
                 data: { status: "merged" }
               });
             }
-            console.log(`[Checkout] Marked cart converted: ${primaryCart.id} for order: ${localOrder.id}`);
           }
         } catch (cartErr: any) {
-          console.error("[Checkout] Failed to mark cart converted:", cartErr.message);
+          if (cartErr?.code !== 'P2002') {
+            console.warn("[Checkout] Failed to mark cart converted:", cartErr.message);
+          }
         }
       },
     });

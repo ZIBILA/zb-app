@@ -249,15 +249,20 @@ export async function shopifyFetch<T>(endpoint: string, params?: Record<string, 
     }
 
     if (res.status === 429 || res.status >= 500) {
+      const { shouldLogThrottled } = await import('@/lib/log-throttle');
       if (res.status === 429 && cached) {
-        console.warn(`[Shopify Client] Rate limited. Serving stale cache for ${endpoint}`);
+        if (shouldLogThrottled(`shopify:429:stale:${endpoint}`, 60_000)) {
+          console.warn(`[Shopify Client] Rate limited. Serving stale cache for ${endpoint}`);
+        }
         return cached.data as T;
       }
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
       const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
-      console.warn(
-        `[Shopify Client] ${endpoint} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
-      );
+      if (shouldLogThrottled(`shopify:${res.status}:${endpoint}`, 30_000)) {
+        console.warn(
+          `[Shopify Client] ${endpoint} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
+        );
+      }
       await new Promise((resolve) => setTimeout(resolve, delay));
       lastError = new Error(`Shopify API ${res.status}: transient failure on ${endpoint}`);
       continue;

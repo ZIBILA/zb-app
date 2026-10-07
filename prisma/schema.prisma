@@ -875,20 +875,22 @@ model StoreCredit {
 }
 
 model DeviceToken {
-  id         String   @id @default(cuid())
-  userId     String
-  deviceId   String
-  fcmToken   String
-  apnsToken  String?
-  platform   String   @default("ios")
-  appVersion String?
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id            String   @id @default(cuid())
+  userId        String
+  deviceId      String
+  fcmToken      String
+  expoPushToken String?
+  apnsToken     String?
+  platform      String   @default("ios")
+  appVersion    String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([userId, deviceId])
   @@index([userId, isActive])
   @@index([fcmToken])
+  @@index([expoPushToken])
 }
 
 model NotificationSend {

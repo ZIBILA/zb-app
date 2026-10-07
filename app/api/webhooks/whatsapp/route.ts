@@ -271,16 +271,22 @@ async function handleIncomingMessages(messages: any[], contacts: any[] | undefin
             });
           }
         } else {
-          customer = await db.customer.create({
-            data: {
-              phone: phoneNumber,
-              name: profileName.trim(),
-              shopifyId: `whatsapp_${Date.now()}`
-            }
-          });
+          const shop = await db.shop.findFirst({ select: { id: true } });
+          if (!shop) {
+            console.warn('[WhatsApp Webhook] No shop configured — skipping customer create');
+          } else {
+            customer = await db.customer.create({
+              data: {
+                shopId: shop.id,
+                phone: phoneNumber,
+                name: profileName.trim(),
+                shopifyId: `whatsapp_${Date.now()}`,
+              }
+            });
+          }
         }
       } catch (err: any) {
-        console.error('[WhatsApp Webhook] Profile name sync error:', err.message);
+        console.warn('[WhatsApp Webhook] Profile name sync error:', err?.message || err);
       }
     }
 

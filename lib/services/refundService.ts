@@ -11,8 +11,6 @@ import { assignRefundId } from '@/lib/orderNumber';
  * Supports mock payment IDs for local testing.
  */
 export async function processOrderRefund(orderId: string, triggeredBy = 'system') {
-  console.log(`[AutoRefund] Starting auto-refund check for Order: ${orderId} (triggered by: ${triggeredBy})`);
-  
   // Create unique CUID for audit logs
   const logId = `sl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
@@ -22,34 +20,44 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
       where: { id: orderId },
       include: { payments: true }
     });
-    
+
     if (!order) {
-      console.error(`[AutoRefund] Order not found: ${orderId}`);
       return { success: false, error: 'Order not found' };
     }
 
     // 2. Only refund if order is cancelled
     if (order.status.toLowerCase() !== 'cancelled') {
-      console.log(`[AutoRefund] Order ${orderId} is not in cancelled status (current status: ${order.status}). Skipping.`);
       return { success: false, error: 'Order is not cancelled' };
     }
 
     // 3. Check if already refunded in DB
-    const alreadyRefunded = order.payments.some((p: any) => p.type.toLowerCase() === 'refund' && p.status.toLowerCase() === 'completed') 
+    const alreadyRefunded = order.payments.some((p: any) => p.type.toLowerCase() === 'refund' && p.status.toLowerCase() === 'completed')
       || order.refundStatus === 'completed';
     if (alreadyRefunded) {
-      console.log(`[AutoRefund] Order ${orderId} already has a completed refund record. Skipping.`);
       return { success: true, message: 'Already refunded' };
     }
 
-    // 4. Update order status to processing refund
-    await prisma.order.update({
-      where: { id: order.id },
+    if (order.refundStatus === 'processing') {
+      return { success: true, message: 'Refund already processing' };
+    }
+
+    // 4. Atomic claim — only one worker proceeds to Razorpay
+    const claimed = await prisma.order.updateMany({
+      where: {
+        id: order.id,
+        OR: [
+          { refundStatus: null },
+          { refundStatus: { notIn: ['processing', 'completed', 'not_applicable'] } },
+        ],
+      },
       data: {
         refundStatus: 'processing',
-        refundAttempts: { increment: 1 }
-      }
+        refundAttempts: { increment: 1 },
+      },
     });
+    if (claimed.count === 0) {
+      return { success: true, message: 'Refund already claimed by another worker' };
+    }
 
     // 5. Find linked WebStoreOrder to get exact values if available
     let webStoreOrder = null;
@@ -88,8 +96,6 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
       : order.razorpayPaymentId;
 
     if (!paymentId) {
-      console.log(`[AutoRefund] Order ${orderId} has no payment transaction ID. No online payment to refund.`);
-      
       await prisma.order.update({
         where: { id: order.id },
         data: {
@@ -120,8 +126,6 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
     }
 
     if (refundAmount <= 0) {
-      console.log(`[AutoRefund] Refund amount is 0 or negative: ${refundAmount}. Skipping.`);
-      
       await prisma.order.update({
         where: { id: order.id },
         data: { refundStatus: 'not_applicable' }
@@ -129,8 +133,6 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
 
       return { success: true, message: 'Refund amount is zero' };
     }
-
-    console.log(`[AutoRefund] Processing refund of ₹${refundAmount} for payment ${paymentId} (Order: ${orderId}, Method: ${order.paymentMethod})`);
 
     // Support mock orders/payments in test mode
     const isMock = paymentId.startsWith('pay_mock_') || 
@@ -273,8 +275,11 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
 
     return { success: true, refundId: refund.id };
   } catch (err: any) {
-    console.error(`[AutoRefund] Razorpay refund API failed for Order ${orderId}:`, err);
     const errorMessage = err?.error?.description || err?.message || 'Unknown error';
+    const { shouldLogThrottled } = await import('@/lib/log-throttle');
+    if (shouldLogThrottled(`autorefund:fail:${errorMessage.slice(0, 40)}`, 60_000)) {
+      console.warn(`[AutoRefund] Razorpay refund failed for ${orderId}: ${errorMessage}`);
+    }
     
     try {
       const currentOrder = await prisma.order.findUnique({

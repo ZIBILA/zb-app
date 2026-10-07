@@ -50,15 +50,20 @@ async function shopifyFetchPage<T>(urlStr: string): Promise<{ data: T; nextPageU
     });
 
     if (res.status === 429) {
+      const { shouldLogThrottled } = await import('@/lib/log-throttle');
       // Rate limited — serve stale cache if available
       if (cached) {
-        console.warn(`[Shopify Admin] Rate limited on page fetch. Serving stale cache.`);
+        if (shouldLogThrottled('shopify:page:429:stale', 60_000)) {
+          console.warn(`[Shopify Admin] Rate limited on page fetch. Serving stale cache.`);
+        }
         return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
       }
       // No cache — wait with exponential backoff and retry
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
       const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
-      console.warn(`[Shopify Admin] Rate limited on page fetch, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      if (shouldLogThrottled('shopify:page:429:retry', 30_000)) {
+        console.warn(`[Shopify Admin] Rate limited on page fetch, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      }
       await new Promise(resolve => setTimeout(resolve, delay));
       continue;
     }
@@ -1593,8 +1598,16 @@ export async function fetchProductById(productId: string, includeMetafields = fa
 }
 
 export async function fetchProductByHandle(handle: string): Promise<ShopifyProduct | null> {
+  // Clients sometimes pass "foo.json" or encoded paths — normalize before Shopify
+  const normalized = String(handle || '')
+    .trim()
+    .replace(/\.json$/i, '')
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .pop() || '';
+
   const fromFallback = (): ShopifyProduct | null => {
-    const key = String(handle || '').trim().toLowerCase();
+    const key = normalized.toLowerCase();
     if (!key) return null;
     return (
       FALLBACK_PRODUCTS.find(
@@ -1603,25 +1616,32 @@ export async function fetchProductByHandle(handle: string): Promise<ShopifyProdu
     );
   };
 
+  if (!normalized) return null;
+
   try {
     // If the handle looks like a numeric ID, try fetching by ID first
-    if (/^\d+$/.test(handle)) {
+    if (/^\d+$/.test(normalized)) {
       try {
-        const product = await fetchProductById(handle);
+        const product = await fetchProductById(normalized);
         if (product) return product;
       } catch {
         // Fall through to handle search
       }
     }
 
-    const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`products.json?handle=${handle}`);
+    const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
+      `products.json?handle=${encodeURIComponent(normalized)}`
+    );
     if (data?.products?.length) {
       const product = data.products[0];
       const metafields = await fetchProductMetafields(product.id.toString()).catch(() => []);
       return { ...product, metafields };
     }
   } catch (err: any) {
-    console.warn(`[Shopify Admin] fetchProductByHandle("${handle}") failed:`, err?.message || err);
+    const { shouldLogThrottled } = await import('@/lib/log-throttle');
+    if (shouldLogThrottled(`shopify:handle:${normalized}`, 60_000)) {
+      console.warn(`[Shopify Admin] fetchProductByHandle("${normalized}") failed:`, err?.message || err);
+    }
   }
 
   // Local/dev resilience when Shopify is unavailable (402) or product missing remotely

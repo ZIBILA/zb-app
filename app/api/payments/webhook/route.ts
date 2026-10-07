@@ -245,17 +245,13 @@ export async function POST(req: NextRequest) {
               }
 
               if (targetCartId) {
-                await prisma.cart.update({
-                  where: { id: targetCartId },
-                  data: {
-                    status: "converted",
-                    convertedOrderId: order.id
-                  }
-                });
-                console.log(`[Razorpay Webhook] Cart ${targetCartId} successfully converted for order ${order.id}.`);
+                const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
+                await linkCartToOrderSafe(targetCartId, order.id);
               }
             } catch (cartErr: any) {
-              console.error("[Razorpay Webhook] Cart conversion update failed:", cartErr.message);
+              if (cartErr?.code !== 'P2002') {
+                console.warn("[Razorpay Webhook] Cart conversion update failed:", cartErr.message);
+              }
             }
 
             // Sync to Shopify if not already synced

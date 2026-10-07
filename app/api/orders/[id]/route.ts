@@ -105,14 +105,18 @@ export async function GET(
 
     // Orders list also links WebStoreOrder UUIDs for standalone web purchases.
     // Resolve those → local Order when possible, otherwise return a WSO-shaped payload.
-    // WebStoreOrder.id is Postgres UUID — querying with a cuid throws, so wrap in try/catch.
+    // WebStoreOrder.id is Postgres UUID — only query by id when orderId looks like a UUID.
     let accessWebStoreOrder: any = null;
     let standaloneWebStoreOrder: any = null;
     if (!order) {
       try {
+        const { isUuid } = await import('@/lib/is-uuid');
         const wso = await prisma.webStoreOrder.findFirst({
           where: {
-            OR: [{ id: orderId }, { orderNumber: orderId }],
+            OR: [
+              ...(isUuid(orderId) ? [{ id: orderId }] : []),
+              { orderNumber: orderId },
+            ],
           },
         });
 

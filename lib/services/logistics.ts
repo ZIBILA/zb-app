@@ -1513,21 +1513,24 @@ async function assignCourierAwbAndPersist(
       assignPayload?.awb_assign_error ||
       assignData?.message ||
       'rejected';
-    console.error('[Shiprocket] AWB assign rejected', {
-      courierId,
-      courierName,
-      shipmentId: srShipmentId,
-      carrierReason,
-      package: {
-        status: pkg?.status,
-        err_code: pkg?.err_code,
-        remarks: pkg?.remarks,
-        payment: pkg?.payment,
-        cod_amount: pkg?.cod_amount,
-        serviceable: pkg?.serviceable,
-        refnum: pkg?.refnum,
-      },
-    });
+    const { shouldLogThrottled } = await import('@/lib/log-throttle');
+    if (shouldLogThrottled('shiprocket:awb:rejected', 60_000)) {
+      console.warn('[Shiprocket] AWB assign rejected', {
+        courierId,
+        courierName,
+        shipmentId: srShipmentId,
+        carrierReason,
+        package: {
+          status: pkg?.status,
+          err_code: pkg?.err_code,
+          remarks: pkg?.remarks,
+          payment: pkg?.payment,
+          cod_amount: pkg?.cod_amount,
+          serviceable: pkg?.serviceable,
+          refnum: pkg?.refnum,
+        },
+      });
+    }
     throw new Error(
       `${courierName} could not assign an AWB for this shipment. ` +
         `Try a different courier (another provider often works when one rejects). ` +

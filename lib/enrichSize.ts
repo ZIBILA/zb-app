@@ -69,11 +69,12 @@ export async function enrichItemsWithSize(rawItems: any[], parentOrder?: any) {
         }
       }
       if (!webOrder && parentOrder?.id) {
+        const { isUuid } = await import('@/lib/is-uuid');
         webOrder = await prisma.webStoreOrder.findFirst({
           where: {
             OR: [
               { notes: { contains: `Local: ${parentOrder.id}` } },
-              { id: parentOrder.id }
+              ...(isUuid(parentOrder.id) ? [{ id: parentOrder.id }] : []),
             ]
           }
         });

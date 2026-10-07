@@ -8,7 +8,6 @@
  */
 
 import { NextResponse, NextRequest } from 'next/server';
-import * as crypto from 'crypto';
 import prisma from '@/lib/db';
 import { validateWebhookSignature, resolveWebhookSecret } from '@/lib/services/logistics';
 
@@ -69,9 +68,8 @@ interface WebhookPayload extends ShipmentDetail {
 }
 
 /**
- * Logs a webhook event to the webhook_logs table for audit/debugging.
- * Uses raw SQL since the table is not modeled in Prisma.
- * Silently catches errors if the table doesn't exist yet.
+ * Persist logistics webhook for audit via existing WebhookEvent model
+ * (replaces missing raw `webhook_logs` table that spammed production logs).
  */
 async function logToWebhookLogs(
   source: string,
@@ -79,17 +77,21 @@ async function logToWebhookLogs(
   status: string
 ): Promise<void> {
   try {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO "webhook_logs" ("id", "source", "payload", "status", "created_at") VALUES ($1, $2, $3, $4, NOW())`,
-      crypto.randomUUID(),
-      source,
-      payload.substring(0, 10000),
-      status
-    );
+    await prisma.webhookEvent.create({
+      data: {
+        source,
+        eventType: `logistics.${status}`,
+        payload: payload.substring(0, 10000),
+        processed: status === 'processed' || status === 'success',
+        processedAt: status === 'processed' || status === 'success' ? new Date() : null,
+      },
+    });
   } catch (err) {
-    // webhook_logs table may not exist yet — log warning but don't fail the webhook
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.warn('[Webhook] Could not write to webhook_logs:', errMsg.substring(0, 150));
+    // Non-fatal — never fail the webhook over audit logging
+    if (process.env.NODE_ENV !== 'production') {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn('[Webhook] Could not write WebhookEvent:', errMsg.substring(0, 150));
+    }
   }
 }
 
