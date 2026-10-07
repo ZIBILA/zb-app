@@ -49,7 +49,13 @@ export async function GET(
     if (sessionPhone) customerWhereClauses.push({ phone: sessionPhone });
     if (phoneLast10) customerWhereClauses.push({ phoneLast10: phoneLast10 });
 
-    const matchingCustomers =
+    type MatchingCustomer = {
+      id: string;
+      email: string | null;
+      phone: string | null;
+      phoneLast10: string | null;
+    };
+    const matchingCustomers: MatchingCustomer[] =
       customerWhereClauses.length > 0
         ? await prisma.customer.findMany({
             where: { OR: customerWhereClauses },
