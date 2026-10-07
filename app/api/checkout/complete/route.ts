@@ -250,24 +250,30 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid payment signature" }, { status: 400 });
           }
 
-          // Confirm captured amount matches what we should have charged (COD fee or full prepaid total).
+          // Require a live Razorpay capture — signature alone is not enough (authorized ≠ paid).
           try {
             const creds = await resolveRazorpayCredentials();
-            const { fetchCapturedPayment } = await import('@/lib/razorpay-payment');
-            const payment = await fetchCapturedPayment(razorpay.razorpay_payment_id, {
-              key_id: creds.key_id,
-              key_secret: creds.key_secret,
-            });
-            capturedRupees = Number(payment.amount) / 100;
+            const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
             const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
-            if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
+            const payment = await assertCapturedCharge({
+              paymentId: razorpay.razorpay_payment_id,
+              credentials: { key_id: creds.key_id, key_secret: creds.key_secret },
+              expectedMinRupees: isCodOrder ? expectedCharge : 0,
+              orderId: razorpay.razorpay_order_id,
+            });
+            capturedRupees = paymentAmountRupees(payment);
+            if (!isCodOrder && Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
               paymentUnderpaid = true;
               console.error(
                 `[Checkout] Underpayment: captured ₹${capturedRupees} < expected ₹${expectedCharge} (payment ${razorpay.razorpay_payment_id})`
               );
             }
           } catch (amtErr: any) {
-            console.warn('[Checkout] Could not verify Razorpay captured amount:', amtErr?.message || amtErr);
+            console.error('[Checkout] Razorpay capture verification failed:', amtErr?.message || amtErr);
+            return NextResponse.json(
+              { error: isCodOrder ? 'COD upfront payment not captured' : 'Payment not captured' },
+              { status: 402 }
+            );
           }
         } else {
           console.warn('[Checkout] Accepting MOCK payment for testing');
@@ -574,6 +580,7 @@ export async function POST(req: Request) {
 
     let localOrder: any = null;
     const finalPaymentMethod = isFullStoreCredit ? "store_credit" : isCodOrder ? "cod" : "razorpay";
+    // COD upfront is only "paid" after capture verification above (or mock in non-prod).
     const orderPaymentStatus = isFullStoreCredit
       ? "paid"
       : isCodOrder
@@ -581,6 +588,11 @@ export async function POST(req: Request) {
         : paymentUnderpaid
           ? "partially_paid"
           : "paid";
+    const lockedCodUpfrontPaid = isCodOrder
+      ? (Number.isFinite(capturedRupees as number) && (capturedRupees as number) > 0
+          ? (capturedRupees as number)
+          : resolvedCodFee)
+      : 0;
     const orderTotalPrice = priceVerified
       ? authoritativeTotal
       : Math.max(0, Number(subtotal || total || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
@@ -610,13 +622,13 @@ export async function POST(req: Request) {
         discountCode: finalCouponCode || null,
         discountAmount: Number(finalCouponDiscount) || 0,
         paymentFailureReason: null,
-        codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
+        codUpfrontPaid: lockedCodUpfrontPaid,
         codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
         tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
         note: isFullStoreCredit
           ? `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`
           : isCodOrder
-          ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay${underpayNote}`
+          ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${lockedCodUpfrontPaid} upfront fee paid via Razorpay${underpayNote}`
           : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})${underpayNote}`,
         internalOrderNumber: universalOrderNumber,
         customerId: localCustomer.id,
@@ -699,7 +711,7 @@ export async function POST(req: Request) {
           razorpayOrderId: razorpay?.razorpay_order_id || null,
           razorpayPaymentId: razorpay?.razorpay_payment_id || null,
           paymentMethod: finalPaymentMethod,
-          codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
+          codUpfrontPaid: lockedCodUpfrontPaid,
           codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
           storeCreditAmount: parsedStoreCredit,
           paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
@@ -1095,7 +1107,7 @@ export async function POST(req: Request) {
       });
 
       const wsPaymentStatus = orderPaymentStatus;
-      const wsCodUpfrontPaid = isCodOrder ? resolvedCodFee : 0;
+      const wsCodUpfrontPaid = lockedCodUpfrontPaid;
       const wsCodUpfrontPaymentId = isCodOrder ? (razorpay?.razorpay_payment_id || null) : null;
       const wsNotes = isFullStoreCredit
         ? `Paid 100% via Store Credit (₹${parsedStoreCredit})`

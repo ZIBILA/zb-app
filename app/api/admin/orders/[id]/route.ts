@@ -230,6 +230,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         paymentMethod: order.paymentMethod,
         tags: order.tags,
         note: order.note,
+        paymentId: webStoreOrder?.codUpfrontPaymentId || order.razorpayPaymentId || null,
         configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
       });
     }

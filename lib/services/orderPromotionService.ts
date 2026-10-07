@@ -76,12 +76,30 @@ export async function promoteMasterOrderToWebStoreOrder(mOrder: Record<string, u
         discountCode: (mOrder.discountCode as string) || null,
         discountAmount: Number(mOrder.discountAmount || 0),
         totalAmount: Number(mOrder.totalPrice || 0),
-        paymentStatus: (mOrder.paymentStatus as string) === "partially_paid" ? "partially_paid" : isCod ? "cod_upfront_paid" : (mOrder.financialStatus === "paid" || mOrder.paymentStatus === "paid" ? "paid" : "paid"),
+        // Mirror master Order status only — never invent cod_upfront_paid from paymentMethod alone
+        paymentStatus:
+          (mOrder.paymentStatus as string) === "cod_upfront_paid"
+            ? "cod_upfront_paid"
+            : (mOrder.paymentStatus as string) === "partially_paid"
+              ? "partially_paid"
+              : (mOrder.paymentStatus as string) === "paid" || mOrder.financialStatus === "paid"
+                ? "paid"
+                : ((mOrder.paymentStatus as string) || "pending"),
         paymentMethod: isCod ? "cod" : ((mOrder.paymentMethod as string) || "razorpay"),
         razorpayOrderId: rzpOrderId,
         razorpayPaymentId: rzpPayId,
-        codUpfrontPaid: isCod ? storedUpfront : 0,
-        codUpfrontPaymentId: isCod ? ((mOrder as any).codUpfrontPaymentId || rzpPayId) : null,
+        codUpfrontPaid:
+          isCod &&
+          ((mOrder.paymentStatus as string) === "cod_upfront_paid" ||
+            (mOrder.paymentStatus as string) === "partially_paid")
+            ? storedUpfront
+            : 0,
+        codUpfrontPaymentId:
+          isCod &&
+          ((mOrder.paymentStatus as string) === "cod_upfront_paid" ||
+            (mOrder.paymentStatus as string) === "partially_paid")
+            ? ((mOrder as any).codUpfrontPaymentId || rzpPayId || null)
+            : null,
         fulfillmentStatus: (mOrder.fulfillmentStatus as string) || "unfulfilled",
         notes: (mOrder.note as string) || `Reconciled from master Order: ${orderId}`,
         source: "web",

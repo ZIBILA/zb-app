@@ -96,7 +96,8 @@ export async function getConfiguredCodUpfrontAmount(): Promise<number> {
 /**
  * Resolve the upfront already paid on an existing order.
  * Prefers stored order fields; only falls back to configured amount when status
- * clearly indicates COD upfront was collected but the amount was never saved.
+ * clearly indicates COD upfront was collected AND a Razorpay payment id exists.
+ * Status alone must never invent a paid amount (that caused false "₹99 paid" badges).
  */
 export function resolveStoredCodUpfrontPaid(opts: {
   storedPaid?: unknown;
@@ -104,6 +105,8 @@ export function resolveStoredCodUpfrontPaid(opts: {
   paymentMethod?: string | null;
   tags?: string | null;
   note?: string | null;
+  /** Razorpay payment id — required for status-based fallback */
+  paymentId?: string | null;
   configuredFallback?: number;
 }): number {
   const stored = Number(opts.storedPaid);
@@ -119,8 +122,12 @@ export function resolveStoredCodUpfrontPaid(opts: {
     noteLower.includes('cod order') ||
     noteLower.includes('upfront fee paid');
 
+  const hasPaymentProof =
+    typeof opts.paymentId === 'string' && /^pay_[A-Za-z0-9]+$/.test(opts.paymentId);
+
   if (
     isCod &&
+    hasPaymentProof &&
     (pStat === 'cod_upfront_paid' || pStat === 'partially_paid' || pStat === 'paid')
   ) {
     return normalizeCodUpfrontAmount(opts.configuredFallback, DEFAULT_COD_UPFRONT_AMOUNT);

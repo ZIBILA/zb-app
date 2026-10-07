@@ -82,12 +82,45 @@ export async function POST(req: Request) {
         );
       }
 
-      if (!['captured', 'authorized'].includes(payment.status)) {
+      if (payment.status !== 'captured' || payment.captured !== true) {
         return NextResponse.json(
-          { success: false, error: `Payment is not complete yet (${payment.status}).` },
+          { success: false, error: `Payment is not captured yet (${payment.status}).` },
           { status: 400, headers: corsHeaders }
         );
       }
+    }
+
+    // Always confirm live capture + amount (signature path included)
+    const creds = await resolveRazorpayCredentials();
+    const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+    const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+
+    let verifiedCaptureAmount = 0;
+    try {
+      // Peek order first so COD fee expectation is correct
+      const peekOrder = await prisma.order.findUnique({
+        where: { razorpayOrderId: razorpay_order_id },
+        select: { paymentMethod: true, tags: true, totalPrice: true },
+      });
+      const peekIsCod =
+        String(peekOrder?.paymentMethod || '').toLowerCase().includes('cod') ||
+        String(peekOrder?.tags || '').toLowerCase().includes('cod');
+      const expectedMin = peekIsCod
+        ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
+        : 0;
+      const captured = await assertCapturedCharge({
+        paymentId: razorpay_payment_id,
+        credentials: { key_id: creds.key_id.trim(), key_secret: secret },
+        expectedMinRupees: expectedMin,
+        orderId: razorpay_order_id,
+      });
+      verifiedCaptureAmount = paymentAmountRupees(captured);
+    } catch (capErr: any) {
+      console.error('[Verify] Capture check failed:', capErr?.message || capErr);
+      return NextResponse.json(
+        { success: false, error: 'Payment has not been captured on Razorpay.' },
+        { status: 402, headers: corsHeaders }
+      );
     }
 
     console.log(`[Verify] ✅ Payment verified: ${razorpay_payment_id} for order ${razorpay_order_id}`);
@@ -169,6 +202,12 @@ export async function POST(req: Request) {
               status: isCod ? 'open' : 'approved',
               tags: `${tags}, ${isCod ? 'cod_upfront_paid' : 'Prepaid, Razorpay'}`,
               internalOrderNumber: promotedNumber || order.internalOrderNumber,
+              ...(isCod
+                ? {
+                    codUpfrontPaid: verifiedCaptureAmount || (order as any).codUpfrontPaid || 0,
+                    codUpfrontPaymentId: razorpay_payment_id,
+                  }
+                : {}),
             }
           });
 

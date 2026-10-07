@@ -64,7 +64,20 @@ export async function POST(req: Request) {
     paymentLog('info', 'webhook', { message: `Received event: ${eventType}`, eventId });
 
     // 4. Process specific webhook events
-    if (eventType === 'payment.captured' || eventType === 'order.paid' || eventType === 'payment.authorized') {
+    if (eventType === 'payment.authorized') {
+      // Authorized ≠ captured. Do not mark orders paid until payment.captured / order.paid.
+      paymentLog('info', 'webhook', {
+        message: 'Ignoring payment.authorized (waiting for capture)',
+        eventId,
+      });
+      await prisma.webhookEvent.update({
+        where: { id: webhookRecord.id },
+        data: { processed: true, processedAt: new Date() },
+      });
+      return NextResponse.json({ success: true, message: 'Authorized only — not marking paid' });
+    }
+
+    if (eventType === 'payment.captured' || eventType === 'order.paid') {
       const payment = data.payment?.entity;
       if (!payment) {
         return NextResponse.json({ success: true, message: 'No payment entity in payload' });
@@ -72,6 +85,8 @@ export async function POST(req: Request) {
 
       const razorpayOrderId = payment.order_id || payment.notes?.order_id || payment.notes?.razorpay_order_id;
       const razorpayPaymentId = payment.id;
+      const { isCapturedPaymentEntity, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+      const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
 
       if (!razorpayOrderId) {
         paymentLog('warn', 'webhook', { message: 'Received payment without order_id', razorpayPaymentId });
@@ -90,6 +105,32 @@ export async function POST(req: Request) {
           (order.paymentMethod || "").toLowerCase().trim() === "cod" ||
           (order.tags || "").toLowerCase().includes("cod") ||
           (order.note || "").toLowerCase().includes("cod order");
+        const expectedCod =
+          isCOD
+            ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
+            : 0;
+
+        if (
+          !isCapturedPaymentEntity(payment, {
+            minRupees: isCOD ? expectedCod : 0,
+            orderId: razorpayOrderId,
+          })
+        ) {
+          paymentLog('warn', 'webhook', {
+            message: 'Skipping mark-paid: payment entity not a verified capture',
+            razorpayPaymentId,
+            status: payment.status,
+            captured: payment.captured,
+            amount: payment.amount,
+          });
+          await prisma.webhookEvent.update({
+            where: { id: webhookRecord.id },
+            data: { processed: true, processedAt: new Date() },
+          });
+          return NextResponse.json({ success: true, message: 'Payment not captured — not marking paid' });
+        }
+
+        const capturedRupees = paymentAmountRupees(payment);
         const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "paid";
         const isAlreadyPaid = order.paymentStatus === 'paid' || order.paymentStatus === 'partially_paid' || order.paymentStatus === 'cod_upfront_paid';
 
@@ -111,9 +152,9 @@ export async function POST(req: Request) {
               paymentCapturedAt: new Date(),
               status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending') ? 'OPEN' : order.status,
               tags: cleanedTags,
-              note: isCOD ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
+              note: isCOD ? `COD Order (₹${capturedRupees} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
               ...(isCOD ? {
-                codUpfrontPaid: Number(payment.amount / 100) || Number((order as any).codUpfrontPaid) || 0,
+                codUpfrontPaid: capturedRupees,
                 codUpfrontPaymentId: razorpayPaymentId,
               } : {}),
             },
@@ -185,9 +226,9 @@ export async function POST(req: Request) {
             paymentStatus: targetPaymentStatus,
             razorpayPaymentId,
             ...(isCOD ? {
-              codUpfrontPaid: Number(payment.amount / 100) || 0,
+              codUpfrontPaid: capturedRupees,
               codUpfrontPaymentId: razorpayPaymentId,
-              notes: `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay) | Order: ${currentOrderNum || order.id}`
+              notes: `COD Order (₹${capturedRupees} upfront fee paid via Razorpay) | Order: ${currentOrderNum || order.id}`
             } : {})
           },
         });

@@ -144,6 +144,30 @@ export async function POST(req: NextRequest) {
               } catch {}
             }
 
+            const { isCapturedPaymentEntity, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+            const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+            const expectedCod = isCodOrder
+              ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
+              : 0;
+
+            if (
+              !isCapturedPaymentEntity(payment, {
+                minRupees: isCodOrder ? expectedCod : 0,
+                orderId: razorpayOrderId,
+              })
+            ) {
+              console.warn(
+                `[Razorpay Webhook] Skipping mark-paid for ${razorpayPaymentId}: not a verified capture`
+              );
+              await prisma.webhookEvent.update({
+                where: { id: webhookEvent.id },
+                data: { processed: true, processedAt: new Date() },
+              });
+              return NextResponse.json({ success: true, message: 'Payment not captured — not marking paid' });
+            }
+
+            const capturedRupees = paymentAmountRupees(payment);
+
             // For COD orders: set cod_upfront_paid and preserve payment method
             // For prepaid orders: set paid and update payment method from Razorpay
             const updateData: any = {
@@ -152,6 +176,12 @@ export async function POST(req: NextRequest) {
               razorpayPaymentId,
               paymentCapturedAt: new Date(),
               paymentFailureReason: null,
+              ...(isCodOrder
+                ? {
+                    codUpfrontPaid: capturedRupees,
+                    codUpfrontPaymentId: razorpayPaymentId,
+                  }
+                : {}),
             };
 
             // Never override paymentMethod for COD orders — keep it as "cod"
@@ -177,7 +207,6 @@ export async function POST(req: NextRequest) {
                 where: { razorpayOrderId },
               });
               if (wsOrder) {
-                const capturedAmount = payment?.amount ? Number(payment.amount) / 100 : 0;
                 await prisma.webStoreOrder.update({
                   where: { id: wsOrder.id },
                   data: {
@@ -185,7 +214,7 @@ export async function POST(req: NextRequest) {
                     razorpayPaymentId,
                     paymentFailureReason: null,
                     ...(isCodOrder ? {
-                      codUpfrontPaid: capturedAmount || Number(wsOrder.codUpfrontPaid) || 0,
+                      codUpfrontPaid: capturedRupees,
                       codUpfrontPaymentId: razorpayPaymentId,
                     } : {}),
                   },

@@ -226,6 +226,11 @@ export async function GET(req: Request) {
           paymentMethod: order.paymentMethod as string,
           tags: order.tags as string,
           note: order.note as string,
+          paymentId:
+            (webStoreOrder?.codUpfrontPaymentId as string) ||
+            (webStoreOrder?.razorpayPaymentId as string) ||
+            (order.razorpayPaymentId as string) ||
+            null,
           configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
         });
       }

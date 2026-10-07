@@ -167,7 +167,8 @@ export async function POST(req: Request) {
                 fulfillmentStatus: 'unfulfilled',
                 deliveryStatus: 'pending',
                 paymentMethod: isCod ? 'COD' : 'Razorpay',
-                codUpfrontPaid: isCod ? chargeAmountRupees : 0,
+                // Fee is charged at Razorpay; only store as paid after capture
+                codUpfrontPaid: 0,
                 shippingAddress: typeof orderData.shippingAddress === 'string' ? orderData.shippingAddress : JSON.stringify({
                   ...orderData.shippingAddress,
                   address1: orderData.shippingAddress?.address1 || orderData.shippingAddress?.line1 || orderData.shippingAddress?.street || '',
