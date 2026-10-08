@@ -18,7 +18,7 @@ import {
   parseSnapDeviceContext, snapAppConfig,
   type SnapAppEventInput, type SnapDeviceContext,
 } from '@/lib/snap/app-capi';
-import { NATIVE_APP_ORDER_TYPES, SNAP_PURCHASE_PAYMENT_STATUSES } from '@/lib/snap/purchase';
+import { NATIVE_APP_ORDER_TYPES, SNAP_PURCHASE_PAYMENT_STATUSES, snapPurchaseValue } from '@/lib/snap/purchase';
 
 const PLATFORM = 'snap_app';
 const EVENT = 'PURCHASE';
@@ -87,7 +87,7 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
       country: addr.countryCode || addr.country_code || addr.country,
     },
     customData: {
-      value: Math.round(Number(order.totalPrice) * 100) / 100,
+      value: snapPurchaseValue(order) ?? 0,
       currency: String(order.currency || 'INR').toUpperCase(),
       content_ids: Array.from(new Set(contents.map(c => c.id))),
       content_type: 'product',
@@ -135,7 +135,7 @@ export function createSnapAppPurchaseDelivery({ db, send, env = process.env, ver
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
-    if (!(Number(order.totalPrice) > 0)) return { status: 'skipped', reason: 'non-positive order value' };
+    if (snapPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
 
     const { device } = splitContext(stored?.context || {});
     if (!device) return { status: 'skipped', reason: 'no device context from the app (older app version)' };

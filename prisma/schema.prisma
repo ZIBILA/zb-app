@@ -869,6 +869,9 @@ model StoreCredit {
   createdAt       DateTime  @default(now())
   expiresAt       DateTime?
   remainingAmount Float     @default(0)
+  /// Set on DEBIT rows: stable reference of the redemption (e.g. rzp:<razorpay order id>).
+  /// Unique, so a retried checkout can never debit the same order twice.
+  idempotencyKey  String?   @unique
   customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([customerId, createdAt])

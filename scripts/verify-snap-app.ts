@@ -232,7 +232,7 @@ async function main() {
   console.log('\n— Wiring');
   const read = (p: string) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   const verify = read('app/api/app/payment/verify/route.ts');
-  check('verify: MOBILE_APP emit gated on captured status', /paymentCaptured = payment\.status === 'captured' && payment\.captured === true/.test(verify) && /paymentConfirmed: paymentCaptured/.test(verify));
+  check('verify: MOBILE_APP emit gated on captured status', /paymentCaptured = capture\.captured/.test(verify) && /confirmRazorpayCapture\(/.test(verify) && /paymentConfirmed: paymentCaptured/.test(verify));
   check('verify: never calls the web sender', !/sendSnapEvent\s*\(|emitSnapPurchase\s*\(/.test(verify));
   check('create-order records device context', /recordSnapAppContext\(pendingOrderId, snapDevice/.test(read('app/api/app/payment/create-order/route.ts')));
   check('webhook sends app purchases on captured/order.paid only', /emitSnapAppPurchase\(order\.id, \{ paymentConfirmed: true \}\)/.test(read('app/api/webhooks/razorpay/route.ts')));

@@ -9,6 +9,7 @@ import { assignUniversalOrderNumber, isFailedPrefixNumber } from '@/lib/orderNum
 
 import { getCorsHeaders, handleCorsOptions } from '@/lib/cors';
 import { emitSnapAppPurchase, appRequestContext } from '@/lib/snap/app-purchase-server';
+import { confirmRazorpayCapture } from '@/lib/razorpay-payment';
 
 export async function OPTIONS(req: Request) {
   return handleCorsOptions(req);
@@ -91,10 +92,27 @@ export async function POST(req: Request) {
           { status: 400, headers: corsHeaders }
         );
       }
-      paymentCaptured = payment.status === 'captured' && payment.captured === true;
     }
 
-    console.log(`[Verify] ✅ Payment verified: ${razorpay_payment_id} for order ${razorpay_order_id}`);
+    // A valid signature (or HEADLESS lookup) proves authorization only. The order
+    // becomes paid / cod_upfront_paid ONLY when Razorpay confirms the payment
+    // CAPTURED; otherwise it stays pending and the payment.captured / order.paid
+    // webhook completes it.
+    try {
+      const captureCreds = await resolveRazorpayCredentials();
+      const capture = await confirmRazorpayCapture(razorpay_payment_id, {
+        key_id: captureCreds.key_id.trim(),
+        key_secret: secret,
+      }, { expectedOrderId: razorpay_order_id });
+      paymentCaptured = capture.captured;
+      if (!capture.captured) {
+        console.warn(`[Verify] Payment ${razorpay_payment_id} not captured yet (${capture.reason}) — order left pending for the webhook`);
+      }
+    } catch (capErr: any) {
+      console.warn('[Verify] Capture check failed — order left pending for the webhook:', capErr?.message);
+    }
+
+    console.log(`[Verify] ✅ Payment verified: ${razorpay_payment_id} for order ${razorpay_order_id} (captured=${paymentCaptured})`);
 
     let localOrderId: string | null = null;
     let localOrderNumber: string | null = null;
@@ -120,7 +138,7 @@ export async function POST(req: Request) {
 
         // Promote ZBPP/ZBPF → real ZB when payment is confirmed
         let promotedNumber = order.internalOrderNumber;
-        if (isFailedPrefixNumber(promotedNumber)) {
+        if (paymentCaptured && isFailedPrefixNumber(promotedNumber)) {
           const oldNumber = promotedNumber!;
           let minted = '';
           try {
@@ -159,7 +177,7 @@ export async function POST(req: Request) {
         }
         localOrderNumber = promotedNumber;
 
-        if (!alreadyPaid) {
+        if (!alreadyPaid && paymentCaptured) {
           // ─── Sync with Shopify ───
           let shopifyOrderId = order.shopifyOrderId;
           let tags = order.tags || 'mobile-app';
@@ -332,6 +350,8 @@ export async function POST(req: Request) {
         payment_id: razorpay_payment_id,
         orderId: localOrderId,
         orderNumber: localOrderNumber,
+        // 'pending_capture' → order kept pending; the Razorpay webhook confirms it.
+        paymentState: paymentCaptured ? 'captured' : 'pending_capture',
       },
       { headers: corsHeaders }
     );

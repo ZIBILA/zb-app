@@ -233,7 +233,10 @@ export default function OrderReviewScreen() {
           body: JSON.stringify({
             ...orderData,
             paymentMethod: 'Store Credit',
-            paymentStatus: 'paid'
+            paymentStatus: 'paid',
+            // No Razorpay payment for 100% store credit: the server sends the Snap
+            // MOBILE_APP Purchase from orders/create, so it needs the device context here.
+            snapDevice: await getSnapDeviceContext(),
           }),
         });
         

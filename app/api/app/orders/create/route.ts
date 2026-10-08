@@ -5,6 +5,7 @@ import { syncOrderToShopify } from '@/lib/services/shopifyOrderSyncService';
 import { extractNumericId } from '@/lib/utils';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
+import { emitSnapAppPurchase, appRequestContext } from '@/lib/snap/app-purchase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -138,6 +139,43 @@ export async function POST(req: Request) {
       });
     }
 
+    // ─── Server payment state wins over the client's paymentStatus ───
+    // 1. Never downgrade: once the server (verify route / Razorpay webhook) has
+    //    confirmed the payment, a stale client payload ("pending") can't undo it.
+    // 2. Never trust an upgrade: a client claiming "paid" is accepted only when
+    //    Razorpay confirms the payment CAPTURED. Otherwise the order stays pending
+    //    and the payment.captured / order.paid webhook completes it.
+    //    100% store-credit orders have no gateway payment (debit happens below).
+    {
+      const SERVER_CONFIRMED = ['paid', 'cod_upfront_paid', 'partially_paid'];
+      const serverStatus = String(existingOrder?.paymentStatus || '').toLowerCase();
+      const clientClaimsPaid = ['paid', 'cod_upfront_paid', 'partially_paid'].includes(paymentStatus);
+      const isFullStoreCreditOrder = !isCod && total <= 0 && appliedStoreCredits > 0;
+      if (existingOrder && SERVER_CONFIRMED.includes(serverStatus)) {
+        paymentStatus = serverStatus;
+      } else if (clientClaimsPaid && !isFullStoreCreditOrder) {
+        let captured = false;
+        if (paymentId) {
+          try {
+            const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
+            const { confirmRazorpayCapture } = await import('@/lib/razorpay-payment');
+            const creds = await resolveRazorpayCredentials();
+            const capture = await confirmRazorpayCapture(String(paymentId), {
+              key_id: creds.key_id.trim(),
+              key_secret: creds.key_secret.trim(),
+            }, { expectedOrderId: rzpOrderId || null });
+            captured = capture.captured;
+          } catch {
+            captured = false;
+          }
+        }
+        if (!captured) {
+          console.warn(`[MobileCheckoutComplete] Client reported "${paymentStatus}" but capture is not confirmed for payment ${paymentId || '(none)'} — keeping order pending for the webhook`);
+          paymentStatus = 'pending';
+        }
+      }
+    }
+
     // Determine the universal order number: reuse if pre-initiated, otherwise generate based on payment status
     const isSuccessfulPayment =
       paymentStatus === 'paid' ||
@@ -179,7 +217,11 @@ export async function POST(req: Request) {
     if (appliedStoreCredits > 0) {
       try {
         const { debitStoreCredits } = await import('@/lib/storeCreditsHelper');
-        await debitStoreCredits(customer.id, appliedStoreCredits, `#${orderNumber}`);
+        // Idempotent per Razorpay order (or pre-created order): a retried / duplicate
+        // orders/create call never debits the wallet twice.
+        await debitStoreCredits(customer.id, appliedStoreCredits, `#${orderNumber}`, {
+          idempotencyKey: rzpOrderId ? `rzp:${rzpOrderId}` : existingOrder ? `order:${existingOrder.id}` : `apporder:${orderNumber}`,
+        });
       } catch (debitErr: any) {
         return jsonError(debitErr.message, 400);
       }
@@ -714,6 +756,17 @@ export async function POST(req: Request) {
       } catch (syncErr: any) {
         console.error('[App API] Shopify sync error:', syncErr.message);
       }
+    }
+
+    // Snap MOBILE_APP Purchase for 100% store-credit orders: there is no Razorpay
+    // payment, so neither verify nor the webhook ever sees them. Reaching this
+    // point means the store-credit debit committed and the order exists.
+    if (!isCod && total <= 0 && appliedStoreCredits > 0 && paymentStatus === 'paid') {
+      emitSnapAppPurchase(created.id, {
+        paymentConfirmed: true,
+        device: body.snapDevice,
+        req: appRequestContext(req, resolvedCustomerId),
+      }).catch(() => {});
     }
 
     return NextResponse.json({

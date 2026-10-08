@@ -124,6 +124,8 @@ export async function POST(req: Request) {
     let authoritativeSubtotal = Math.max(0, Number(subtotal || 0));
     let paymentUnderpaid = false;
     let capturedRupees: number | null = null;
+    // true only when Razorpay confirms the payment CAPTURED (or a mock in non-prod).
+    let captureConfirmed = false;
     try {
       const variantIds = items
         .map((item: any) => {
@@ -251,14 +253,20 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid payment signature" }, { status: 400 });
           }
 
-          // Confirm captured amount matches what we should have charged (COD fee or full prepaid total).
+          // A valid signature only proves AUTHORIZATION. Confirm server-side that the
+          // money is CAPTURED before the order may become paid / cod_upfront_paid.
+          // If capture can't be confirmed yet, the order stays payment_pending and the
+          // payment.captured / order.paid webhook completes it (no lost/duplicate order).
           try {
             const creds = await resolveRazorpayCredentials();
-            const { fetchCapturedPayment } = await import('@/lib/razorpay-payment');
-            const payment = await fetchCapturedPayment(razorpay.razorpay_payment_id, {
+            const { confirmRazorpayCapture } = await import('@/lib/razorpay-payment');
+            const capture = await confirmRazorpayCapture(razorpay.razorpay_payment_id, {
               key_id: creds.key_id,
               key_secret: creds.key_secret,
-            });
+            }, { expectedOrderId: razorpay.razorpay_order_id });
+            if (!capture.captured) throw new Error(capture.reason);
+            const payment = capture.payment;
+            captureConfirmed = true;
             capturedRupees = Number(payment.amount) / 100;
             const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
             if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
@@ -272,6 +280,7 @@ export async function POST(req: Request) {
           }
         } else {
           console.warn('[Checkout] Accepting MOCK payment for testing');
+          captureConfirmed = true;
         }
       } else {
         return NextResponse.json({ error: "COD upfront payment details missing" }, { status: 400 });
@@ -578,11 +587,13 @@ export async function POST(req: Request) {
     const finalPaymentMethod = isFullStoreCredit ? "store_credit" : isCodOrder ? "cod" : "razorpay";
     const orderPaymentStatus = isFullStoreCredit
       ? "paid"
-      : isCodOrder
-        ? "cod_upfront_paid"
-        : paymentUnderpaid
-          ? "partially_paid"
-          : "paid";
+      : !captureConfirmed
+        ? "payment_pending" // authorized / unverifiable → webhook marks it paid on capture
+        : isCodOrder
+          ? "cod_upfront_paid"
+          : paymentUnderpaid
+            ? "partially_paid"
+            : "paid";
     const orderTotalPrice = priceVerified
       ? authoritativeTotal
       : Math.max(0, Number(subtotal || total || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
@@ -861,11 +872,11 @@ export async function POST(req: Request) {
     // currency, variant ids, quantities, payment status) and sends it exactly
     // once via the AdConversionDelivery ledger. This request comes from the
     // shopper's browser, so its cookies carry ScCid/_scid for attribution.
-    // Conversion requires Razorpay to have CAPTURED the money (fetchCapturedPayment
-    // succeeded above) or a 100% store-credit order. If capture could not be
-    // confirmed yet, the payment.captured / order.paid webhook sends it instead.
+    // Confirmed = Razorpay CAPTURED the money (prepaid / COD upfront). Web store
+    // credit is app-only (rejected above). If capture isn't confirmed yet the order
+    // stays payment_pending and the payment.captured / order.paid webhook sends it.
     emitSnapPurchase(localOrder.id, snapContextFromRequest(req), {
-      paymentConfirmed: isFullStoreCredit || capturedRupees !== null,
+      paymentConfirmed: isFullStoreCredit || captureConfirmed,
     })
       .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Snap Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
       .catch(() => {});

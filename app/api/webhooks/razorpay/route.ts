@@ -389,19 +389,29 @@ export async function POST(req: Request) {
       const failureReason = payment?.error_description || payment?.error_code || payment?.error_reason || 'payment_failed';
 
       if (razorpayOrderId) {
-        await prisma.order.updateMany({
-          where: { razorpayOrderId },
+        // A failed attempt must never downgrade an order another attempt already paid
+        // (same Razorpay order: retry after a failure). Same guard as /api/payments/webhook.
+        const CONFIRMED_PAYMENT_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
+        const updatedFailed = await prisma.order.updateMany({
+          where: { razorpayOrderId, paymentStatus: { notIn: CONFIRMED_PAYMENT_STATUSES } },
           data: {
             paymentStatus: 'failed',
             status: 'FAILED',
             paymentFailureReason: failureReason,
           },
         });
+        if (updatedFailed.count === 0) {
+          paymentLog('info', 'webhook', { message: 'payment.failed ignored: order already confirmed by another attempt (or not found)', razorpayOrderId });
+        }
 
         // Assign a ZBPF failed prefix number if the order doesn't have one yet
         try {
           const failedOrder = await prisma.order.findFirst({ where: { razorpayOrderId } });
-          if (failedOrder && !failedOrder.internalOrderNumber?.startsWith('ZBPF')) {
+          if (
+            failedOrder &&
+            !CONFIRMED_PAYMENT_STATUSES.includes(String(failedOrder.paymentStatus || '').toLowerCase()) &&
+            !failedOrder.internalOrderNumber?.startsWith('ZBPF')
+          ) {
             const oldNumber = failedOrder.internalOrderNumber;
             const failedNumber = await assignFailedOrderNumber(prisma, { cause: 'payment_failed' });
             const previousNumbers = [failedOrder.previousOrderNumbers, oldNumber].filter(Boolean).join(',');
@@ -418,7 +428,7 @@ export async function POST(req: Request) {
         }
 
         await prisma.webStoreOrder.updateMany({
-          where: { razorpayOrderId },
+          where: { razorpayOrderId, paymentStatus: { notIn: CONFIRMED_PAYMENT_STATUSES } },
           data: {
             paymentStatus: 'failed',
             paymentFailureReason: failureReason,

@@ -79,6 +79,22 @@ function parseAddress(raw: unknown): Record<string, any> {
   try { return JSON.parse(String(raw)) || {}; } catch { return {}; }
 }
 
+/**
+ * Snap PURCHASE value (web, iOS, Android) = net sale value of the order:
+ *   products − coupon/discount − store credit used.
+ * COD upfront is NOT deducted (it only splits how the same sale is paid).
+ * Order.totalPrice is stored as exactly this net value by every order writer:
+ *   web  app/api/checkout/complete (subtotal − coupon − store credit; COD upfront
+ *        is a deposit deducted from the balance, not from the total)
+ *   app  /api/app/payment/create-order + /api/app/orders/create (netOrderTotal).
+ * A 100% store-credit order is a real purchase with value 0.
+ * Returns null when the stored value is unusable.
+ */
+export function snapPurchaseValue(order: { totalPrice?: unknown }): number | null {
+  const v = Number(order?.totalPrice);
+  return Number.isFinite(v) && v >= 0 ? Math.round(v * 100) / 100 : null;
+}
+
 /** Build the CAPI PURCHASE from the stored order. Exported for tests. */
 export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventTimeMs: number) {
   const addr = parseAddress(order.shippingAddress);
@@ -117,7 +133,7 @@ export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventT
       country: addr.countryCode || addr.country_code || addr.country,
     },
     customData: {
-      value: Number(order.totalPrice),
+      value: snapPurchaseValue(order) ?? undefined,
       currency: String(order.currency || 'INR').toUpperCase(),
       content_ids: Array.from(new Set(contents.map(c => c.id))),
       contents,
@@ -188,8 +204,7 @@ export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, ve
     if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
       return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     }
-    const value = Number(order.totalPrice);
-    if (!Number.isFinite(value) || value <= 0) return { status: 'skipped', reason: 'non-positive order value' };
+    if (snapPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
 
     return ledger.deliver({
       platform: PLATFORM,
