@@ -442,12 +442,19 @@ export default function LoginPage() {
         setLoading(false);
         isSubmittingRef.current = false;
       } else if (result?.ok) {
+        // fullPhone carries the dial code, so it normalizes correctly worldwide
+        const snapNameParts = (name || "").trim().split(/\s+/).filter(Boolean);
+        const snapLoginIdentity = {
+          ph: fullPhone,
+          fn: snapNameParts[0],
+          ln: snapNameParts.length > 1 ? snapNameParts.slice(1).join(" ") : undefined,
+        };
         if (isNewUser) {
           trackCompleteRegistration();
-          trackSnapSignUp();
+          trackSnapSignUp(snapLoginIdentity);
           trackOaiRegistrationCompleted();
         } else {
-          trackSnapLogin();
+          trackSnapLogin(snapLoginIdentity);
         }
         // Lock the form permanently — no more submissions allowed
         loginSucceededRef.current = true;

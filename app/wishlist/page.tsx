@@ -6,6 +6,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useBookmarks } from "@/lib/bookmark-context";
 import { useCart } from "@/lib/cart-context";
+import { snapTrackAddToCart } from "@/hooks/useSnapEvents";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
@@ -40,6 +41,8 @@ export default function WishlistPage() {
           price: variant.price,
           image: product.image?.src || product.images?.[0]?.src || "/zb-logo-220px.png"
         });
+        // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
+        snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
         toast.success(`${product.title} added to bag`);
         return;
       }
@@ -61,6 +64,8 @@ export default function WishlistPage() {
         price: variant.price,
         image: product.image?.src || product.images?.[0]?.src || "/zb-logo-220px.png"
       });
+      // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
+      snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
 
       toast.success(`${product.title} added to bag`);
     } else {

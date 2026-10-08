@@ -3,7 +3,9 @@ import { getAppAuthFromRequest } from '@/lib/appAuth';
 import prisma from '@/lib/db';
 import { syncOrderToShopify } from '@/lib/services/shopifyOrderSyncService';
 import { extractNumericId } from '@/lib/utils';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
+import { emitSnapAppPurchase, appRequestContext } from '@/lib/snap/app-purchase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -137,6 +139,83 @@ export async function POST(req: Request) {
       });
     }
 
+    // ─── 100% store credit: one stable checkout reference ───
+    // These orders have no Razorpay order id, so the app sends a checkoutId generated
+    // once per checkout and reused on every retry. It keys the store-credit debit and
+    // points at the order number reserved by that debit, so duplicate / concurrent
+    // requests reuse the same order and the wallet is debited exactly once.
+    const isFullStoreCreditCheckout = !isCod && total <= 0 && appliedStoreCredits > 0 && !rzpOrderId;
+    const rawCheckoutId = String(body.checkoutId || body.checkout_id || '').trim();
+    const storeCreditCheckoutKey = isFullStoreCreditCheckout && /^[A-Za-z0-9_-]{8,100}$/.test(rawCheckoutId)
+      ? `checkout:${customer.id}:${rawCheckoutId}`
+      : null;
+    const replayStoreCreditCheckout = async (): Promise<{ orderNumber: string | null; response: NextResponse | null }> => {
+      if (!storeCreditCheckoutKey) return { orderNumber: null, response: null };
+      const debit = await prisma.storeCredit.findUnique({
+        where: { idempotencyKey: storeCreditCheckoutKey },
+        select: { orderId: true },
+      });
+      const reserved = debit?.orderId ? String(debit.orderId).replace(/^#/, '') : null;
+      if (!reserved) return { orderNumber: null, response: null };
+      const prior = await prisma.order.findUnique({ where: { internalOrderNumber: reserved } });
+      if (!prior) return { orderNumber: reserved, response: null };
+      console.log(`[MobileCheckoutComplete] Duplicate store-credit checkout ${rawCheckoutId} → existing order ${prior.id} (${reserved})`);
+      return {
+        orderNumber: reserved,
+        response: NextResponse.json({
+          success: true,
+          orderId: prior.id,
+          orderNumber: reserved,
+          status: prior.status,
+          shopifyOrderId: prior.shopifyOrderId,
+          duplicate: true,
+        }, { headers: corsHeaders }),
+      };
+    };
+    let reservedStoreCreditOrderNumber: string | null = null;
+    if (storeCreditCheckoutKey) {
+      const replay = await replayStoreCreditCheckout();
+      if (replay.response) return replay.response;
+      reservedStoreCreditOrderNumber = replay.orderNumber;
+    }
+
+    // ─── Server payment state wins over the client's paymentStatus ───
+    // 1. Never downgrade: once the server (verify route / Razorpay webhook) has
+    //    confirmed the payment, a stale client payload ("pending") can't undo it.
+    // 2. Never trust an upgrade: a client claiming "paid" is accepted only when
+    //    Razorpay confirms the payment CAPTURED. Otherwise the order stays pending
+    //    and the payment.captured / order.paid webhook completes it.
+    //    100% store-credit orders have no gateway payment (debit happens below).
+    {
+      const SERVER_CONFIRMED = ['paid', 'cod_upfront_paid', 'partially_paid'];
+      const serverStatus = String(existingOrder?.paymentStatus || '').toLowerCase();
+      const clientClaimsPaid = ['paid', 'cod_upfront_paid', 'partially_paid'].includes(paymentStatus);
+      const isFullStoreCreditOrder = !isCod && total <= 0 && appliedStoreCredits > 0;
+      if (existingOrder && SERVER_CONFIRMED.includes(serverStatus)) {
+        paymentStatus = serverStatus;
+      } else if (clientClaimsPaid && !isFullStoreCreditOrder) {
+        let captured = false;
+        if (paymentId) {
+          try {
+            const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
+            const { confirmRazorpayCapture } = await import('@/lib/razorpay-payment');
+            const creds = await resolveRazorpayCredentials();
+            const capture = await confirmRazorpayCapture(String(paymentId), {
+              key_id: creds.key_id.trim(),
+              key_secret: creds.key_secret.trim(),
+            }, { expectedOrderId: rzpOrderId || null });
+            captured = capture.captured;
+          } catch {
+            captured = false;
+          }
+        }
+        if (!captured) {
+          console.warn(`[MobileCheckoutComplete] Client reported "${paymentStatus}" but capture is not confirmed for payment ${paymentId || '(none)'} — keeping order pending for the webhook`);
+          paymentStatus = 'pending';
+        }
+      }
+    }
+
     // Determine the universal order number: reuse if pre-initiated, otherwise generate based on payment status
     const isSuccessfulPayment =
       paymentStatus === 'paid' ||
@@ -161,6 +240,10 @@ export async function POST(req: Request) {
       } else {
         orderNumber = existingOrder.internalOrderNumber;
       }
+    } else if (reservedStoreCreditOrderNumber) {
+      // Retry of a store-credit checkout whose debit committed but whose order wasn't
+      // written yet (or is being written concurrently): reuse the reserved number.
+      orderNumber = reservedStoreCreditOrderNumber;
     } else {
       try {
         if (isSuccessfulPayment) {
@@ -178,7 +261,21 @@ export async function POST(req: Request) {
     if (appliedStoreCredits > 0) {
       try {
         const { debitStoreCredits } = await import('@/lib/storeCreditsHelper');
-        await debitStoreCredits(customer.id, appliedStoreCredits, `#${orderNumber}`);
+        // Idempotent per Razorpay order (or pre-created order): a retried / duplicate
+        // orders/create call never debits the wallet twice.
+        const debit = await debitStoreCredits(customer.id, appliedStoreCredits, `#${orderNumber}`, {
+          idempotencyKey: rzpOrderId
+            ? `rzp:${rzpOrderId}`
+            : existingOrder
+              ? `order:${existingOrder.id}`
+              : storeCreditCheckoutKey || `apporder:${orderNumber}`,
+        });
+        if (storeCreditCheckoutKey && !debit.applied) {
+          // A concurrent duplicate committed the debit first → use its order number.
+          const replay = await replayStoreCreditCheckout();
+          if (replay.response) return replay.response;
+          if (replay.orderNumber) orderNumber = replay.orderNumber;
+        }
       } catch (debitErr: any) {
         return jsonError(debitErr.message, 400);
       }
@@ -272,6 +369,7 @@ export async function POST(req: Request) {
               quantity: Number(li.quantity || 0),
               price: Number(li.price || 0),
               sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
               image: li.image || li.imageUrl || null,
             };
           }));
@@ -345,6 +443,7 @@ export async function POST(req: Request) {
             quantity: Math.max(1, Number(li.quantity) || 1),
             price: Number(li.price || 0),
             sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
             image: li.image || li.imageUrl || null,
           };
         }));
@@ -361,6 +460,7 @@ export async function POST(req: Request) {
               quantity: item.quantity,
               price: item.price,
               sku: item.sku,
+              variantId: item.variantId,
               image: item.image,
             })),
           });
@@ -481,7 +581,9 @@ export async function POST(req: Request) {
       }, { headers: corsHeaders });
     }
 
-    const created = await prisma.$transaction(async (tx: any) => {
+    let created: any;
+    try {
+    created = await prisma.$transaction(async (tx: any) => {
       // 1. Create order
       const order = await tx.order.create({
         data: {
@@ -513,7 +615,7 @@ export async function POST(req: Request) {
           note,
           tags: finalTags,
           razorpayPaymentId: paymentId || null,
-          paymentMethod: paymentMethod === 'COD' ? 'COD' : 'Razorpay',
+          paymentMethod: isFullStoreCreditCheckout ? 'store_credit' : paymentMethod === 'COD' ? 'COD' : 'Razorpay',
           codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : 0,
           codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || null) : null,
           paymentCapturedAt: isPaidLike ? now : null,
@@ -550,6 +652,7 @@ export async function POST(req: Request) {
                 quantity: Number(li.quantity || 0),
                 price: Number(li.price || 0),
                 sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
                 image: li.image || li.imageUrl || null,
               };
             })),
@@ -562,7 +665,7 @@ export async function POST(req: Request) {
                     amount: total,
                     type: 'INITIAL',
                     status: 'success',
-                    gateway: paymentMethod === 'COD' ? 'cod' : 'razorpay',
+                    gateway: isFullStoreCreditCheckout ? 'store_credit' : paymentMethod === 'COD' ? 'cod' : 'razorpay',
                   },
                 }
               : undefined,
@@ -595,6 +698,7 @@ export async function POST(req: Request) {
           quantity: Number(li.quantity || 0),
           price: Number(li.price || 0),
           sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
           image: li.image || li.imageUrl || null,
         };
       }));
@@ -606,7 +710,7 @@ export async function POST(req: Request) {
           customerId: resolvedCustomerId,
           status: isSyncedNow ? 'synced' : initialStatus,
           paymentStatus,
-          paymentMethod: paymentMethod === 'COD' ? 'COD' : 'PREPAID',
+          paymentMethod: isFullStoreCreditCheckout ? 'STORE_CREDIT' : paymentMethod === 'COD' ? 'COD' : 'PREPAID',
           paymentId: paymentId || null,
           totalPrice: total,
           subtotalPrice: subtotal,
@@ -641,6 +745,15 @@ export async function POST(req: Request) {
 
       return order;
     });
+    } catch (createErr: any) {
+      // Concurrent duplicate of the same store-credit checkout created the order
+      // with the reserved number first → return that order (one order, one debit).
+      if (storeCreditCheckoutKey && createErr?.code === 'P2002') {
+        const replay = await replayStoreCreditCheckout();
+        if (replay.response) return replay.response;
+      }
+      throw createErr;
+    }
 
     // ─── Trigger Dynamic Order Confirmation Email ───
     if (customerEmail && (paymentStatus === 'paid' || paymentMethod === 'COD')) {
@@ -708,6 +821,17 @@ export async function POST(req: Request) {
       } catch (syncErr: any) {
         console.error('[App API] Shopify sync error:', syncErr.message);
       }
+    }
+
+    // Snap MOBILE_APP Purchase for 100% store-credit orders: there is no Razorpay
+    // payment, so neither verify nor the webhook ever sees them. Reaching this
+    // point means the store-credit debit committed and the order exists.
+    if (!isCod && total <= 0 && appliedStoreCredits > 0 && paymentStatus === 'paid') {
+      emitSnapAppPurchase(created.id, {
+        paymentConfirmed: true,
+        device: body.snapDevice,
+        req: appRequestContext(req, resolvedCustomerId),
+      }).catch(() => {});
     }
 
     return NextResponse.json({

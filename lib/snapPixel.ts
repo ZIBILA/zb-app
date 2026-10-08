@@ -1,3 +1,5 @@
+import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
+
 export const SNAP_PIXEL_ID = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd';
 
 /**
@@ -82,13 +84,14 @@ export function captureSnapClickId(): string | null {
 }
 
 /**
- * Read Snapchat identity cookies (_scid / ScCid) for event enrichment.
+ * Read Snapchat identity cookies (_scid / ScCid) + first-party PII cookies.
+ * NOTE: zb_guest_* cookies hold SHA-256 hashes (written by lib/metaPixel.ts).
  */
 export function getSnapIdentityCookies(): Record<string, string | undefined> {
   return {
     sc_click_id: getClientCookie('ScCid') || undefined,
     sc_cookie1: getClientCookie('_scid') || undefined,
-    uuid_c1: getClientCookie('zb_external_id') || undefined,
+    external_id: getClientCookie('zb_external_id') || undefined,
     em: getClientCookie('zb_guest_email') || undefined,
     ph: getClientCookie('zb_guest_phone') || undefined,
     fn: getClientCookie('zb_guest_fn') || undefined,
@@ -101,138 +104,91 @@ export function getSnapIdentityCookies(): Record<string, string | undefined> {
 }
 
 /**
- * Helper: detect if a value is already a 64-char lowercase hex SHA-256 hash.
+ * Build Snap Pixel advanced-matching fields.
+ *
+ * The pixel documents hashed variants ONLY for email and phone
+ * (user_hashed_email / user_hashed_phone_number). firstname / lastname / geo_*
+ * are raw fields that the pixel hashes itself — feeding it our cookie HASHES
+ * there would get hashed a second time and never match, so hashed cookie values
+ * for those fields are left to CAPI (which accepts hashes for every field).
+ *
+ * Raw values (from checkout / order data passed as `raw`) are normalized with
+ * the same worldwide rules as CAPI, so pixel and CAPI hash to identical values.
  */
-function isSha256Hash(val: string): boolean {
-  return /^[a-f0-9]{64}$/.test(val.trim().toLowerCase());
-}
-
-/**
- * Build the browser-pixel identity object from guest/logged-in cookies.
- * Maps cookie fields to Snap Pixel advanced-matching field names.
- * Strips empty/undefined keys so the pixel only receives populated fields.
- */
-export function buildBrowserIdentity(): Record<string, string> {
-  const cookies = getSnapIdentityCookies();
-  const identity: Record<string, string> = {};
-
-  // Email: if already hashed, use user_hashed_email; otherwise user_email (Snap hashes client-side)
-  if (cookies.em) {
-    if (isSha256Hash(cookies.em)) {
-      identity.user_hashed_email = cookies.em.trim().toLowerCase();
-    } else {
-      identity.user_email = cookies.em;
-    }
-  }
-
-  // Phone: same hashed vs raw logic
-  if (cookies.ph) {
-    if (isSha256Hash(cookies.ph)) {
-      identity.user_hashed_phone_number = cookies.ph.trim().toLowerCase();
-    } else {
-      identity.user_phone_number = cookies.ph;
-    }
-  }
-
-  // Name fields
-  if (cookies.fn) identity.firstname = cookies.fn;
-  if (cookies.ln) identity.lastname = cookies.ln;
-
-  // Geo fields
-  if (cookies.ct) identity.geo_city = cookies.ct;
-  if (cookies.st) identity.geo_region = cookies.st;
-  if (cookies.zp) identity.geo_postal_code = cookies.zp;
-  if (cookies.country) identity.geo_country = cookies.country;
-
-  // External ID
-  if (cookies.uuid_c1) identity.external_id = cookies.uuid_c1;
-
-  return identity;
-}
-
-/**
- * Map a raw {em, ph, fn, ln, ct, st, zp, country, external_id} object
- * to Snap Pixel advanced-matching field names. Raw values are left raw
- * (Snap hashes client-side); already-hashed SHA-256 values use user_hashed_*.
- * Empty/undefined values are stripped.
- */
-export function mapOverrideToSnapFields(src: Record<string, string | undefined>): Record<string, string> {
+export function buildPixelIdentity(raw?: RawIdentity): Record<string, string> {
   const out: Record<string, string> = {};
-  const em = src.em?.trim();
-  if (em) {
-    if (isSha256Hash(em)) out.user_hashed_email = em.toLowerCase();
-    else out.user_email = em.toLowerCase();
+  const cookies = getSnapIdentityCookies();
+  const n = normalizeIdentity(raw || {});
+
+  // Email
+  if (n.em && !isSha256Hash(n.em)) out.user_email = n.em;
+  else if (n.em) out.user_hashed_email = n.em;
+  else if (cookies.em && isSha256Hash(cookies.em)) out.user_hashed_email = cookies.em.toLowerCase();
+
+  // Phone (digits incl. country code, no "+")
+  if (n.ph && !isSha256Hash(n.ph)) out.user_phone_number = n.ph;
+  else if (n.ph) out.user_hashed_phone_number = n.ph;
+  else if (cookies.ph && isSha256Hash(cookies.ph)) out.user_hashed_phone_number = cookies.ph.toLowerCase();
+
+  // Raw-only fields
+  const rawOnly: Array<[keyof RawIdentity, string]> = [
+    ['fn', 'firstname'], ['ln', 'lastname'], ['ct', 'geo_city'],
+    ['st', 'geo_region'], ['zp', 'geo_postal_code'], ['country', 'geo_country'],
+  ];
+  for (const [k, key] of rawOnly) {
+    const v = n[k];
+    if (v && !isSha256Hash(v)) out[key] = v;
   }
-  const ph = src.ph?.trim();
-  if (ph) {
-    if (isSha256Hash(ph)) out.user_hashed_phone_number = ph.toLowerCase();
-    else out.user_phone_number = ph;
-  }
-  if (src.fn?.trim()) out.firstname = src.fn.trim();
-  if (src.ln?.trim()) out.lastname = src.ln.trim();
-  if (src.ct?.trim()) out.geo_city = src.ct.trim();
-  if (src.st?.trim()) out.geo_region = src.st.trim();
-  if (src.zp?.trim()) out.geo_postal_code = src.zp.trim();
-  if (src.country?.trim()) out.geo_country = src.country.trim();
-  if (src.external_id?.trim()) out.external_id = src.external_id.trim();
   return out;
 }
 
-let isInitialized = false;
+/** Back-compat alias used by older call sites. */
+export function buildBrowserIdentity(): Record<string, string> {
+  return buildPixelIdentity();
+}
+
+let lastInitKey: string | null = null;
+
+function initWithIdentity(snaptr: any, identity: Record<string, string>) {
+  // Re-init only when the identity actually changed (avoids redundant init calls).
+  const key = JSON.stringify(identity, Object.keys(identity).sort());
+  if (key === lastInitKey) return;
+  lastInitKey = key;
+  snaptr('init', SNAP_PIXEL_ID, identity);
+  if (typeof window !== 'undefined') (window as any).__snapPixelInitialized = true;
+}
 
 /**
- * Initialize Snap Pixel with optional user data for advanced matching.
- * When called with no arguments (or empty {}), defaults to buildBrowserIdentity()
- * so the pixel is init'd with whatever PII cookies are currently available.
+ * Initialize Snap Pixel with advanced matching from cookies (+ optional raw PII).
  */
-export const initSnapPixel = (userData?: Record<string, any>) => {
+export const initSnapPixel = (raw?: RawIdentity) => {
   if (!SNAP_PIXEL_ID) return;
-  const resolvedData = (userData && Object.keys(userData).length > 0)
-    ? userData
-    : buildBrowserIdentity();
-  withSnaptr((snaptr) => {
-    snaptr('init', SNAP_PIXEL_ID, resolvedData);
-    isInitialized = true;
-    if (typeof window !== 'undefined') {
-      (window as any).__snapPixelInitialized = true;
-    }
-  }, 'init');
+  withSnaptr((snaptr) => initWithIdentity(snaptr, buildPixelIdentity(raw)), 'init');
 };
 
 /**
- * Send client-side event via snaptr('track', eventName, params, options).
- * Re-inits the pixel with fresh identity cookies before each track call
- * so that late-arriving checkout PII (set during address entry) is captured.
- * @param identityOverride — raw or pre-hashed PII (em, ph, fn, ln, ct, st, zp, country, external_id)
- *   merged on top of cookie identity so checkout/purchase events carry full PII even without cookies.
+ * Browser pixel event.
+ *  - `params` use PIXEL names: price, currency, item_ids, item_category,
+ *    number_items, transaction_id, search_string, description.
+ *  - `dedupId` is sent as client_dedup_id and MUST equal the CAPI event_id.
+ *  - `rawIdentity` = raw checkout/order PII to improve matching on this event.
  */
 export const trackSnapClientEvent = (
   eventName: string,
   params: Record<string, any> = {},
-  eventId?: string,
-  identityOverride?: Record<string, string | undefined>
+  dedupId?: string,
+  rawIdentity?: RawIdentity
 ) => {
   if (!SNAP_PIXEL_ID) return;
   withSnaptr((snaptr) => {
-    // Merge cookie identity with any explicit override (override wins)
-    const cookieIdentity = buildBrowserIdentity();
-    const overrideIdentity = identityOverride ? mapOverrideToSnapFields(identityOverride) : {};
-    const identity = { ...cookieIdentity, ...overrideIdentity };
-
-    if (Object.keys(identity).length > 0) {
-      snaptr('init', SNAP_PIXEL_ID, identity);
-      isInitialized = true;
-      (window as any).__snapPixelInitialized = true;
-    } else if (!isInitialized && typeof window !== 'undefined' && !(window as any).__snapPixelInitialized) {
-      snaptr('init', SNAP_PIXEL_ID);
-      isInitialized = true;
-      (window as any).__snapPixelInitialized = true;
+    initWithIdentity(snaptr, buildPixelIdentity(rawIdentity));
+    const payload: Record<string, any> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null || v === '') continue;
+      if (Array.isArray(v) && v.length === 0) continue;
+      payload[k] = v;
     }
-
-    const payload = { ...params };
-    if (eventId) {
-      payload.event_id = eventId;
-    }
+    if (dedupId) payload.client_dedup_id = dedupId;
     snaptr('track', eventName, payload);
   }, eventName);
 };

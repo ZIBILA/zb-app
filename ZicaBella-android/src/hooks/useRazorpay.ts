@@ -23,6 +23,7 @@ import { getPaymentApiBaseUrl } from '../constants/config';
 import { useAuthStore } from '../store/authStore';
 import { checkOrderStatus } from '../api/payment';
 import { WALLET_APPS } from '../utils/razorpayBridge';
+import { getSnapDeviceContext } from '../services/snapDeviceContext';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -96,6 +97,13 @@ export interface UseRazorpayReturn {
   startPayment: (method: PaymentMethod, options: UseRazorpayOptions) => Promise<void>;
   reset: () => void;
 }
+
+// Authorized-but-not-captured payments: re-check /api/app/payment/verify until the
+// server reports paymentState === 'captured'. Never show success before that.
+const CAPTURE_POLL_MS = 4000;
+const CAPTURE_WAIT_MS = 3 * 60_000;
+export const CAPTURE_PENDING_MESSAGE =
+  'Your bank has authorised the payment but has not confirmed it yet. Please do not pay again — your order will be confirmed automatically once the payment is captured.';
 
 // ── Hook ─────────────────────────────────────────────────────────────
 
@@ -330,6 +338,8 @@ export function useRazorpay(): UseRazorpayReturn {
               currency: opts.currency || 'INR',
               receipt: opts.receipt || `zb_${Date.now()}`,
               orderData: opts.orderData,
+              // Device context for the Snap MOBILE_APP Purchase (server-side, never the web pixel)
+              snapDevice: await getSnapDeviceContext(),
             }),
           });
 
@@ -519,14 +529,16 @@ export function useRazorpay(): UseRazorpayReturn {
               razorpay_payment_id: paymentData.razorpay_payment_id,
             };
 
-        const verifyRes = await fetch(`${apiBase}/api/app/payment/verify`, {
+        const verifyPayload = JSON.stringify({ ...verifyBody, snapDevice: await getSnapDeviceContext() });
+        const callVerify = () => fetch(`${apiBase}/api/app/payment/verify`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
-          body: JSON.stringify(verifyBody),
+          body: verifyPayload,
         });
+        const verifyRes = await callVerify();
 
         const verifyText = await verifyRes.text();
         let verifyJson: any;
@@ -538,6 +550,31 @@ export function useRazorpay(): UseRazorpayReturn {
 
         if (!verifyJson.success) {
           throw new Error(verifyJson.error || 'Payment verification failed');
+        }
+
+        // success:true only means the signature is valid (payment AUTHORIZED).
+        // Final success — order sync, cart clear, confirmation — needs a CAPTURED payment.
+        if (verifyJson.paymentState !== 'captured') {
+          setStatus('waiting_capture');
+          statusRef.current = 'waiting_capture';
+          const deadline = Date.now() + CAPTURE_WAIT_MS;
+          while (verifyJson.paymentState !== 'captured' && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, CAPTURE_POLL_MS));
+            if (statusRef.current !== 'waiting_capture') return; // reset() / left the flow
+            try {
+              const again = JSON.parse(await (await callVerify()).text());
+              if (again?.success) verifyJson = again;
+            } catch {
+              // network blip — keep waiting
+            }
+          }
+          if (verifyJson.paymentState !== 'captured') {
+            // Not a failure: Razorpay may still capture it and the webhook will then
+            // confirm the order. Stay in waiting_capture: no success UI, cart untouched.
+            console.warn('[useRazorpay] Payment authorized but not captured yet');
+            setError(CAPTURE_PENDING_MESSAGE);
+            return;
+          }
         }
 
         console.log('[useRazorpay] Payment verified successfully');

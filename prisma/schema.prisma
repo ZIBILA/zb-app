@@ -869,6 +869,9 @@ model StoreCredit {
   createdAt       DateTime  @default(now())
   expiresAt       DateTime?
   remainingAmount Float     @default(0)
+  /// Set on DEBIT rows: stable reference of the redemption (e.g. rzp:<razorpay order id>).
+  /// Unique, so a retried checkout can never debit the same order twice.
+  idempotencyKey  String?   @unique
   customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([customerId, createdAt])
@@ -2310,4 +2313,41 @@ model AffiliateLedgerEntry {
 
   @@index([affiliateId, createdAt])
   @@map("affiliate_ledger_entries")
+}
+
+/// Durable, idempotent delivery ledger for server-side ad conversions
+/// (currently Snap CAPI PURCHASE). One row per (platform, eventName, orderId).
+/// status: pending → sending (leased) → sent | failed | skipped.
+/// sentAt is set ONLY after the ad platform confirmed the event.
+model AdConversionDelivery {
+  id         String    @id @default(cuid())
+  platform   String
+  eventName  String
+  orderId    String
+  eventId    String
+  status     String    @default("pending")
+  attempts   Int       @default(0)
+  leaseUntil DateTime?
+  eventTime  DateTime?
+  context    Json?
+  lastError  String?
+  sentAt     DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([platform, eventName, orderId])
+  @@index([status, updatedAt])
+  @@map("ad_conversion_deliveries")
+}
+
+/// Storefront footer newsletter sign-ups (email only).
+model NewsletterSubscriber {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  status    String   @default("subscribed")
+  source    String   @default("storefront_footer")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("newsletter_subscribers")
 }

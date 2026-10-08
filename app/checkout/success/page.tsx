@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
+import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
 
 const PENDING_KEY = "zb_pending_checkout";
 
@@ -77,21 +78,25 @@ function CheckoutSuccessInner() {
       }
 
       try {
-        const verifyRes = await fetch("/api/checkout/complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...pending,
-            razorpay: {
-              razorpay_payment_id,
-              razorpay_order_id,
-              razorpay_signature,
-            },
-          }),
-        });
-        const verifyData = await verifyRes.json().catch(() => ({}));
+        // Re-sends while the payment is only authorized (paymentState "pending_capture").
+        const completion = await postCheckoutComplete({
+          ...pending,
+          razorpay: {
+            razorpay_payment_id,
+            razorpay_order_id,
+            razorpay_signature,
+          },
+        }, { isCancelled: () => cancelled });
 
         if (cancelled) return;
+
+        if (completion.pendingCapture) {
+          setMessage(CAPTURE_PENDING_MESSAGE);
+          setTimeout(() => router.replace("/profile?tab=orders"), 6000);
+          return;
+        }
+        const verifyRes = completion.res!;
+        const verifyData = completion.data;
 
         if (verifyRes.ok && verifyData.orderId) {
           sessionStorage.setItem("last_placed_order_id", verifyData.orderId);

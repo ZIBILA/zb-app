@@ -1,4 +1,5 @@
 'use client';
+import { normalizePhone, normalizeState, normalizeZip } from '@/lib/tracking/identity-normalize';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
@@ -181,18 +182,6 @@ export function MetaPixelRouteTracker() {
           setClientCookie('zb_guest_email', hashedEmail, 365);
         }
 
-        const phone = (session.user as any).phone || (session as any).customer?.phone;
-        if (phone && !isDemoValue('phone', phone)) {
-          const digits = phone.replace(/\D/g, "");
-          let baseNumber = digits;
-          if (digits.length === 12 && digits.startsWith("91")) baseNumber = digits.slice(2);
-          else if (digits.length === 11 && digits.startsWith("0")) baseNumber = digits.slice(1);
-          const formattedPhone = `91${baseNumber}`;
-          const hashedPhone = await sha256(formattedPhone);
-          sessionUserData.ph = hashedPhone;
-          setClientCookie('zb_guest_phone', hashedPhone, 365);
-        }
-
         const name = session.user.name;
         if (name && !isDemoValue('name', name)) {
           const parts = name.trim().split(/\s+/);
@@ -220,6 +209,20 @@ export function MetaPixelRouteTracker() {
           }
         }
 
+        // Phone after the profile fetch so a number saved without "+<dial code>"
+        // is read in the customer's own country. OTP-login numbers carry their
+        // dial code and parse correctly regardless; with no country known, a bare
+        // number falls back to India (same as before).
+        const phone = (session.user as any).phone || (session as any).customer?.phone;
+        if (phone && !isDemoValue('phone', phone)) {
+          const formattedPhone = normalizePhone(phone, cachedProfileData?.country);
+          if (formattedPhone) {
+            const hashedPhone = await sha256(formattedPhone);
+            sessionUserData.ph = hashedPhone;
+            setClientCookie('zb_guest_phone', hashedPhone, 365);
+          }
+        }
+
         if (cachedProfileData) {
           const { city, state, zip, country, dob } = cachedProfileData;
           if (city) {
@@ -227,13 +230,15 @@ export function MetaPixelRouteTracker() {
             sessionUserData.ct = hashedCity;
             setClientCookie('zb_guest_ct', hashedCity, 365);
           }
-          if (state) {
-            const hashedState = await sha256(cleanStringNoSpaces(state));
+          const normState = normalizeState(state, country);
+          if (normState) {
+            const hashedState = await sha256(normState);
             sessionUserData.st = hashedState;
             setClientCookie('zb_guest_st', hashedState, 365);
           }
-          if (zip) {
-            const hashedZip = await sha256(cleanStringNoSpaces(zip));
+          const normZip = normalizeZip(zip, country);
+          if (normZip) {
+            const hashedZip = await sha256(normZip);
             sessionUserData.zp = hashedZip;
             setClientCookie('zb_guest_zp', hashedZip, 365);
           }

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useBookmarks } from "@/lib/bookmark-context";
 import { useCart } from "@/lib/cart-context";
+import { snapTrackAddToCart } from "@/hooks/useSnapEvents";
 import dynamic from "next/dynamic";
 import { useState, useEffect } from "react";
 import { handleImageError } from "./ImagePlaceholder";
@@ -47,6 +48,8 @@ export default function BookmarkDrawer({ isOpen, onClose }: BookmarkDrawerProps)
           price: variant.price,
           image: product.image?.src || product.images?.[0]?.src || "/zb-logo-220px.png"
         });
+        // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
+        snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
         return;
       }
     }

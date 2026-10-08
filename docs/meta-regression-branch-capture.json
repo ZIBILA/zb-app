@@ -1,0 +1,3073 @@
+{
+ "AE_guest": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98",
+   "zb_guest_ct": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+   "zb_guest_email": "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577",
+   "zb_guest_fn": "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c",
+   "zb_guest_ln": "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4",
+   "zb_guest_phone": "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5",
+   "zb_guest_st": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+   "zb_guest_zp": "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "ct": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "st": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "zp": "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77",
+      "country": "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98"
+      ],
+      "st": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "ct": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "zp": [
+       "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "0710c7a483c44a4952446c652cc72536dd397c626a4ada58256db92fac05a8d7"
+      ],
+      "ct": [
+       "d209bcc17778fd19fd2bc0c99a3868bf011da5162d3a75037a605768ebc276e2"
+      ],
+      "zp": [
+       "a5bc8dcde81ed9dbad6edf4f14b3b8e1201702eaa27ab7f8cb708ffe7f49ddc9"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "country": "United Arab Emirates",
+      "st": "Dubai",
+      "ct": "Dubai",
+      "zp": "00000",
+      "fn": "Aisha",
+      "ln": "Khan",
+      "em": "aisha@example.ae",
+      "ph": "050 123 4567"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_AE_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_AE_guest"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_AE_guest",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_AE_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "country": "United Arab Emirates",
+      "st": "Dubai",
+      "ct": "Dubai",
+      "zp": "00000",
+      "fn": "Aisha",
+      "ln": "Khan",
+      "em": "aisha@example.ae",
+      "ph": "050 123 4567"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_AE_guest",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577"
+      ],
+      "ph": [
+       "febff274992ea598e794ba83073fe5af856aa0fe2919ff374cc2e89df84f4d1b"
+      ],
+      "fn": [
+       "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c"
+      ],
+      "ln": [
+       "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4"
+      ],
+      "country": [
+       "68bca10eea2ba33f6f15a6ab0c7df2a49051a6541f9118d468b0585d5d60398b"
+      ],
+      "st": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "ct": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "zp": [
+       "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_AE_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "AE_logged_in": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98",
+   "zb_guest_ct": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+   "zb_guest_email": "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577",
+   "zb_guest_fn": "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c",
+   "zb_guest_ln": "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4",
+   "zb_guest_phone": "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5",
+   "zb_guest_st": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+   "zb_guest_zp": "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577",
+      "ph": "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5",
+      "fn": "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c",
+      "ln": "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4",
+      "ct": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "st": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "zp": "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77",
+      "country": "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577",
+      "ph": "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5",
+      "fn": "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c",
+      "ln": "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4",
+      "ct": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "st": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "zp": "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77",
+      "country": "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577"
+      ],
+      "ph": [
+       "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5"
+      ],
+      "fn": [
+       "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c"
+      ],
+      "ln": [
+       "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4"
+      ],
+      "country": [
+       "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98"
+      ],
+      "st": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "ct": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "zp": [
+       "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577",
+      "ph": "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5",
+      "fn": "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c",
+      "ln": "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4",
+      "ct": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "st": "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c",
+      "zp": "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77",
+      "country": "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577"
+      ],
+      "ph": [
+       "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5"
+      ],
+      "fn": [
+       "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c"
+      ],
+      "ln": [
+       "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4"
+      ],
+      "country": [
+       "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98"
+      ],
+      "st": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "ct": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "zp": [
+       "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "aisha@example.ae",
+      "ph": "050 123 4567",
+      "fn": "Aisha",
+      "ln": "Khan",
+      "ct": "Dubai",
+      "st": "Dubai",
+      "zp": "00000",
+      "country": "United Arab Emirates"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_AE_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_AE_logged_in"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_AE_logged_in",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_AE_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "aisha@example.ae",
+      "ph": "050 123 4567",
+      "fn": "Aisha",
+      "ln": "Khan",
+      "ct": "Dubai",
+      "st": "Dubai",
+      "zp": "00000",
+      "country": "United Arab Emirates",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_AE_logged_in",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "e3bae48a8009b5ff981b4e4bbcf693d6528fe7464a9ea656bb136ea756078577"
+      ],
+      "ph": [
+       "febff274992ea598e794ba83073fe5af856aa0fe2919ff374cc2e89df84f4d1b"
+      ],
+      "fn": [
+       "9e691cc3bf80c4491b1b0ff55880e453bbe335d562e1c75f341b4af7ad35934c"
+      ],
+      "ln": [
+       "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4"
+      ],
+      "country": [
+       "68bca10eea2ba33f6f15a6ab0c7df2a49051a6541f9118d468b0585d5d60398b"
+      ],
+      "st": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "ct": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "zp": [
+       "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_AE_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "IN_guest": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf",
+   "zb_guest_ct": "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f",
+   "zb_guest_email": "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417",
+   "zb_guest_fn": "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d",
+   "zb_guest_ln": "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32",
+   "zb_guest_st": "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41",
+   "zb_guest_zp": "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "ct": "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f",
+      "st": "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41",
+      "zp": "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b",
+      "country": "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "0710c7a483c44a4952446c652cc72536dd397c626a4ada58256db92fac05a8d7"
+      ],
+      "ct": [
+       "d209bcc17778fd19fd2bc0c99a3868bf011da5162d3a75037a605768ebc276e2"
+      ],
+      "zp": [
+       "a5bc8dcde81ed9dbad6edf4f14b3b8e1201702eaa27ab7f8cb708ffe7f49ddc9"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "country": "India",
+      "st": "Uttar Pradesh",
+      "ct": "Noida",
+      "zp": "201304",
+      "fn": "Aarav",
+      "ln": "Mehta",
+      "em": "Aarav.Mehta@Example.com",
+      "ph": "98765 43210"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_IN_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_IN_guest"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_IN_guest",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_IN_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "country": "India",
+      "st": "Uttar Pradesh",
+      "ct": "Noida",
+      "zp": "201304",
+      "fn": "Aarav",
+      "ln": "Mehta",
+      "em": "Aarav.Mehta@Example.com",
+      "ph": "98765 43210"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_IN_guest",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417"
+      ],
+      "fn": [
+       "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d"
+      ],
+      "ln": [
+       "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_IN_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "IN_logged_in": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf",
+   "zb_guest_ct": "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f",
+   "zb_guest_email": "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417",
+   "zb_guest_fn": "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d",
+   "zb_guest_ln": "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32",
+   "zb_guest_st": "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41",
+   "zb_guest_zp": "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417",
+      "fn": "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d",
+      "ln": "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32",
+      "ct": "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f",
+      "st": "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41",
+      "zp": "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b",
+      "country": "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417",
+      "fn": "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d",
+      "ln": "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32",
+      "ct": "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f",
+      "st": "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41",
+      "zp": "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b",
+      "country": "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417"
+      ],
+      "fn": [
+       "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d"
+      ],
+      "ln": [
+       "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417",
+      "fn": "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d",
+      "ln": "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32",
+      "ct": "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f",
+      "st": "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41",
+      "zp": "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b",
+      "country": "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417"
+      ],
+      "fn": [
+       "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d"
+      ],
+      "ln": [
+       "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "Aarav.Mehta@Example.com",
+      "fn": "Aarav",
+      "ln": "Mehta",
+      "ct": "Noida",
+      "st": "Uttar Pradesh",
+      "zp": "201304",
+      "country": "India",
+      "ph": "98765 43210"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_IN_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_IN_logged_in"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_IN_logged_in",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_IN_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "Aarav.Mehta@Example.com",
+      "fn": "Aarav",
+      "ln": "Mehta",
+      "ct": "Noida",
+      "st": "Uttar Pradesh",
+      "zp": "201304",
+      "country": "India",
+      "ph": "98765 43210",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_IN_logged_in",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "922738890be709062f1178c2a9b757ecb58e58d97cc435d03142e1b97b7b8417"
+      ],
+      "fn": [
+       "70c64570680ddcef112f9cd6bfe44f671b40fa653beacc67ab2832792b42934d"
+      ],
+      "ln": [
+       "ff06be44c7e8efa6589dc64541aa526f2db273ba4990375b8cdf360ddd421d32"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "4983b29e8a51480679642277021b241df86f8278c215a8822c7339c9657a014b"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_IN_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "UK_guest": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677",
+   "zb_guest_ct": "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161",
+   "zb_guest_email": "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187",
+   "zb_guest_fn": "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2",
+   "zb_guest_ln": "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f",
+   "zb_guest_phone": "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd",
+   "zb_guest_st": "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0",
+   "zb_guest_zp": "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "ct": "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161",
+      "st": "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0",
+      "zp": "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890",
+      "country": "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677"
+      ],
+      "st": [
+       "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0"
+      ],
+      "ct": [
+       "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161"
+      ],
+      "zp": [
+       "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "0710c7a483c44a4952446c652cc72536dd397c626a4ada58256db92fac05a8d7"
+      ],
+      "ct": [
+       "d209bcc17778fd19fd2bc0c99a3868bf011da5162d3a75037a605768ebc276e2"
+      ],
+      "zp": [
+       "a5bc8dcde81ed9dbad6edf4f14b3b8e1201702eaa27ab7f8cb708ffe7f49ddc9"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "country": "United Kingdom",
+      "st": "Greater London",
+      "ct": "London",
+      "zp": "SW1A 1AA",
+      "fn": "Jane",
+      "ln": "Doe",
+      "em": "jane.doe@example.co.uk",
+      "ph": "07700 900123"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_UK_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_UK_guest"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_UK_guest",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_UK_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "country": "United Kingdom",
+      "st": "Greater London",
+      "ct": "London",
+      "zp": "SW1A 1AA",
+      "fn": "Jane",
+      "ln": "Doe",
+      "em": "jane.doe@example.co.uk",
+      "ph": "07700 900123"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_UK_guest",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187"
+      ],
+      "ph": [
+       "f5501672ce6098e2922b1956b3f2c2f7e431e2ef479292507d2277e99e4dd4f5"
+      ],
+      "fn": [
+       "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2"
+      ],
+      "ln": [
+       "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f"
+      ],
+      "country": [
+       "68bca10eea2ba33f6f15a6ab0c7df2a49051a6541f9118d468b0585d5d60398b"
+      ],
+      "st": [
+       "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0"
+      ],
+      "ct": [
+       "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161"
+      ],
+      "zp": [
+       "830e1d4b9838bab1f5c2acdb23e0b502ff13a9832c4632e8d67a1d43d3b7f614"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_UK_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "UK_logged_in": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677",
+   "zb_guest_ct": "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161",
+   "zb_guest_email": "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187",
+   "zb_guest_fn": "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2",
+   "zb_guest_ln": "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f",
+   "zb_guest_phone": "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd",
+   "zb_guest_st": "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0",
+   "zb_guest_zp": "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187",
+      "ph": "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd",
+      "fn": "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2",
+      "ln": "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f",
+      "ct": "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161",
+      "st": "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0",
+      "zp": "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890",
+      "country": "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187",
+      "ph": "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd",
+      "fn": "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2",
+      "ln": "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f",
+      "ct": "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161",
+      "st": "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0",
+      "zp": "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890",
+      "country": "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187"
+      ],
+      "ph": [
+       "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd"
+      ],
+      "fn": [
+       "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2"
+      ],
+      "ln": [
+       "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f"
+      ],
+      "country": [
+       "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677"
+      ],
+      "st": [
+       "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0"
+      ],
+      "ct": [
+       "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161"
+      ],
+      "zp": [
+       "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187",
+      "ph": "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd",
+      "fn": "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2",
+      "ln": "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f",
+      "ct": "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161",
+      "st": "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0",
+      "zp": "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890",
+      "country": "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187"
+      ],
+      "ph": [
+       "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd"
+      ],
+      "fn": [
+       "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2"
+      ],
+      "ln": [
+       "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f"
+      ],
+      "country": [
+       "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677"
+      ],
+      "st": [
+       "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0"
+      ],
+      "ct": [
+       "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161"
+      ],
+      "zp": [
+       "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "jane.doe@example.co.uk",
+      "ph": "07700 900123",
+      "fn": "Jane",
+      "ln": "Doe",
+      "ct": "London",
+      "st": "Greater London",
+      "zp": "SW1A 1AA",
+      "country": "United Kingdom"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_UK_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_UK_logged_in"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_UK_logged_in",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_UK_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "jane.doe@example.co.uk",
+      "ph": "07700 900123",
+      "fn": "Jane",
+      "ln": "Doe",
+      "ct": "London",
+      "st": "Greater London",
+      "zp": "SW1A 1AA",
+      "country": "United Kingdom",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_UK_logged_in",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "22c24abe678ca650e3292465ecc383e8b56e5c3a24af3a2d2aa32342d7205187"
+      ],
+      "ph": [
+       "f5501672ce6098e2922b1956b3f2c2f7e431e2ef479292507d2277e99e4dd4f5"
+      ],
+      "fn": [
+       "81f8f6dde88365f3928796ec7aa53f72820b06db8664f5fe76a7eb13e24546a2"
+      ],
+      "ln": [
+       "799ef92a11af918e3fb741df42934f3b568ed2d93ac1df74f1b8d41a27932a6f"
+      ],
+      "country": [
+       "68bca10eea2ba33f6f15a6ab0c7df2a49051a6541f9118d468b0585d5d60398b"
+      ],
+      "st": [
+       "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0"
+      ],
+      "ct": [
+       "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161"
+      ],
+      "zp": [
+       "830e1d4b9838bab1f5c2acdb23e0b502ff13a9832c4632e8d67a1d43d3b7f614"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_UK_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "US_guest": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621",
+   "zb_guest_ct": "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac",
+   "zb_guest_email": "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4",
+   "zb_guest_fn": "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a",
+   "zb_guest_ln": "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd",
+   "zb_guest_phone": "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0",
+   "zb_guest_st": "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+   "zb_guest_zp": "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "ct": "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac",
+      "st": "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+      "zp": "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e",
+      "country": "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+      ],
+      "st": [
+       "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126"
+      ],
+      "ct": [
+       "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac"
+      ],
+      "zp": [
+       "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "0710c7a483c44a4952446c652cc72536dd397c626a4ada58256db92fac05a8d7"
+      ],
+      "ct": [
+       "d209bcc17778fd19fd2bc0c99a3868bf011da5162d3a75037a605768ebc276e2"
+      ],
+      "zp": [
+       "a5bc8dcde81ed9dbad6edf4f14b3b8e1201702eaa27ab7f8cb708ffe7f49ddc9"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "country": "United States",
+      "st": "California",
+      "ct": "San Francisco",
+      "zp": "94105-1234",
+      "fn": "John",
+      "ln": "Smith",
+      "em": "john@example.com",
+      "ph": "(415) 555-2671"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_US_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_US_guest"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_US_guest",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_US_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "country": "United States",
+      "st": "California",
+      "ct": "San Francisco",
+      "zp": "94105-1234",
+      "fn": "John",
+      "ln": "Smith",
+      "em": "john@example.com",
+      "ph": "(415) 555-2671"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_US_guest",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4"
+      ],
+      "ph": [
+       "1e6012f4eb19bedad20fd4ab5c5d8c6a9d49feefa02d547f26c9306598bd54a3"
+      ],
+      "fn": [
+       "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a"
+      ],
+      "ln": [
+       "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd"
+      ],
+      "country": [
+       "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+      ],
+      "st": [
+       "7e8eea5cc60980270c9ceb75ce8c087d48d726110fd3d17921f774eefd8e18d8"
+      ],
+      "ct": [
+       "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac"
+      ],
+      "zp": [
+       "0f5f5669ff2667c30b9f9df50e282aed448ddc9fc1ad9a4e22f249c51910db9d"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_US_guest",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "US_logged_in": {
+  "cookiesAfterAddress": {
+   "_fbp": "fb.1.1700000000000.123456789",
+   "zb_external_id": "zb.fixed-external-id",
+   "zb_guest_country": "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621",
+   "zb_guest_ct": "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac",
+   "zb_guest_email": "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4",
+   "zb_guest_fn": "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a",
+   "zb_guest_ln": "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd",
+   "zb_guest_phone": "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0",
+   "zb_guest_st": "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+   "zb_guest_zp": "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e",
+   "zb_pii_owner": "zb.fixed-external-id"
+  },
+  "pageView": {
+   "fbq": [
+    [
+     "track",
+     "PageView",
+     {},
+     {
+      "eventID": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0"
+     }
+    ],
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4",
+      "ph": "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0",
+      "fn": "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a",
+      "ln": "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd",
+      "ct": "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac",
+      "st": "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+      "zp": "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e",
+      "country": "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventName": "PageView",
+     "eventId": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "eventTime": 1791464460,
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4",
+      "ph": "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0",
+      "fn": "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a",
+      "ln": "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd",
+      "ct": "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac",
+      "st": "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+      "zp": "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e",
+      "country": "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "PageView",
+     "event_time": 1791464460,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "pv.98ebcb82-034f-4ba5-81ed-d74d0cfc15a0",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4"
+      ],
+      "ph": [
+       "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0"
+      ],
+      "fn": [
+       "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a"
+      ],
+      "ln": [
+       "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd"
+      ],
+      "country": [
+       "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+      ],
+      "st": [
+       "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126"
+      ],
+      "ct": [
+       "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac"
+      ],
+      "zp": [
+       "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     }
+    }
+   ]
+  },
+  "atc": {
+   "fbq": [
+    [
+     "track",
+     "AddToCart",
+     {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     {
+      "eventID": "8c48098a-bdd3-4d6e-ad40-702e359b9c99"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "eventName": "AddToCart",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464520,
+     "customData": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4",
+      "ph": "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0",
+      "fn": "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a",
+      "ln": "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd",
+      "ct": "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac",
+      "st": "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126",
+      "zp": "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e",
+      "country": "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "AddToCart",
+     "event_time": 1791464520,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "8c48098a-bdd3-4d6e-ad40-702e359b9c99",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4"
+      ],
+      "ph": [
+       "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0"
+      ],
+      "fn": [
+       "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a"
+      ],
+      "ln": [
+       "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd"
+      ],
+      "country": [
+       "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+      ],
+      "st": [
+       "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126"
+      ],
+      "ct": [
+       "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac"
+      ],
+      "zp": [
+       "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "content_ids": [
+       "51813148262681"
+      ],
+      "content_name": "AEROLAYER HALF DENIM",
+      "value": 1499,
+      "currency": "INR",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 1,
+        "item_price": 1499
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "purchase": {
+   "fbq": [
+    [
+     "init",
+     "2049977412558608",
+     {
+      "external_id": "zb.fixed-external-id",
+      "em": "john@example.com",
+      "ph": "(415) 555-2671",
+      "fn": "John",
+      "ln": "Smith",
+      "ct": "San Francisco",
+      "st": "California",
+      "zp": "94105-1234",
+      "country": "United States"
+     }
+    ],
+    [
+     "track",
+     "Purchase",
+     {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_US_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     {
+      "eventID": "ord_US_logged_in"
+     }
+    ]
+   ],
+   "relay": [
+    {
+     "eventId": "ord_US_logged_in",
+     "eventName": "Purchase",
+     "eventSourceUrl": "https://zicabella.com/",
+     "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+     "actionSource": "website",
+     "eventTime": 1791464580,
+     "customData": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_US_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     },
+     "userData": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "fbp": "fb.1.1700000000000.123456789",
+      "external_id": "zb.fixed-external-id",
+      "em": "john@example.com",
+      "ph": "(415) 555-2671",
+      "fn": "John",
+      "ln": "Smith",
+      "ct": "San Francisco",
+      "st": "California",
+      "zp": "94105-1234",
+      "country": "United States",
+      "piiOwner": "zb.fixed-external-id"
+     }
+    }
+   ],
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791464580,
+     "event_source_url": "https://zicabella.com/",
+     "event_id": "ord_US_logged_in",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.123456789",
+      "em": [
+       "855f96e983f1f8e8be944692b6f719fd54329826cb62e98015efee8e2e071dd4"
+      ],
+      "ph": [
+       "1e6012f4eb19bedad20fd4ab5c5d8c6a9d49feefa02d547f26c9306598bd54a3"
+      ],
+      "fn": [
+       "96d9632f363564cc3032521409cf22a852f2032eec099ed5967c0d000cec607a"
+      ],
+      "ln": [
+       "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd"
+      ],
+      "country": [
+       "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+      ],
+      "st": [
+       "7e8eea5cc60980270c9ceb75ce8c087d48d726110fd3d17921f774eefd8e18d8"
+      ],
+      "ct": [
+       "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac"
+      ],
+      "zp": [
+       "0f5f5669ff2667c30b9f9df50e282aed448ddc9fc1ad9a4e22f249c51910db9d"
+      ],
+      "external_id": [
+       "a730b006fb9cb0027ac8b86d87a3218a1a301c466ae9c4a92d63588fc5a87c4b"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "order_id": "ord_US_logged_in",
+      "content_category": "Denim",
+      "content_type": "product",
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "price": 1499,
+        "item_price": 1499,
+        "title": "A"
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "price": 799,
+        "item_price": 799,
+        "title": "B"
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ }
+}

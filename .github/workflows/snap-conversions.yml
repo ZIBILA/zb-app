@@ -1,0 +1,27 @@
+name: Snap Conversions Retry
+
+# Retries Snap CAPI PURCHASE deliveries (web + native app) that failed, whose
+# sending lease expired, or that were stranded as pending after a verified capture.
+# Same pattern as order-sync.yml: GitHub Actions pings the endpoint with CRON_SECRET.
+# Scheduled workflows run only from the default branch, so this activates on merge.
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'   # every 15 min, offset from the other schedulers
+  workflow_dispatch:
+
+concurrency:
+  group: snap-conversions-retry
+  cancel-in-progress: false
+
+jobs:
+  ping-snap-conversions:
+    name: Ping Snap conversions retry
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Call retry endpoint
+        run: |
+          curl --retry 3 --retry-delay 10 --retry-all-errors --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/snap-conversions" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

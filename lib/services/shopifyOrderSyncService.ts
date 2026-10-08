@@ -2,6 +2,7 @@ import prisma from '@/lib/db';
 import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
 import { toE164 } from '@/lib/shopify-phone';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -304,6 +305,15 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       const sku = item.sku || '';
       const m = sku.match(/variant:(\d+)/i);
       const qty = Math.max(1, Number(item.quantity) || 1);
+      // Stored OrderItem.variantId (Shopify backend variant id = feed.xml g:id) is
+      // authoritative; SKU parsing below is only the legacy fallback.
+      const storedVariantId = normalizeVariantId(item.variantId);
+      if (storedVariantId) {
+        return {
+          variant_id: parseInt(storedVariantId, 10),
+          quantity: qty,
+        };
+      }
       if (m?.[1]) {
         return {
           variant_id: parseInt(m[1], 10),

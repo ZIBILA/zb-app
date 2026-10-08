@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@/lib/db": ["./scripts/snap-test-support/fake-db.ts"],
+      "@/app/api/auth/[...nextauth]/options": ["./scripts/meta-regression/mocks.ts"],
+      "next/navigation": ["./scripts/meta-regression/mocks.ts"],
+      "next-auth/react": ["./scripts/meta-regression/mocks.ts"],
+      "next-auth/next": ["./scripts/meta-regression/mocks.ts"],
+      "@/*": ["./*"]
+    }
+  }
+}

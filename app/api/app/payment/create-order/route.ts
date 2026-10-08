@@ -6,6 +6,8 @@ import prisma from '@/lib/db';
 import { assignFailedOrderNumber } from '@/lib/orderNumber';
 
 import { getCorsHeaders, handleCorsOptions } from '@/lib/cors';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { recordSnapAppContext, appRequestContext } from '@/lib/snap/app-purchase-server';
 
 export async function OPTIONS(req: Request) {
   return handleCorsOptions(req);
@@ -71,7 +73,7 @@ export async function POST(req: Request) {
     });
 
     const body = await req.json();
-    const { amount, currency = 'INR', receipt: receiptIn, orderData } = body;
+    const { amount, currency = 'INR', receipt: receiptIn, orderData, snapDevice } = body;
     const amountRupees = Number(amount);
     if (!Number.isFinite(amountRupees) || amountRupees <= 0) {
       return NextResponse.json({ error: 'Invalid amount' }, { status: 400, headers: corsHeaders });
@@ -139,8 +141,12 @@ export async function POST(req: Request) {
               }
             }
             
+            // Shopify backend variant id = Snap catalog <g:id> (feed.xml). Stored on the
+            // PENDING item so it survives even if the app never calls orders/create.
+            const variantId = normalizeVariantId(li.variantId || li.variant_id);
             return {
               productId: resolvedPid,
+              variantId,
               title: li.name || li.title || 'Product',
               quantity: Number(li.quantity || 1),
               price: Number(li.price || 0),
@@ -149,9 +155,10 @@ export async function POST(req: Request) {
             };
           }));
 
+          let pendingOrderId: string | null = null;
           await prisma.$transaction(async (tx: any) => {
             // 1. Create pending Order
-            await tx.order.create({
+            const pendingOrder = await tx.order.create({
               data: {
                 shopId: shop.id,
                 customerId: customer.id,
@@ -193,11 +200,13 @@ export async function POST(req: Request) {
                     quantity: item.quantity,
                     price: item.price,
                     sku: item.sku,
+                    variantId: item.variantId,
                     image: item.image,
                   }))
                 }
               }
             });
+            pendingOrderId = pendingOrder.id;
 
             // 2. Create pending MobileOrder
             await tx.mobileOrder.create({
@@ -221,6 +230,7 @@ export async function POST(req: Request) {
                 items: {
                   create: resolvedItems.map(item => ({
                     productId: item.productId,
+                    variantId: item.variantId,
                     title: item.title,
                     quantity: item.quantity,
                     price: item.price,
@@ -233,6 +243,13 @@ export async function POST(req: Request) {
           });
 
           console.log(`[Razorpay] Pre-created pending order and mobile order ${order.id} in DB with internalOrderNumber: ${universalOrderNumber}`);
+
+          // Tracking only: store the app's device context (platform, OS/app version,
+          // ATT, IDFV/AAID) so the MOBILE_APP Snap Purchase can be sent once the
+          // payment is captured — even if the app never calls back.
+          if (pendingOrderId && snapDevice) {
+            recordSnapAppContext(pendingOrderId, snapDevice, appRequestContext(req, customer.id)).catch(() => {});
+          }
         }
       } catch (dbErr: any) {
         console.warn('[Razorpay] Failed to pre-create pending order:', dbErr.message);

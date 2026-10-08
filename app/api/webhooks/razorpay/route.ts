@@ -64,7 +64,24 @@ export async function POST(req: Request) {
     paymentLog('info', 'webhook', { message: `Received event: ${eventType}`, eventId });
 
     // 4. Process specific webhook events
-    if (eventType === 'payment.captured' || eventType === 'order.paid' || eventType === 'payment.authorized') {
+    //
+    // payment.authorized means the bank has only RESERVED the money; it is not
+    // collected and is auto-refunded if never captured. It must not mark an
+    // order paid, recover an order, or count as a conversion (Meta/Snap).
+    // Orders become paid on payment.captured / order.paid only.
+    if (eventType === 'payment.authorized') {
+      paymentLog('info', 'webhook', {
+        message: 'payment.authorized received — not treated as paid; waiting for payment.captured / order.paid',
+        eventId,
+      });
+      await prisma.webhookEvent.update({
+        where: { id: webhookRecord.id },
+        data: { processed: true, processedAt: new Date() },
+      });
+      return NextResponse.json({ success: true, ignored: 'payment.authorized is not a completed payment' });
+    }
+
+    if (eventType === 'payment.captured' || eventType === 'order.paid') {
       const payment = data.payment?.entity;
       if (!payment) {
         return NextResponse.json({ success: true, message: 'No payment entity in payload' });
@@ -294,6 +311,22 @@ export async function POST(req: Request) {
           console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr.message);
         }
 
+        // Snap CAPI Purchase safety net for orders whose browser/app never reached
+        // checkout/complete. Idempotent with that path via the delivery ledger;
+        // uses the click context recorded at Razorpay pre-create. Native-app and
+        // unpaid orders are skipped inside emitSnapPurchase.
+        try {
+          // Only captured / order.paid reach this point → payment is confirmed.
+          // Web orders → website CAPI; native-app orders → MOBILE_APP CAPI.
+          // Each function skips orders that are not its type.
+          const { emitSnapPurchase } = await import('@/lib/snap/purchase-server');
+          const { emitSnapAppPurchase } = await import('@/lib/snap/app-purchase-server');
+          await emitSnapPurchase(order.id, undefined, { paymentConfirmed: true });
+          await emitSnapAppPurchase(order.id, { paymentConfirmed: true });
+        } catch (snapErr: any) {
+          console.warn('[Razorpay Webhook] Snap Purchase dispatch failed:', snapErr?.message);
+        }
+
         // Link WebhookEvent to Order
         await prisma.webhookEvent.update({
           where: { id: webhookRecord.id },
@@ -356,19 +389,29 @@ export async function POST(req: Request) {
       const failureReason = payment?.error_description || payment?.error_code || payment?.error_reason || 'payment_failed';
 
       if (razorpayOrderId) {
-        await prisma.order.updateMany({
-          where: { razorpayOrderId },
+        // A failed attempt must never downgrade an order another attempt already paid
+        // (same Razorpay order: retry after a failure). Same guard as /api/payments/webhook.
+        const CONFIRMED_PAYMENT_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
+        const updatedFailed = await prisma.order.updateMany({
+          where: { razorpayOrderId, paymentStatus: { notIn: CONFIRMED_PAYMENT_STATUSES } },
           data: {
             paymentStatus: 'failed',
             status: 'FAILED',
             paymentFailureReason: failureReason,
           },
         });
+        if (updatedFailed.count === 0) {
+          paymentLog('info', 'webhook', { message: 'payment.failed ignored: order already confirmed by another attempt (or not found)', razorpayOrderId });
+        }
 
         // Assign a ZBPF failed prefix number if the order doesn't have one yet
         try {
           const failedOrder = await prisma.order.findFirst({ where: { razorpayOrderId } });
-          if (failedOrder && !failedOrder.internalOrderNumber?.startsWith('ZBPF')) {
+          if (
+            failedOrder &&
+            !CONFIRMED_PAYMENT_STATUSES.includes(String(failedOrder.paymentStatus || '').toLowerCase()) &&
+            !failedOrder.internalOrderNumber?.startsWith('ZBPF')
+          ) {
             const oldNumber = failedOrder.internalOrderNumber;
             const failedNumber = await assignFailedOrderNumber(prisma, { cause: 'payment_failed' });
             const previousNumbers = [failedOrder.previousOrderNumbers, oldNumber].filter(Boolean).join(',');
@@ -385,7 +428,7 @@ export async function POST(req: Request) {
         }
 
         await prisma.webStoreOrder.updateMany({
-          where: { razorpayOrderId },
+          where: { razorpayOrderId, paymentStatus: { notIn: CONFIRMED_PAYMENT_STATUSES } },
           data: {
             paymentStatus: 'failed',
             paymentFailureReason: failureReason,

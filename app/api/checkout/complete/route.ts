@@ -10,9 +10,10 @@ import { authOptions } from "../../auth/[...nextauth]/options";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { debitStoreCredits } from "@/lib/storeCreditsHelper";
-import { assignUniversalOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
+import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
 import { sendCapiEvent } from "@/lib/metaCapi";
-import { sendSnapEvent } from '@/lib/snap-capi';
+import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-server';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
 
@@ -123,6 +124,8 @@ export async function POST(req: Request) {
     let authoritativeSubtotal = Math.max(0, Number(subtotal || 0));
     let paymentUnderpaid = false;
     let capturedRupees: number | null = null;
+    // true only when Razorpay confirms the payment CAPTURED (or a mock in non-prod).
+    let captureConfirmed = false;
     try {
       const variantIds = items
         .map((item: any) => {
@@ -250,14 +253,20 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid payment signature" }, { status: 400 });
           }
 
-          // Confirm captured amount matches what we should have charged (COD fee or full prepaid total).
+          // A valid signature only proves AUTHORIZATION. Confirm server-side that the
+          // money is CAPTURED before the order may become paid / cod_upfront_paid.
+          // If capture can't be confirmed yet, the order stays payment_pending and the
+          // payment.captured / order.paid webhook completes it (no lost/duplicate order).
           try {
             const creds = await resolveRazorpayCredentials();
-            const { fetchCapturedPayment } = await import('@/lib/razorpay-payment');
-            const payment = await fetchCapturedPayment(razorpay.razorpay_payment_id, {
+            const { confirmRazorpayCapture } = await import('@/lib/razorpay-payment');
+            const capture = await confirmRazorpayCapture(razorpay.razorpay_payment_id, {
               key_id: creds.key_id,
               key_secret: creds.key_secret,
-            });
+            }, { expectedOrderId: razorpay.razorpay_order_id });
+            if (!capture.captured) throw new Error(capture.reason);
+            const payment = capture.payment;
+            captureConfirmed = true;
             capturedRupees = Number(payment.amount) / 100;
             const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
             if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
@@ -271,6 +280,7 @@ export async function POST(req: Request) {
           }
         } else {
           console.warn('[Checkout] Accepting MOCK payment for testing');
+          captureConfirmed = true;
         }
       } else {
         return NextResponse.json({ error: "COD upfront payment details missing" }, { status: 400 });
@@ -435,6 +445,18 @@ export async function POST(req: Request) {
       });
     }
 
+    // The Razorpay webhook may already have confirmed capture for this order.
+    const CAPTURE_CONFIRMED_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
+    if (!captureConfirmed && CAPTURE_CONFIRMED_STATUSES.includes(String(existingPreCreatedOrder?.paymentStatus || ''))) {
+      captureConfirmed = true;
+    }
+    // Authorized but capture not confirmed: save the order as PENDING (pending number,
+    // no capture time, no COD upfront recorded) and run none of the "order confirmed"
+    // side effects. The shopper's page re-sends this request until capture is
+    // confirmed (normal path below), and the payment.captured / order.paid webhook
+    // confirms the order if the page is gone.
+    const awaitingCapture = !isFullStoreCredit && !captureConfirmed;
+
     // Determine the final universalOrderNumber based on pre-created order state
     let universalOrderNumber = '';
     let preCreatedWasPromoted = false;
@@ -444,6 +466,9 @@ export async function POST(req: Request) {
         // Pre-created order already has a real ZB number → reuse it, do NOT mint
         universalOrderNumber = oldNumber;
         console.log(`[Checkout Complete] Reusing existing real order number: ${universalOrderNumber}`);
+      } else if (awaitingCapture && isFailedPrefixNumber(oldNumber)) {
+        // Not captured yet → keep the pending number; promotion happens on capture.
+        universalOrderNumber = oldNumber;
       } else if (isFailedPrefixNumber(oldNumber)) {
         // Pre-created order has a failed-prefix number → mint a new real number and promote NOW
         let mintedNumber = '';
@@ -502,9 +527,11 @@ export async function POST(req: Request) {
         }
       }
     } else {
-      // No pre-created order → mint a fresh number
+      // No pre-created order → mint a fresh number (pending-prefix while awaiting capture)
       try {
-        universalOrderNumber = await assignUniversalOrderNumber(prisma);
+        universalOrderNumber = awaitingCapture
+          ? await assignFailedOrderNumber(prisma, { cause: 'pending' })
+          : await assignUniversalOrderNumber(prisma);
       } catch (seqErr: any) {
         console.error('[Checkout] Failed to generate universal order number:', seqErr.message);
         universalOrderNumber = `ZB${Date.now().toString().slice(-8)}`;
@@ -542,6 +569,7 @@ export async function POST(req: Request) {
         quantity: item.quantity,
         price: parseFloat(item.price || '0'),
         sku: item.variantId || item.productId || null,
+        variantId: normalizeVariantId(item.variantId),
         image: image
       });
     }
@@ -576,11 +604,13 @@ export async function POST(req: Request) {
     const finalPaymentMethod = isFullStoreCredit ? "store_credit" : isCodOrder ? "cod" : "razorpay";
     const orderPaymentStatus = isFullStoreCredit
       ? "paid"
-      : isCodOrder
-        ? "cod_upfront_paid"
-        : paymentUnderpaid
-          ? "partially_paid"
-          : "paid";
+      : !captureConfirmed
+        ? "payment_pending" // authorized / unverifiable → webhook marks it paid on capture
+        : isCodOrder
+          ? "cod_upfront_paid"
+          : paymentUnderpaid
+            ? "partially_paid"
+            : "paid";
     const orderTotalPrice = priceVerified
       ? authoritativeTotal
       : Math.max(0, Number(subtotal || total || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
@@ -588,6 +618,9 @@ export async function POST(req: Request) {
     const underpayNote = paymentUnderpaid && capturedRupees != null
       ? ` | UNDERPAID: captured ₹${capturedRupees} vs expected ₹${isCodOrder ? resolvedCodFee : orderTotalPrice}`
       : '';
+
+    const awaitingCaptureNote = `Web Store ${isCodOrder ? 'COD ' : ''}order — Razorpay payment ${razorpay?.razorpay_payment_id || 'N/A'} was authorized at checkout; the order is confirmed only once Razorpay reports it captured`;
+    const orderTags = `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}${awaitingCapture ? ', payment_pending' : ''}`;
 
     if (existingPreCreatedOrder) {
       // Recalculate correct total: prefer server-verified totals when available
@@ -599,10 +632,10 @@ export async function POST(req: Request) {
         (existingPreCreatedOrder.shopifySyncError || '').includes('pending manual');
 
       const updateData: any = {
-        status: isCodOrder ? "open" : "approved",
+        status: awaitingCapture ? "payment_pending" : isCodOrder ? "open" : "approved",
         paymentStatus: orderPaymentStatus,
         razorpayPaymentId: razorpay?.razorpay_payment_id || null,
-        paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
+        paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
         paymentMethod: finalPaymentMethod,
         storeCreditAmount: parsedStoreCredit,
         totalPrice: correctedTotal,
@@ -610,10 +643,12 @@ export async function POST(req: Request) {
         discountCode: finalCouponCode || null,
         discountAmount: Number(finalCouponDiscount) || 0,
         paymentFailureReason: null,
-        codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
-        codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
-        tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
-        note: isFullStoreCredit
+        codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
+        codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
+        tags: orderTags,
+        note: awaitingCapture
+          ? awaitingCaptureNote
+          : isFullStoreCredit
           ? `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`
           : isCodOrder
           ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay${underpayNote}`
@@ -628,10 +663,23 @@ export async function POST(req: Request) {
         shopifySyncError: null,
       };
 
-      localOrder = await prisma.order.update({
-        where: { id: existingPreCreatedOrder.id },
-        data: updateData,
-      });
+      if (awaitingCapture) {
+        // Never overwrite a payment the webhook confirmed in the meantime.
+        const guarded = await prisma.order.updateMany({
+          where: { id: existingPreCreatedOrder.id, paymentStatus: { notIn: CAPTURE_CONFIRMED_STATUSES } },
+          data: updateData,
+        });
+        if (guarded.count === 0) {
+          // Captured meanwhile → the page re-sends and the normal path completes it.
+          return NextResponse.json({ orderId: existingPreCreatedOrder.id, paymentState: 'pending_capture' }, { status: 202 });
+        }
+        localOrder = await prisma.order.findUnique({ where: { id: existingPreCreatedOrder.id } });
+      } else {
+        localOrder = await prisma.order.update({
+          where: { id: existingPreCreatedOrder.id },
+          data: updateData,
+        });
+      }
 
       // Always replace line items from the verified checkout payload.
       // Pre-create refresh used to call a non-existent prisma.lineItem model, so
@@ -646,6 +694,7 @@ export async function POST(req: Request) {
           quantity: Number(item.quantity) || 1,
           price: item.price,
           sku: item.sku,
+          variantId: item.variantId ?? null,
           image: item.image,
         })),
       });
@@ -686,7 +735,7 @@ export async function POST(req: Request) {
           shopId: shop.id,
           shopifyOrderId: null,
           customerId: localCustomer.id,
-          status: isCodOrder ? "open" : "approved",
+          status: awaitingCapture ? "payment_pending" : isCodOrder ? "open" : "approved",
           totalPrice: orderTotalPrice,
           subtotalPrice: orderSubtotalPrice,
           currency: body.currency || "INR",
@@ -699,18 +748,20 @@ export async function POST(req: Request) {
           razorpayOrderId: razorpay?.razorpay_order_id || null,
           razorpayPaymentId: razorpay?.razorpay_payment_id || null,
           paymentMethod: finalPaymentMethod,
-          codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
-          codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
+          codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
+          codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
           storeCreditAmount: parsedStoreCredit,
-          paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
+          paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
           orderType: "WEB_STORE",
-          tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
+          tags: orderTags,
           discountCode: finalCouponCode || null,
           discountAmount: Number(finalCouponDiscount) || 0,
           internalOrderNumber: universalOrderNumber,
           shopifySyncStatus: 'pending',
           shopifySyncError: null,
-          note: underpayNote
+          note: awaitingCapture
+            ? awaitingCaptureNote
+            : underpayNote
             ? `Web checkout${underpayNote}`
             : undefined,
           items: {
@@ -721,11 +772,20 @@ export async function POST(req: Request) {
               quantity: item.quantity,
               price: item.price,
               sku: item.sku,
+              variantId: item.variantId ?? null,
               image: item.image
             }))
           }
         }
       });
+    }
+
+    // ─── Capture not confirmed: stop here — order saved as pending, nothing confirmed ───
+    // No Shopify sync, Meta/Snap/OpenAI Purchase, analytics, coupon usage, cashback,
+    // cart conversion, affiliate attribution, email or WhatsApp until capture is confirmed.
+    if (awaitingCapture) {
+      console.warn(`[Checkout Complete] Payment ${razorpay?.razorpay_payment_id} for ${localOrder.id} authorized but not captured — order kept pending`);
+      return NextResponse.json({ orderId: localOrder.id, paymentState: 'pending_capture' }, { status: 202 });
     }
 
     // ─── ONE AND ONLY ONE SHOPIFY-CREATE CHOKE POINT (FIX 1) ───
@@ -852,49 +912,19 @@ export async function POST(req: Request) {
       console.warn('[Checkout Complete] Meta CAPI Purchase dispatch failed:', metaErr.message);
     }
 
-    // ─── FIX 3: Authoritative server-side Snap CAPI Purchase ───
-    // Fires exactly once when payment is verified, regardless of whether the
-    // browser reaches the confirmation page. Uses eventId = localOrder.id to
-    // match the browser pixel's Purchase event for Snap deduplication.
-    try {
-      const toSnapItemId = (item: any): string => {
-        const raw = item.variantId || item.sku || item.productId || '';
-        const s = String(raw);
-        const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-        const m = stripped.match(/(\d+)\s*$/);
-        return m ? m[1] : stripped;
-      };
-      const snapItemIds = items.map(toSnapItemId);
-
-      sendSnapEvent({
-        eventName: 'PURCHASE',
-        eventId: localOrder.id,
-        eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${localOrder.id}/confirmation`,
-        userAgent: req.headers.get('user-agent') || '',
-        ipAddress: req.headers.get('do-connecting-ip')
-          || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-          || req.headers.get('x-real-ip') || undefined,
-        userData: {
-          em: address.email || undefined,
-          ph: address.phone || undefined,
-          fn: address.name?.trim().split(/\s+/)[0] || undefined,
-          ln: address.name?.trim().split(/\s+/).slice(1).join(' ') || undefined,
-          ct: address.city || undefined,
-          st: address.state || undefined,
-          zp: address.zip || undefined,
-          country: address.country || undefined,
-        },
-        customData: {
-          price: Number(total || 0),
-          currency: resolvedOrderCurrency,
-          item_ids: snapItemIds,
-          transaction_id: localOrder.id,
-          number_items: items.length || 1,
-        },
-      }).catch(() => {}); // fire-and-forget; never block order response
-    } catch (snapErr: any) {
-      console.warn('[Checkout Complete] Snap CAPI Purchase fire failed:', snapErr.message);
-    }
+    // ─── Authoritative server-side Snap CAPI Purchase ───
+    // lib/snap/purchase.ts rebuilds the event from the stored order (value,
+    // currency, variant ids, quantities, payment status) and sends it exactly
+    // once via the AdConversionDelivery ledger. This request comes from the
+    // shopper's browser, so its cookies carry ScCid/_scid for attribution.
+    // Confirmed = Razorpay CAPTURED the money (prepaid / COD upfront). Web store
+    // credit is app-only (rejected above). If capture isn't confirmed yet the order
+    // stays payment_pending and the payment.captured / order.paid webhook sends it.
+    emitSnapPurchase(localOrder.id, snapContextFromRequest(req), {
+      paymentConfirmed: isFullStoreCredit || captureConfirmed,
+    })
+      .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Snap Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
+      .catch(() => {});
 
     // ─── Authoritative server-side OpenAI Ads order_created ───
     // Same dedup pattern: id = localOrder.id matches browser pixel event_id.

@@ -7,6 +7,8 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { toMinorUnits } from "@/lib/global-pricing";
 import { assignFailedOrderNumber } from "@/lib/orderNumber";
+import { recordSnapPurchaseContext, snapContextFromRequest } from "@/lib/snap/purchase-server";
+import { normalizeVariantId } from "@/lib/snap/catalog-id";
 
 export const dynamic = 'force-dynamic';
 
@@ -229,6 +231,7 @@ export async function POST(req: Request) {
               quantity: item.quantity,
               price: parseFloat(item.price || '0'),
               sku: item.variantId || item.productId || null,
+              variantId: normalizeVariantId(item.variantId),
               image: image
             };
           }));
@@ -287,6 +290,7 @@ export async function POST(req: Request) {
                   quantity: Number(item.quantity) || 1,
                   price: item.price,
                   sku: item.sku,
+                  variantId: item.variantId ?? null,
                   image: item.image
                 }))
               });
@@ -383,6 +387,7 @@ export async function POST(req: Request) {
                     quantity: item.quantity,
                     price: item.price,
                     sku: item.sku,
+                    variantId: item.variantId ?? null,
                     image: item.image
                   }))
                 }
@@ -461,6 +466,12 @@ export async function POST(req: Request) {
           { status: 500 }
         );
       }
+    }
+
+    // Tracking only (no effect on payment/order logic): remember the shopper's
+    // Snap click context so a webhook-completed order can still be attributed.
+    if (localOrderId) {
+      recordSnapPurchaseContext(localOrderId, snapContextFromRequest(req)).catch(() => {});
     }
 
     return NextResponse.json({
