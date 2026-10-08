@@ -105,7 +105,10 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
     (isShipmentCancelled ? 'Canceled' : String(status).replace(/_/g, ' '));
   const isCancellationRequested =
     normalizeCarrierStatus(status) === 'cancellation_requested' ||
+    normalizeCarrierStatus(order.deliveryStatus) === 'cancellation_requested' ||
     /cancellation\s*requested/i.test(order.tracking_status || '');
+  /** While void is in progress — no labels, track, sync, cancel, or rebook actions. */
+  const actionsLocked = isCancellationRequested;
   const trackingUrl =
     shipment?.trackingUrl || (awb ? `https://shiprocket.co/tracking/${awb}` : null);
 
@@ -139,7 +142,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
     parseFloat(height) > 0;
 
   const handleFetchCouriers = async () => {
-    if (!dimensionsValid) return;
+    if (actionsLocked || !dimensionsValid) return;
     setLoading('couriers');
     setError(null);
     setCouriers([]);
@@ -220,6 +223,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   };
 
   const handleSync = async () => {
+    if (actionsLocked) return;
     setLoading('sync');
     setError(null);
     try {
@@ -240,6 +244,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   };
 
   const handleMarkRtoReceived = async () => {
+    if (actionsLocked) return;
     setLoading('rto');
     setError(null);
     try {
@@ -262,12 +267,12 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   const [showCancelModal, setShowCancelModal] = useState(false);
 
   const handleCancel = () => {
-    if (!awb && !trackingNumber) return;
+    if (actionsLocked || (!awb && !trackingNumber)) return;
     setShowCancelModal(true);
   };
 
   const handleConfirmCancel = async () => {
-    if (!awb && !trackingNumber) return;
+    if (actionsLocked || (!awb && !trackingNumber)) return;
     setLoading('cancel');
     setError(null);
     try {
@@ -282,7 +287,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       }
       setShowCancelModal(false);
       setMessage(
-        'Cancel sent to Shiprocket. Status will stay Cancellation Requested until Shiprocket reports Cancelled — sync keeps checking.'
+        'Cancellation requested — actions locked until Shiprocket reports Cancelled. Background sync keeps checking.'
       );
       // Keep AWB visible while void is in progress so status checks can continue.
       setLocallyCancelled(false);
@@ -321,17 +326,19 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             <div className="flex flex-wrap gap-3">
               {isRtoReceived ? (
                 <button
+                  type="button"
                   onClick={() => { setReship(true); setStep('idle'); setCouriers([]); setError(null); }}
-                  disabled={blocked || loading !== null}
-                  className="px-5 py-3 bg-foreground text-background rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50"
+                  disabled={actionsLocked || blocked || loading !== null}
+                  className="px-5 py-3 bg-foreground text-background rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Reassign to New Courier
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={handleMarkRtoReceived}
-                  disabled={loading !== null}
-                  className="px-5 py-3 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+                  disabled={actionsLocked || loading !== null}
+                  className="px-5 py-3 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading === 'rto' ? 'Saving…' : 'Mark RTO Received'}
                 </button>
@@ -350,8 +357,10 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
               <div className="flex items-center justify-between p-3.5 rounded-xl bg-foreground/5 border border-foreground/10">
                 <span className="font-mono text-xs font-bold text-foreground select-all">{awb}</span>
                 <button
+                  type="button"
                   onClick={handleCopy}
-                  className="p-1 rounded hover:bg-foreground/10 transition-colors text-foreground/40 hover:text-foreground"
+                  disabled={actionsLocked}
+                  className="p-1 rounded hover:bg-foreground/10 transition-colors text-foreground/40 hover:text-foreground disabled:opacity-40 disabled:pointer-events-none"
                   title="Copy AWB"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -360,7 +369,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             </div>
             {isCancellationRequested ? (
               <p className="text-[11px] font-medium text-rose-400/90">
-                Cancel sent to Shiprocket — waiting for exact Cancelled (not done yet). Sync will keep checking.
+                Cancellation in progress — all actions locked until Shiprocket reports Cancelled. Status keeps syncing in the background.
               </p>
             ) : !isRto ? (
               <p className={`text-[11px] font-medium ${pickupDone ? 'text-emerald-400/90' : 'text-foreground/50'}`}>
@@ -371,49 +380,72 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             ) : null}
           </div>
 
-          <div className="flex flex-col gap-3 justify-center">
-            <a
-              href={`/api/logistics/label?order_id=${order.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all group"
-            >
-              <Printer className="w-4 h-4" />
-              Download Shipping Label
-            </a>
-            <a
-              href={`/api/logistics/invoice?order_id=${order.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
-            >
-              <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
-              Download Invoice
-            </a>
+          <div className={`flex flex-col gap-3 justify-center ${actionsLocked ? 'opacity-40 pointer-events-none select-none' : ''}`}>
+            {actionsLocked ? (
+              <div className="flex items-center justify-center gap-3 py-4 bg-foreground/5 border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-foreground/40 cursor-not-allowed">
+                <Printer className="w-4 h-4" />
+                Download Shipping Label
+              </div>
+            ) : (
+              <a
+                href={`/api/logistics/label?order_id=${order.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all group"
+              >
+                <Printer className="w-4 h-4" />
+                Download Shipping Label
+              </a>
+            )}
+            {actionsLocked ? (
+              <div className="flex items-center justify-center gap-3 py-4 bg-foreground/5 border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-foreground/40 cursor-not-allowed">
+                <FileText className="w-4 h-4" />
+                Download Invoice
+              </div>
+            ) : (
+              <a
+                href={`/api/logistics/invoice?order_id=${order.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+              >
+                <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
+                Download Invoice
+              </a>
+            )}
             <button
+              type="button"
               onClick={handleSync}
-              disabled={loading !== null}
-              className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+              disabled={actionsLocked || loading !== null}
+              className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-foreground/5 disabled:hover:text-inherit"
             >
               {loading === 'sync' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanLine className="w-4 h-4" />}
               Sync Status from Shiprocket
             </button>
             {trackingUrl && (
-              <a
-                href={trackingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
-              >
-                <ExternalLink className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
-                Track Shipment
-              </a>
+              actionsLocked ? (
+                <div className="flex items-center justify-center gap-3 py-4 bg-foreground/5 border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-foreground/40 cursor-not-allowed">
+                  <ExternalLink className="w-4 h-4" />
+                  Track Shipment
+                </div>
+              ) : (
+                <a
+                  href={trackingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+                >
+                  <ExternalLink className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
+                  Track Shipment
+                </a>
+              )
             )}
             {!isRto && (
             <button
+              type="button"
               onClick={handleCancel}
-              disabled={loading !== null}
-              className="flex items-center justify-center gap-2.5 py-4 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50 active:scale-95"
+              disabled={actionsLocked || loading !== null}
+              className="flex items-center justify-center gap-2.5 py-4 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-rose-500/10 active:scale-95"
             >
               {loading === 'cancel' && <Loader2 className="w-4 h-4 animate-spin" />}
               Cancel Shipment
@@ -574,7 +606,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
 
         <button
           onClick={handleFetchCouriers}
-          disabled={!dimensionsValid || blocked || loading !== null}
+          disabled={actionsLocked || !dimensionsValid || blocked || loading !== null}
           className="w-full flex items-center justify-center gap-3 py-4 bg-indigo-500 text-white rounded-[20px] text-[11px] font-bold uppercase tracking-[0.25em] hover:bg-indigo-400 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {loading === 'couriers' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Truck className="w-4 h-4" />}
@@ -680,9 +712,10 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
                 className="pt-2"
               >
                 <button
+                  type="button"
                   onClick={handleBookWithCourier}
-                  disabled={blocked || loading !== null}
-                  className="w-full flex items-center justify-center gap-3 py-5 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-[0.25em] hover:opacity-90 active:scale-95 transition-all disabled:opacity-50"
+                  disabled={actionsLocked || blocked || loading !== null}
+                  className="w-full flex items-center justify-center gap-3 py-5 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-[0.25em] hover:opacity-90 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading === 'book' ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -760,9 +793,21 @@ function Alerts({
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20"
+          className={`p-4 rounded-2xl border ${
+            /cancellation requested|actions locked/i.test(message)
+              ? 'bg-rose-500/10 border-rose-500/20'
+              : 'bg-emerald-500/10 border-emerald-500/20'
+          }`}
         >
-          <p className="text-emerald-400 text-[11px] uppercase tracking-widest font-bold">{message}</p>
+          <p
+            className={`text-[11px] uppercase tracking-widest font-bold ${
+              /cancellation requested|actions locked/i.test(message)
+                ? 'text-rose-400'
+                : 'text-emerald-400'
+            }`}
+          >
+            {message}
+          </p>
         </motion.div>
       )}
     </AnimatePresence>
