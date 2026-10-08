@@ -119,7 +119,7 @@ export default function ProductDetailsClient({
   const router = useRouter();
   const { formatPrice: fmtPrice } = useCountry();
   const { trackViewContent, trackAddToCart, trackAddToWishlist } = useMetaEvents();
-  const { trackViewContent: trackSnapViewContent, trackAddToCart: trackSnapAddToCart, trackAddToWishlist: trackSnapAddToWishlist } = useSnapEvents();
+  const { trackViewContent: trackSnapViewContent, trackAddToCart: trackSnapAddToCart } = useSnapEvents(); // Snap ADD_TO_WISHLIST fires inside toggleBookmark
   const { trackContentsViewed: trackOaiContentsViewed, trackItemsAdded: trackOaiItemsAdded } = useOpenAiEvents();
 
   useEffect(() => {
@@ -560,7 +560,6 @@ export default function ProductDetailsClient({
                   setIsOpen(true);
                   if (!wasBookmarked) {
                     trackAddToWishlist(product.id.toString(), product.title, product.product_type);
-                    trackSnapAddToWishlist(product.id.toString(), product.title, product.product_type);
                   }
                   toast.success(wasBookmarked ? "Removed from bookmarks" : "Saved to bookmarks");
                 }}
@@ -892,7 +891,6 @@ export default function ProductDetailsClient({
                     setIsOpen(true);
                     if (!wasBookmarked) {
                       trackAddToWishlist(product.id.toString(), product.title, product.product_type);
-                      trackSnapAddToWishlist(product.id.toString(), product.title, product.product_type);
                     }
                     toast.success(wasBookmarked ? "Removed from bookmarks" : "Saved to bookmarks");
                   }}

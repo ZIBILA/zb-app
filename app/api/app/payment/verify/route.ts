@@ -283,14 +283,19 @@ export async function POST(req: Request) {
                 ct: address?.city || undefined,
                 st: address?.province || address?.state || undefined,
                 zp: address?.zip || address?.pincode || undefined,
-                country: address?.country || undefined,
+                country: address?.countryCode || address?.country_code || address?.country || undefined,
               },
               customData: {
-                price: Number(order.totalPrice || 0),
+                value: Number(order.totalPrice || 0),
                 currency: order.currency || 'INR',
-                item_ids: order.items?.map(toSnapItemId) || [],
-                transaction_id: order.id,
-                number_items: order.items?.length || 1,
+                content_ids: order.items?.map(toSnapItemId) || [],
+                contents: (order.items || []).map((li: any) => ({
+                  id: toSnapItemId(li),
+                  quantity: Number(li.quantity) || 1,
+                  item_price: parseFloat(li.price || '0') || undefined,
+                })),
+                order_id: order.id,
+                num_items: (order.items || []).reduce((s: number, li: any) => s + (Number(li.quantity) || 1), 0) || 1,
               },
             }).catch(() => {}); // fire-and-forget; never block order response
           } catch (snapErr: any) {

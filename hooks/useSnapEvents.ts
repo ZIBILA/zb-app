@@ -1,6 +1,34 @@
 import { trackSnapClientEvent, getSnapIdentityCookies, getClientCookie } from '@/lib/snapPixel';
+import type { RawIdentity } from '@/lib/tracking/identity-normalize';
+
+/**
+ * Snap Pixel + Conversions API dual tracking.
+ *
+ * Every event is fired twice with ONE shared id:
+ *   browser:  snaptr('track', EVENT, { …pixel params, client_dedup_id: id })
+ *   server:   POST /api/snap/event → CAPI v3 { event_id: id, custom_data: {…v3 params} }
+ * Snap deduplicates on client_dedup_id ⇄ event_id (and, for PURCHASE,
+ * transaction_id ⇄ order_id). The two sides use DIFFERENT parameter names:
+ *
+ *   pixel            CAPI v3
+ *   price         →  value
+ *   item_ids      →  content_ids
+ *   item_category →  content_category
+ *   number_items  →  num_items
+ *   transaction_id→  order_id
+ *   description   →  content_name
+ */
+
+export interface SnapContent {
+  id: string;
+  quantity?: number;
+  item_price?: number;
+}
 
 function uuidv4() {
+  if (typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function') {
+    return (crypto as any).randomUUID() as string;
+  }
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
@@ -9,250 +37,289 @@ function uuidv4() {
 }
 
 const firedEventsCache = new Map<string, number>();
-
-function shouldFireEvent(key: string): boolean {
+function shouldFireEvent(key: string, windowMs = 1000): boolean {
   const now = Date.now();
   const lastFired = firedEventsCache.get(key);
-  if (lastFired && now - lastFired < 1000) {
-    return false;
-  }
+  if (lastFired && now - lastFired < windowMs) return false;
   firedEventsCache.set(key, now);
   return true;
 }
 
-async function sendToSnapCapiRoute(payload: Record<string, any>): Promise<any> {
+const CHECKOUT_EVENTS = ['START_CHECKOUT', 'ADD_BILLING', 'PURCHASE'];
+
+function sendToSnapCapiRoute(payload: {
+  eventName: string;
+  eventId: string;
+  eventSourceUrl: string;
+  userAgent: string;
+  eventTime: number;
+  customData?: Record<string, any>;
+  userData?: RawIdentity;
+}): void {
   try {
-    const snapIdentity = getSnapIdentityCookies();
+    const cookies = getSnapIdentityCookies();
     const isLoggedIn = getClientCookie('zb_user_logged_in') === 'true';
-    const isCheckoutEvent = ['START_CHECKOUT', 'ADD_BILLING', 'PURCHASE'].includes(payload.eventName);
+    const isCheckoutEvent = CHECKOUT_EVENTS.includes(payload.eventName);
 
-    const identityData: Record<string, any> = { ...snapIdentity };
-    if (!isLoggedIn && !isCheckoutEvent) {
-      delete identityData.em;
-      delete identityData.ph;
-      delete identityData.fn;
-      delete identityData.ln;
+    // Hashed PII cookies are only attached for logged-in users or checkout events
+    // (privacy decision: avoids attributing a shared device to a previous guest).
+    const cookiePii: RawIdentity = (isLoggedIn || isCheckoutEvent)
+      ? { em: cookies.em, ph: cookies.ph, fn: cookies.fn, ln: cookies.ln,
+          ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country }
+      : { ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country };
+
+    // Explicit raw data (checkout form / order) wins over cookies field-by-field.
+    const userData: Record<string, any> = { ...cookiePii };
+    for (const [k, v] of Object.entries(payload.userData || {})) {
+      if (v) userData[k] = v;
     }
 
-    const callerUserData = payload.userData || {};
-    const mergedUserData = {
-      ...identityData,
-      ...callerUserData,
-    };
-
-    if (!isLoggedIn && !isCheckoutEvent && payload.eventName === 'SUBSCRIBE' && payload.userData?.em) {
-      mergedUserData.em = payload.userData.em;
-    }
-
-    const enrichedPayload = {
+    const body = JSON.stringify({
       ...payload,
-      userData: mergedUserData,
-    };
-
-    const res = await fetch('/api/snap/event', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(enrichedPayload),
+      userData,
+      scClickId: cookies.sc_click_id,
+      scCookie1: cookies.sc_cookie1,
+      externalId: cookies.external_id,
     });
 
-    if (res.ok) {
-      return await res.json();
-    }
+    // keepalive lets PURCHASE / ADD_BILLING survive an immediate navigation
+    // (e.g. redirect to Razorpay or to the confirmation page).
+    fetch('/api/snap/event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: body.length < 60000,
+    }).catch(err => console.warn('[Snap CAPI send error]', err));
   } catch (err) {
-    console.error('[Snap CAPI send error]', err);
+    console.warn('[Snap CAPI send error]', err);
   }
-  return null;
 }
 
-function getBasePayload(eventName: string, overrideEventId?: string) {
+function base(eventName: string, fixedId?: string) {
   return {
-    eventId: overrideEventId || `${eventName.toLowerCase()}_snap_${uuidv4()}`,
+    eventId: fixedId || `${eventName.toLowerCase()}_snap_${uuidv4()}`,
     eventName,
     eventSourceUrl: typeof window !== 'undefined' ? window.location.href : '',
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
-    eventTime: Math.floor(Date.now() / 1000),
+    eventTime: Date.now(),
   };
 }
 
+const num = (v: unknown): number | undefined => {
+  const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
+  return Number.isFinite(n) ? n : undefined;
+};
+const ids = (list?: Array<string | number | null | undefined>) =>
+  (list || []).map(i => String(i ?? '').trim()).filter(Boolean);
+
+// ─── Plain functions (usable outside React, e.g. contexts) ────────────────────
+
+export function snapTrackViewContent(
+  contentId: string,
+  contentName: string,
+  value?: number,
+  currency = 'INR',
+  contentCategory?: string,
+  userData?: RawIdentity
+) {
+  if (!contentId || !shouldFireEvent(`Snap-ViewContent-${contentId}`)) return;
+  const b = base('VIEW_CONTENT');
+  const price = num(value);
+  trackSnapClientEvent('VIEW_CONTENT', {
+    price, currency, item_ids: [contentId], item_category: contentCategory, description: contentName,
+  }, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData, customData: {
+    value: price, currency, content_ids: [contentId], content_category: contentCategory, content_name: contentName,
+    contents: [{ id: contentId, quantity: 1, item_price: price }],
+  } });
+}
+
+export function snapTrackAddToCart(
+  contentId: string,
+  contentName: string,
+  value: number,
+  currency = 'INR',
+  contentCategory?: string,
+  numberItems = 1
+) {
+  if (!contentId || !shouldFireEvent(`Snap-AddToCart-${contentId}`)) return;
+  const b = base('ADD_CART');
+  const unit = num(value);
+  const total = unit !== undefined ? unit * numberItems : undefined;
+  trackSnapClientEvent('ADD_CART', {
+    price: total, currency, item_ids: [contentId], item_category: contentCategory,
+    number_items: numberItems, description: contentName,
+  }, b.eventId);
+  sendToSnapCapiRoute({ ...b, customData: {
+    value: total, currency, content_ids: [contentId], content_category: contentCategory,
+    content_name: contentName, num_items: numberItems,
+    contents: [{ id: contentId, quantity: numberItems, item_price: unit }],
+  } });
+}
+
+export function snapTrackAddToWishlist(
+  contentId: string,
+  contentName: string,
+  contentCategory?: string,
+  value?: number,
+  currency = 'INR'
+) {
+  if (!contentId || !shouldFireEvent(`Snap-Wishlist-${contentId}`)) return;
+  const b = base('ADD_TO_WISHLIST');
+  const price = num(value);
+  trackSnapClientEvent('ADD_TO_WISHLIST', {
+    price, currency: price !== undefined ? currency : undefined,
+    item_ids: [contentId], item_category: contentCategory, description: contentName,
+  }, b.eventId);
+  sendToSnapCapiRoute({ ...b, customData: {
+    value: price, currency: price !== undefined ? currency : undefined,
+    content_ids: [contentId], content_category: contentCategory, content_name: contentName,
+  } });
+}
+
+export function snapTrackSearch(searchString: string, contentIds?: string[], contentCategory?: string) {
+  const q = (searchString || '').trim();
+  if (!q || !shouldFireEvent(`Snap-Search-${q.toLowerCase()}`, 3000)) return;
+  const b = base('SEARCH');
+  const idList = ids(contentIds);
+  trackSnapClientEvent('SEARCH', {
+    search_string: q, item_ids: idList, item_category: contentCategory,
+  }, b.eventId);
+  sendToSnapCapiRoute({ ...b, customData: {
+    search_string: q, content_ids: idList, content_category: contentCategory,
+  } });
+}
+
+export function snapTrackStartCheckout(
+  value: number,
+  numberItems: number,
+  currency = 'INR',
+  contentCategory?: string,
+  contentIds?: string[],
+  userData?: RawIdentity,
+  contents?: SnapContent[]
+) {
+  if (!shouldFireEvent(`Snap-StartCheckout-${value}-${numberItems}`)) return;
+  const b = base('START_CHECKOUT');
+  const idList = ids(contentIds);
+  trackSnapClientEvent('START_CHECKOUT', {
+    price: num(value), currency, number_items: numberItems, item_category: contentCategory, item_ids: idList,
+  }, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData, customData: {
+    value: num(value), currency, num_items: numberItems, content_category: contentCategory,
+    content_ids: idList, contents,
+  } });
+}
+
+export function snapTrackAddBilling(
+  value: number,
+  currency = 'INR',
+  userData?: RawIdentity,
+  contentIds?: string[],
+  numberItems?: number,
+  contents?: SnapContent[]
+) {
+  if (!shouldFireEvent(`Snap-AddBilling-${value}`, 3000)) return;
+  const b = base('ADD_BILLING');
+  const idList = ids(contentIds);
+  trackSnapClientEvent('ADD_BILLING', {
+    price: num(value), currency, item_ids: idList, number_items: numberItems,
+  }, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData, customData: {
+    value: num(value), currency, content_ids: idList, num_items: numberItems, contents,
+  } });
+}
+
+/**
+ * PURCHASE: dedup id = order id. The server (checkout/complete) sends the same
+ * order id as event_id, so browser pixel + browser CAPI + server CAPI collapse
+ * into one conversion.
+ */
+export function snapTrackPurchase(
+  orderId: string,
+  value: number,
+  currency = 'INR',
+  contentIds: string[] = [],
+  userData?: RawIdentity,
+  contentCategory?: string,
+  contents?: SnapContent[] | number
+) {
+  if (!orderId || !shouldFireEvent(`Snap-Purchase-${orderId}`, 60_000)) return;
+  const b = base('PURCHASE', orderId);
+  const idList = ids(contentIds);
+  const contentList = Array.isArray(contents) ? contents : undefined;
+  const numItems = contentList
+    ? contentList.reduce((s, c) => s + (c.quantity || 1), 0)
+    : (typeof contents === 'number' ? contents : idList.length) || 1;
+
+  trackSnapClientEvent('PURCHASE', {
+    price: num(value), currency, item_ids: idList, item_category: contentCategory,
+    number_items: numItems, transaction_id: orderId,
+  }, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData, customData: {
+    value: num(value), currency, content_ids: idList, content_category: contentCategory,
+    num_items: numItems, order_id: orderId, contents: contentList,
+  } });
+}
+
+export function snapTrackSignUp(userData?: RawIdentity) {
+  const b = base('SIGN_UP');
+  trackSnapClientEvent('SIGN_UP', {}, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData });
+}
+
+export function snapTrackLogin(userData?: RawIdentity) {
+  const b = base('LOGIN');
+  trackSnapClientEvent('LOGIN', {}, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData });
+}
+
+export function snapTrackSubscribe(email?: string) {
+  const b = base('SUBSCRIBE');
+  const userData = email ? { em: email } : undefined;
+  trackSnapClientEvent('SUBSCRIBE', {}, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData });
+}
+
 export function useSnapEvents() {
-  const trackViewContent = (
-    contentId: string,
-    contentName: string,
-    value?: number,
-    currency = 'INR',
-    contentCategory?: string,
-    userData?: Record<string, any>
-  ) => {
-    const cacheKey = `Snap-ViewContent-${contentId}`;
-    if (!shouldFireEvent(cacheKey)) return;
-
-    const base = getBasePayload('VIEW_CONTENT');
-    const customData: Record<string, any> = {
-      price: value,
-      currency,
-      item_ids: [contentId],
-      item_category: contentCategory,
-      description: contentName,
-    };
-
-    trackSnapClientEvent('VIEW_CONTENT', customData, base.eventId, userData);
-    sendToSnapCapiRoute({ ...base, customData, userData });
-  };
-
-  const trackAddToCart = (
-    contentId: string,
-    contentName: string,
-    value: number,
-    currency = 'INR',
-    contentCategory?: string,
-    numberItems = 1
-  ) => {
-    const cacheKey = `Snap-AddToCart-${contentId}`;
-    if (!shouldFireEvent(cacheKey)) return;
-
-    const base = getBasePayload('ADD_CART');
-    const customData: Record<string, any> = {
-      price: value,
-      currency,
-      item_ids: [contentId],
-      item_category: contentCategory,
-      number_items: numberItems,
-      description: contentName,
-    };
-
-    trackSnapClientEvent('ADD_CART', customData, base.eventId);
-    sendToSnapCapiRoute({ ...base, customData });
-  };
-
-  const trackAddToWishlist = (
-    contentId: string,
-    contentName: string,
-    contentCategory?: string
-  ) => {
-    const base = getBasePayload('ADD_TO_WISHLIST');
-    const customData: Record<string, any> = {
-      item_ids: [contentId],
-      item_category: contentCategory,
-      description: contentName,
-    };
-
-    trackSnapClientEvent('ADD_TO_WISHLIST', customData, base.eventId);
-    sendToSnapCapiRoute({ ...base, customData });
-  };
-
-  const trackSearch = (
-    searchString: string,
-    contentIds?: string[],
-    contentCategory?: string
-  ) => {
-    const base = getBasePayload('SEARCH');
-    const customData: Record<string, any> = {
-      search_string: searchString,
-      item_ids: contentIds,
-      item_category: contentCategory,
-    };
-
-    trackSnapClientEvent('SEARCH', customData, base.eventId);
-    sendToSnapCapiRoute({ ...base, customData });
-  };
-
-  const trackStartCheckout = (
-    value: number,
-    numberItems: number,
-    currency = 'INR',
-    contentCategory?: string,
-    contentIds?: string[],
-    userData?: Record<string, any>
-  ) => {
-    const cacheKey = `Snap-StartCheckout-${value}-${numberItems}`;
-    if (!shouldFireEvent(cacheKey)) return;
-
-    const base = getBasePayload('START_CHECKOUT');
-    const customData: Record<string, any> = {
-      price: value,
-      currency,
-      number_items: numberItems,
-      item_category: contentCategory,
-      item_ids: contentIds,
-    };
-
-    trackSnapClientEvent('START_CHECKOUT', customData, base.eventId, userData);
-    sendToSnapCapiRoute({ ...base, customData, userData });
-  };
-
-  const trackAddBilling = (
-    value: number,
-    currency = 'INR',
-    userData?: Record<string, any>,
-    contentIds?: string[]
-  ) => {
-    const base = getBasePayload('ADD_BILLING');
-    const customData: Record<string, any> = {
-      price: value,
-      currency,
-      item_ids: contentIds,
-    };
-
-    trackSnapClientEvent('ADD_BILLING', customData, base.eventId, userData);
-    sendToSnapCapiRoute({ ...base, customData, userData });
-  };
-
-  const trackPurchase = (
-    orderId: string,
-    value: number,
-    currency = 'INR',
-    contentIds: string[] = [],
-    userData?: Record<string, any>,
-    contentCategory?: string,
-    numberItems?: number
-  ) => {
-    const cacheKey = `Snap-Purchase-${orderId}`;
-    if (!shouldFireEvent(cacheKey)) return;
-
-    const base = getBasePayload('PURCHASE', orderId);
-    const customData: Record<string, any> = {
-      price: value,
-      currency,
-      item_ids: contentIds,
-      item_category: contentCategory,
-      number_items: numberItems || contentIds.length || 1,
-      transaction_id: orderId,
-    };
-
-    // FIX 1b: forward identity to the BROWSER pixel (was previously CAPI-only)
-    trackSnapClientEvent('PURCHASE', customData, base.eventId, userData);
-    sendToSnapCapiRoute({ ...base, customData, userData });
-  };
-
-  const trackSignUp = () => {
-    const base = getBasePayload('SIGN_UP');
-    trackSnapClientEvent('SIGN_UP', {}, base.eventId);
-    sendToSnapCapiRoute({ ...base });
-  };
-
-  const trackLogin = () => {
-    const base = getBasePayload('LOGIN');
-    trackSnapClientEvent('LOGIN', {}, base.eventId);
-    sendToSnapCapiRoute({ ...base });
-  };
-
-  const trackSubscribe = (email?: string) => {
-    const base = getBasePayload('SUBSCRIBE');
-    const userData = email ? { em: email } : undefined;
-    trackSnapClientEvent('SUBSCRIBE', {}, base.eventId);
-    sendToSnapCapiRoute({ ...base, userData });
-  };
-
   return {
-    trackViewContent,
-    trackAddToCart,
-    trackAddToWishlist,
-    trackSearch,
-    trackStartCheckout,
-    trackAddBilling,
-    trackPurchase,
-    trackSignUp,
-    trackLogin,
-    trackSubscribe,
+    trackViewContent: snapTrackViewContent,
+    trackAddToCart: snapTrackAddToCart,
+    trackAddToWishlist: snapTrackAddToWishlist,
+    trackSearch: snapTrackSearch,
+    trackStartCheckout: snapTrackStartCheckout,
+    trackAddBilling: snapTrackAddBilling,
+    trackPurchase: snapTrackPurchase,
+    trackSignUp: snapTrackSignUp,
+    trackLogin: snapTrackLogin,
+    trackSubscribe: snapTrackSubscribe,
+  };
+}
+
+/**
+ * Catalog id used across Snap events: the numeric Shopify VARIANT id
+ * (strips "variant:" prefixes and gid://shopify/ProductVariant/ GIDs).
+ * Must match the id column in the product feed sent to Snap.
+ */
+export function toSnapItemId(raw: string | number | null | undefined): string {
+  const s = String(raw ?? '').trim();
+  const stripped = s.startsWith('variant:') ? s.slice(8) : s;
+  const m = stripped.match(/(\d+)\s*$/);
+  return m ? m[1] : stripped;
+}
+
+/** Cart items → { ids, contents, numItems } for Snap events. */
+export function snapCartPayload(
+  items: Array<{ variantId?: string; productId?: string; quantity?: number; price?: string | number }>
+): { ids: string[]; contents: SnapContent[]; numItems: number } {
+  const contents = items.map(it => ({
+    id: toSnapItemId(it.variantId || it.productId),
+    quantity: Number(it.quantity) || 1,
+    item_price: num(it.price),
+  })).filter(c => c.id);
+  return {
+    ids: contents.map(c => c.id),
+    contents,
+    numItems: contents.reduce((s, c) => s + c.quantity, 0),
   };
 }

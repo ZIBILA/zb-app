@@ -51,40 +51,37 @@ export function SnapPixelRouteTracker() {
       setClientCookie('zb_external_id', extId, 365);
     }
 
-    // 3. Re-init pixel with current identity cookies for advanced matching.
-    //    No-args call defaults to buildBrowserIdentity() which maps cookies
-    //    to Snap's expected field names (user_email, firstname, geo_city, etc.)
+    // 3. (Re)init pixel with advanced matching (only re-inits when identity changed)
     initSnapPixel();
 
-    // 4. Generate shared eventId for PageView
+    // 4. Shared id: browser client_dedup_id === CAPI event_id
     const eventId = 'pv_snap_' + uuidv4();
-    const eventTime = Math.floor(Date.now() / 1000);
+    const eventTime = Date.now();
 
-    // 5. Client-side snaptr PageView
+    // 5. Browser PAGE_VIEW
     trackSnapClientEvent('PAGE_VIEW', {}, eventId);
 
-    // 6. Server-side CAPI PageView
-    const snapIdentity = getSnapIdentityCookies();
-    const builtIdentity: Record<string, any> = { ...snapIdentity };
-
-    // Strip PII fields for anonymous page views unless logged in
-    if (!session?.user) {
-      delete builtIdentity.em;
-      delete builtIdentity.ph;
-      delete builtIdentity.fn;
-      delete builtIdentity.ln;
-    }
-
+    // 6. Server PAGE_VIEW. Hashed email/phone/name cookies are attached only for
+    //    logged-in shoppers (shared-device privacy); location + Snap ids always.
+    const ids = getSnapIdentityCookies();
+    const loggedIn = !!session?.user;
     fetch('/api/snap/event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      keepalive: true,
       body: JSON.stringify({
         eventName: 'PAGE_VIEW',
         eventId,
         eventTime,
         eventSourceUrl: window.location.href,
         userAgent: navigator.userAgent,
-        userData: builtIdentity,
+        scClickId: ids.sc_click_id,
+        scCookie1: ids.sc_cookie1,
+        externalId: ids.external_id || extId,
+        userData: {
+          ...(loggedIn ? { em: ids.em, ph: ids.ph, fn: ids.fn, ln: ids.ln } : {}),
+          ct: ids.ct, st: ids.st, zp: ids.zp, country: ids.country,
+        },
       }),
     }).catch(err => console.warn('[Snap Tracker Client] PAGE_VIEW CAPI failed:', err));
 

@@ -1,4 +1,5 @@
 'use client';
+import { normalizePhone, normalizeState, normalizeZip } from '@/lib/tracking/identity-normalize';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
@@ -183,14 +184,14 @@ export function MetaPixelRouteTracker() {
 
         const phone = (session.user as any).phone || (session as any).customer?.phone;
         if (phone && !isDemoValue('phone', phone)) {
-          const digits = phone.replace(/\D/g, "");
-          let baseNumber = digits;
-          if (digits.length === 12 && digits.startsWith("91")) baseNumber = digits.slice(2);
-          else if (digits.length === 11 && digits.startsWith("0")) baseNumber = digits.slice(1);
-          const formattedPhone = `91${baseNumber}`;
-          const hashedPhone = await sha256(formattedPhone);
-          sessionUserData.ph = hashedPhone;
-          setClientCookie('zb_guest_phone', hashedPhone, 365);
+          // OTP-login phones are stored with their "+<dial code>", so they parse
+          // correctly for any country; bare 10-digit numbers fall back to India.
+          const formattedPhone = normalizePhone(phone);
+          if (formattedPhone) {
+            const hashedPhone = await sha256(formattedPhone);
+            sessionUserData.ph = hashedPhone;
+            setClientCookie('zb_guest_phone', hashedPhone, 365);
+          }
         }
 
         const name = session.user.name;
@@ -227,13 +228,15 @@ export function MetaPixelRouteTracker() {
             sessionUserData.ct = hashedCity;
             setClientCookie('zb_guest_ct', hashedCity, 365);
           }
-          if (state) {
-            const hashedState = await sha256(cleanStringNoSpaces(state));
+          const normState = normalizeState(state, country);
+          if (normState) {
+            const hashedState = await sha256(normState);
             sessionUserData.st = hashedState;
             setClientCookie('zb_guest_st', hashedState, 365);
           }
-          if (zip) {
-            const hashedZip = await sha256(cleanStringNoSpaces(zip));
+          const normZip = normalizeZip(zip, country);
+          if (normZip) {
+            const hashedZip = await sha256(normZip);
             sessionUserData.zp = hashedZip;
             setClientCookie('zb_guest_zp', hashedZip, 365);
           }

@@ -852,11 +852,19 @@ export async function POST(req: Request) {
       console.warn('[Checkout Complete] Meta CAPI Purchase dispatch failed:', metaErr.message);
     }
 
-    // ─── FIX 3: Authoritative server-side Snap CAPI Purchase ───
-    // Fires exactly once when payment is verified, regardless of whether the
-    // browser reaches the confirmation page. Uses eventId = localOrder.id to
-    // match the browser pixel's Purchase event for Snap deduplication.
+    // ─── Authoritative server-side Snap CAPI Purchase ───
+    // Fires once when payment is verified, even if the browser never reaches the
+    // confirmation page. event_id = order_id = localOrder.id, which equals the
+    // browser pixel's client_dedup_id / transaction_id → Snap deduplicates.
+    // Snap click/cookie identifiers come from THIS request's cookies (the checkout
+    // POST is made by the shopper's browser), which is what links the purchase
+    // back to the Snap ad click.
     try {
+      const cookieHeader = req.headers.get('cookie') || '';
+      const readCookie = (name: string): string | undefined => {
+        const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+        return match ? decodeURIComponent(match[1]) : undefined;
+      };
       const toSnapItemId = (item: any): string => {
         const raw = item.variantId || item.sku || item.productId || '';
         const s = String(raw);
@@ -864,7 +872,13 @@ export async function POST(req: Request) {
         const m = stripped.match(/(\d+)\s*$/);
         return m ? m[1] : stripped;
       };
-      const snapItemIds = items.map(toSnapItemId);
+      const snapContents = items.map((item: any) => ({
+        id: toSnapItemId(item),
+        quantity: Number(item.quantity) || 1,
+        item_price: parseFloat(item.price || '0') || undefined,
+      }));
+      const snapName = (address.name || '').trim().split(/\s+/);
+      const snapValue = Number(orderTotalPrice);
 
       sendSnapEvent({
         eventName: 'PURCHASE',
@@ -873,23 +887,31 @@ export async function POST(req: Request) {
         userAgent: req.headers.get('user-agent') || '',
         ipAddress: req.headers.get('do-connecting-ip')
           || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-          || req.headers.get('x-real-ip') || undefined,
+          || req.headers.get('x-real-ip')
+          || readCookie('zb_client_ip')
+          || undefined,
+        scClickId: readCookie('ScCid') || readCookie('_sccid'),
+        scCookie1: readCookie('_scid'),
+        externalId: body.externalId || readCookie('zb_external_id') || localCustomer?.id,
         userData: {
-          em: address.email || undefined,
-          ph: address.phone || undefined,
-          fn: address.name?.trim().split(/\s+/)[0] || undefined,
-          ln: address.name?.trim().split(/\s+/).slice(1).join(' ') || undefined,
-          ct: address.city || undefined,
-          st: address.state || undefined,
-          zp: address.zip || undefined,
-          country: address.country || undefined,
+          em: address.email || readCookie('zb_guest_email'),
+          ph: address.phone || readCookie('zb_guest_phone'),
+          fn: snapName[0] || readCookie('zb_guest_fn'),
+          ln: snapName.slice(1).join(' ') || readCookie('zb_guest_ln'),
+          ct: address.city || readCookie('zb_guest_ct'),
+          st: address.state || readCookie('zb_guest_st'),
+          zp: address.zip || readCookie('zb_guest_zp'),
+          // country drives phone/state/zip normalization — prefer the ISO code
+          country: address.countryCode || address.country || readCookie('zb_guest_country'),
         },
         customData: {
-          price: Number(total || 0),
+          // Verified order total (same figure stored on the order), not the client's `total`
+          value: Number.isFinite(snapValue) && snapValue > 0 ? snapValue : Number(total || 0),
           currency: resolvedOrderCurrency,
-          item_ids: snapItemIds,
-          transaction_id: localOrder.id,
-          number_items: items.length || 1,
+          content_ids: snapContents.map((c: any) => c.id),
+          contents: snapContents,
+          num_items: snapContents.reduce((sum: number, c: any) => sum + c.quantity, 0) || 1,
+          order_id: localOrder.id,
         },
       }).catch(() => {}); // fire-and-forget; never block order response
     } catch (snapErr: any) {

@@ -37,6 +37,7 @@
     "isomorphic-dompurify": "^3.19.0",
     "jsonwebtoken": "^9.0.3",
     "jspdf": "^4.2.1",
+    "libphonenumber-js": "^1.13.15",
     "lucide-react": "^0.577.0",
     "mailparser": "^3.9.8",
     "next": "14.2.35",

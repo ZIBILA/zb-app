@@ -1,3 +1,4 @@
+import { normalizePhone, normalizeState, normalizeZip, normalizeCountry } from '@/lib/tracking/identity-normalize';
 export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || '2049977412558608';
 
 /**
@@ -235,12 +236,13 @@ function cleanStringNoSpaces(val: string | undefined): string {
   return val.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+/**
+ * Country name/code → ISO alpha-2 lowercase. Worldwide-safe:
+ * "United Kingdom" → "gb" (old code produced "un"), "Germany" → "de" (was "ge").
+ * Returns "" when the country can't be resolved, so no wrong value is hashed.
+ */
 export function cleanCountry(country: string | undefined): string {
-  if (!country) return "";
-  const c = country.trim().toLowerCase();
-  if (c === 'india' || c === 'ind' || c === 'in') return 'in';
-  if (c === 'united states' || c === 'usa' || c === 'us' || c === 'united states of america') return 'us';
-  return c.replace(/[^a-z]/g, '').slice(0, 2);
+  return normalizeCountry(country);
 }
 
 export async function saveUserDataToCookies(data: {
@@ -266,13 +268,12 @@ export async function saveUserDataToCookies(data: {
     setClientCookie('zb_guest_email', hashedEmail, 365);
   }
   if (data.phone && !isDemoValue('phone', data.phone)) {
-    const digits = data.phone.replace(/\D/g, "");
-    let baseNumber = digits;
-    if (digits.length === 12 && digits.startsWith("91")) baseNumber = digits.slice(2);
-    else if (digits.length === 11 && digits.startsWith("0")) baseNumber = digits.slice(1);
-    const formattedPhone = `91${baseNumber}`; // Only digits, no plus sign for Meta
-    const hashedPhone = await sha256(formattedPhone);
-    setClientCookie('zb_guest_phone', hashedPhone, 365);
+    // Worldwide: digits incl. the CUSTOMER's country calling code (not always 91).
+    const formattedPhone = normalizePhone(data.phone, data.country);
+    if (formattedPhone) {
+      const hashedPhone = await sha256(formattedPhone);
+      setClientCookie('zb_guest_phone', hashedPhone, 365);
+    }
   }
   if (data.name && !isDemoValue('name', data.name)) {
     const parts = data.name.trim().split(/\s+/);
@@ -290,16 +291,16 @@ export async function saveUserDataToCookies(data: {
     setClientCookie('zb_guest_ct', hashedCity, 365);
   }
   if (data.state) {
-    const hashedState = await sha256(cleanStringNoSpaces(data.state));
-    setClientCookie('zb_guest_st', hashedState, 365);
+    const st = normalizeState(data.state, data.country);
+    if (st) setClientCookie('zb_guest_st', await sha256(st), 365);
   }
   if (data.zip) {
-    const hashedZip = await sha256(cleanStringNoSpaces(data.zip));
-    setClientCookie('zb_guest_zp', hashedZip, 365);
+    const zp = normalizeZip(data.zip, data.country);
+    if (zp) setClientCookie('zb_guest_zp', await sha256(zp), 365);
   }
   if (data.country) {
-    const hashedCountry = await sha256(cleanCountry(data.country));
-    setClientCookie('zb_guest_country', hashedCountry, 365);
+    const c = cleanCountry(data.country);
+    if (c) setClientCookie('zb_guest_country', await sha256(c), 365);
   }
   if (data.fbLoginId) {
     setClientCookie('zb_fb_login_id', data.fbLoginId.trim(), 365); // Do NOT hash fb_login_id

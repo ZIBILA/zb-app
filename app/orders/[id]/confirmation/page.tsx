@@ -79,6 +79,7 @@ export default function OrderConfirmationPage() {
         const contentIds = order.items?.map(toSnapId) || [];
 
         let userData: any = undefined;
+        let snapCountry: string | undefined = undefined;
         try {
           const addr = order.shippingAddress
             ? (typeof order.shippingAddress === 'string'
@@ -92,6 +93,7 @@ export default function OrderConfirmationPage() {
           const fn = nameParts[0] || undefined;
           const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
 
+          snapCountry = addr?.countryCode || addr?.country_code || undefined;
           userData = {
             country: addr?.country || undefined,
             st: addr?.state || undefined,
@@ -119,7 +121,12 @@ export default function OrderConfirmationPage() {
         })) || [];
 
         trackPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents);
-        trackSnapPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents.length);
+        trackSnapPurchase(
+          order.id, val, orderCurrency, contentIds,
+          userData ? { ...userData, country: snapCountry || userData.country } : undefined,
+          storedCategory,
+          contents.map((c: any) => ({ id: c.id, quantity: c.quantity, item_price: c.item_price }))
+        );
 
         // OpenAI Ads — order_created with minor-unit amounts
         const openAiContents = order.items?.map((item: any) => ({
