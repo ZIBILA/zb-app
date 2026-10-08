@@ -4,7 +4,6 @@ import Razorpay from 'razorpay';
 
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
 import prisma from '@/lib/db';
-import { sendSnapEvent } from '@/lib/snap-capi';
 import { sendOpenAiEvent, toMinorUnits as oaiToMinorUnits } from '@/lib/openai-capi';
 import { assignUniversalOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
 
@@ -250,57 +249,15 @@ export async function POST(req: Request) {
           }
           console.log(`[Verify] Local order ${order.id} marked as ${targetPaymentStatus}`);
 
-          // ─── FIX 3: Authoritative server-side Snap CAPI Purchase ───
-          // Fires when Razorpay payment is verified for mobile-app prepaid orders.
-          // Uses eventId = order.id to match browser pixel's Purchase event for Snap dedup.
-          try {
-            const address = typeof order.shippingAddress === 'string'
-              ? JSON.parse(order.shippingAddress)
-              : order.shippingAddress;
-            const custName = order.customer?.name || address?.name || '';
-
-            const toSnapItemId = (li: any): string => {
-              const raw = li.sku || li.variantId || li.productId || '';
-              const s = String(raw);
-              const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-              const m = stripped.match(/(\d+)\s*$/);
-              return m ? m[1] : stripped;
-            };
-
-            sendSnapEvent({
-              eventName: 'PURCHASE',
-              eventId: order.id,
-              eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${order.id}/confirmation`,
-              userAgent: req.headers.get('user-agent') || '',
-              ipAddress: req.headers.get('do-connecting-ip')
-                || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-                || req.headers.get('x-real-ip') || undefined,
-              userData: {
-                em: order.customer?.email || undefined,
-                ph: order.customer?.phone || undefined,
-                fn: custName.trim().split(/\s+/)[0] || undefined,
-                ln: custName.trim().split(/\s+/).slice(1).join(' ') || undefined,
-                ct: address?.city || undefined,
-                st: address?.province || address?.state || undefined,
-                zp: address?.zip || address?.pincode || undefined,
-                country: address?.countryCode || address?.country_code || address?.country || undefined,
-              },
-              customData: {
-                value: Number(order.totalPrice || 0),
-                currency: order.currency || 'INR',
-                content_ids: order.items?.map(toSnapItemId) || [],
-                contents: (order.items || []).map((li: any) => ({
-                  id: toSnapItemId(li),
-                  quantity: Number(li.quantity) || 1,
-                  item_price: parseFloat(li.price || '0') || undefined,
-                })),
-                order_id: order.id,
-                num_items: (order.items || []).reduce((s: number, li: any) => s + (Number(li.quantity) || 1), 0) || 1,
-              },
-            }).catch(() => {}); // fire-and-forget; never block order response
-          } catch (snapErr: any) {
-            console.warn('[Verify] Snap CAPI Purchase fire failed:', snapErr.message);
-          }
+          // ─── Snap: intentionally NOT sent for native-app purchases ───
+          // These are iOS/Android app conversions. Sending them through the
+          // website pixel (action_source WEB) misclassified app sales. A correct
+          // Snap app event needs action_source MOBILE_APP against the Snap App ID
+          // endpoint (/v3/{SNAP_APP_ID}/events) with app_data.app_id and extinfo
+          // (version i2/a2 + OS version required), plus ATT status / IDFV on iOS.
+          // The apps do not yet send platform, OS/app version, ATT or IDFV to the
+          // server, and no Snap App IDs are configured — so nothing is sent until
+          // that exists. Payment/order handling above is unaffected.
 
           // ─── Authoritative server-side OpenAI Ads order_created ───
           // Mobile app — no browser pixel to dedup against, so action_source = 'mobile_app'.

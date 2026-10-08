@@ -1,5 +1,6 @@
 import { trackSnapClientEvent, getSnapIdentityCookies, getClientCookie } from '@/lib/snapPixel';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 
 /**
  * Snap Pixel + Conversions API dual tracking.
@@ -45,7 +46,7 @@ function shouldFireEvent(key: string, windowMs = 1000): boolean {
   return true;
 }
 
-const CHECKOUT_EVENTS = ['START_CHECKOUT', 'ADD_BILLING', 'PURCHASE'];
+const CHECKOUT_EVENTS = ['START_CHECKOUT', 'ADD_BILLING'];
 
 function sendToSnapCapiRoute(payload: {
   eventName: string;
@@ -123,14 +124,16 @@ export function snapTrackViewContent(
   userData?: RawIdentity
 ) {
   if (!contentId || !shouldFireEvent(`Snap-ViewContent-${contentId}`)) return;
+  const cid = toSnapItemId(contentId);
+  const cidList = cid ? [cid] : undefined;
   const b = base('VIEW_CONTENT');
   const price = num(value);
   trackSnapClientEvent('VIEW_CONTENT', {
-    price, currency, item_ids: [contentId], item_category: contentCategory, description: contentName,
+    price, currency, item_ids: cidList, item_category: contentCategory, description: contentName,
   }, b.eventId, userData);
   sendToSnapCapiRoute({ ...b, userData, customData: {
-    value: price, currency, content_ids: [contentId], content_category: contentCategory, content_name: contentName,
-    contents: [{ id: contentId, quantity: 1, item_price: price }],
+    value: price, currency, content_ids: cidList, content_category: contentCategory, content_name: contentName,
+    contents: cid ? [{ id: cid, quantity: 1, item_price: price }] : undefined,
   } });
 }
 
@@ -143,17 +146,19 @@ export function snapTrackAddToCart(
   numberItems = 1
 ) {
   if (!contentId || !shouldFireEvent(`Snap-AddToCart-${contentId}`)) return;
+  const cid = toSnapItemId(contentId);
+  const cidList = cid ? [cid] : undefined;
   const b = base('ADD_CART');
   const unit = num(value);
   const total = unit !== undefined ? unit * numberItems : undefined;
   trackSnapClientEvent('ADD_CART', {
-    price: total, currency, item_ids: [contentId], item_category: contentCategory,
+    price: total, currency, item_ids: cidList, item_category: contentCategory,
     number_items: numberItems, description: contentName,
   }, b.eventId);
   sendToSnapCapiRoute({ ...b, customData: {
-    value: total, currency, content_ids: [contentId], content_category: contentCategory,
+    value: total, currency, content_ids: cidList, content_category: contentCategory,
     content_name: contentName, num_items: numberItems,
-    contents: [{ id: contentId, quantity: numberItems, item_price: unit }],
+    contents: cid ? [{ id: cid, quantity: numberItems, item_price: unit }] : undefined,
   } });
 }
 
@@ -165,15 +170,17 @@ export function snapTrackAddToWishlist(
   currency = 'INR'
 ) {
   if (!contentId || !shouldFireEvent(`Snap-Wishlist-${contentId}`)) return;
+  const cid = toSnapItemId(contentId);
+  const cidList = cid ? [cid] : undefined;
   const b = base('ADD_TO_WISHLIST');
   const price = num(value);
   trackSnapClientEvent('ADD_TO_WISHLIST', {
     price, currency: price !== undefined ? currency : undefined,
-    item_ids: [contentId], item_category: contentCategory, description: contentName,
+    item_ids: cidList, item_category: contentCategory, description: contentName,
   }, b.eventId);
   sendToSnapCapiRoute({ ...b, customData: {
     value: price, currency: price !== undefined ? currency : undefined,
-    content_ids: [contentId], content_category: contentCategory, content_name: contentName,
+    content_ids: cidList, content_category: contentCategory, content_name: contentName,
   } });
 }
 
@@ -231,9 +238,15 @@ export function snapTrackAddBilling(
 }
 
 /**
- * PURCHASE: dedup id = order id. The server (checkout/complete) sends the same
- * order id as event_id, so browser pixel + browser CAPI + server CAPI collapse
- * into one conversion.
+ * PURCHASE (browser side) — Snap PIXEL ONLY.
+ *
+ * The server-side CAPI PURCHASE is owned exclusively by lib/snap/purchase.ts,
+ * which rebuilds it from the database. The browser must not send a CAPI
+ * Purchase: /api/snap/event refuses it, and a second server send would rely on
+ * Snap dedup instead of being correct by construction.
+ *
+ * client_dedup_id = transaction_id = order id = server event_id = order_id.
+ * Call this only for orders whose payment is confirmed.
  */
 export function snapTrackPurchase(
   orderId: string,
@@ -245,7 +258,6 @@ export function snapTrackPurchase(
   contents?: SnapContent[] | number
 ) {
   if (!orderId || !shouldFireEvent(`Snap-Purchase-${orderId}`, 60_000)) return;
-  const b = base('PURCHASE', orderId);
   const idList = ids(contentIds);
   const contentList = Array.isArray(contents) ? contents : undefined;
   const numItems = contentList
@@ -255,11 +267,7 @@ export function snapTrackPurchase(
   trackSnapClientEvent('PURCHASE', {
     price: num(value), currency, item_ids: idList, item_category: contentCategory,
     number_items: numItems, transaction_id: orderId,
-  }, b.eventId, userData);
-  sendToSnapCapiRoute({ ...b, userData, customData: {
-    value: num(value), currency, content_ids: idList, content_category: contentCategory,
-    num_items: numItems, order_id: orderId, contents: contentList,
-  } });
+  }, orderId, userData);
 }
 
 export function snapTrackSignUp(userData?: RawIdentity) {
@@ -297,15 +305,12 @@ export function useSnapEvents() {
 }
 
 /**
- * Catalog id used across Snap events: the numeric Shopify VARIANT id
- * (strips "variant:" prefixes and gid://shopify/ProductVariant/ GIDs).
- * Must match the id column in the product feed sent to Snap.
+ * Catalog id used across Snap events: the numeric Shopify VARIANT id, exactly
+ * as published in <g:id> of https://zicabella.com/feed.xml. Returns '' when the
+ * input is not a provable variant id (never falls back to product id or SKU).
  */
 export function toSnapItemId(raw: string | number | null | undefined): string {
-  const s = String(raw ?? '').trim();
-  const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-  const m = stripped.match(/(\d+)\s*$/);
-  return m ? m[1] : stripped;
+  return normalizeVariantId(raw) || '';
 }
 
 /** Cart items → { ids, contents, numItems } for Snap events. */
@@ -313,7 +318,7 @@ export function snapCartPayload(
   items: Array<{ variantId?: string; productId?: string; quantity?: number; price?: string | number }>
 ): { ids: string[]; contents: SnapContent[]; numItems: number } {
   const contents = items.map(it => ({
-    id: toSnapItemId(it.variantId || it.productId),
+    id: toSnapItemId(it.variantId),
     quantity: Number(it.quantity) || 1,
     item_price: num(it.price),
   })).filter(c => c.id);

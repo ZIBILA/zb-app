@@ -12,7 +12,8 @@ import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { debitStoreCredits } from "@/lib/storeCreditsHelper";
 import { assignUniversalOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
 import { sendCapiEvent } from "@/lib/metaCapi";
-import { sendSnapEvent } from '@/lib/snap-capi';
+import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-server';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
 
@@ -542,6 +543,7 @@ export async function POST(req: Request) {
         quantity: item.quantity,
         price: parseFloat(item.price || '0'),
         sku: item.variantId || item.productId || null,
+        variantId: normalizeVariantId(item.variantId),
         image: image
       });
     }
@@ -646,6 +648,7 @@ export async function POST(req: Request) {
           quantity: Number(item.quantity) || 1,
           price: item.price,
           sku: item.sku,
+          variantId: item.variantId ?? null,
           image: item.image,
         })),
       });
@@ -721,6 +724,7 @@ export async function POST(req: Request) {
               quantity: item.quantity,
               price: item.price,
               sku: item.sku,
+              variantId: item.variantId ?? null,
               image: item.image
             }))
           }
@@ -853,70 +857,13 @@ export async function POST(req: Request) {
     }
 
     // ─── Authoritative server-side Snap CAPI Purchase ───
-    // Fires once when payment is verified, even if the browser never reaches the
-    // confirmation page. event_id = order_id = localOrder.id, which equals the
-    // browser pixel's client_dedup_id / transaction_id → Snap deduplicates.
-    // Snap click/cookie identifiers come from THIS request's cookies (the checkout
-    // POST is made by the shopper's browser), which is what links the purchase
-    // back to the Snap ad click.
-    try {
-      const cookieHeader = req.headers.get('cookie') || '';
-      const readCookie = (name: string): string | undefined => {
-        const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-        return match ? decodeURIComponent(match[1]) : undefined;
-      };
-      const toSnapItemId = (item: any): string => {
-        const raw = item.variantId || item.sku || item.productId || '';
-        const s = String(raw);
-        const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-        const m = stripped.match(/(\d+)\s*$/);
-        return m ? m[1] : stripped;
-      };
-      const snapContents = items.map((item: any) => ({
-        id: toSnapItemId(item),
-        quantity: Number(item.quantity) || 1,
-        item_price: parseFloat(item.price || '0') || undefined,
-      }));
-      const snapName = (address.name || '').trim().split(/\s+/);
-      const snapValue = Number(orderTotalPrice);
-
-      sendSnapEvent({
-        eventName: 'PURCHASE',
-        eventId: localOrder.id,
-        eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${localOrder.id}/confirmation`,
-        userAgent: req.headers.get('user-agent') || '',
-        ipAddress: req.headers.get('do-connecting-ip')
-          || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-          || req.headers.get('x-real-ip')
-          || readCookie('zb_client_ip')
-          || undefined,
-        scClickId: readCookie('ScCid') || readCookie('_sccid'),
-        scCookie1: readCookie('_scid'),
-        externalId: body.externalId || readCookie('zb_external_id') || localCustomer?.id,
-        userData: {
-          em: address.email || readCookie('zb_guest_email'),
-          ph: address.phone || readCookie('zb_guest_phone'),
-          fn: snapName[0] || readCookie('zb_guest_fn'),
-          ln: snapName.slice(1).join(' ') || readCookie('zb_guest_ln'),
-          ct: address.city || readCookie('zb_guest_ct'),
-          st: address.state || readCookie('zb_guest_st'),
-          zp: address.zip || readCookie('zb_guest_zp'),
-          // country drives phone/state/zip normalization — prefer the ISO code
-          country: address.countryCode || address.country || readCookie('zb_guest_country'),
-        },
-        customData: {
-          // Verified order total (same figure stored on the order), not the client's `total`
-          value: Number.isFinite(snapValue) && snapValue > 0 ? snapValue : Number(total || 0),
-          currency: resolvedOrderCurrency,
-          content_ids: snapContents.map((c: any) => c.id),
-          contents: snapContents,
-          num_items: snapContents.reduce((sum: number, c: any) => sum + c.quantity, 0) || 1,
-          order_id: localOrder.id,
-        },
-      }).catch(() => {}); // fire-and-forget; never block order response
-    } catch (snapErr: any) {
-      console.warn('[Checkout Complete] Snap CAPI Purchase fire failed:', snapErr.message);
-    }
+    // lib/snap/purchase.ts rebuilds the event from the stored order (value,
+    // currency, variant ids, quantities, payment status) and sends it exactly
+    // once via the AdConversionDelivery ledger. This request comes from the
+    // shopper's browser, so its cookies carry ScCid/_scid for attribution.
+    emitSnapPurchase(localOrder.id, snapContextFromRequest(req))
+      .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Snap Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
+      .catch(() => {});
 
     // ─── Authoritative server-side OpenAI Ads order_created ───
     // Same dedup pattern: id = localOrder.id matches browser pixel event_id.

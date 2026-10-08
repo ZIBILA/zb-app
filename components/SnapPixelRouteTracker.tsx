@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import {
   SNAP_PIXEL_ID,
@@ -23,8 +23,21 @@ function uuidv4() {
 
 export function SnapPixelRouteTracker() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const lastTrackedPath = useRef<string | null>(null);
+  const [sessionWaitExpired, setSessionWaitExpired] = useState(false);
+
+  // Persist ScCid immediately on landing, before anything else can navigate away.
+  useEffect(() => {
+    if (SNAP_PIXEL_ID) captureSnapClickId();
+  }, [pathname]);
+
+  // Don't let a stuck session request block PAGE_VIEW forever.
+  useEffect(() => {
+    if (status !== 'loading') return;
+    const t = setTimeout(() => setSessionWaitExpired(true), 2000);
+    return () => clearTimeout(t);
+  }, [status]);
 
   useEffect(() => {
     // Exclude admin dashboard and admin routes from tracking
@@ -32,7 +45,15 @@ export function SnapPixelRouteTracker() {
       return;
     }
 
+    // Exactly one PAGE_VIEW per pathname change. Session changes (hydration,
+    // login, logout) never fire an extra one because lastTrackedPath is unchanged.
     if (pathname === lastTrackedPath.current) {
+      return;
+    }
+
+    // Wait (briefly) for NextAuth so a logged-in shopper's first PAGE_VIEW
+    // carries their first-party match keys.
+    if (status === 'loading' && !sessionWaitExpired) {
       return;
     }
     lastTrackedPath.current = pathname;
@@ -41,7 +62,7 @@ export function SnapPixelRouteTracker() {
       return;
     }
 
-    // 1. Capture and persist ScCid (Snap Click ID)
+    // 1. ScCid (already captured above; re-read is idempotent)
     captureSnapClickId();
 
     // 2. Ensure visitor UUID (external_id) exists
@@ -85,7 +106,7 @@ export function SnapPixelRouteTracker() {
       }),
     }).catch(err => console.warn('[Snap Tracker Client] PAGE_VIEW CAPI failed:', err));
 
-  }, [pathname]);
+  }, [pathname, status, sessionWaitExpired, session]);
 
   return null;
 }

@@ -22,6 +22,7 @@ import {
 import Link from "next/link";
 import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
+import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -121,12 +122,25 @@ export default function OrderConfirmationPage() {
         })) || [];
 
         trackPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents);
-        trackSnapPurchase(
-          order.id, val, orderCurrency, contentIds,
-          userData ? { ...userData, country: snapCountry || userData.country } : undefined,
-          storedCategory,
-          contents.map((c: any) => ({ id: c.id, quantity: c.quantity, item_price: c.item_price }))
-        );
+        // Snap: browser pixel only, and only for a confirmed payment. The CAPI
+        // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
+        // are proven variant ids only (OrderItem.variantId / "variant:<id>").
+        const snapPayStatus = String(order.paymentStatus || "").toLowerCase();
+        if (snapPayStatus === "paid" || snapPayStatus === "cod_upfront_paid") {
+          const snapContents = (order.items || [])
+            .map((item: any) => ({
+              id: snapCatalogIdFromOrderItem(item) || "",
+              quantity: Number(item.quantity) || 1,
+              item_price: parseFloat(item.price || "0") || undefined,
+            }));
+          trackSnapPurchase(
+            order.id, val, orderCurrency,
+            snapContents.map((c: any) => c.id).filter(Boolean),
+            userData ? { ...userData, country: snapCountry || userData.country } : undefined,
+            storedCategory,
+            snapContents
+          );
+        }
 
         // OpenAI Ads — order_created with minor-unit amounts
         const openAiContents = order.items?.map((item: any) => ({

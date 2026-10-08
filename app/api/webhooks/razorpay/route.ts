@@ -294,6 +294,17 @@ export async function POST(req: Request) {
           console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr.message);
         }
 
+        // Snap CAPI Purchase safety net for WEB orders whose browser never reached
+        // checkout/complete. Idempotent with that path via the delivery ledger;
+        // uses the click context recorded at Razorpay pre-create. Native-app and
+        // unpaid orders are skipped inside emitSnapPurchase.
+        try {
+          const { emitSnapPurchase } = await import('@/lib/snap/purchase-server');
+          await emitSnapPurchase(order.id);
+        } catch (snapErr: any) {
+          console.warn('[Razorpay Webhook] Snap Purchase dispatch failed:', snapErr?.message);
+        }
+
         // Link WebhookEvent to Order
         await prisma.webhookEvent.update({
           where: { id: webhookRecord.id },

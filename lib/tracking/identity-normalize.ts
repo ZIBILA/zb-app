@@ -115,13 +115,13 @@ export function normalizePhone(phone: string | undefined | null, countryIso?: st
 
 // ─── Names / City ───────────────────────────────────────────────────────────
 
-/** Lowercase, keep letters (any script, incl. accents) and digits, drop punctuation & spaces. */
+/** Lowercase, keep letters + combining marks (any script: "ë", Devanagari matras) and digits; drop punctuation & spaces. */
 function lettersDigitsOnly(val: string): string {
   return val
     .trim()
     .toLowerCase()
     .normalize('NFC')
-    .replace(/[^\p{L}\p{N}]/gu, '');
+    .replace(/[^\p{L}\p{M}\p{N}]/gu, '');
 }
 
 export function normalizeName(name: string | undefined | null): string {

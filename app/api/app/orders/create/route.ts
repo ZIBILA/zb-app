@@ -272,6 +272,7 @@ export async function POST(req: Request) {
               quantity: Number(li.quantity || 0),
               price: Number(li.price || 0),
               sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: vid || null,
               image: li.image || li.imageUrl || null,
             };
           }));
@@ -345,6 +346,7 @@ export async function POST(req: Request) {
             quantity: Math.max(1, Number(li.quantity) || 1),
             price: Number(li.price || 0),
             sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: vid || null,
             image: li.image || li.imageUrl || null,
           };
         }));
@@ -361,6 +363,7 @@ export async function POST(req: Request) {
               quantity: item.quantity,
               price: item.price,
               sku: item.sku,
+              variantId: item.variantId,
               image: item.image,
             })),
           });
@@ -550,6 +553,7 @@ export async function POST(req: Request) {
                 quantity: Number(li.quantity || 0),
                 price: Number(li.price || 0),
                 sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: vid || null,
                 image: li.image || li.imageUrl || null,
               };
             })),
@@ -595,6 +599,7 @@ export async function POST(req: Request) {
           quantity: Number(li.quantity || 0),
           price: Number(li.price || 0),
           sku: li.sku || (vid ? `variant:${vid}` : null),
+            variantId: vid || null,
           image: li.image || li.imageUrl || null,
         };
       }));

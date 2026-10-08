@@ -8,7 +8,15 @@ const SNAP_CAPI_ACCESS_TOKEN = process.env.SNAP_CAPI_ACCESS_TOKEN || '';
  * Snap's /events/validate endpoint instead of /events. Snap checks the payload
  * and returns field-level problems without recording a conversion.
  */
-const SNAP_CAPI_VALIDATE = process.env.SNAP_CAPI_VALIDATE === '1';
+const PRODUCTION_SITE = /^https?:\/\/(www\.)?zicabella\.com\/?$/i;
+const SNAP_CAPI_VALIDATE =
+  process.env.SNAP_CAPI_VALIDATE === '1' &&
+  // Hard guard: never validation-only on the production storefront, where it
+  // would silently stop real conversions from being recorded.
+  !PRODUCTION_SITE.test(process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com');
+if (process.env.SNAP_CAPI_VALIDATE === '1' && !SNAP_CAPI_VALIDATE) {
+  console.error('[Snap CAPI] SNAP_CAPI_VALIDATE=1 ignored on the production site — events are sent normally.');
+}
 
 /** Snap CAPI v3 standard web events. */
 export type SnapEventName =
@@ -72,16 +80,23 @@ function hashIfNeeded(v: string | undefined): string | undefined {
   return isSha256Hash(v) ? v.trim().toLowerCase() : sha256Hex(v);
 }
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+/** Snap rejects events older than 7 days. Keep a small safety margin. */
+const MAX_EVENT_AGE_MS = 7 * 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
-/** Snap accepts second or millisecond epoch; ms is preferred. Clamp to the 7-day window. */
-function toEventTimeMs(t?: number): number {
-  const now = Date.now();
-  if (!t || !Number.isFinite(t)) return now;
-  const ms = t < 1e12 ? Math.round(t * 1000) : Math.round(t);
-  if (ms > now + 60_000) return now;
-  if (now - ms > SEVEN_DAYS_MS) return now - SEVEN_DAYS_MS + 60_000;
-  return ms;
+/** Seconds or milliseconds → milliseconds (Snap prefers ms). Never rewrites the moment. */
+export function toEventTimeMs(t?: number): number {
+  if (!t || !Number.isFinite(t)) return Date.now();
+  return t < 1e12 ? Math.round(t * 1000) : Math.round(t);
+}
+
+/**
+ * true when Snap will accept this timestamp. Old or far-future events are NOT
+ * re-dated — callers must skip them (see sendSnapEvent / emitSnapPurchase).
+ */
+export function isEventTimeSendable(t?: number, now = Date.now()): boolean {
+  const ms = toEventTimeMs(t);
+  return now - ms <= MAX_EVENT_AGE_MS && ms - now <= MAX_CLOCK_SKEW_MS;
 }
 
 function toFiniteNumber(v: unknown): number | undefined {
@@ -166,6 +181,11 @@ export async function sendSnapEvent(payload: SnapCapiEventPayload): Promise<{ su
       return { success: false, error: 'Snap Pixel ID or CAPI Access Token not configured' };
     }
 
+    if (!isEventTimeSendable(payload.eventTime)) {
+      console.warn(`[Snap CAPI] ${payload.eventName} ${payload.eventId} not sent: event_time outside Snap's 7-day window`);
+      return { success: false, skipped: true, error: 'event_time outside accepted window' };
+    }
+
     const event = buildSnapCapiEvent(payload);
 
     if (event.event_name === 'PURCHASE' && (event.custom_data?.value === undefined || !event.custom_data?.currency)) {
@@ -180,6 +200,7 @@ export async function sendSnapEvent(payload: SnapCapiEventPayload): Promise<{ su
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: [event] }),
+      signal: AbortSignal.timeout(5000),
     });
     const resData: any = await res.json().catch(() => ({}));
 

@@ -138,18 +138,41 @@ export default function StorefrontFooterClient({ shop, policies, socialLinks }: 
   const revealY = useTransform(scrollYProgress, [0, 1], [-55, 0]);
   const revealOpacity = useTransform(scrollYProgress, [0, 1], [0, 1]);
 
-  const handleSubscribe = (e: React.FormEvent) => {
+  const [subscribing, setSubscribing] = useState(false);
+  const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (email.trim()) {
-      // Subscribe is a non-monetary newsletter signup — pass estimated lead value
-      // for Meta's value-based optimization. Currency is INR.
-      trackSubscribe(email, 'Newsletter Signup');
-      trackSnapSubscribe(email);
-      trackOaiLeadCreated(email);
-      toast.success("Thank you for joining our newsletter!", {
-        description: "You have successfully subscribed to the Zica Bella newsletter.",
+    const value = email.trim();
+    if (!value || subscribing) return;
+    setSubscribing(true);
+    try {
+      // Persist first. Tracking fires ONLY after the backend confirmed the save.
+      const res = await fetch("/api/newsletter/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        toast.error(
+          data?.error === "invalid_email" ? "Please enter a valid email address." : "Couldn't subscribe right now. Please try again."
+        );
+        return;
+      }
+      if (data.created) {
+        // Subscribe is a non-monetary newsletter signup — pass estimated lead value
+        // for Meta's value-based optimization. Currency is INR.
+        trackSubscribe(value, 'Newsletter Signup');
+        trackSnapSubscribe(value);
+        trackOaiLeadCreated(value);
+      }
+      toast.success(data.created ? "Thank you for joining our newsletter!" : "You're already subscribed.", {
+        description: data.created ? "You have successfully subscribed to the Zica Bella newsletter." : undefined,
       });
       setEmail("");
+    } catch {
+      toast.error("Couldn't subscribe right now. Please try again.");
+    } finally {
+      setSubscribing(false);
     }
   };
 
@@ -326,6 +349,7 @@ export default function StorefrontFooterClient({ shop, policies, socialLinks }: 
               </div>
               <button 
                 type="submit"
+                disabled={subscribing}
                 className="h-10 bg-black dark:bg-white text-white dark:text-black hover:opacity-90 active:scale-95 rounded-full px-4 text-[8.5px] font-bold tracking-[0.15em] uppercase transition-all shrink-0 flex items-center justify-center"
               >
                 SUBSCRIBE
@@ -720,6 +744,7 @@ export default function StorefrontFooterClient({ shop, policies, socialLinks }: 
                 </div>
                 <button 
                   type="submit"
+                disabled={subscribing}
                   className="h-11 bg-black dark:bg-white text-white dark:text-black hover:opacity-90 active:scale-95 rounded-full px-5 text-[9px] font-bold tracking-[0.2em] uppercase transition-all shrink-0 flex items-center justify-center"
                 >
                   SUBSCRIBE
