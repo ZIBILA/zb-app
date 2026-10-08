@@ -10,7 +10,7 @@ import { authOptions } from "../../auth/[...nextauth]/options";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { debitStoreCredits } from "@/lib/storeCreditsHelper";
-import { assignUniversalOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
+import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
 import { sendCapiEvent } from "@/lib/metaCapi";
 import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-server';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
@@ -445,6 +445,18 @@ export async function POST(req: Request) {
       });
     }
 
+    // The Razorpay webhook may already have confirmed capture for this order.
+    const CAPTURE_CONFIRMED_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
+    if (!captureConfirmed && CAPTURE_CONFIRMED_STATUSES.includes(String(existingPreCreatedOrder?.paymentStatus || ''))) {
+      captureConfirmed = true;
+    }
+    // Authorized but capture not confirmed: save the order as PENDING (pending number,
+    // no capture time, no COD upfront recorded) and run none of the "order confirmed"
+    // side effects. The shopper's page re-sends this request until capture is
+    // confirmed (normal path below), and the payment.captured / order.paid webhook
+    // confirms the order if the page is gone.
+    const awaitingCapture = !isFullStoreCredit && !captureConfirmed;
+
     // Determine the final universalOrderNumber based on pre-created order state
     let universalOrderNumber = '';
     let preCreatedWasPromoted = false;
@@ -454,6 +466,9 @@ export async function POST(req: Request) {
         // Pre-created order already has a real ZB number → reuse it, do NOT mint
         universalOrderNumber = oldNumber;
         console.log(`[Checkout Complete] Reusing existing real order number: ${universalOrderNumber}`);
+      } else if (awaitingCapture && isFailedPrefixNumber(oldNumber)) {
+        // Not captured yet → keep the pending number; promotion happens on capture.
+        universalOrderNumber = oldNumber;
       } else if (isFailedPrefixNumber(oldNumber)) {
         // Pre-created order has a failed-prefix number → mint a new real number and promote NOW
         let mintedNumber = '';
@@ -512,9 +527,11 @@ export async function POST(req: Request) {
         }
       }
     } else {
-      // No pre-created order → mint a fresh number
+      // No pre-created order → mint a fresh number (pending-prefix while awaiting capture)
       try {
-        universalOrderNumber = await assignUniversalOrderNumber(prisma);
+        universalOrderNumber = awaitingCapture
+          ? await assignFailedOrderNumber(prisma, { cause: 'pending' })
+          : await assignUniversalOrderNumber(prisma);
       } catch (seqErr: any) {
         console.error('[Checkout] Failed to generate universal order number:', seqErr.message);
         universalOrderNumber = `ZB${Date.now().toString().slice(-8)}`;
@@ -602,6 +619,9 @@ export async function POST(req: Request) {
       ? ` | UNDERPAID: captured ₹${capturedRupees} vs expected ₹${isCodOrder ? resolvedCodFee : orderTotalPrice}`
       : '';
 
+    const awaitingCaptureNote = `Web Store ${isCodOrder ? 'COD ' : ''}order — Razorpay payment ${razorpay?.razorpay_payment_id || 'N/A'} was authorized at checkout; the order is confirmed only once Razorpay reports it captured`;
+    const orderTags = `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}${awaitingCapture ? ', payment_pending' : ''}`;
+
     if (existingPreCreatedOrder) {
       // Recalculate correct total: prefer server-verified totals when available
       const correctedTotal = orderTotalPrice;
@@ -612,10 +632,10 @@ export async function POST(req: Request) {
         (existingPreCreatedOrder.shopifySyncError || '').includes('pending manual');
 
       const updateData: any = {
-        status: isCodOrder ? "open" : "approved",
+        status: awaitingCapture ? "payment_pending" : isCodOrder ? "open" : "approved",
         paymentStatus: orderPaymentStatus,
         razorpayPaymentId: razorpay?.razorpay_payment_id || null,
-        paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
+        paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
         paymentMethod: finalPaymentMethod,
         storeCreditAmount: parsedStoreCredit,
         totalPrice: correctedTotal,
@@ -623,10 +643,12 @@ export async function POST(req: Request) {
         discountCode: finalCouponCode || null,
         discountAmount: Number(finalCouponDiscount) || 0,
         paymentFailureReason: null,
-        codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
-        codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
-        tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
-        note: isFullStoreCredit
+        codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
+        codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
+        tags: orderTags,
+        note: awaitingCapture
+          ? awaitingCaptureNote
+          : isFullStoreCredit
           ? `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`
           : isCodOrder
           ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay${underpayNote}`
@@ -641,10 +663,23 @@ export async function POST(req: Request) {
         shopifySyncError: null,
       };
 
-      localOrder = await prisma.order.update({
-        where: { id: existingPreCreatedOrder.id },
-        data: updateData,
-      });
+      if (awaitingCapture) {
+        // Never overwrite a payment the webhook confirmed in the meantime.
+        const guarded = await prisma.order.updateMany({
+          where: { id: existingPreCreatedOrder.id, paymentStatus: { notIn: CAPTURE_CONFIRMED_STATUSES } },
+          data: updateData,
+        });
+        if (guarded.count === 0) {
+          // Captured meanwhile → the page re-sends and the normal path completes it.
+          return NextResponse.json({ orderId: existingPreCreatedOrder.id, paymentState: 'pending_capture' }, { status: 202 });
+        }
+        localOrder = await prisma.order.findUnique({ where: { id: existingPreCreatedOrder.id } });
+      } else {
+        localOrder = await prisma.order.update({
+          where: { id: existingPreCreatedOrder.id },
+          data: updateData,
+        });
+      }
 
       // Always replace line items from the verified checkout payload.
       // Pre-create refresh used to call a non-existent prisma.lineItem model, so
@@ -700,7 +735,7 @@ export async function POST(req: Request) {
           shopId: shop.id,
           shopifyOrderId: null,
           customerId: localCustomer.id,
-          status: isCodOrder ? "open" : "approved",
+          status: awaitingCapture ? "payment_pending" : isCodOrder ? "open" : "approved",
           totalPrice: orderTotalPrice,
           subtotalPrice: orderSubtotalPrice,
           currency: body.currency || "INR",
@@ -713,18 +748,20 @@ export async function POST(req: Request) {
           razorpayOrderId: razorpay?.razorpay_order_id || null,
           razorpayPaymentId: razorpay?.razorpay_payment_id || null,
           paymentMethod: finalPaymentMethod,
-          codUpfrontPaid: isCodOrder ? resolvedCodFee : 0,
-          codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
+          codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
+          codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
           storeCreditAmount: parsedStoreCredit,
-          paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
+          paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
           orderType: "WEB_STORE",
-          tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
+          tags: orderTags,
           discountCode: finalCouponCode || null,
           discountAmount: Number(finalCouponDiscount) || 0,
           internalOrderNumber: universalOrderNumber,
           shopifySyncStatus: 'pending',
           shopifySyncError: null,
-          note: underpayNote
+          note: awaitingCapture
+            ? awaitingCaptureNote
+            : underpayNote
             ? `Web checkout${underpayNote}`
             : undefined,
           items: {
@@ -741,6 +778,14 @@ export async function POST(req: Request) {
           }
         }
       });
+    }
+
+    // ─── Capture not confirmed: stop here — order saved as pending, nothing confirmed ───
+    // No Shopify sync, Meta/Snap/OpenAI Purchase, analytics, coupon usage, cashback,
+    // cart conversion, affiliate attribution, email or WhatsApp until capture is confirmed.
+    if (awaitingCapture) {
+      console.warn(`[Checkout Complete] Payment ${razorpay?.razorpay_payment_id} for ${localOrder.id} authorized but not captured — order kept pending`);
+      return NextResponse.json({ orderId: localOrder.id, paymentState: 'pending_capture' }, { status: 202 });
     }
 
     // ─── ONE AND ONLY ONE SHOPIFY-CREATE CHOKE POINT (FIX 1) ───

@@ -10,6 +10,7 @@ import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zbTrackPaymentInitiated } from "@/lib/analytics-tracker";
 import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
+import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -1773,10 +1774,8 @@ export default function CheckoutPage() {
         setError("");
 
         try {
-          const verifyRes = await fetch("/api/checkout/complete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+          // Re-sends while the payment is only authorized (paymentState "pending_capture").
+          const completion = await postCheckoutComplete({
               address: checkoutAddress,
               paymentMethod,
               items: convertedItems,
@@ -1795,10 +1794,17 @@ export default function CheckoutPage() {
               fbp: getClientCookie("_fbp") || undefined,
               fbc: getClientCookie("_fbc") || undefined,
               externalId: getClientCookie("zb_external_id") || undefined,
-            }),
           });
 
-          const verifyData = await verifyRes.json();
+          if (completion.pendingCapture) {
+            // Authorized, not captured: no success screen, cart kept, lock kept (no double pay).
+            setIsConfirmingPayment(false);
+            setError(CAPTURE_PENDING_MESSAGE);
+            setLoading(false);
+            return;
+          }
+          const verifyRes = completion.res!;
+          const verifyData = completion.data;
           if (verifyRes.ok && verifyData.orderId) {
             if (typeof window !== "undefined") {
               sessionStorage.setItem("last_placed_order_id", verifyData.orderId);

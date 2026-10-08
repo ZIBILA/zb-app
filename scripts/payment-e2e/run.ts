@@ -21,7 +21,11 @@ Object.assign(process.env, {
   SHOPIFY_ADMIN_ACCESS_TOKEN: 'shpat_test', SHOPIFY_STORE_DOMAIN: 'test-shop.myshopify.com',
   RAZORPAY_WEBHOOK_SECRET: 'whsec_test',
   NEXT_PUBLIC_SITE_URL: 'https://zicabella.com',
-  META_CAPI_ACCESS_TOKEN: '', OPENAI_ADS_CAPI_KEY: '',
+  // Real-looking config so Meta / OpenAI / WhatsApp senders actually call out and the
+  // fetch fake below can count every "order confirmed" side effect.
+  META_CAPI_ACCESS_TOKEN: 'EAA' + 'B'.repeat(180), META_PIXEL_ID: '2049977412558608',
+  OPENAI_ADS_CAPI_KEY: 'oai-test-key', NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID: 'oai-pixel',
+  WHATSAPP_PHONE_NUMBER_ID: '110000000000001', WHATSAPP_BUSINESS_ACCOUNT_ID: '220000000000002', WHATSAPP_TOKEN: 'EAA' + 'W'.repeat(120),
 });
 const KEY_SECRET = 'secret'; // scripts/snap-test-support/fake-razorpay-credentials.ts
 
@@ -33,12 +37,19 @@ const PRICE: Record<string, number> = { [V.DENIM]: 1499, [V.TEE]: 799, [V.JACKET
 type RzpPayment = { id: string; order_id: string; status: string; captured: boolean; amount: number; amount_refunded: number };
 const razorpayPayments = new Map<string, RzpPayment>();
 const snapWeb: any[] = [], snapApp: any[] = [], shopifyOrders: any[] = [];
+const metaEvents: any[] = [], openAiEvents: any[] = [], whatsappSends: any[] = [];
 let shopifyOrderSeq = 6000;
 (globalThis as any).fetch = async (url: string, opt: any = {}) => {
   const u = String(url);
   const json = (status: number, body: any) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body), headers: new Map() });
   const m = u.match(/^https:\/\/api\.razorpay\.com\/v1\/payments\/([^/?]+)/);
   if (m) { const p = razorpayPayments.get(m[1]); return p ? json(200, { ...p }) : json(404, { error: { description: 'not found' } }); }
+  if (u.startsWith('https://graph.facebook.com/') && u.includes('/events')) {
+    try { const b = typeof opt.body === 'string' ? JSON.parse(opt.body) : opt.body; for (const e of b?.data || []) metaEvents.push(e); } catch { metaEvents.push({ raw: opt.body }); }
+    return json(200, { events_received: 1, fbtrace_id: 'x' });
+  }
+  if (u.startsWith('https://graph.facebook.com/') && u.includes('/messages')) { whatsappSends.push(JSON.parse(opt.body || '{}')); return json(200, { messages: [{ id: 'wamid.1' }] }); }
+  if (u.startsWith('https://bzr.openai.com/')) { try { const b = JSON.parse(opt.body); for (const e of b?.events || [b]) openAiEvents.push(e); } catch { openAiEvents.push({ raw: opt.body }); } return json(200, {}); }
   if (u.startsWith('https://tr.snapchat.com/v3/snap-app-')) { snapApp.push({ url: u, event: JSON.parse(opt.body).data[0] }); return json(200, { status: 'VALID' }); }
   if (u.startsWith('https://tr.snapchat.com/')) { snapWeb.push({ url: u, event: JSON.parse(opt.body).data[0] }); return json(200, { status: 'VALID' }); }
   if (u.includes('/admin/api/')) {
@@ -222,6 +233,93 @@ async function main() {
     eq('W6: one Shopify order', shopifyFor(os[0].internalOrderNumber).length, 1);
   }
 
+  // ── Confirmation side effects observed per order ──
+  const { isFailedPrefixNumber } = await import('../../lib/orderNumber');
+  const couponUses = () => Number((db.webStoreCoupon || []).find(c => c.code === 'SAVE500')?.usedCount || 0);
+  const effects = (orderId: string) => ({
+    metaPurchase: metaEvents.filter(e => e.event_id === orderId && e.event_name === 'Purchase').length,
+    openAiOrderCreated: openAiEvents.filter(e => e.id === orderId && e.type === 'order_created').length,
+    snapPurchase: snapFor(snapWeb, orderId).length,
+    shopifyOrders: shopifyOrders.length,
+    analyticsPurchase: (db.analyticsEvent || []).filter(a => a.orderId === orderId && a.eventName === 'purchase').length,
+    confirmationEmail: (db.emailLog || []).filter(e => e.referenceId === orderId).length,
+    whatsapp: whatsappSends.length,
+    couponUses: couponUses(),
+    cashback: (db.storeCredit || []).filter(c => c.orderId === orderId && c.type === 'COUPON_REBATE').length,
+    cartConverted: (db.cart || []).filter(c => c.convertedOrderId === orderId).length,
+  });
+  const delta = (a: Record<string, number>, b: Record<string, number>, keys: string[]) =>
+    Object.fromEntries(keys.map(k => [k, ['metaPurchase', 'openAiOrderCreated', 'snapPurchase', 'analyticsPurchase', 'confirmationEmail', 'cashback', 'cartConverted'].includes(k) ? b[k] : b[k] - a[k]]));
+  const EFFECT_KEYS = ['metaPurchase', 'openAiOrderCreated', 'snapPurchase', 'shopifyOrders', 'analyticsPurchase', 'confirmationEmail', 'whatsapp', 'couponUses', 'cashback', 'cartConverted'];
+  const NONE = Object.fromEntries(EFFECT_KEYS.map(k => [k, 0]));
+
+  // W7 authorized only (pre-created order, prepaid + coupon + cashback) → nothing confirmed;
+  // page keeps re-sending; once captured the normal path runs exactly once.
+  report.push('', '## Web — authorized but not captured: NO confirmation side effects');
+  console.log('\n— W7 web authorized/unverified capture → no side effects');
+  { const rzp = newRzpOrder(); pay('pay_W7', rzp, 'authorized', 3297);
+    const pre = await prisma.order.create({ data: { shopId: 'shop_1', status: 'payment_pending', paymentStatus: 'payment_pending', razorpayOrderId: rzp, internalOrderNumber: 'ZBPP77001', orderType: 'WEB_STORE', totalPrice: 3297, subtotalPrice: 3797, paymentMethod: 'razorpay', shippingAddress: '{}', tags: 'WebStoreOrder, Web, razorpay, zb-order-ZBPP77001, payment_pending, Order creation in process' } });
+    await prisma.webStoreOrder.create({ data: { orderNumber: 'ZBPP77001', paymentStatus: 'payment_pending', razorpayOrderId: rzp, customerName: 'Riya Kapoor', customerEmail: 'riya@example.com', customerPhone: '9811122233', shippingAddress: {}, items: [], subtotal: 3797, totalAmount: 3297, paymentMethod: 'razorpay', source: 'web' } });
+    await prisma.cart.create({ data: { status: 'active', email: 'riya@example.com', phone: '9811122233', convertedOrderId: null, lastActivityAt: new Date() } });
+    const body = { address: webAddress, items: webItems, subtotal: 3797, total: 3297, couponCode: 'SAVE500', couponDiscount: 500, cashbackAmount: 100, paymentMethod: 'razorpay', razorpay: { razorpay_order_id: rzp, razorpay_payment_id: 'pay_W7', razorpay_signature: sig(rzp, 'pay_W7') } };
+    const base = effects(pre.id);
+
+    const r1 = await complete(body); const j1: any = await r1.json(); await settle(200);
+    let o = orderById(pre.id);
+    eq('W7: response 202 pending_capture', [r1.status, j1.paymentState, j1.orderId], [202, 'pending_capture', pre.id]);
+    eq('W7: order status stays pending', [o.status, o.paymentStatus], ['payment_pending', 'payment_pending']);
+    check('W7: paymentCapturedAt not set', !o.paymentCapturedAt, o.paymentCapturedAt);
+    check('W7: pending number kept (not promoted)', isFailedPrefixNumber(o.internalOrderNumber), o.internalOrderNumber);
+    eq('W7: local pending order preserved with items', itemsOf(o.id).map(i => [i.variantId, i.quantity]), [[V.DENIM, 2], [V.TEE, 1]]);
+    eq('W7: WebStoreOrder stays payment_pending', (db.webStoreOrder || []).find(w => w.razorpayOrderId === rzp)?.paymentStatus, 'payment_pending');
+    eq('W7: NO confirmation side effects (Meta, OpenAI, Snap, Shopify, analytics, email, WhatsApp, coupon, cashback, cart)', delta(base, effects(pre.id), EFFECT_KEYS), NONE);
+
+    const r2 = await complete(body); const j2: any = await r2.json(); await settle(200);
+    eq('W7: page re-sends while authorized → still 202 pending_capture', [r2.status, j2.paymentState], [202, 'pending_capture']);
+    eq('W7: still NO side effects after the re-send', delta(base, effects(pre.id), EFFECT_KEYS), NONE);
+    eq('W7: still one local order', ordersByRzp(rzp).length, 1);
+
+    pay('pay_W7', rzp, 'captured', 3297);
+    const r3 = await complete(body); const j3: any = await r3.json(); await settle(250);
+    o = orderById(pre.id);
+    eq('W7: after capture → 200 with the same order', [r3.status, j3.orderId, j3.paymentState], [200, pre.id, undefined]);
+    eq('W7: confirmed → paid / approved', [o.paymentStatus, o.status], ['paid', 'approved']);
+    check('W7: paymentCapturedAt set on capture', !!o.paymentCapturedAt);
+    check('W7: real ZB number assigned on capture', !isFailedPrefixNumber(o.internalOrderNumber), o.internalOrderNumber);
+    const once = { metaPurchase: 1, openAiOrderCreated: 1, snapPurchase: 1, shopifyOrders: 1, analyticsPurchase: 1, confirmationEmail: 1, whatsapp: 1, couponUses: 1, cashback: 1, cartConverted: 1 };
+    eq('W7: normal completion ran exactly once after capture', delta(base, effects(pre.id), EFFECT_KEYS), once);
+    verifyPurchase('W7', snapWeb, o.id, { value: 3297, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'WEB' });
+
+    await hook('payment.captured', 'pay_W7', rzp, 'captured');
+    const after = delta(base, effects(pre.id), EFFECT_KEYS);
+    eq('W7: late payment.captured webhook adds no duplicate email/WhatsApp/coupon/cashback/Snap/Shopify',
+      { ...after, metaPurchase: undefined }, { ...once, metaPurchase: undefined });
+    check('W7: every Meta Purchase for the order shares event_id = order id (deduplicated by Meta)',
+      metaEvents.filter(e => e.event_name === 'Purchase' && e.custom_data?.order_id === o.id).every(e => e.event_id === o.id));
+  }
+
+  // W8 COD upfront authorized only, shopper closes the page → webhook confirms on capture
+  report.push('', '## Web — COD upfront authorized only, page closed, webhook confirms');
+  console.log('\n— W8 web COD authorized → webhook capture');
+  { const rzp = newRzpOrder(); pay('pay_W8', rzp, 'authorized', 99);
+    const r = await complete({ address: webAddress, items: webItems, subtotal: 3797, total: 3797, paymentMethod: 'COD', codFee: 99, razorpay: { razorpay_order_id: rzp, razorpay_payment_id: 'pay_W8', razorpay_signature: sig(rzp, 'pay_W8') } });
+    const j: any = await r.json(); await settle(200);
+    let o = orderById(j.orderId);
+    eq('W8: response 202 pending_capture', [r.status, j.paymentState], [202, 'pending_capture']);
+    eq('W8: order + payment status pending', [o.status, o.paymentStatus], ['payment_pending', 'payment_pending']);
+    eq('W8: COD upfront NOT recorded as paid', [o.codUpfrontPaid, o.codUpfrontPaymentId ?? null, o.paymentCapturedAt ?? null], [0, null, null]);
+    check('W8: pending number', isFailedPrefixNumber(o.internalOrderNumber), o.internalOrderNumber);
+    eq('W8: no Meta / OpenAI / Snap / analytics / email for the order', [effects(o.id).metaPurchase, effects(o.id).openAiOrderCreated, effects(o.id).snapPurchase, effects(o.id).analyticsPurchase, effects(o.id).confirmationEmail], [0, 0, 0, 0, 0]);
+    pay('pay_W8', rzp, 'captured', 99);
+    const shopifyBefore = shopifyOrders.length;
+    await hook('payment.captured', 'pay_W8', rzp, 'captured');
+    o = orderById(o.id);
+    eq('W8: webhook capture → cod_upfront_paid with ₹99 upfront recorded', [o.paymentStatus, o.codUpfrontPaid], ['cod_upfront_paid', 99]);
+    check('W8: real ZB number on capture', !isFailedPrefixNumber(o.internalOrderNumber), o.internalOrderNumber);
+    verifyPurchase('W8 (net sale, not ₹99)', snapWeb, o.id, { value: 3797, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'WEB' });
+    eq('W8: one Shopify order after capture', shopifyOrders.length - shopifyBefore, 1);
+  }
+
   // ════════════ APP ════════════
   const iosDevice = { platform: 'ios', appVersion: '1.0.2', buildNumber: '9', osVersion: '17.5', deviceModel: 'iPhone15,2', locale: 'en_IN', timezoneAbbr: 'GMT+5:30', timezone: 'Asia/Kolkata', attStatus: 'denied', idfv: '3F2504E0-4F89-11D3-9A0C-0305E82C3301' };
   const androidDevice = { platform: 'android', appVersion: '1.0.4', buildNumber: '5', osVersion: '14', deviceModel: 'SM-S918B', locale: 'en_IN', timezoneAbbr: 'GMT+5:30', timezone: 'Asia/Kolkata', madid: '38400000-8cf0-11bd-b23e-10b96e40000d' };
@@ -297,6 +395,7 @@ async function main() {
     const o = orderById(j.orderId);
     eq('A4: local paymentStatus', o?.paymentStatus, 'paid');
     eq('A4: wallet debited ₹3,797', b0 - balance(), 3797);
+    eq('A4: internal payment method is store_credit (not Razorpay)', [o?.paymentMethod, (db.mobileOrder || []).find(m => m.orderNumber === o?.internalOrderNumber)?.paymentMethod], ['store_credit', 'STORE_CREDIT']);
     verifyPurchase('A4 (store credit = discount → value 0)', snapApp, o.id, { value: 0, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'MOBILE_APP' });
     verifyShopify('A4', o, { financial: 'paid', variants: [[+V.DENIM, 2], [+V.TEE, 1]] });
   }
@@ -359,6 +458,53 @@ async function main() {
     eq('A9: one local order', ordersByRzp(r.rzp).length, 1);
     eq('A9: one Snap Purchase', snapFor(snapApp, r.order.id).length, 1);
     eq('A9: one Shopify order', shopifyFor(r.order.internalOrderNumber).length, 1);
+  }
+
+  // A11 three concurrent identical 100% store-credit requests (same checkoutId)
+  report.push('', '## Android — 3 concurrent duplicate 100% store-credit requests');
+  console.log('\n— A11 concurrent duplicate 100% store credit');
+  { // top up the test wallet so this scenario is independent of earlier ones
+    await prisma.storeCredit.create({ data: { customerId: 'cust_app_1', amount: 10000, type: 'CREDIT', description: 'seed A11', remainingAmount: 10000 } });
+    await prisma.customer.update({ where: { id: 'cust_app_1' }, data: { storeCredits: { increment: 10000 } } });
+    const b0 = balance();
+    const ordersBefore = (db.order || []).length, shopifyBefore = shopifyOrders.length;
+    const checkoutId = 'sc_lz4k2p_9f3a1c7e2b';
+    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress,
+      paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 3797, checkoutId, snapDevice: androidDevice };
+    const results = await Promise.all([1, 2, 3].map(() => post(ordersCreate, 'https://zicabella.com/api/app/orders/create', body).then((r: Response) => r.json())));
+    await settle(200);
+    const ids = new Set(results.map((r: any) => r.orderId));
+    eq('A11: all 3 responses succeed', results.map((r: any) => r.success), [true, true, true]);
+    if (!results.every((r: any) => r.success)) console.log('      errors:', results.map((r: any) => r.error));
+    eq('A11: all 3 responses point at ONE order', ids.size, 1);
+    eq('A11: exactly ONE local order created', (db.order || []).length - ordersBefore, 1);
+    const o = orderById([...ids][0] as string);
+    eq('A11: exactly ONE store-credit debit', (db.storeCredit || []).filter(c => c.type === 'DEBIT' && c.idempotencyKey === `checkout:cust_app_1:${checkoutId}`).length, 1);
+    eq('A11: wallet debited ₹3,797 once', b0 - balance(), 3797);
+    eq('A11: order paid with internal method store_credit', [o?.paymentStatus, o?.paymentMethod], ['paid', 'store_credit']);
+    eq('A11: one MobileOrder', (db.mobileOrder || []).filter(m => m.orderNumber === o?.internalOrderNumber).length, 1);
+    eq('A11: one Shopify order', shopifyOrders.length - shopifyBefore, 1);
+    verifyPurchase('A11 (value 0, one Purchase)', snapApp, o.id, { value: 0, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'MOBILE_APP' });
+    // A later retry of the same checkout (e.g. app resent after a timeout) → same order, no new debit
+    const again: any = await (await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', body)).json(); await settle(100);
+    eq('A11: later retry returns the same order', [again.orderId, again.orderNumber], [o.id, o.internalOrderNumber]);
+    eq('A11: later retry does not debit again', b0 - balance(), 3797);
+    eq('A11: still one order after retry', (db.order || []).length - ordersBefore, 1);
+  }
+
+  // A11b debit committed but the order was never written (crash between the two):
+  // a retry with the same checkoutId must create the order under the reserved number
+  // WITHOUT debiting again.
+  console.log('\n— A11b store-credit retry after debit-only crash');
+  { const checkoutId = 'sc_crash_retry_01';
+    await prisma.storeCredit.create({ data: { customerId: 'cust_app_1', amount: -799, type: 'DEBIT', description: 'Applied to order #ZB99901', orderId: '#ZB99901', remainingAmount: 0, idempotencyKey: `checkout:cust_app_1:${checkoutId}` } });
+    const b0 = balance();
+    const r: any = await (await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: [appLines[1]], appliedStoreCredits: 799, shippingAddress: appAddress,
+      paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 799, checkoutId, snapDevice: iosDevice })).json();
+    await settle(120);
+    eq('A11b: order created under the reserved number', [r.success, r.orderNumber, orderById(r.orderId)?.internalOrderNumber], [true, 'ZB99901', 'ZB99901']);
+    eq('A11b: no second debit', b0 - balance(), 0);
+    eq('A11b: still one DEBIT row for the checkout', (db.storeCredit || []).filter(c => c.idempotencyKey === `checkout:cust_app_1:${checkoutId}`).length, 1);
   }
 
   // Concurrent duplicate debit (unique constraint path)

@@ -27,6 +27,9 @@ const UNIQUE: Record<string, string[][]> = {
   storeCredit: [['idempotencyKey']],
   adConversionDelivery: [['platform', 'eventName', 'orderId']],
   orderItem: [['shopifyLineItemId']],
+  mobileOrder: [['orderNumber']],
+  webStoreOrder: [['orderNumber']],
+  analyticsEvent: [['eventId']],
   newsletterSubscriber: [['email']],
 };
 const DEFAULTS: Record<string, Row> = {

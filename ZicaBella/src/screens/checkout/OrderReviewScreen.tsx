@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Dimensions, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -185,6 +185,10 @@ export default function OrderReviewScreen() {
   };
 
   // ─── Place Order (COD) or open PaymentSheet (Razorpay) ───────────────
+  // One id per checkout, reused on every retry of a 100% store-credit order so the
+  // server never creates a second order or debits the wallet twice.
+  const storeCreditCheckoutIdRef = useRef<string | null>(null);
+
   const handlePlaceOrder = async () => {
     if (loading) return;
     haptics.buttonTap();
@@ -234,6 +238,7 @@ export default function OrderReviewScreen() {
             ...orderData,
             paymentMethod: 'Store Credit',
             paymentStatus: 'paid',
+            checkoutId: (storeCreditCheckoutIdRef.current ||= `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`),
             // No Razorpay payment for 100% store credit: the server sends the Snap
             // MOBILE_APP Purchase from orders/create, so it needs the device context here.
             snapDevice: await getSnapDeviceContext(),
