@@ -1,22 +1,7 @@
 import prisma from '../db';
 import { sendTrackingPushNotification } from './notifications';
-
-function mapReverseStatus(rawStatus: string): string {
-  const s = (rawStatus || '').trim().toLowerCase();
-  if (s.includes('manifested') || s.includes('scheduled') || s.includes('pending')) {
-    return 'pickup_pending';
-  }
-  if (s.includes('transit') || s.includes('dispatched') || s.includes('picked')) {
-    return 'in_transit';
-  }
-  if (s.includes('dto delivered') || s.includes('delivered-at-origin') || s.includes('delivered') || s === 'dl') {
-    return 'received';
-  }
-  if (s.includes('failed') || s.includes('cancelled')) {
-    return 'pickup_registration_failed';
-  }
-  return 'in_transit';
-}
+import { isReverseShipmentType, normalizeCarrierStatus } from '../logistics/status';
+import { applyShipmentStatusUpdate, type ShipmentScanEvent } from '../services/shipmentStatusService';
 
 export async function updateOrderTracking({
   awb,
@@ -25,7 +10,9 @@ export async function updateOrderTracking({
   statusDateTime,
   statusType,
   location,
-  instructions
+  instructions,
+  events: carrierEvents,
+  estimatedDelivery,
 }: {
   awb: string;
   shopifyOrderId: string;
@@ -34,6 +21,9 @@ export async function updateOrderTracking({
   statusType: string;
   location: string;
   instructions: string;
+  /** Full scan history when the carrier supplies it (Shiprocket webhooks do). */
+  events?: ShipmentScanEvent[];
+  estimatedDelivery?: string | null;
 }) {
   if (!awb && !shopifyOrderId) {
     console.warn('[Delhivery Tracking] Missing both AWB and order reference.');
@@ -97,30 +87,7 @@ export async function updateOrderTracking({
       return;
     }
 
-    // Prepare events scan history
-    let events: any[] = [];
-    if (shipment && shipment.events) {
-      try {
-        events = JSON.parse(shipment.events);
-      } catch (e) {
-        events = [];
-      }
-    }
-
-    const isDuplicate = events.some(
-      (e: any) => e.timestamp === statusDateTime && e.status === status
-    );
-
-    if (!isDuplicate) {
-      events.push({
-        status,
-        location,
-        timestamp: statusDateTime,
-        description: instructions || statusType || status
-      });
-    }
-
-    // Upsert shipment record if target order exists
+    // Create the shipment row if only the order matched (webhook arrived before we stored the AWB)
     if (!shipment && order) {
       shipment = await prisma.shipment.create({
         data: {
@@ -128,113 +95,65 @@ export async function updateOrderTracking({
           awb,
           trackingNumber: awb,
           courier: 'Delhivery',
-          status,
+          status: normalizeCarrierStatus(status) === 'unknown' ? status : normalizeCarrierStatus(status),
           type: 'outbound',
           currentLocation: location,
           trackingUrl: `https://www.delhivery.com/track/package/${awb}`,
-          events: JSON.stringify(events)
+          events: JSON.stringify([])
         },
         include: { order: true }
       });
-    } else if (shipment) {
-      await prisma.shipment.update({
-        where: { id: shipment.id },
-        data: {
-          status,
-          currentLocation: location,
-          updatedAt: new Date(),
-          events: JSON.stringify(events)
-        }
-      });
     }
 
+    // Single place that applies the update to Shipment + Order (canonical status,
+    // RTO tag, COD settlement, event log). Reverse shipments only touch the Shipment.
+    const applied = shipment
+      ? await applyShipmentStatusUpdate({
+          shipmentId: shipment.id,
+          rawStatus: status,
+          location,
+          timestamp: statusDateTime,
+          description: instructions || statusType || status,
+          events: carrierEvents,
+          estimatedDelivery,
+        })
+      : null;
+    const canonicalStatus = applied?.status ?? normalizeCarrierStatus(status);
+
     // 3. Handle routing based on shipment type
-    const isReverse = shipment?.type === 'reverse_pickup';
+    const isReverse = applied?.isReverse ?? isReverseShipmentType(shipment?.type);
 
     if (isReverse) {
-      const mappedReverseStatus = mapReverseStatus(status);
-      const targetOrderId = shipment?.orderId || order?.id;
-
-      // Update linked ExchangeRequest if exists
-      const exchangeReq = await prisma.exchangeRequest.findFirst({
-        where: {
-          OR: [
-            { reverseAwb: awb },
-            ...(targetOrderId ? [{ orderId: targetOrderId }] : [])
-          ]
-        }
-      });
-
-      if (exchangeReq && exchangeReq.status !== 'cancelled') {
-        const currentIdx = ['pending_approval', 'approved_pickup_failed', 'approved', 'in_transit', 'received', 'qc_passed', 'new_order_created', 'shipped', 'completed'].indexOf(exchangeReq.status);
-        const mappedIdx = ['pending_approval', 'approved_pickup_failed', 'approved', 'in_transit', 'received'].indexOf(mappedReverseStatus);
-
-        // Advance status if forward movement detected and not yet past received
-        if (mappedIdx > currentIdx && currentIdx < 4) {
-          await prisma.exchangeRequest.update({
-            where: { id: exchangeReq.id },
-            data: { status: mappedReverseStatus }
-          });
-        }
-      }
-
-      // Update linked ReturnRequest if exists
-      const returnReq = await prisma.returnRequest.findFirst({
-        where: {
-          OR: [
-            { reverseAwb: awb },
-            ...(targetOrderId ? [{ orderId: targetOrderId }] : [])
-          ]
-        }
-      });
-
-      if (returnReq && returnReq.status !== 'cancelled') {
-        if (mappedReverseStatus === 'in_transit' && returnReq.status === 'approved') {
-          await prisma.returnRequest.update({
-            where: { id: returnReq.id },
-            data: { status: 'in_transit' }
-          });
-        } else if (mappedReverseStatus === 'received' && ['approved', 'in_transit'].includes(returnReq.status)) {
-          await prisma.returnRequest.update({
-            where: { id: returnReq.id },
-            data: { status: 'received' }
-          });
-        }
-      }
-
-      // Reverse pickup updates request/shipment, NOT the customer's original Order.deliveryStatus
-      console.log(`[Delhivery Tracking] Reverse pickup updated for AWB ${awb} → ${mappedReverseStatus}`);
+      // Reverse pickup: applyShipmentStatusUpdate already advanced the Shipment and the
+      // linked return/exchange request (by reverse AWB). The customer's original
+      // Order.deliveryStatus is intentionally untouched.
+      console.log(`[Delhivery Tracking] Reverse pickup AWB ${awb} → ${canonicalStatus}`);
 
     } else if (order || shipment?.orderId) {
-      // Outbound shipment update
+      // Outbound shipment: Order.deliveryStatus / RTO tag / COD settlement are already
+      // applied by applyShipmentStatusUpdate. Only exchange linkage remains here.
       const activeOrderId = order?.id || shipment?.orderId;
       if (activeOrderId) {
-        await prisma.order.update({
-          where: { id: activeOrderId },
-          data: {
-            tracking_status: status,
-            deliveryStatus: status.toLowerCase()
-          }
-        });
-
         // If outbound shipment is tied to an exchange replacement order, update exchange request tracking
         const linkedExchange = await prisma.exchangeRequest.findFirst({
           where: {
             OR: [
-              { newShopifyOrderId: order?.shopifyOrderId || '' },
-              { orderId: activeOrderId }
+              { replacementOrderId: activeOrderId },
+              ...(order?.shopifyOrderId ? [{ newShopifyOrderId: order.shopifyOrderId }] : [])
             ]
           }
         });
 
         if (linkedExchange) {
-          const lowerStatus = status.toLowerCase();
-          if (lowerStatus.includes('delivered') && linkedExchange.status === 'shipped') {
+          if (canonicalStatus === 'delivered' && linkedExchange.status === 'shipped') {
             await prisma.exchangeRequest.update({
               where: { id: linkedExchange.id },
               data: { status: 'completed' }
             });
-          } else if ((lowerStatus.includes('dispatched') || lowerStatus.includes('transit')) && linkedExchange.status === 'new_order_created') {
+          } else if (
+            ['picked_up', 'in_transit', 'out_for_delivery'].includes(canonicalStatus) &&
+            linkedExchange.status === 'new_order_created'
+          ) {
             await prisma.exchangeRequest.update({
               where: { id: linkedExchange.id },
               data: { status: 'shipped' }

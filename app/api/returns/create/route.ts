@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
 import prisma from "@/lib/db";
+import { allocateLinkedId } from "@/lib/linkedIds";
+import { resolveRefundMethod } from "@/lib/returnPolicy";
 
 export async function POST(req: Request) {
   try {
@@ -88,6 +90,9 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
 
+    // COD orders can only be refunded as store credit (policy); prepaid may choose.
+    const effectiveRefundMethod = resolveRefundMethod(order, refundMethod);
+
     let estimatedRefund = 0;
     const itemsToReturn = [];
 
@@ -124,7 +129,7 @@ export async function POST(req: Request) {
         reason: returnItem.reason,
         status: "REQUESTED",
         refundAmount: itemRefund,
-        refundMethod: refundMethod || "original_method",
+        refundMethod: effectiveRefundMethod,
         comments: returnItem.comments,
         variantTitle: orderItem.variantTitle,
         size: orderItem.size,
@@ -133,8 +138,11 @@ export async function POST(req: Request) {
     }
 
     // Create the ReturnRequest
+    const displayId = await allocateLinkedId(prisma as any, 'return', order);
     const returnRequest = await prisma.returnRequest.create({
       data: {
+        displayId,
+        refundType: effectiveRefundMethod === 'store_credit' ? 'store_credit' : 'original_source',
         orderId,
         customerId: resolvedUserId,
         status: "pending_approval",
@@ -186,7 +194,7 @@ export async function POST(req: Request) {
           reason: r.reason
         })),
         totalRefundAmount: estimatedRefund,
-        refundMethod: refundMethod || "original_method",
+        refundMethod: effectiveRefundMethod,
         reason: returnItems[0]?.reason,
         requestType: "RETURN"
       });
@@ -196,6 +204,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       returnRequestId: returnRequest.id,
+      displayId: returnRequest.displayId,
+      refundMethod: effectiveRefundMethod,
       orderId: returnRequest.orderId,
       status: returnRequest.status,
       estimatedRefund: returnRequest.estimatedRefund,

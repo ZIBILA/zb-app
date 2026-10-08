@@ -8,9 +8,15 @@ import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import { formatDisplayOrderNumber } from "@/lib/formatOrderNumber";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
+import { parseLinkedId } from "@/lib/linkedIds";
 
 type ExchangeRequest = {
   exchangeRequestId: string;
+  displayId?: string | null;
+  replacementDisplayId?: string | null;
+  logisticsPartner?: string | null;
+  reverseAwb?: string | null;
+  receivedAt?: string | null;
   orderId: string;
   shopifyOrderId: string;
   userId: string;
@@ -66,6 +72,12 @@ export default function ExchangesPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
+  // Linked ids (R_/E_/G_E_) are looked up server-side (debounced) so older requests are found too.
+  const [linkedSearch, setLinkedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setLinkedSearch(parseLinkedId(search) ? search.trim() : ""), 350);
+    return () => clearTimeout(t);
+  }, [search]);
   const [toast, setToast] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -110,6 +122,7 @@ export default function ExchangesPage() {
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
+      if (linkedSearch) params.set("search", linkedSearch);
 
       const res = await fetch(`/api/admin/exchanges?${params.toString()}`);
       if (res.ok) {
@@ -129,7 +142,7 @@ export default function ExchangesPage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, linkedSearch]);
 
   useEffect(() => {
     fetchExchanges();
@@ -234,6 +247,9 @@ export default function ExchangesPage() {
     const q = search.toLowerCase();
     return (
       e.shopifyOrderId?.toLowerCase().includes(q) ||
+      e.displayId?.toLowerCase().includes(q) ||
+      e.replacementDisplayId?.toLowerCase().includes(q) ||
+
       e.userName?.toLowerCase().includes(q) ||
       e.userEmail?.toLowerCase().includes(q) ||
       e.exchangeRequestId?.toLowerCase().includes(q)
@@ -303,7 +319,7 @@ export default function ExchangesPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground/30" />
           <input
             type="text"
-            placeholder="Search by order ID, customer..."
+            placeholder="Search by order ID, R_/E_/G_E_ ID, customer..."
             className="w-full bg-background border border-foreground/[0.05] rounded-md pl-10 pr-4 py-2 text-[11px] outline-none focus:border-foreground/20 transition-colors"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -349,6 +365,13 @@ export default function ExchangesPage() {
                   >
                     <td className="px-4 py-3">
                       <div className="text-[11px] font-semibold text-foreground">{formatDisplayOrderNumber(req.shopifyOrderId || req.orderId)}</div>
+                      {req.displayId && (
+                        <div className="text-[9px] font-bold text-blue-500 mt-0.5 font-mono">{req.displayId}</div>
+                      )}
+                      {req.replacementDisplayId && (
+                        <div className="text-[9px] font-bold text-emerald-500 font-mono">{req.replacementDisplayId}</div>
+                      )}
+
                       {(req as any).orderCreatedAt && (
                         <div className="text-[9px] text-foreground/40 mt-0.5 font-mono">
                           Ordered: {formatExactDateTime((req as any).orderCreatedAt)}

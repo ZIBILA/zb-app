@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { resolveRefundMethod } from "@/lib/returnPolicy";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -23,7 +24,21 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "Return request not found" }, { status: 404 });
     }
 
+    if (!["pending_approval", "submitted"].includes(returnRequest.status)) {
+      return NextResponse.json(
+        { error: `Return request is already "${returnRequest.status}" and cannot be accepted again.` },
+        { status: 400 }
+      );
+    }
+
     const refundAmount = actualRefund !== undefined ? actualRefund : returnRequest.estimatedRefund;
+    // COD orders → store credit only. Prepaid keeps the customer's choice (or admin override).
+    const requestedMethod =
+      typeof isStoreCredit === 'boolean'
+        ? (isStoreCredit ? 'store_credit' : 'original_method')
+        : returnRequest.returns[0]?.refundMethod || 'original_method';
+    const refundMethod = resolveRefundMethod(returnRequest.order, requestedMethod);
+    const storeCreditRefund = refundMethod === 'store_credit';
 
     const result = await prisma.$transaction(async (tx: any) => {
       // 1. Update the return request status
@@ -32,7 +47,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         data: {
           status: "approved",
           actualRefund: refundAmount,
-          approvedAt: new Date()
+          approvedAt: new Date(),
+          refundType: storeCreditRefund ? "store_credit" : "original_source"
         }
       });
 
@@ -41,10 +57,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         where: { returnRequestId: id },
         data: { 
           status: "APPROVED",
-          refundAmount: isStoreCredit ? refundAmount : refundAmount,
-          storeCreditAmount: isStoreCredit ? refundAmount : 0,
+          refundAmount,
+          storeCreditAmount: storeCreditRefund ? refundAmount : 0,
           refundStatus: "PENDING",
-          refundMethod: isStoreCredit ? "store_credit" : "original_method"
+          refundMethod
         }
       });
 
@@ -65,76 +81,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         }
       });
 
-      // 5. Create a reverse shipment tracking record with real Delhivery reverse pickup
-      let reverseAwb: string | null = null;
-      let pickupStatus = 'pickup_pending';
-      let requestStatus = 'approved';
-      let delhiveryRaw: any = null;
+      // Accepting does NOT book a courier any more: ops now selects the logistics partner
+      // (POST /api/admin/returns/[id]/pickup) which creates the AWB and requests the pickup.
+      return { finalRequest: updatedRequest, reverseAwb: null as string | null, awaitingPartner: true };
 
-      try {
-        const { createReversePickup } = await import('@/lib/delhivery');
-        
-        let addrObj: any = {};
-        const shippingRaw = returnRequest.order.shippingAddress;
-        if (typeof shippingRaw === 'string') {
-          try { addrObj = JSON.parse(shippingRaw); } catch (_) { addrObj = { add: shippingRaw }; }
-        } else if (shippingRaw && typeof shippingRaw === 'object') {
-          addrObj = shippingRaw;
-        }
-
-        const customer = returnRequest.order.customer;
-        const name = addrObj.name || (addrObj.first_name ? `${addrObj.first_name} ${addrObj.last_name || ''}`.trim() : customer?.name || 'Customer');
-        const add = addrObj.add || addrObj.address1 || addrObj.street || addrObj.fullAddress || (typeof shippingRaw === 'string' ? shippingRaw : 'Address Not Specified');
-        const pin = addrObj.pin || addrObj.zip || addrObj.pincode || addrObj.postalCode || '110001';
-        const phone = addrObj.phone || customer?.phone || '9876543210';
-        const prodDesc = returnRequest.returns.map((r: any) => r.sku || 'Item').join(', ');
-
-        const pickupRes = await createReversePickup({
-          name,
-          add,
-          pin: String(pin),
-          phone: String(phone),
-          order: returnRequest.id, // Deterministic request reference
-          products_desc: `Return: ${prodDesc}`,
-          weight: '500',
-          seller_name: 'Zica Bella',
-          pickup_location_name: process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Warehouse',
-        });
-
-        reverseAwb = pickupRes.awb;
-        pickupStatus = pickupRes.status;
-        requestStatus = 'approved';
-        delhiveryRaw = pickupRes.rawResponse;
-      } catch (dErr: any) {
-        console.error('[Return Approve] Delhivery reverse pickup failed:', dErr.message);
-        pickupStatus = 'pickup_registration_failed';
-        requestStatus = 'approved_pickup_failed';
-        delhiveryRaw = { error: dErr.message, note: 'Delhivery pickup creation failed. Marked as approved_pickup_failed for admin retry.' };
-      }
-
-      await tx.shipment.create({
-        data: {
-          orderId: returnRequest.orderId,
-          awb: reverseAwb,
-          trackingNumber: reverseAwb,
-          courier: "Delhivery",
-          status: pickupStatus,
-          type: "reverse_pickup",
-          trackingUrl: reverseAwb ? `https://www.delhivery.com/track/package/${reverseAwb}` : null,
-          rawDelhiveryResponse: JSON.stringify(delhiveryRaw)
-        }
-      });
-
-      // Update ReturnRequest status & store reverseAwb
-      const finalRequest = await tx.returnRequest.update({
-        where: { id },
-        data: {
-          status: requestStatus,
-          reverseAwb: reverseAwb
-        }
-      });
-
-      return { finalRequest, reverseAwb };
     });
 
     // Mark SKUs on returned items as RETURNED (not yet restocked — that happens on RECEIVED)
@@ -147,34 +97,6 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       }
     } catch (skuErr) {
       console.error('[Return Approve] SKU status update failed:', skuErr);
-    }
-
-    // Auto-send Return Pickup Scheduled WhatsApp notification
-    try {
-      const { sendReturnPickupScheduled } = await import('@/lib/whatsapp/templates');
-      const cust = returnRequest.order.customer;
-      let phone = cust?.phone;
-      if (!phone && returnRequest.order.shippingAddress) {
-        try {
-          const parsed = typeof returnRequest.order.shippingAddress === 'string'
-            ? JSON.parse(returnRequest.order.shippingAddress)
-            : returnRequest.order.shippingAddress;
-          phone = parsed?.phone;
-        } catch (_) {}
-      }
-      if (phone) {
-        const orderIdDisplay = returnRequest.order.shopifyOrderId || returnRequest.orderId;
-        const customerName = cust?.name || 'Valued Customer';
-        await sendReturnPickupScheduled({
-          phone,
-          customerName,
-          orderId: orderIdDisplay,
-          pickupDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-          awbNumber: result.reverseAwb || 'Pickup Scheduled',
-        });
-      }
-    } catch (waErr: any) {
-      console.error('[Return Approve] WhatsApp pickup notification error:', waErr.message);
     }
 
     return NextResponse.json(result);

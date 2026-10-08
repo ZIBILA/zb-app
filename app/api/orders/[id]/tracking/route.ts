@@ -3,7 +3,7 @@ import prisma from '@/lib/db';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '../../../auth/[...nextauth]/options';
 import { getAppAuthFromRequest } from '@/lib/appAuth';
-import { trackShipment } from '@/lib/delhivery/api';
+import { getOrderTracking } from '@/lib/services/orderTracking';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,52 +72,16 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       return NextResponse.json({ error: 'Unauthorized access to order' }, { status: 403, headers: corsHeaders });
     }
 
-    // If no AWB exists: return empty structure
-    if (!order.delhivery_awb) {
-      return NextResponse.json({
-        awb: null,
-        currentStatus: null,
-        statusDateTime: null,
-        location: null,
-        timeline: []
-      }, { headers: corsHeaders });
-    }
+    // Provider-aware: AWB may be on Shipment.awb (Shiprocket), Shipment.trackingNumber
+    // (Delhivery) or the legacy Order.delhivery_awb.
+    const tracking = await getOrderTracking({
+      id: order.id,
+      delhivery_awb: order.delhivery_awb,
+      tracking_status: order.tracking_status,
+      createdAt: order.createdAt,
+    });
 
-    // Fetch live tracking logs from Delhivery
-    const trackingData = await trackShipment(order.delhivery_awb);
-    if (!trackingData || !trackingData.ShipmentData || trackingData.ShipmentData.length === 0) {
-      // Return empty tracking timeline if Delhivery has no records yet
-      return NextResponse.json({
-        awb: order.delhivery_awb,
-        currentStatus: order.tracking_status || 'Manifested',
-        statusDateTime: order.createdAt.toISOString(),
-        location: 'Warehouse',
-        timeline: []
-      }, { headers: corsHeaders });
-    }
-
-    const pkg = trackingData.ShipmentData[0].Shipment;
-    const currentStatus = pkg.Status?.Status || 'Manifested';
-    const statusDateTime = pkg.Status?.StatusDateTime || '';
-    const location = pkg.Status?.StatusLocation || '';
-
-    const timeline = (pkg.Scans || []).map((scan: any) => ({
-      status: scan.ScanDetail?.Scan || '',
-      dateTime: scan.ScanDetail?.ScanDateTime || '',
-      location: scan.ScanDetail?.ScannedLocation || '',
-      instructions: scan.ScanDetail?.Instructions || ''
-    }));
-
-    // Sort timeline newest first
-    timeline.sort((a: any, b: any) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
-
-    return NextResponse.json({
-      awb: order.delhivery_awb,
-      currentStatus,
-      statusDateTime,
-      location,
-      timeline
-    }, { headers: corsHeaders });
+    return NextResponse.json(tracking, { headers: corsHeaders });
   } catch (err: any) {
     console.error('[App Order Tracking API] Error:', err);
     return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500, headers: corsHeaders });

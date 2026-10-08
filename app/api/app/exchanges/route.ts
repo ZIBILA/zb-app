@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { orderBaseNumber } from '@/lib/linkedIds';
+import { buildRequestSummaries } from '@/lib/services/requestEnrichment';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,39 +66,99 @@ export async function GET(req: Request) {
       return NextResponse.json({ exchanges: [] }, { headers: corsHeaders });
     }
 
-    const exchanges = await prisma.exchange.findMany({
+    const productSelect = { select: { id: true, title: true, shopifyProductId: true, featuredImage: true } };
+    const productShape = (p: any, fallback: string) => ({
+      id: p?.id || null,
+      title: p?.title || fallback,
+      shopifyProductId: p?.shopifyProductId || null,
+      image: p?.featuredImage || null,
+    });
+
+    // Grouped requests (E_… ids with their G_E_… replacement)
+    const requests = await prisma.exchangeRequest.findMany({
       where: { orderId: { in: orderIds } },
       orderBy: { createdAt: 'desc' },
       include: {
-        order: { select: { id: true, shopifyOrderId: true } },
-        originalProduct: { select: { id: true, title: true, shopifyProductId: true, featuredImage: true } },
-        newProduct: { select: { id: true, title: true, shopifyProductId: true, featuredImage: true } },
+        order: {
+          select: {
+            id: true, shopifyOrderId: true, shopifyOrderName: true, internalOrderNumber: true,
+            paymentMethod: true, paymentStatus: true, tags: true, note: true, shipments: true,
+          },
+        },
+        exchanges: { include: { originalProduct: productSelect, newProduct: productSelect } },
       },
     });
 
-    const formatted = exchanges.map((e: any) => ({
+    const { exchangeSummaries } = await buildRequestSummaries(
+      requests.map((e: any) => ({ ...e.order, returnRequests: [], exchangeRequests: [e] }))
+    );
+
+    const grouped = requests.map((req: any) => {
+      const first = (req.exchanges || [])[0];
+      const items = (req.exchanges || []).map((x: any) => ({
+        id: x.id,
+        originalProduct: productShape(x.originalProduct, 'Unknown'),
+        newProduct: productShape(x.newProduct, 'Unknown'),
+        originalSize: x.originalSize || null,
+        newSize: x.newSize || null,
+        reason: x.reason || null,
+      }));
+      return {
+        id: req.id,
+        requestId: req.id,
+        kind: 'exchange',
+        displayId: req.displayId || null,
+        replacementDisplayId: req.replacementDisplayId || null,
+        orderId: req.orderId,
+        orderNumber: req.order ? orderBaseNumber(req.order) : null,
+        originalProduct: items[0]?.originalProduct || productShape(null, 'Unknown'),
+        newProduct: items[0]?.newProduct || productShape(null, 'Unknown'),
+        items,
+        status: req.status,
+        priceDifference: req.priceDifference,
+        paymentStatus: req.paymentStatus,
+        newOrderId: req.replacementOrderId || first?.newOrderId || null,
+        createdAt: req.createdAt,
+        updatedAt: req.updatedAt,
+        receivedAt: req.receivedAt || null,
+        summary: exchangeSummaries.get(req.id) || null,
+      };
+    });
+
+    // Legacy standalone rows (created before requests were grouped)
+    const legacy = await prisma.exchange.findMany({
+      where: { orderId: { in: orderIds }, exchangeRequestId: null },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        order: { select: { id: true, shopifyOrderId: true, shopifyOrderName: true, internalOrderNumber: true } },
+        originalProduct: productSelect,
+        newProduct: productSelect,
+      },
+    });
+
+    const legacyFormatted = legacy.map((e: any) => ({
       id: e.id,
+      requestId: null,
+      kind: 'exchange',
+      displayId: null,
+      replacementDisplayId: null,
       orderId: e.orderId,
-      orderNumber: e.order?.shopifyOrderId || null,
-      originalProduct: {
-        id: e.originalProduct?.id || null,
-        title: e.originalProduct?.title || 'Unknown',
-        shopifyProductId: e.originalProduct?.shopifyProductId || null,
-        image: e.originalProduct?.featuredImage || null,
-      },
-      newProduct: {
-        id: e.newProduct?.id || null,
-        title: e.newProduct?.title || 'Unknown',
-        shopifyProductId: e.newProduct?.shopifyProductId || null,
-        image: e.newProduct?.featuredImage || null,
-      },
+      orderNumber: e.order ? orderBaseNumber(e.order) : null,
+      originalProduct: productShape(e.originalProduct, 'Unknown'),
+      newProduct: productShape(e.newProduct, 'Unknown'),
       status: e.status,
       priceDifference: e.priceDifference,
       paymentStatus: e.paymentStatus,
       newOrderId: e.newOrderId,
       createdAt: e.createdAt,
       updatedAt: e.updatedAt,
+      receivedAt: null,
+      summary: null,
     }));
+
+    const formatted = [...grouped, ...legacyFormatted].sort(
+      (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
 
     return NextResponse.json({ exchanges: formatted }, { headers: corsHeaders });
   } catch (error: any) {

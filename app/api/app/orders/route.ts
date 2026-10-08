@@ -1,6 +1,9 @@
+import { isCodOrder, COD_STORE_CREDIT_MESSAGE } from '@/lib/returnPolicy';
+import { buildRequestSummaries, isInternalExchangeReturn } from '@/lib/services/requestEnrichment';
 import { NextResponse } from 'next/server';
 import prisma, { getShopSettings } from '@/lib/db';
-import { getTrackingStatus } from '@/lib/services/logistics';
+import { refreshShipmentFromCarrier } from '@/lib/services/shipmentStatusService';
+import { normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb, toOrderDeliveryStatus } from '@/lib/logistics/status';
 import { createOrder as createShopifyOrder } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
@@ -166,10 +169,12 @@ export async function GET(req: Request) {
       }
     }
 
+    const requestSummaries = await buildRequestSummaries(orders as any[]);
+
     const formatted = orders.map((o: any) => {
-      const latestShipment = o.shipments?.sort(
-        (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      )[0];
+      // Forward shipment only — never a cancelled one or a return/exchange pickup.
+      const latestShipment: any = pickActiveOutboundShipment(o.shipments as any[]);
+      const latestAwb = shipmentAwb(latestShipment);
 
       let parsedShippingAddress: any = null;
       if (o.shippingAddress) {
@@ -285,11 +290,13 @@ export async function GET(req: Request) {
         paymentStatus: o.paymentStatus,
         fulfillmentStatus: o.fulfillmentStatus,
         deliveryStatus: o.deliveryStatus,
-        trackingNumber: latestShipment?.trackingNumber || null,
-        trackingUrl: latestShipment?.trackingUrl || (latestShipment?.trackingNumber
-          ? latestShipment.courier?.toLowerCase() === 'shiprocket'
-            ? `https://shiprocket.co/tracking/${latestShipment.trackingNumber}`
-            : `https://www.delhivery.com/track/package/${latestShipment.trackingNumber}`
+        shipmentId: latestShipment?.id || null,
+        trackingNumber: latestAwb,
+        awb: latestAwb,
+        trackingUrl: latestShipment?.trackingUrl || (latestAwb
+          ? latestShipment?.courier?.toLowerCase() === 'delhivery'
+            ? `https://www.delhivery.com/track/package/${latestAwb}`
+            : `https://shiprocket.co/tracking/${latestAwb}`
           : null),
         courier: latestShipment?.courier || null,
         shipmentCreatedAt: latestShipment?.createdAt || null,
@@ -301,6 +308,8 @@ export async function GET(req: Request) {
         tags: o.tags,
         paymentMethod,
         paymentMethod2: o.paymentMethod, // direct from DB
+        isCod: isCodOrder(o),
+        codStoreCreditMessage: isCodOrder(o) ? COD_STORE_CREDIT_MESSAGE : null,
         razorpayOrderId: o.razorpayOrderId,
         razorpayPaymentId: o.razorpayPaymentId,
         shippingMethod: shippingMethodInfo,
@@ -342,6 +351,10 @@ export async function GET(req: Request) {
           updatedAt: r.updatedAt,
           approvedAt: r.approvedAt,
           reason: r.reason,
+          displayId: r.displayId || null,
+          isInternal: isInternalExchangeReturn(r),
+          receivedAt: r.receivedAt || null,
+          summary: requestSummaries.returnSummaries.get(r.id) || null,
         })),
         exchangeRequests: (o.exchangeRequests || []).map((e: any) => ({
           id: e.id,
@@ -356,6 +369,10 @@ export async function GET(req: Request) {
           reason: e.reason,
           returnRequestId: e.returnRequestId,
           newShopifyOrderId: e.newShopifyOrderId,
+          displayId: e.displayId || null,
+          replacementDisplayId: e.replacementDisplayId || null,
+          receivedAt: e.receivedAt || null,
+          summary: requestSummaries.exchangeSummaries.get(e.id) || null,
         })),
         timeline,
         statusTimeline, // Added for mobile app compatibility
@@ -374,48 +391,29 @@ export async function GET(req: Request) {
     // Real-time tracking refresh if single order requested
     if (orderId && formatted.length > 0) {
       const order = formatted[0];
-      if (order.trackingNumber && order.deliveryStatus !== 'delivered') {
+      const finalStates = ['delivered', 'returned_to_origin', 'cancelled', 'lost'];
+      if (order.shipmentId && order.trackingNumber && !finalStates.includes(String(order.deliveryStatus || '').toLowerCase())) {
         try {
-          const status = await getTrackingStatus(order.trackingNumber);
-          if (status && status.status !== 'unknown') {
-             // Update the order object in memory for the response
-             order.deliveryStatus = status.status;
-             order.shipmentEvents = status.events;
-             if (status.estimatedDelivery) {
-                (order.timeline as any).estimatedDelivery = status.estimatedDelivery;
-             }
-
-             // Update statusTimeline too
-             if (status.status.toLowerCase() === 'delivered') {
-               const deliveredStep = order.statusTimeline.find((s: any) => s.step === 'delivered');
-               if (deliveredStep) deliveredStep.completedAt = new Date().toISOString();
-             }
-             if (status.status.toLowerCase() === 'out_for_delivery') {
-               const ofdStep = order.statusTimeline.find((s: any) => s.step === 'out_for_delivery');
-               if (ofdStep) ofdStep.completedAt = new Date().toISOString();
-             }
-
-             // Update DB in background
-             prisma.shipment.updateMany({
-               where: { trackingNumber: order.trackingNumber },
-               data: { 
-                 status: status.status,
-                 currentLocation: status.location,
-                 estimatedDelivery: status.estimatedDelivery ? new Date(status.estimatedDelivery) : undefined,
-                 events: JSON.stringify(status.events)
-               }
-             }).catch((e: any) => console.error('DB Status Sync Error:', e));
-
-             // Also update order delivery status if changed
-             if (status.status.toLowerCase() === 'delivered') {
-                prisma.order.update({
-                   where: { id: order.id },
-                   data: { deliveryStatus: 'delivered' }
-                }).catch((e: any) => console.error('DB Order Sync Error:', e));
-             }
+          const { tracking, result } = await refreshShipmentFromCarrier(order.shipmentId);
+          if (tracking && tracking.status !== 'unknown') {
+            const code = result && result.applied ? result.status : normalizeCarrierStatus(tracking.rawStatus || tracking.status);
+            const nextDelivery = toOrderDeliveryStatus(code);
+            if (nextDelivery) order.deliveryStatus = nextDelivery;
+            order.shipmentEvents = tracking.events;
+            if (tracking.estimatedDelivery) {
+              (order.timeline as any).estimatedDelivery = tracking.estimatedDelivery;
+            }
+            if (code === 'delivered') {
+              const deliveredStep = order.statusTimeline.find((s: any) => s.step === 'delivered');
+              if (deliveredStep) deliveredStep.completedAt = new Date().toISOString();
+            }
+            if (code === 'out_for_delivery') {
+              const ofdStep = order.statusTimeline.find((s: any) => s.step === 'out_for_delivery');
+              if (ofdStep) ofdStep.completedAt = new Date().toISOString();
+            }
           }
         } catch (e: any) {
-          console.error('Real-time sync failed:', e);
+          console.warn('Real-time tracking refresh skipped:', e?.message || e);
         }
       }
     }

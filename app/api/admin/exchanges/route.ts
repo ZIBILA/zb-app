@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { enrichSingleItem } from "@/lib/enrichSize";
 import { extractItemVariantAndSize } from "@/lib/utils";
+import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +13,20 @@ export async function GET(req: Request) {
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
 
-    const where = status && status !== 'all' ? { status } : {};
-    const standaloneWhere = status && status !== 'all' ? { exchangeRequestId: null, status: status.toUpperCase() } : { exchangeRequestId: null };
+    // Linked-id search (R_ZB…, E_ZB…, G_E_ZB…) is resolved server-side so it also finds older requests.
+    const parsedQ = parseLinkedId(searchParams.get('search'));
+    const statusWhere: any = status && status !== 'all' ? { status } : {};
+    const where: any = parsedQ
+      ? {
+          ...statusWhere,
+          OR: [
+          { displayId: { contains: parsedQ.id, mode: 'insensitive' } },
+          { replacementDisplayId: { contains: parsedQ.id, mode: 'insensitive' } },
+          { order: { OR: [{ internalOrderNumber: { contains: parsedQ.baseNumber, mode: 'insensitive' } }, { shopifyOrderName: { contains: parsedQ.baseNumber, mode: 'insensitive' } }] } },
+          ],
+        }
+      : statusWhere;
+    const standaloneWhere = parsedQ ? { id: '__none__' } as any : (status && status !== 'all' ? { exchangeRequestId: null, status: status.toUpperCase() } : { exchangeRequestId: null });
 
     // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
     const rowCap = Math.min(Math.max(limit + offset, limit), 100);
@@ -104,6 +117,11 @@ export async function GET(req: Request) {
         const enrichedItems = await Promise.all((e.exchanges || []).map(enrichExchangeItem));
         return {
           exchangeRequestId: e.id,
+          displayId: e.displayId || null,
+          replacementDisplayId: e.replacementDisplayId || null,
+          logisticsPartner: e.logisticsPartner || null,
+          reverseAwb: e.reverseAwb || null,
+          receivedAt: e.receivedAt || null,
           orderId: e.orderId,
           shopifyOrderId: e.order?.shopifyOrderName || e.order?.internalOrderNumber || (e.order?.shopifyOrderId && `#${e.order.shopifyOrderId.replace('#', '')}`) || e.orderId,
           orderCreatedAt: e.order?.createdAt,
@@ -242,9 +260,16 @@ export async function POST(req: Request) {
       };
     }));
 
+    const parentOrder = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!parentOrder) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+    const displayId = await allocateLinkedId(prisma as any, 'exchange', parentOrder);
+
     const exchangeRequest = await prisma.$transaction(async (tx: any) => {
       const er = await tx.exchangeRequest.create({
         data: {
+          displayId,
           orderId,
           customerId,
           status: 'pending_approval',

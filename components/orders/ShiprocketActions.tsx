@@ -19,6 +19,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment } from '@/lib/logistics/status';
 
 interface CourierOption {
   courier_company_id: number;
@@ -38,6 +39,8 @@ interface ShiprocketOrder {
   deliveryStatus?: string | null;
   delhivery_awb?: string | null;
   shipments?: Array<{
+    type?: string | null;
+    createdAt?: string | Date | null;
     trackingNumber?: string | null;
     awb?: string | null;
     courier?: string | null;
@@ -75,11 +78,16 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   const [step, setStep] = useState<FlowStep>('idle');
 
   // Never fall back to a cancelled row — that kept showing the old AWB after cancel.
-  const activeShipment = order.shipments?.find((s) => (s.status || '').toLowerCase() !== 'cancelled') || null;
+  // Forward shipment only: never a cancelled one or a return/exchange pickup.
+  const activeShipment = pickActiveOutboundShipment(order.shipments || []);
   const isShipmentCancelled =
     !activeShipment &&
     (order.deliveryStatus === 'cancelled' ||
-      Boolean(order.shipments?.some((s) => (s.status || '').toLowerCase() === 'cancelled')));
+      Boolean(
+        order.shipments?.some(
+          (s) => !isReverseShipmentType(s.type) && (s.status || '').toLowerCase().startsWith('cancel')
+        )
+      ));
   const shipment = isShipmentCancelled ? null : activeShipment;
   const awb = shipment?.awb || (!isShipmentCancelled ? order.delhivery_awb : null) || null;
   const trackingNumber = shipment?.trackingNumber || null;
@@ -101,6 +109,14 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   );
 
   const blocked = order.status === 'cancelled' || order.status === 'payment_failed';
+
+  // RTO: parcel is returning (in progress) or already back at the warehouse (received).
+  const shipmentCode = normalizeCarrierStatus(shipment?.status ?? order.deliveryStatus);
+  const isRtoInProgress = shipmentCode === 'rto';
+  const isRtoReceived = shipmentCode === 'rto_delivered';
+  const isRto = isRtoInProgress || isRtoReceived;
+  // Operator chose "Reassign courier" on an RTO order → show the booking flow again.
+  const [reship, setReship] = useState(false);
 
   const dimensionsValid =
     parseFloat(weight) > 0 &&
@@ -165,6 +181,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       if (!res.ok) throw new Error(data.error || 'Failed to book shipment');
       setMessage(`AWB ${data.awb} assigned via ${data.courier}`);
       setStep('booked');
+      setReship(false);
       onRefresh();
     } catch (err: any) {
       const raw = String(err.message || '');
@@ -222,6 +239,26 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
     }
   };
 
+  const handleMarkRtoReceived = async () => {
+    setLoading('rto');
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/logistics/rto-received', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: order.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || 'Failed to mark RTO received');
+      setMessage('RTO marked as received — you can now reassign a courier.');
+      onRefresh();
+    } catch (err: any) {
+      setError(err.message || 'Request failed');
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const [showCancelModal, setShowCancelModal] = useState(false);
 
   const handleCancel = () => {
@@ -261,10 +298,41 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   };
 
   // ─── AWB Already Assigned ──────────────────────────────────────────────────
-  if (awb) {
+  if (awb && !reship) {
     return (
       <div className="space-y-6">
         <Alerts error={error} message={message} onClearError={() => setError(null)} />
+        {isRto && (
+          <div className="p-5 rounded-2xl bg-rose-500/10 border border-rose-500/20 space-y-3">
+            <p className="text-[11px] font-bold text-rose-400 uppercase tracking-widest">
+              {isRtoReceived ? 'RTO received at warehouse' : 'RTO in progress — parcel is returning to origin'}
+            </p>
+            <p className="text-[12px] text-foreground/60 leading-relaxed">
+              {isRtoReceived
+                ? 'The parcel is back. Reassign this order to a new courier to generate a fresh AWB.'
+                : 'Wait for the carrier to deliver the parcel back, or confirm physical receipt manually.'}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {isRtoReceived ? (
+                <button
+                  onClick={() => { setReship(true); setStep('idle'); setCouriers([]); setError(null); }}
+                  disabled={blocked || loading !== null}
+                  className="px-5 py-3 bg-foreground text-background rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50"
+                >
+                  Reassign to New Courier
+                </button>
+              ) : (
+                <button
+                  onClick={handleMarkRtoReceived}
+                  disabled={loading !== null}
+                  className="px-5 py-3 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+                >
+                  {loading === 'rto' ? 'Saving…' : 'Mark RTO Received'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <div className="p-6 rounded-[24px] bg-foreground/[0.03] border border-foreground/5 space-y-6">
             <div className="space-y-2">
@@ -310,7 +378,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
               <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
               Download Invoice
             </a>
-            {!pickupDone && (
+            {!pickupDone && !isRto && (
               <div className="space-y-2">
                 <button
                   onClick={handlePickup}
@@ -344,6 +412,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
                 Track Shipment
               </a>
             )}
+            {!isRto && (
             <button
               onClick={handleCancel}
               disabled={loading !== null}
@@ -352,6 +421,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
               {loading === 'cancel' && <Loader2 className="w-4 h-4 animate-spin" />}
               Cancel Shipment
             </button>
+            )}
           </div>
         </div>
 
@@ -439,6 +509,20 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   return (
     <div className="space-y-6">
       <Alerts error={error} message={message} onClearError={() => setError(null)} />
+
+      {reship && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-4">
+          <p className="text-[11px] font-bold text-amber-400 uppercase tracking-widest">
+            Reassigning after RTO — choose a new courier to generate a fresh AWB
+          </p>
+          <button
+            onClick={() => setReship(false)}
+            className="text-[10px] font-bold uppercase tracking-widest text-foreground/50 hover:text-foreground"
+          >
+            Back
+          </button>
+        </div>
+      )}
 
       {trackingNumber && !awb && (
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-1">

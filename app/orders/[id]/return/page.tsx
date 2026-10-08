@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { isCodOrder, COD_STORE_CREDIT_MESSAGE, REFUND_POLICY_PATH } from "@/lib/returnPolicy";
 
 const RETURN_REASONS = [
   "Defective or damaged",
@@ -45,6 +46,12 @@ export default function ReturnRequestPage() {
   useEffect(() => {
     fetchOrder();
   }, [id]);
+
+  // COD orders are refunded as Store Credit only (return policy).
+  const codOrder = isCodOrder(order);
+  useEffect(() => {
+    if (codOrder) setRefundMethod("store_credit");
+  }, [codOrder]);
 
   const fetchOrder = async () => {
     try {
@@ -261,32 +268,42 @@ export default function ReturnRequestPage() {
             <h3 className="text-[11px] font-bold text-foreground uppercase tracking-widest">Refund Preference</h3>
             <p className="text-[10px] text-foreground/45 mt-1 leading-relaxed">Select how you want to be refunded once your return is processed.</p>
           </div>
+          {codOrder ? (
+            <div className="p-4 rounded-xl border border-amber-500/20 bg-amber-500/5">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-foreground">Store Credit</p>
+              <p className="text-[10px] text-foreground/70 mt-1.5 leading-relaxed">
+                {COD_STORE_CREDIT_MESSAGE}{" "}
+                <Link href={REFUND_POLICY_PATH} className="underline font-bold text-foreground">Learn More</Link>
+              </p>
+            </div>
+          ) : (
           <div className="flex flex-col sm:flex-row gap-3">
-            <button
-              type="button"
-              onClick={() => setRefundMethod("original_method")}
-              className={`flex-1 p-4 rounded-xl border text-left transition-all ${
-                refundMethod === "original_method"
-                  ? "bg-foreground/[0.03] border-foreground/30 text-foreground"
-                  : "border-foreground/5 text-foreground/40 hover:border-foreground/10"
-              }`}
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wider">Original Payment Method</p>
-              <p className="text-[9px] text-foreground/40 mt-1.5 leading-relaxed">Funds are reversed directly to your source account (Credit/Debit Card, UPI, net banking, or Razorpay wallet).</p>
-            </button>
-            <button
-              type="button"
-              onClick={() => setRefundMethod("store_credit")}
-              className={`flex-1 p-4 rounded-xl border text-left transition-all ${
-                refundMethod === "store_credit"
-                  ? "bg-foreground/[0.03] border-foreground/30 text-foreground"
-                  : "border-foreground/5 text-foreground/40 hover:border-foreground/10"
-              }`}
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wider">Store Credit (Fastest)</p>
-              <p className="text-[9px] text-foreground/40 mt-1.5 leading-relaxed">Added instantly as a store balance to your account wallet once your return is approved. Recommended.</p>
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => setRefundMethod("original_method")}
+                className={`flex-1 p-4 rounded-xl border text-left transition-all ${
+                  refundMethod === "original_method"
+                    ? "bg-foreground/[0.03] border-foreground/30 text-foreground"
+                    : "border-foreground/5 text-foreground/40 hover:border-foreground/10"
+                }`}
+              >
+                <p className="text-[11px] font-bold uppercase tracking-wider">Original Payment Method</p>
+                <p className="text-[9px] text-foreground/40 mt-1.5 leading-relaxed">Funds are reversed directly to your source account (Credit/Debit Card, UPI, net banking, or Razorpay wallet).</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRefundMethod("store_credit")}
+                className={`flex-1 p-4 rounded-xl border text-left transition-all ${
+                  refundMethod === "store_credit"
+                    ? "bg-foreground/[0.03] border-foreground/30 text-foreground"
+                    : "border-foreground/5 text-foreground/40 hover:border-foreground/10"
+                }`}
+              >
+                <p className="text-[11px] font-bold uppercase tracking-wider">Store Credit (Fastest)</p>
+                <p className="text-[9px] text-foreground/40 mt-1.5 leading-relaxed">Added as a store balance to your account wallet once your returned item is received and checked. Recommended.</p>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Error */}

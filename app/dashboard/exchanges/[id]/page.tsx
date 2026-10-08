@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
+import ReversePickupPanel from "@/components/admin/ReversePickupPanel";
+import { deriveReverseStage, REVERSE_STAGE_LABEL } from "@/lib/returnPolicy";
 
 const STATUS_STEPS = [
   { key: "pending_approval", label: "Requested", icon: Clock },
@@ -20,6 +22,9 @@ const STATUS_STEPS = [
 const STATUS_INDEX: Record<string, number> = {
   pending_approval: 0,
   approved: 1,
+  approved_pickup_failed: 1,
+  in_transit: 1,
+  delivered_to_warehouse: 1,
   return_created: 1,
   received: 2,
   qc_passed: 3,
@@ -40,7 +45,9 @@ const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string;
   new_order_created: { color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "New Order Created" },
   shipped: { color: "text-violet-500", bg: "bg-violet-500/10", border: "border-violet-500/20", label: "Shipped" },
   completed: { color: "text-green-500", bg: "bg-green-500/10", border: "border-green-500/20", label: "Completed" },
-  requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" }
+  requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" },
+  in_transit: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "Pickup In Transit" },
+  delivered_to_warehouse: { color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20", label: "Delivered – Confirm Receipt" },
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -323,7 +330,10 @@ export default function ExchangeDetailPage() {
           </button>
           <div>
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-lg font-semibold text-foreground tracking-tight">Exchange #{(data.id || exchangeId).slice(0, 8)}</h1>
+              <h1 className="text-lg font-semibold text-foreground tracking-tight">Exchange {data.displayId || `#${(data.id || exchangeId).slice(0, 8)}`}</h1>
+              {data.replacementDisplayId && (
+                <span className="text-[10px] font-bold text-emerald-500 font-mono">→ {data.replacementDisplayId}</span>
+              )}
               <StatusBadge status={currentStatus} />
             </div>
             <p className="text-[10px] font-medium text-foreground/50 mt-0.5 font-mono">
@@ -602,20 +612,54 @@ export default function ExchangeDetailPage() {
             </div>
             <div className="space-y-3">
               <div className="flex justify-between items-center">
-                <span className="text-[10px] text-foreground/50">Reverse AWB</span>
-                {data.reverseAwb ? (
+                <span className="text-[10px] text-foreground/50">Pickup Status</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-foreground">
+                  {REVERSE_STAGE_LABEL[deriveReverseStage({ requestStatus: currentStatus, receivedAt: data.receivedAt, hasAwb: !!data.reverseAwb })]}
+                </span>
+              </div>
+              {data.reverseAwb && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Track</span>
                   <a
-                    href={`https://www.delhivery.com/track/package/${data.reverseAwb}`}
+                    href={
+                      String(data.logisticsPartner || "").toLowerCase().includes("delhivery")
+                        ? `https://www.delhivery.com/track/package/${data.reverseAwb}`
+                        : `https://shiprocket.co/tracking/${data.reverseAwb}`
+                    }
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] font-semibold text-blue-500 hover:underline flex items-center gap-1 font-mono"
                   >
                     {data.reverseAwb} <ExternalLink className="w-3 h-3" />
                   </a>
-                ) : (
-                  <span className="text-[10px] text-foreground/40">Not Generated</span>
-                )}
-              </div>
+                </div>
+              )}
+              <ReversePickupPanel
+                kind="exchange"
+                requestId={data.id || exchangeId}
+                status={currentStatus}
+                reverseAwb={data.reverseAwb}
+                logisticsPartner={data.logisticsPartner}
+                onBooked={(m) => { showToast(m); fetchDetail(); }}
+                onError={(m) => showToast(`Error: ${m}`)}
+              />
+              {data.receivedAt && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Received at warehouse</span>
+                  <span className="text-[10px] font-semibold text-foreground font-mono">{formatExactDateTime(data.receivedAt, true)}</span>
+                </div>
+              )}
+              {data.replacementDisplayId && (
+                <div className="flex justify-between items-center pt-2 border-t border-foreground/[0.05]">
+                  <span className="text-[10px] text-foreground/50">Replacement Order</span>
+                  <a
+                    href={`/dashboard/orders/${data.replacementOrderId || ""}`}
+                    className="text-[11px] font-semibold text-emerald-500 hover:underline font-mono"
+                  >
+                    {data.replacementDisplayId}
+                  </a>
+                </div>
+              )}
               <div className="flex justify-between items-center pt-2 border-t border-foreground/[0.05]">
                 <span className="text-[10px] text-foreground/50">Replacement Forward AWB</span>
                 <div className="flex items-center gap-2">
@@ -721,17 +765,7 @@ export default function ExchangeDetailPage() {
                   </button>
                 </>
               )}
-              {(currentStatus === "approved_pickup_failed" || (currentStatus === "approved" && !data.reverseAwb)) && (
-                <button
-                  onClick={handleRegeneratePickup}
-                  disabled={!!actionLoading}
-                  className="w-full py-2.5 bg-amber-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {actionLoading === "regenerate-pickup" ? <Loader2 className="w-3 h-3 animate-spin" /> : <TruckIcon className="w-3.5 h-3.5" />}
-                  Regenerate Reverse Pickup
-                </button>
-              )}
-              {(currentStatus === "approved" || currentStatus === "return_created" || currentStatus === "in_transit") && (
+              {["approved", "return_created", "in_transit", "delivered_to_warehouse", "approved_pickup_failed"].includes(currentStatus) && (
                 <button
                   onClick={() => setShowQcModal(true)}
                   disabled={!!actionLoading}

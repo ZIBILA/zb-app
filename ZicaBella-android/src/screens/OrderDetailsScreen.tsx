@@ -21,6 +21,7 @@ import { useUIStore } from '../store/uiStore';
 import { Image } from 'expo-image';
 import { trackOrder } from '../services/shipmentService';
 import TrackingTimeline from '../components/TrackingTimeline';
+import RequestSummaryCard from '../components/RequestSummaryCard';
 
 import { getOrderStatusLabel, resolveOrderDisplayStatus } from '../utils/orderStatus';
 import { resolveImageUrl } from '../utils/imageUtils';
@@ -564,6 +565,30 @@ export default function OrderDetailsScreen() {
             </View>
           </>
         ) : null}
+
+        {/* Returns & exchanges linked to this order (R_ / E_ ids, pickup, refund, replacement) */}
+        {(() => {
+          const requestCards = [
+            ...(order.returnRequests || []).filter((r: any) => !r.isInternal && r.status !== 'cancelled' && r.summary),
+            ...(order.exchangeRequests || []).filter((e: any) => e.status !== 'cancelled' && e.summary),
+          ];
+          if (requestCards.length === 0) return null;
+          return (
+            <>
+              <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 1, marginTop: 24, marginBottom: 12 }}>RETURNS & EXCHANGES</Typography>
+              {requestCards.map((req: any) => (
+                <RequestSummaryCard key={req.id} summary={req.summary}>
+                  {req.createdAt ? (
+                    <Typography size={11} color={colors.textMuted} style={{ marginBottom: 2 }}>
+                      Requested on {new Date(req.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </Typography>
+                  ) : null}
+                  {req.reason ? <Typography size={11} color={colors.textMuted}>Reason: {req.reason}</Typography> : null}
+                </RequestSummaryCard>
+              ))}
+            </>
+          );
+        })()}
 
         <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 1, marginTop: 24, marginBottom: 12 }}>BILLING SUMMARY</Typography>
         <View style={[styles.infoCard, { backgroundColor: isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.01)' }]}>

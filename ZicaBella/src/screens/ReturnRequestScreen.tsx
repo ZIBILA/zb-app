@@ -165,6 +165,18 @@ export default function ReturnRequestScreen() {
           </Typography>
         </View>
 
+        {order.isCod ? (
+          <View style={{ marginHorizontal: 16, marginBottom: 16, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,159,10,0.35)', backgroundColor: 'rgba(255,159,10,0.08)' }}>
+            <Typography size={11} weight="800" color={colors.text} style={{ marginBottom: 4 }}>STORE CREDIT REFUND</Typography>
+            <Typography size={12} color={colors.text} style={{ lineHeight: 17 }}>
+              {order.codStoreCreditMessage || 'This was a COD order. As per our return policy, the refund for COD orders will be issued as Store Credit.'}
+            </Typography>
+            <TouchableOpacity onPress={() => { haptics.buttonTap(); navigation.navigate('Policy', { handle: 'refund-policy', title: 'Refund Policy' }); }}>
+              <Typography size={12} weight="800" color={colors.iosBlue} style={{ marginTop: 6 }}>Learn More</Typography>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {order.items?.map((item: any) => {
           const isSelected = selectedItems.has(item.id);
           const imgUrl = getItemImage(item);

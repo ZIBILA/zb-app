@@ -63,65 +63,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         include: { returns: true }
       });
 
-      // 2. Create a reverse shipment tracking record with real Delhivery reverse pickup
-      let reverseAwb: string | null = null;
-      let pickupStatus = 'pickup_pending';
-      let requestStatus = 'approved';
-      let delhiveryRaw: any = null;
-
-      try {
-        const { createReversePickup } = await import('@/lib/delhivery');
-        
-        let addrObj: any = {};
-        const shippingRaw = exchangeRequest.order.shippingAddress;
-        if (typeof shippingRaw === 'string') {
-          try { addrObj = JSON.parse(shippingRaw); } catch (_) { addrObj = { add: shippingRaw }; }
-        } else if (shippingRaw && typeof shippingRaw === 'object') {
-          addrObj = shippingRaw;
-        }
-
-        const customer = exchangeRequest.order.customer;
-        const name = addrObj.name || (addrObj.first_name ? `${addrObj.first_name} ${addrObj.last_name || ''}`.trim() : customer?.name || 'Customer');
-        const add = addrObj.add || addrObj.address1 || addrObj.street || addrObj.fullAddress || (typeof shippingRaw === 'string' ? shippingRaw : 'Address Not Specified');
-        const pin = addrObj.pin || addrObj.zip || addrObj.pincode || addrObj.postalCode || '110001';
-        const phone = addrObj.phone || customer?.phone || '9876543210';
-        const prodDesc = exchangeRequest.exchanges.map((ex: any) => ex.originalProduct?.sku || 'Item').join(', ');
-
-        const pickupRes = await createReversePickup({
-          name,
-          add,
-          pin: String(pin),
-          phone: String(phone),
-          order: exchangeRequest.id, // Deterministic request reference
-          products_desc: `Exchange Return: ${prodDesc}`,
-          weight: '500',
-          seller_name: 'Zica Bella',
-          pickup_location_name: process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Warehouse',
-        });
-
-        reverseAwb = pickupRes.awb;
-        pickupStatus = pickupRes.status;
-        requestStatus = 'approved';
-        delhiveryRaw = pickupRes.rawResponse;
-      } catch (dErr: any) {
-        console.error('[Exchange Approve] Delhivery reverse pickup failed:', dErr.message);
-        pickupStatus = 'pickup_registration_failed';
-        requestStatus = 'approved_pickup_failed';
-        delhiveryRaw = { error: dErr.message, note: 'Delhivery pickup creation failed. Marked as approved_pickup_failed for admin retry.' };
-      }
-
-      await tx.shipment.create({
-        data: {
-          orderId: exchangeRequest.orderId,
-          awb: reverseAwb,
-          trackingNumber: reverseAwb,
-          courier: "Delhivery",
-          status: pickupStatus,
-          type: "reverse_pickup",
-          trackingUrl: reverseAwb ? `https://www.delhivery.com/track/package/${reverseAwb}` : null,
-          rawDelhiveryResponse: JSON.stringify(delhiveryRaw)
-        }
-      });
+      // 2. No courier is booked on accept: ops selects the logistics partner next
+      //    (POST /api/admin/exchanges/[id]/pickup) which creates the reverse AWB + pickup.
+      const reverseAwb: string | null = null;
+      const requestStatus = 'approved';
 
       // 3. Update the ExchangeRequest status & link to the return request & store reverseAwb
       const updatedRequest = await tx.exchangeRequest.update({
@@ -129,7 +74,6 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         data: {
           status: requestStatus,
           returnRequestId: returnRequest.id,
-          reverseAwb: reverseAwb
         }
       });
 
@@ -188,7 +132,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
     // Auto-send WhatsApp notifications with real reverse AWB if available
     try {
-      const { sendExchangeConfirmed, sendExchangePickupScheduled } = await import('@/lib/whatsapp/templates');
+      const { sendExchangeConfirmed } = await import('@/lib/whatsapp/templates');
       const cust = exchangeRequest.order.customer;
       let phone = cust?.phone;
       if (!phone && exchangeRequest.order.shippingAddress) {
@@ -200,7 +144,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         } catch (_) {}
       }
       if (phone) {
-        const orderIdDisplay = exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId;
+        const orderIdDisplay = exchangeRequest.order.internalOrderNumber || exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId;
         const customerName = cust?.name || 'Valued Customer';
         const newItemName = exchangeRequest.exchanges.map((ex: any) => ex.newProduct?.title || 'Replacement Item').join(', ');
 
@@ -209,14 +153,6 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           customerName,
           orderId: orderIdDisplay,
           newItemName,
-        });
-
-        await sendExchangePickupScheduled({
-          phone,
-          customerName,
-          orderId: orderIdDisplay,
-          pickupDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-          awbNumber: result.reverseAwb || 'Pickup Scheduled',
         });
       }
     } catch (waErr: any) {

@@ -7,25 +7,27 @@ import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
+import ReversePickupPanel from "@/components/admin/ReversePickupPanel";
+import { isCodOrder, COD_STORE_CREDIT_MESSAGE, deriveReverseStage, REVERSE_STAGE_LABEL } from "@/lib/returnPolicy";
 
 const STATUS_STEPS = [
   { key: "pending_approval", label: "Requested", icon: Clock },
-  { key: "approved", label: "Approved", icon: CheckCircle2 },
-  { key: "refund_pending", label: "Refund Pending", icon: Clock },
+  { key: "approved", label: "Accepted", icon: CheckCircle2 },
   { key: "pickup_scheduled", label: "Pickup Scheduled", icon: TruckIcon },
+  { key: "in_transit", label: "In Transit", icon: TruckIcon },
   { key: "received", label: "Received", icon: Package },
-  { key: "refunded", label: "Refunded", icon: CreditCard },
+  { key: "refunded", label: "Refund / Credit", icon: CreditCard },
 ];
 
-const STATUS_INDEX: Record<string, number> = {
-  pending_approval: 0,
-  approved: 1,
-  refund_pending: 2,
-  pickup_scheduled: 3,
-  received: 4,
-  refunded: 5,
-  rejected: -1,
-};
+function stepIndexFor(status: string, hasAwb: boolean, receivedAt: unknown): number {
+  const s = (status || "").toLowerCase();
+  if (s === "refunded") return 5;
+  if (s === "received" || s === "qc_passed" || s === "refund_pending" || receivedAt) return 4;
+  if (s === "in_transit" || s === "delivered_to_warehouse") return 3;
+  if (s === "pickup_scheduled" || ((s === "approved" || s === "approved_pickup_failed") && hasAwb)) return 2;
+  if (s === "approved" || s === "approved_pickup_failed") return 1;
+  return 0;
+}
 
 const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string; label: string }> = {
   pending_approval: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending Approval" },
@@ -35,7 +37,10 @@ const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string;
   pickup_scheduled: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "Pickup Scheduled" },
   received: { color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20", label: "Received" },
   refunded: { color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "Refunded" },
-  requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" }
+  requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" },
+  in_transit: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "In Transit" },
+  delivered_to_warehouse: { color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20", label: "Delivered – Confirm Receipt" },
+  approved_pickup_failed: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Pickup Failed" },
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -150,7 +155,7 @@ export default function ReturnDetailPage() {
           body: JSON.stringify(extra || {}),
         });
         if (res.ok) {
-          showToast("Return approved successfully");
+          showToast("Return accepted — now select the logistics partner");
           fetchDetail();
         } else {
           const err = await res.json();
@@ -193,12 +198,34 @@ export default function ReturnDetailPage() {
   };
 
   const handleRefundSubmit = () => {
-    handleStatusUpdate("refund_pending", {
+    handleStatusUpdate("approved", {
       actualRefund: parseFloat(refundAmount) || data?.estimatedRefund || 0,
-      isStoreCredit: refundType === "store_credit",
+      isStoreCredit: (isCodOrder(data?.order) ? "store_credit" : refundType) === "store_credit",
       customerId: data?.customerId || data?.customer?.id,
     });
     setShowRefundModal(false);
+  };
+
+  const handleReleaseRefund = async () => {
+    setActionLoading("release-refund");
+    try {
+      const res = await fetch(`/api/admin/refunds/${returnId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showToast(json.message || "Refund released");
+        fetchDetail();
+      } else {
+        showToast(`Error: ${json.error || "Failed to release refund"}`);
+      }
+    } catch (err) {
+      showToast("Action failed");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const handleRegeneratePickup = async () => {
@@ -245,7 +272,16 @@ export default function ReturnDetailPage() {
   const isReturnRequest = !!data.returns;
   const returnItems = isReturnRequest ? data.returns : [data];
   const currentStatus = (data.status || "pending_approval").toLowerCase();
-  const currentStepIndex = STATUS_INDEX[currentStatus] ?? 0;
+  const currentStepIndex = stepIndexFor(currentStatus, !!data.reverseAwb, data.receivedAt);
+  const codOrder = isCodOrder(data.order);
+  const stage = deriveReverseStage({
+    requestStatus: currentStatus,
+    receivedAt: data.receivedAt,
+    hasAwb: !!data.reverseAwb,
+  });
+  const isReceived = !!data.receivedAt || ["received", "qc_passed", "refund_pending"].includes(currentStatus);
+  const releaseLabel =
+    codOrder || returnItems[0]?.refundMethod === "store_credit" ? "Release Store Credit" : "Release Refund";
   const isRejected = currentStatus === "rejected";
   const order = data.order;
   const customer = data.customer || order?.customer;
@@ -270,7 +306,7 @@ export default function ReturnDetailPage() {
           </button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-lg font-semibold text-foreground tracking-tight">Return #{(data.id || returnId).slice(0, 8)}</h1>
+              <h1 className="text-lg font-semibold text-foreground tracking-tight">Return {data.displayId || `#${(data.id || returnId).slice(0, 8)}`}</h1>
               <StatusBadge status={currentStatus} />
             </div>
             <p className="text-[10px] font-medium text-foreground/50 mt-0.5 font-mono">
@@ -476,20 +512,43 @@ export default function ReturnDetailPage() {
             </div>
             <div className="space-y-3">
               <div className="flex justify-between items-center">
-                <span className="text-[10px] text-foreground/50">Reverse AWB</span>
-                {data.reverseAwb ? (
+                <span className="text-[10px] text-foreground/50">Pickup Status</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-foreground">{REVERSE_STAGE_LABEL[stage]}</span>
+              </div>
+              {data.reverseAwb && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Track</span>
                   <a
-                    href={`https://www.delhivery.com/track/package/${data.reverseAwb}`}
+                    href={
+                      String(data.logisticsPartner || "").toLowerCase().includes("delhivery")
+                        ? `https://www.delhivery.com/track/package/${data.reverseAwb}`
+                        : `https://shiprocket.co/tracking/${data.reverseAwb}`
+                    }
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] font-semibold text-blue-500 hover:underline flex items-center gap-1 font-mono"
                   >
                     {data.reverseAwb} <ExternalLink className="w-3 h-3" />
                   </a>
-                ) : (
-                  <span className="text-[10px] text-foreground/40">Not Generated</span>
-                )}
-              </div>
+                </div>
+              )}
+              {!data.reason?.includes?.("EXCHANGE_RETURN") && (
+                <ReversePickupPanel
+                  kind="return"
+                  requestId={data.id || returnId}
+                  status={currentStatus}
+                  reverseAwb={data.reverseAwb}
+                  logisticsPartner={data.logisticsPartner}
+                  onBooked={(m) => { showToast(m); fetchDetail(); }}
+                  onError={(m) => showToast(`Error: ${m}`)}
+                />
+              )}
+              {data.receivedAt && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Received at warehouse</span>
+                  <span className="text-[10px] font-semibold text-foreground font-mono">{formatExactDateTime(data.receivedAt, true)}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -504,9 +563,12 @@ export default function ReturnDetailPage() {
               <div className="flex justify-between items-center">
                 <span className="text-[10px] text-foreground/50">Customer Preference</span>
                 <span className="text-[10px] font-semibold text-foreground uppercase tracking-widest">
-                  {returnItems[0]?.refundMethod === "store_credit" ? "Store Credit" : "Original Method"}
+                  {codOrder || returnItems[0]?.refundMethod === "store_credit" ? "Store Credit" : "Original Method"}
                 </span>
               </div>
+              {codOrder && (
+                <p className="text-[9px] text-amber-500 leading-relaxed">{COD_STORE_CREDIT_MESSAGE}</p>
+              )}
               {data.actualRefund != null && (
                 <div className="flex justify-between items-center">
                   <span className="text-[10px] text-foreground/50">Actual Refund</span>
@@ -548,34 +610,24 @@ export default function ReturnDetailPage() {
                   </button>
                 </>
               )}
-              {(currentStatus === "approved_pickup_failed" || (currentStatus === "approved" && !data.reverseAwb)) && (
-                <button
-                  onClick={handleRegeneratePickup}
-                  disabled={!!actionLoading}
-                  className="w-full py-2.5 bg-amber-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {actionLoading === "regenerate-pickup" ? <Loader2 className="w-3 h-3 animate-spin" /> : <TruckIcon className="w-3.5 h-3.5" />}
-                  Regenerate Reverse Pickup
-                </button>
-              )}
-              {(currentStatus === "approved" || currentStatus === "in_transit") && (
+              {["approved", "in_transit", "delivered_to_warehouse", "approved_pickup_failed"].includes(currentStatus) && (
                 <button
                   onClick={() => handleStatusUpdate("received")}
                   disabled={!!actionLoading}
                   className="w-full py-2.5 bg-teal-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   {actionLoading === "received" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
-                  Mark as Received
+                  Confirm Parcel Received
                 </button>
               )}
-              {(currentStatus === "received" || currentStatus === "pickup_scheduled") && (
+              {isReceived && currentStatus !== "refunded" && (
                 <button
-                  onClick={() => handleStatusUpdate("refunded")}
+                  onClick={handleReleaseRefund}
                   disabled={!!actionLoading}
                   className="w-full py-2.5 bg-emerald-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  {actionLoading === "refunded" ? <Loader2 className="w-3 h-3 animate-spin" /> : <CreditCard className="w-3.5 h-3.5" />}
-                  Process Refund
+                  {actionLoading === "release-refund" ? <Loader2 className="w-3 h-3 animate-spin" /> : <CreditCard className="w-3.5 h-3.5" />}
+                  {releaseLabel}
                 </button>
               )}
               {(currentStatus === "refunded" || isRejected) && (
@@ -593,15 +645,19 @@ export default function ReturnDetailPage() {
             <div className="absolute inset-0 z-0" onClick={() => setShowRefundModal(false)} />
             <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-background w-full max-w-sm rounded-xl p-6 border border-foreground/[0.05] shadow-lg relative z-10">
               <div className="flex justify-between items-center mb-6">
-                <h2 className="text-[12px] font-semibold text-foreground tracking-widest uppercase">Approve & Issue Refund</h2>
+                <h2 className="text-[12px] font-semibold text-foreground tracking-widest uppercase">Accept Return</h2>
                 <button onClick={() => setShowRefundModal(false)} className="text-foreground/40 hover:text-foreground"><X className="w-4 h-4" /></button>
               </div>
 
               <div className="space-y-4">
-                <div className="flex gap-2">
-                  <button onClick={() => setRefundType("original_method")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "original_method" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Original Method</button>
-                  <button onClick={() => setRefundType("store_credit")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "store_credit" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Store Credit</button>
-                </div>
+                {codOrder ? (
+                  <p className="text-[10px] text-amber-500 leading-relaxed">{COD_STORE_CREDIT_MESSAGE}</p>
+                ) : (
+                  <div className="flex gap-2">
+                    <button onClick={() => setRefundType("original_method")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "original_method" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Original Method</button>
+                    <button onClick={() => setRefundType("store_credit")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "store_credit" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Store Credit</button>
+                  </div>
+                )}
                 <div>
                   <label className="block text-[9px] font-semibold uppercase tracking-widest text-foreground/50 mb-1.5">Refund Amount (₹)</label>
                   <input type="number" step="0.01" value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} className="w-full bg-foreground/[0.02] border border-foreground/[0.05] focus:border-foreground/20 rounded-md px-3 py-2.5 text-[14px] font-semibold text-foreground outline-none" placeholder="0.00" />

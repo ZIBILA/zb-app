@@ -9,6 +9,7 @@
 
 import prisma from '@/lib/db';
 import * as crypto from 'crypto';
+import { normalizeCarrierStatus, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -21,6 +22,8 @@ export interface TrackingEvent {
 
 export interface TrackingStatus {
   status: string;
+  /** Provider's own status text/id (for display and audit). */
+  rawStatus?: string;
   location: string | null;
   estimatedDelivery: string | null;
   trackingUrl: string | null;
@@ -211,6 +214,12 @@ async function getLogisticsConfig(): Promise<LogisticsConfig> {
   }
 }
 
+/** Provider currently configured for this shop ('shiprocket' | 'delhivery' | 'mock'). */
+export async function getActiveLogisticsProvider(): Promise<string> {
+  const config = await getLogisticsConfig();
+  return config.provider;
+}
+
 // ─── Provider API Call Helper ───────────────────────────────────────
 
 async function logisticsApiFetch(
@@ -372,9 +381,10 @@ export async function shipOrder(
 ): Promise<ShipmentResult> {
   // Skip re-create if a real active shipment already exists
   const existing = await prisma.shipment.findFirst({
-    where: { 
+    where: {
       orderId,
-      status: { not: 'cancelled' },
+      NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
+      status: { notIn: ['cancelled', 'canceled', 'rto', 'rto_delivered', 'lost'] },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -773,45 +783,13 @@ export async function shipOrder(
  * Normalize Shiprocket tracking payload into our status vocabulary.
  */
 export function mapShiprocketTrackingStatus(raw: unknown): string {
+  const canonical = normalizeCarrierStatus(raw);
+  if (canonical !== 'unknown') return canonical;
+
   const s = String(raw || '').toLowerCase().trim();
   if (!s || s === 'unknown' || s === 'null') return 'unknown';
-
-  if (
-    s.includes('cancel') ||
-    s === '8' || // Shiprocket status id for Canceled (common)
-    s.includes('cancelled')
-  ) {
-    return 'cancelled';
-  }
-  if (s.includes('rto') || s.includes('return to origin')) return 'rto';
-  if (s.includes('deliver')) return 'delivered';
-  if (s.includes('out for delivery') || s.includes('ofd')) return 'out_for_delivery';
-  if (s.includes('in transit') || s.includes('shipped') || s.includes('in-transit')) return 'in_transit';
-  if (s.includes('pick') || s.includes('manifest')) return 'pickup_scheduled';
-  if (s.includes('confirm') || s.includes('awb') || s.includes('label')) return 'confirmed';
   if (s.includes('pend') || s.includes('new') || s.includes('process')) return 'processing';
-
-  // Numeric Shiprocket shipment_status ids we commonly see
-  if (s === '7') return 'delivered';
-  if (s === '6') return 'shipped';
-  if (s === '17' || s === '18') return 'out_for_delivery';
-  if (s === '42' || s === '15') return 'pickup_scheduled';
-
   return s.replace(/\s+/g, '_');
-}
-
-function applyDeliveryStatusFromShipment(
-  shipStatus: string
-): string | null {
-  const s = shipStatus.toLowerCase();
-  if (s === 'cancelled' || s === 'canceled') return 'cancelled';
-  if (s === 'delivered') return 'delivered';
-  if (s === 'out_for_delivery') return 'out_for_delivery';
-  if (s === 'in_transit' || s === 'shipped') return 'shipped';
-  if (s === 'pickup_scheduled' || s === 'picked_up') return 'pickup_scheduled';
-  if (s === 'rto') return 'returned_to_origin';
-  if (s === 'confirmed') return 'confirmed';
-  return null;
 }
 
 /**
@@ -847,16 +825,24 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
           tracking?.track_status ||
           tracking?.shipment_status_id;
         const mapped = mapShiprocketTrackingStatus(trackStatus);
+        // Scan history lives in shipment_track_activities (shipment_track is the
+        // per-shipment summary). Fall back to the summary for older payloads.
+        const scanSource: any[] =
+          Array.isArray(tracking?.shipment_track_activities) && tracking.shipment_track_activities.length > 0
+            ? tracking.shipment_track_activities
+            : tracking?.shipment_track || [];
         return {
           status: mapped,
+          rawStatus: trackStatus !== undefined && trackStatus !== null ? String(trackStatus) : undefined,
           location:
+            tracking?.shipment_track_activities?.[0]?.location ||
             tracking?.shipment_track?.[0]?.location ||
             tracking?.current_status?.location ||
             null,
           estimatedDelivery: tracking?.etd || null,
           trackingUrl: `https://shiprocket.co/tracking/${trackingNumber}`,
-          events: (tracking?.shipment_track || []).map((e: any) => ({
-            status: e.activity || e.current_status || '',
+          events: scanSource.map((e: any) => ({
+            status: e.activity || e['sr-status-label'] || e.current_status || e.status || '',
             location: e.location || '',
             timestamp: e.date || e.updated_time || '',
             description: e.activity || e.sr_status || '',
@@ -869,6 +855,7 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
         const pkg = data?.ShipmentData?.[0]?.Shipment;
         return {
           status: pkg?.Status?.Status || 'unknown',
+          rawStatus: pkg?.Status?.Status || undefined,
           location: pkg?.Status?.StatusLocation || null,
           estimatedDelivery: pkg?.ExpectedDeliveryDate || null,
           trackingUrl: `https://www.delhivery.com/track/package/${trackingNumber}`,
@@ -906,6 +893,7 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
   if (shipment) {
     return {
       status: shipment.status,
+      rawStatus: shipment.status,
       location: shipment.currentLocation || null,
       estimatedDelivery: shipment.estimatedDelivery?.toISOString() || null,
       trackingUrl: shipment.trackingUrl || null,
@@ -948,47 +936,27 @@ export async function syncOrderLogisticsStatus(orderId: string): Promise<{
     };
   }
 
-  const status = await getTrackingStatus(trackRef);
-  if (!status || status.status === 'unknown') {
+  const { refreshShipmentFromCarrier } = await import('@/lib/services/shipmentStatusService');
+  const refreshed = await refreshShipmentFromCarrier(shipment.id);
+  if (!refreshed.tracking || refreshed.tracking.status === 'unknown') {
     return {
       success: false,
       shipmentStatus: shipment.status,
       deliveryStatus: null,
-      message: 'Shiprocket returned unknown status',
+      message: 'Carrier returned unknown status',
     };
   }
 
-  await prisma.shipment.update({
-    where: { id: shipment.id },
-    data: {
-      status: status.status,
-      currentLocation: status.location,
-      estimatedDelivery: status.estimatedDelivery
-        ? new Date(status.estimatedDelivery)
-        : undefined,
-      events: JSON.stringify(status.events || []),
-      trackingUrl: status.trackingUrl || shipment.trackingUrl,
-    },
-  });
-
-  const nextDelivery = applyDeliveryStatusFromShipment(status.status);
-  if (nextDelivery) {
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        deliveryStatus: nextDelivery,
-        ...(nextDelivery === 'cancelled'
-          ? {} // keep order.status; logistics cancel ≠ full order cancel
-          : {}),
-      },
-    });
-  }
+  const { toOrderDeliveryStatus } = await import('@/lib/logistics/status');
+  const applied = refreshed.result;
+  const nextDelivery =
+    applied && applied.applied && !applied.isReverse ? toOrderDeliveryStatus(applied.status) : null;
 
   return {
     success: true,
-    shipmentStatus: status.status,
+    shipmentStatus: applied?.status && applied.status !== 'unknown' ? applied.status : refreshed.tracking.status,
     deliveryStatus: nextDelivery,
-    message: `Synced: shipment=${status.status}` +
+    message: `Synced: shipment=${refreshed.tracking.status}` +
       (nextDelivery ? `, delivery=${nextDelivery}` : ''),
   };
 }
@@ -1227,9 +1195,20 @@ export function buildShiprocketOrderItems(
   });
 }
 
+/**
+ * Latest FORWARD shipment for an order. Return/exchange pickups (reverse) are never
+ * returned — otherwise label/invoice/pickup would act on the customer's return AWB.
+ * Prefers a live (non-cancelled) shipment; falls back to the newest outbound one.
+ */
 async function getLatestShipmentForOrder(orderId: string) {
+  const outbound = { orderId, NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } } };
+  const live = await prisma.shipment.findFirst({
+    where: { ...outbound, status: { notIn: ['cancelled', 'canceled'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (live) return live;
   return prisma.shipment.findFirst({
-    where: { orderId },
+    where: outbound,
     orderBy: { createdAt: 'desc' },
   });
 }
@@ -1605,9 +1584,28 @@ export async function bookShiprocketOrderWithCourier(
   const { resolveLocalOrderId } = await import('@/lib/services/orderLifecycleService');
   const localOrderId = (await resolveLocalOrderId(orderId)) || orderId;
 
-  // Check for existing non-cancelled non-fake shipment
+  // Forward shipments only — a return/exchange pickup must never be mistaken for the
+  // order's own booking, and an RTO'd / lost parcel is no longer "booked".
+  const outboundOnly = { orderId: localOrderId, NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } } };
+  const latestOutbound = await prisma.shipment.findFirst({
+    where: outboundOnly,
+    orderBy: { createdAt: 'desc' },
+  });
+  const latestOutboundCode = latestOutbound ? normalizeCarrierStatus(latestOutbound.status) : 'unknown';
+  if (latestOutboundCode === 'rto') {
+    throw new Error(
+      'This order is RTO in progress — the parcel has not reached the warehouse yet. ' +
+        'Reassign a courier after the RTO is received (or mark it received first).'
+    );
+  }
+  const isRtoReship = latestOutboundCode === 'rto_delivered' || latestOutboundCode === 'lost';
+
+  // Check for existing live, non-fake shipment
   const existing = await prisma.shipment.findFirst({
-    where: { orderId: localOrderId, status: { not: 'cancelled' } },
+    where: {
+      ...outboundOnly,
+      status: { notIn: ['cancelled', 'canceled', 'rto', 'rto_delivered', 'lost'] },
+    },
     orderBy: { createdAt: 'desc' },
   });
   const existingTn = existing?.trackingNumber || '';
@@ -1713,7 +1711,13 @@ export async function bookShiprocketOrderWithCourier(
     isCod: isCodOrder,
   });
 
-  const shiprocketOrderId = dbOrder.internalOrderNumber || dbOrder.id;
+  // Re-shipping after an RTO: the first Shiprocket order for this reference is still on
+  // file (as RTO), so give the new booking its own channel order id.
+  const baseChannelOrderId = dbOrder.internalOrderNumber || dbOrder.id;
+  const priorOutboundBookings = isRtoReship ? await prisma.shipment.count({ where: outboundOnly }) : 0;
+  const shiprocketOrderId = isRtoReship
+    ? `${baseChannelOrderId}-RS${Math.max(priorOutboundBookings, 1)}`
+    : baseChannelOrderId;
   const nameParts = String(address.name).trim().split(/\s+/).filter(Boolean);
   const phoneDigits = String(address.phone).replace(/\D/g, '');
   const billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
@@ -1791,7 +1795,11 @@ export async function bookShiprocketOrderWithCourier(
     })) || localOrderId;
 
   const pendingShipment = await prisma.shipment.findFirst({
-    where: { orderId: localId, status: { not: 'cancelled' } },
+    where: {
+      orderId: localId,
+      NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
+      status: { notIn: ['cancelled', 'canceled'] },
+    },
     orderBy: { createdAt: 'desc' },
   });
   if (!pendingShipment) {
@@ -1802,7 +1810,7 @@ export async function bookShiprocketOrderWithCourier(
     `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId}`
   );
 
-  return assignCourierAwbAndPersist(
+  const booked = await assignCourierAwbAndPersist(
     localId,
     pendingShipment.id,
     String(srShipmentId),
@@ -1810,6 +1818,307 @@ export async function bookShiprocketOrderWithCourier(
     courierId,
     courierName
   );
+
+  if (isRtoReship) {
+    // Keep the RTO history visible but mark the order as re-shipped.
+    const { addTag } = await import('@/lib/logistics/status');
+    const current = await prisma.order.findUnique({ where: { id: localId }, select: { tags: true } });
+    await prisma.order
+      .update({ where: { id: localId }, data: { tags: addTag(current?.tags, 'Reshipped') } })
+      .catch(() => {});
+  }
+
+  return booked;
+}
+
+// ─── Reverse pickups (returns / exchange pickups) ───────────────────────────
+
+export interface ReverseParty {
+  name: string;
+  address1: string;
+  city: string;
+  state: string;
+  zip: string;
+  phone: string;
+  email?: string;
+}
+
+export interface ReverseItem {
+  name: string;
+  sku: string;
+  units: number;
+  selling_price: number;
+}
+
+/** Our warehouse — the destination of every reverse pickup. */
+function getWarehouseParty(): ReverseParty {
+  return {
+    name: process.env.WAREHOUSE_NAME || 'Zica Bella Returns',
+    address1: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
+    city: process.env.WAREHOUSE_CITY || 'Noida',
+    state: process.env.WAREHOUSE_STATE || 'Uttar Pradesh',
+    zip: process.env.WAREHOUSE_PIN || '201301',
+    phone: process.env.WAREHOUSE_PHONE || '9220385011',
+    email: process.env.WAREHOUSE_EMAIL || undefined,
+  };
+}
+
+/**
+ * Courier options able to pick up from a customer's pincode and deliver to our warehouse.
+ */
+export async function getShiprocketReturnCouriers(
+  customerPincode: string,
+  parcel: { weight: number; length: number; breadth: number; height: number }
+): Promise<CourierServiceabilityResult> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+  const pickupPin = String(customerPincode || '').replace(/\D/g, '');
+  if (pickupPin.length < 6) {
+    throw new Error('Cannot check couriers: the customer pincode is missing or invalid');
+  }
+  const warehousePin = await getShiprocketPickupPincode();
+
+  const params = new URLSearchParams({
+    pickup_postcode: pickupPin,
+    delivery_postcode: warehousePin,
+    weight: String(parcel.weight),
+    length: String(parcel.length),
+    breadth: String(parcel.breadth),
+    height: String(parcel.height),
+    cod: '0',
+    is_return: '1',
+  });
+  const data = await logisticsApiFetch(`/courier/serviceability/?${params.toString()}`, 'GET', undefined, true);
+  const companies: CourierOption[] = (data?.data?.available_courier_companies || []).map((c: any) => ({
+    courier_company_id: c.courier_company_id,
+    courier_name: c.courier_name,
+    rate: Number(c.rate || 0),
+    estimated_delivery_days: c.estimated_delivery_days != null ? Number(c.estimated_delivery_days) : null,
+    cod: Boolean(c.cod),
+    min_weight: Number(c.min_weight || 0),
+    charge_weight: Number(c.charge_weight || parcel.weight),
+    freight_charge: Number(c.freight_charge || 0),
+    cod_charges: Number(c.cod_charges || 0),
+  }));
+  return {
+    available_courier_companies: companies,
+    shiprocket_recommended_courier_id: data?.data?.shiprocket_recommended_courier_id ?? null,
+    message: data?.message || (data?.errors ? JSON.stringify(data.errors) : null),
+  };
+}
+
+export interface ReversePickupBooking {
+  awb: string;
+  courier: string;
+  srShipmentId: string;
+  srOrderId: string | null;
+  shipmentRowId: string;
+  pickupScheduled: boolean;
+}
+
+/**
+ * Create a Shiprocket *return* order for a return / exchange request, assign the AWB for the
+ * chosen courier and request the pickup. Safe to call again after a partial failure: the
+ * Shiprocket shipment id is persisted first and reused (no duplicate return orders).
+ */
+export async function bookShiprocketReversePickup(args: {
+  localOrderId: string;
+  requestKind: 'return' | 'exchange';
+  requestId: string;
+  /** Channel order id on Shiprocket, e.g. R_ZB718103 / E_ZB718103 */
+  channelOrderId: string;
+  customer: ReverseParty;
+  items: ReverseItem[];
+  parcel: { weight: number; length: number; breadth: number; height: number };
+  courierId: number;
+  courierName: string;
+}): Promise<ReversePickupBooking> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') {
+    throw new Error('Shiprocket is not the active logistics provider');
+  }
+  const preset = PROVIDER_PRESETS.shiprocket;
+  const marker = `"request_id":"${args.requestId}"`;
+
+  const existing = await prisma.shipment.findFirst({
+    where: {
+      orderId: args.localOrderId,
+      type: { in: [...REVERSE_SHIPMENT_TYPES] },
+      rawDelhiveryResponse: { contains: marker },
+      status: { notIn: ['cancelled', 'canceled'] },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (existing?.awb) {
+    return {
+      awb: existing.awb,
+      courier: existing.courier || args.courierName,
+      srShipmentId: String(parseShiprocketMeta(existing.rawDelhiveryResponse)?.shipment_id || ''),
+      srOrderId: null,
+      shipmentRowId: existing.id,
+      pickupScheduled: normalizeCarrierStatus(existing.status) === 'pickup_scheduled',
+    };
+  }
+
+  let rowId = existing?.id || null;
+  let srShipmentId = existing ? String(parseShiprocketMeta(existing.rawDelhiveryResponse)?.shipment_id || '') : '';
+  let srOrderId: string | null = existing
+    ? (parseShiprocketMeta(existing.rawDelhiveryResponse)?.order_id != null
+        ? String(parseShiprocketMeta(existing.rawDelhiveryResponse)!.order_id)
+        : null)
+    : null;
+
+  const baseMeta = {
+    provider: 'shiprocket',
+    request_id: args.requestId,
+    request_kind: args.requestKind,
+    is_return: true,
+  };
+
+  if (!srShipmentId) {
+    const c = args.customer;
+    const w = getWarehouseParty();
+    const custParts = c.name.trim().split(/\s+/).filter(Boolean);
+    const whParts = w.name.trim().split(/\s+/).filter(Boolean);
+    const phone10 = (v: string) => {
+      const d = String(v || '').replace(/\D/g, '');
+      return d.length >= 10 ? d.slice(-10) : d;
+    };
+    if (!c.address1 || !c.city || !c.state || !c.zip) {
+      throw new Error(
+        `Cannot book reverse pickup: incomplete customer address (city="${c.city || ''}", state="${c.state || ''}", pincode="${c.zip || ''}")`
+      );
+    }
+    const subTotal = args.items.reduce((s, i) => s + i.selling_price * i.units, 0);
+    const payload = {
+      order_id: args.channelOrderId,
+      order_date: new Date().toISOString().split('T')[0],
+      pickup_customer_name: custParts[0] || 'Customer',
+      pickup_last_name: custParts.slice(1).join(' ') || '.',
+      pickup_address: c.address1,
+      pickup_city: c.city,
+      pickup_state: c.state,
+      pickup_country: 'India',
+      pickup_pincode: Number(String(c.zip).replace(/\D/g, '')),
+      pickup_email: c.email || 'noreply@zicabella.com',
+      pickup_phone: phone10(c.phone),
+      shipping_customer_name: whParts[0] || 'Zica',
+      shipping_last_name: whParts.slice(1).join(' ') || 'Bella',
+      shipping_address: w.address1,
+      shipping_city: w.city,
+      shipping_country: 'India',
+      shipping_pincode: Number(String(w.zip).replace(/\D/g, '')),
+      shipping_state: w.state,
+      shipping_email: w.email || 'noreply@zicabella.com',
+      shipping_phone: phone10(w.phone),
+      order_items: args.items.map((i) => ({
+        name: i.name,
+        sku: i.sku,
+        units: i.units,
+        selling_price: i.selling_price,
+        discount: 0,
+      })),
+      payment_method: 'PREPAID',
+      total_discount: 0,
+      sub_total: subTotal,
+      length: args.parcel.length,
+      breadth: args.parcel.breadth,
+      height: args.parcel.height,
+      weight: args.parcel.weight,
+    };
+
+    const created = await logisticsApiFetch(preset.endpoints.createReturn, 'POST', payload);
+    const sid = created?.shipment_id ?? created?.payload?.shipment_id;
+    const oid = created?.order_id ?? created?.payload?.order_id;
+    if (!sid) {
+      throw new Error(
+        `Shiprocket return order was not created: ${JSON.stringify(created).slice(0, 300)}`
+      );
+    }
+    srShipmentId = String(sid);
+    srOrderId = oid != null ? String(oid) : null;
+
+    const row = await prisma.shipment.create({
+      data: {
+        orderId: args.localOrderId,
+        trackingNumber: srShipmentId,
+        awb: null,
+        courier: args.courierName,
+        status: 'new',
+        type: 'reverse_pickup',
+        rawDelhiveryResponse: JSON.stringify({ ...baseMeta, shipment_id: srShipmentId, order_id: srOrderId }),
+      },
+    });
+    rowId = row.id;
+  }
+
+  if (!rowId) throw new Error('Reverse pickup shipment row missing');
+
+  // Assign AWB for the chosen courier (is_return = reverse leg)
+  const assignData = await logisticsApiFetch(preset.endpoints.assignAwb, 'POST', {
+    shipment_id: srShipmentId,
+    courier_id: args.courierId,
+    is_return: 1,
+  });
+  const assignPayload = assignData?.response?.data || assignData?.data || assignData;
+  const awb = String(assignPayload?.awb_code || '').trim();
+  if (!awb) {
+    throw new Error(
+      `${args.courierName} could not assign an AWB for this pickup. Try a different courier — ` +
+        `the Shiprocket return order is saved, so retrying will not create a duplicate.`
+    );
+  }
+  const finalCourier = assignPayload?.courier_name || args.courierName;
+
+  await prisma.shipment.update({
+    where: { id: rowId },
+    data: {
+      awb,
+      trackingNumber: awb,
+      trackingUrl: `https://shiprocket.co/tracking/${awb}`,
+      courier: finalCourier,
+      status: 'confirmed',
+      rawDelhiveryResponse: JSON.stringify({ ...baseMeta, shipment_id: srShipmentId, order_id: srOrderId }),
+      events: JSON.stringify([
+        {
+          status: 'confirmed',
+          location: 'Customer',
+          timestamp: new Date().toISOString(),
+          description: `Reverse pickup booked with AWB ${awb}`,
+        },
+      ]),
+    },
+  });
+
+  // Request the pickup (best effort — AWB is already assigned and visible to ops)
+  let pickupScheduled = false;
+  try {
+    const pickup = await logisticsApiFetch(preset.endpoints.generatePickup, 'POST', {
+      shipment_id: [Number(srShipmentId) || srShipmentId],
+    });
+    pickupScheduled = pickup?.pickup_status === 1 || Boolean(pickup?.response?.pickup_scheduled_date);
+    if (pickupScheduled) {
+      await prisma.shipment.update({
+        where: { id: rowId },
+        data: {
+          status: 'pickup_scheduled',
+          rawDelhiveryResponse: JSON.stringify({
+            ...baseMeta,
+            shipment_id: srShipmentId,
+            order_id: srOrderId,
+            pickup_scheduled_at: pickup?.response?.pickup_scheduled_date || new Date().toISOString(),
+          }),
+        },
+      });
+    }
+  } catch (pErr: any) {
+    console.warn('[Shiprocket] Reverse pickup request note:', pErr?.message || pErr);
+  }
+
+  return { awb, courier: finalCourier, srShipmentId, srOrderId, shipmentRowId: rowId, pickupScheduled };
 }
 
 /**
@@ -2058,6 +2367,9 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
 
   const cancellableStatuses = [
     'confirmed',
+    'manifested',
+    'pickup_failed',
+    'pickup_pending',
     'packed',
     'label_created',
     'pickup_scheduled',

@@ -34,6 +34,8 @@ interface Shipment {
   courier: string | null;
   status: string;
   trackingUrl: string | null;
+  provider?: string;
+  isReverse?: boolean;
   createdAt: string;
   order: {
     shopifyOrderId: string;
@@ -82,6 +84,12 @@ const STATUS_THEME: Record<string, { label: string; color: string; bg: string; d
   pickup_pending:    { label: "Pickup Pending",     color: "text-amber-400",   bg: "bg-amber-500/10",   dot: "bg-amber-400" },
   rto:               { label: "RTO",                color: "text-rose-400",    bg: "bg-rose-500/10",    dot: "bg-rose-400" },
   cancelled:         { label: "Cancelled",          color: "text-rose-400",    bg: "bg-rose-500/10",    dot: "bg-rose-400" },
+  pickup_scheduled:  { label: "Pickup Scheduled",   color: "text-amber-400",   bg: "bg-amber-500/10",   dot: "bg-amber-400" },
+  picked_up:         { label: "Picked Up",          color: "text-blue-400",    bg: "bg-blue-500/10",    dot: "bg-blue-400" },
+  pickup_failed:     { label: "Pickup Failed",      color: "text-rose-400",    bg: "bg-rose-500/10",    dot: "bg-rose-400" },
+  undelivered:       { label: "Delivery Failed",    color: "text-rose-400",    bg: "bg-rose-500/10",    dot: "bg-rose-400" },
+  rto_delivered:     { label: "RTO Received",       color: "text-rose-400",    bg: "bg-rose-500/10",    dot: "bg-rose-400" },
+  lost:              { label: "Lost / Damaged",     color: "text-rose-400",    bg: "bg-rose-500/10",    dot: "bg-rose-400" },
 };
 
 // ─── Main Page ───────────────────────────────────────────────────────
@@ -276,9 +284,44 @@ export default function LogisticsPage() {
     setTrackingLoading(true);
     setTrackingData(null);
     try {
-      const res = await fetch(`/api/delhivery/track?awb=${awb}`);
+      const res = await fetch(`/api/logistics/track?awb=${encodeURIComponent(awb)}`);
       const data = await res.json();
-      setTrackingData(data);
+      if (!res.ok || data.error) {
+        setTrackingData(null);
+      } else {
+        const history: Array<{ status?: string; location?: string; timestamp?: string; description?: string }> =
+          Array.isArray(data.scan_history) ? data.scan_history : [];
+        const sorted = [...history].sort((a, b) => {
+          const ta = new Date(a.timestamp || "").getTime() || 0;
+          const tb = new Date(b.timestamp || "").getTime() || 0;
+          return tb - ta;
+        });
+        setTrackingData({
+          ShipmentData: [
+            {
+              Shipment: {
+                AWB: data.awb || awb,
+                ExpectedDeliveryDate: data.estimated_delivery || undefined,
+                Status: {
+                  Status: data.status_label || data.status || "unknown",
+                  StatusDateTime: sorted[0]?.timestamp || "",
+                  StatusType: data.status || "",
+                  StatusLocation: data.current_location || sorted[0]?.location || "",
+                  Instructions: sorted[0]?.description || undefined,
+                },
+                Scans: sorted.map((e) => ({
+                  ScanDetail: {
+                    Scan: e.status || "",
+                    ScannedLocation: e.location || "",
+                    ScanDateTime: e.timestamp || "",
+                    Instructions: e.description || undefined,
+                  },
+                })),
+              },
+            },
+          ],
+        });
+      }
     } catch {
       showToast("Failed to load tracking data", "error");
     } finally {
@@ -290,10 +333,10 @@ export default function LogisticsPage() {
 
   const stats = {
     total: shipments.length,
-    manifested: shipments.filter(s => s.status === "manifested" || s.status === "confirmed").length,
+    manifested: shipments.filter(s => s.status === "manifested" || s.status === "confirmed" || s.status === "pickup_scheduled").length,
     awaiting: shipments.filter(s => s.status === "manifest_required").length,
     delivered: shipments.filter(s => s.status === "delivered").length,
-    inTransit: shipments.filter(s => ["shipped", "in_transit", "out_for_delivery", "pickup_pending"].includes(s.status)).length,
+    inTransit: shipments.filter(s => ["shipped", "in_transit", "picked_up", "out_for_delivery", "pickup_pending"].includes(s.status)).length,
   };
 
   // ─── Render ───────────────────────────────────────────────────────
@@ -325,7 +368,7 @@ export default function LogisticsPage() {
             <div className="w-8 h-8 rounded-lg bg-foreground/5 border border-foreground/10 flex items-center justify-center">
               <Truck className="w-4 h-4 text-foreground/40" />
             </div>
-            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/20">Delhivery B2C</span>
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/20">Shiprocket · Delhivery</span>
           </div>
           <h1 className="text-4xl font-semibold tracking-tight text-foreground">Logistics</h1>
           <p className="text-[13px] text-foreground/40 max-w-md font-medium leading-relaxed">
@@ -403,12 +446,13 @@ export default function LogisticsPage() {
             >
               <option value="">All Status</option>
               <option value="manifest_required">Awaiting Manifest</option>
-              <option value="manifested">Manifested</option>
-              <option value="shipped">Shipped</option>
+              <option value="manifested">Booked / Manifested</option>
+              <option value="pickup_scheduled">Pickup Scheduled</option>
               <option value="in_transit">In Transit</option>
               <option value="out_for_delivery">Out for Delivery</option>
               <option value="delivered">Delivered</option>
-              <option value="rto">RTO</option>
+              <option value="rto">RTO In Progress</option>
+              <option value="rto_delivered">RTO Received</option>
               <option value="cancelled">Cancelled</option>
             </select>
             <button onClick={fetchShipments} className="p-2.5 text-foreground/20 hover:text-foreground transition-all">
@@ -466,7 +510,7 @@ export default function LogisticsPage() {
                         <StatusBadge status={s.status} />
                         <p className="text-[10px] text-foreground/20 font-semibold uppercase tracking-widest mt-1.5 flex items-center gap-1.5">
                           <Globe className="w-2.5 h-2.5" />
-                          {s.courier || "Delhivery B2C"}
+                          {s.courier || "Courier"}{s.isReverse ? " · Reverse pickup" : ""}
                         </p>
                       </div>
 
@@ -474,9 +518,14 @@ export default function LogisticsPage() {
                       <div className="col-span-5 text-right flex items-center justify-end gap-2 flex-wrap">
                         {s.awb ? (
                           <>
-                            {/* Print Label */}
+                            {/* Print Label (forward shipments only) */}
+                            {!s.isReverse && (
                             <a
-                              href={`/api/delhivery/label?awb=${s.awb}`}
+                              href={
+                                s.provider === "delhivery"
+                                  ? `/api/delhivery/label?awb=${s.awb}`
+                                  : `/api/logistics/label?order_id=${s.orderId}`
+                              }
                               target="_blank"
                               rel="noopener noreferrer"
                               title="Print Label"
@@ -484,6 +533,7 @@ export default function LogisticsPage() {
                             >
                               <Printer className="w-3.5 h-3.5" />
                             </a>
+                            )}
 
                             {/* Track */}
                             <button
@@ -496,17 +546,22 @@ export default function LogisticsPage() {
 
                             {/* External Link */}
                             <a
-                              href={s.trackingUrl || `https://www.delhivery.com/track/package/${s.awb}`}
+                              href={
+                                s.trackingUrl ||
+                                (s.provider === "delhivery"
+                                  ? `https://www.delhivery.com/track/package/${s.awb}`
+                                  : `https://shiprocket.co/tracking/${s.awb}`)
+                              }
                               target="_blank"
                               rel="noopener noreferrer"
-                              title="Open on Delhivery"
+                              title="Open carrier tracking page"
                               className="p-2.5 bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 rounded-xl text-foreground/40 hover:text-foreground transition-all"
                             >
                               <ExternalLink className="w-3.5 h-3.5" />
                             </a>
 
                             {/* Cancel (only for cancellable statuses) */}
-                            {["manifested", "confirmed", "packed", "pickup_pending"].includes(s.status) && (
+                            {["manifested", "confirmed", "packed", "pickup_pending", "pickup_scheduled"].includes(s.status) && (
                               <button
                                 onClick={() => handleCancel(s.awb!)}
                                 disabled={cancellingAwb === s.awb}
@@ -522,19 +577,29 @@ export default function LogisticsPage() {
                             )}
                           </>
                         ) : (
-                          /* Manifest Button */
-                          <button
-                            onClick={() => handleManifest(s.id)}
-                            disabled={manifestingOrderId === s.id}
-                            className="flex items-center gap-2 px-5 py-2 bg-blue-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-blue-500/20 disabled:opacity-50"
-                          >
-                            {manifestingOrderId === s.id ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
+                          /* Booking */
+                          s.provider === "shiprocket" ? (
+                            <Link
+                              href={`/dashboard/orders/${s.orderId.replace("pending-", "")}`}
+                              className="flex items-center gap-2 px-5 py-2 bg-blue-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-blue-500/20"
+                            >
                               <Zap className="w-3.5 h-3.5 fill-white" />
-                            )}
-                            Manifest
-                          </button>
+                              Book Courier
+                            </Link>
+                          ) : (
+                            <button
+                              onClick={() => handleManifest(s.id)}
+                              disabled={manifestingOrderId === s.id}
+                              className="flex items-center gap-2 px-5 py-2 bg-blue-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all shadow-lg shadow-blue-500/20 disabled:opacity-50"
+                            >
+                              {manifestingOrderId === s.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Zap className="w-3.5 h-3.5 fill-white" />
+                              )}
+                              Manifest
+                            </button>
+                          )
                         )}
 
                         {/* Order Detail Link */}

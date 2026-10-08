@@ -166,6 +166,19 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: 'Exchange request not found' }, { status: 404 });
     }
 
+    // State-machine guards: these steps have dedicated endpoints that perform the real work
+    // (receipt confirmation, replacement order creation) and must not be skipped.
+    const currentStatus = String(exchangeRequest.status || '').toLowerCase();
+    if (['received', 'qc_passed'].includes(status)) {
+      return NextResponse.json({ error: 'Use "Mark as Received & QC" (receive endpoint) to confirm the parcel.' }, { status: 400 });
+    }
+    if (status === 'new_order_created') {
+      return NextResponse.json({ error: 'Use "Create Replacement Order" — it creates the G_E_ order and its shipment.' }, { status: 400 });
+    }
+    if ((status === 'shipped' || status === 'completed') && !['new_order_created', 'shipped'].includes(currentStatus)) {
+      return NextResponse.json({ error: `Cannot mark "${currentStatus}" exchange as ${status}; the replacement order must be created first.` }, { status: 400 });
+    }
+
     // Build update data
     const updateData: any = { status };
 

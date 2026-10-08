@@ -4,6 +4,7 @@
  * Books Shiprocket (create + AWB) from local Order.
  */
 
+import { REVERSE_SHIPMENT_TYPES } from "@/lib/logistics/status";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { shipOrder } from "@/lib/services/logistics";
@@ -35,9 +36,10 @@ export async function POST(req: Request) {
     orderIdForLock = order_id;
 
     const existingShipment = await prisma.shipment.findFirst({
-      where: { 
+      where: {
         orderId: order_id,
-        status: { not: "cancelled" },
+        NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
+        status: { notIn: ["cancelled", "canceled", "rto", "rto_delivered", "lost"] },
       },
       orderBy: { createdAt: "desc" },
     });

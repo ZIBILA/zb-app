@@ -235,9 +235,36 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       });
     }
 
+    const baseStatus = String(webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
+    const codSettled =
+      isCodOrder &&
+      String(order.deliveryStatus || '').toLowerCase() === 'delivered' &&
+      ['paid', 'cod_upfront_paid', 'partially_paid', 'pending', 'payment_pending'].includes(baseStatus);
+
+    // Linked return / exchange requests (R_ / E_ / G_E_ ids) for traceability
+    const [linkedReturns, linkedExchanges, replacementOf] = await Promise.all([
+      prisma.returnRequest.findMany({
+        where: { orderId: order.id },
+        select: { id: true, displayId: true, status: true, reverseAwb: true, logisticsPartner: true, receivedAt: true, createdAt: true, reason: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.exchangeRequest.findMany({
+        where: { orderId: order.id },
+        select: { id: true, displayId: true, replacementDisplayId: true, replacementOrderId: true, status: true, reverseAwb: true, logisticsPartner: true, receivedAt: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.exchangeRequest.findFirst({
+        where: { replacementOrderId: order.id },
+        select: { id: true, displayId: true, orderId: true, order: { select: { id: true, internalOrderNumber: true, shopifyOrderName: true, shopifyOrderId: true } } },
+      }),
+    ]);
+
     // Enrich the order payload with correct webstore fields if available
     const enrichedOrder = {
       ...order,
+      linkedReturns: linkedReturns.filter((r: any) => !(r.reason || '').includes('EXCHANGE_RETURN')),
+      linkedExchanges,
+      replacementOf,
       items: enrichedItems,
       codUpfrontPaid: resolvedCodUpfrontPaid,
       codUpfrontPaymentId: webStoreOrder?.codUpfrontPaymentId || order.razorpayPaymentId || null,
@@ -247,7 +274,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       razorpayOrderId: webStoreOrder?.razorpayOrderId || order.razorpayOrderId || null,
       razorpayPaymentId: webStoreOrder?.razorpayPaymentId || order.razorpayPaymentId || null,
       paymentMethod: finalPaymentMethod,
-      paymentStatus: webStoreOrder?.paymentStatus || (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus),
+      paymentStatus: codSettled
+        ? 'paid'
+        : webStoreOrder?.paymentStatus || (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus),
+      /** COD cash collected by the courier on delivery → fully settled. */
+      codSettled,
     };
 
     return NextResponse.json({ success: true, order: enrichedOrder });

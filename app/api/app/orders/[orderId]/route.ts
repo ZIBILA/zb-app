@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { isReverseShipmentType, pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
 import { getAppAuthFromRequest } from '@/lib/appAuth';
+import { isCodOrder, COD_STORE_CREDIT_MESSAGE } from '@/lib/returnPolicy';
+import { buildRequestSummaries, isInternalExchangeReturn } from '@/lib/services/requestEnrichment';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,12 +67,11 @@ function paymentStatusFromOrder(order: any): 'pending' | 'paid' | 'failed' {
 
 function trackingFromOrder(order: any) {
   const shipments = Array.isArray(order.shipments) ? order.shipments : [];
-  const latest = shipments
-    .slice()
-    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  if (!latest?.awb && !latest?.trackingNumber) return null;
+  // Outbound parcel only — never a return / exchange pickup.
+  const latest: any = pickActiveOutboundShipment(shipments);
+  if (!latest || !shipmentAwb(latest)) return null;
   return {
-    awb: latest.awb || latest.trackingNumber || null,
+    awb: shipmentAwb(latest),
     carrier: latest.courier || null,
     lastLocation: latest.currentLocation || null,
     estimatedDelivery: latest.estimatedDelivery ? new Date(latest.estimatedDelivery).toISOString() : null,
@@ -95,7 +97,7 @@ function statusTimeline(order: any) {
       order.returnRequests?.some((r: any) => r.status === 'refunded') ||
       order.exchangeRequests?.some((e: any) => e.status === 'new_order_created');
 
-    const latestShipment = (order.shipments || []).find((s: any) => String(s.status).toLowerCase() === 'delivered');
+    const latestShipment = (order.shipments || []).find((s: any) => !isReverseShipmentType(s.type) && String(s.status).toLowerCase() === 'delivered');
     const deliveredAt = latestShipment?.updatedAt ? new Date(latestShipment.updatedAt).toISOString() : updatedAt;
 
     return [
@@ -263,6 +265,8 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
       };
     };
 
+    const requestSummaries = await buildRequestSummaries([order as any]);
+
     return NextResponse.json({
       order: {
         id: order.id,
@@ -273,6 +277,8 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
         cancelledBy: order.cancelledBy || null,
         cancelledAt: order.cancelledAt || null,
         paymentMethod: paymentMethodFromOrder(order),
+        isCod: isCodOrder(order),
+        codStoreCreditMessage: isCodOrder(order) ? COD_STORE_CREDIT_MESSAGE : null,
         paymentStatus: paymentStatusFromOrder(order),
         fulfillmentStatus: order.fulfillmentStatus || 'unfulfilled',
         deliveryStatus: order.deliveryStatus || 'pending',
@@ -294,8 +300,15 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
         tags: order.tags,
         razorpayOrderId: order.razorpayOrderId,
         razorpayPaymentId: order.razorpayPaymentId,
-        returnRequests: order.returnRequests || [],
-        exchangeRequests: order.exchangeRequests || [],
+        returnRequests: (order.returnRequests || []).map((r: any) => ({
+          ...r,
+          isInternal: isInternalExchangeReturn(r),
+          summary: requestSummaries.returnSummaries.get(r.id) || null,
+        })),
+        exchangeRequests: (order.exchangeRequests || []).map((e: any) => ({
+          ...e,
+          summary: requestSummaries.exchangeSummaries.get(e.id) || null,
+        })),
       },
     }, { headers: corsHeaders });
   } catch (e: any) {

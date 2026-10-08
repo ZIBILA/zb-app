@@ -436,6 +436,15 @@ model ReturnRequest {
   approvedAt      DateTime?
   reason          String?
   reverseAwb      String?
+  /// Human-facing linked id, e.g. R_ZB718103 (second return on same order: R_ZB718103_2).
+  displayId        String?   @unique
+  /// Courier chosen by ops when accepting the return (Shiprocket courier name / Delhivery).
+  logisticsPartner String?
+  /// Set when the returned parcel is physically received at our warehouse.
+  receivedAt       DateTime?
+  /// 'store_credit' | 'original_source' — what the customer was actually given.
+  refundType       String?
+  refundReleasedAt DateTime?
   returns         Return[]
   order           Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
 }
@@ -480,6 +489,14 @@ model ExchangeRequest {
   newShopifyOrderId    String?
   reverseAwb           String?
   settlementPreference String     @default("PREPAID_NOW")
+  /// Human-facing linked id, e.g. E_ZB718103.
+  displayId            String?    @unique
+  /// Replacement shipment/order id once the exchange parcel is received, e.g. G_E_ZB718103.
+  replacementDisplayId String?    @unique
+  /// Local Order.id of the replacement order.
+  replacementOrderId   String?
+  logisticsPartner     String?
+  receivedAt           DateTime?
   exchanges            Exchange[]
   order                Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
 }

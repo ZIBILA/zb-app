@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { enrichSingleItem } from "@/lib/enrichSize";
+import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
+import { resolveRefundMethod } from "@/lib/returnPolicy";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +13,19 @@ export async function GET(req: Request) {
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
 
-    const where = status && status !== 'all' ? { status } : {};
-    const standaloneWhere = status && status !== 'all' ? { returnRequestId: null, status: status.toUpperCase() } : { returnRequestId: null };
+    // Linked-id search (R_ZB…, E_ZB…, G_E_ZB…) is resolved server-side so it also finds older requests.
+    const parsedQ = parseLinkedId(searchParams.get('search'));
+    const statusWhere: any = status && status !== 'all' ? { status } : {};
+    const where: any = parsedQ
+      ? {
+          ...statusWhere,
+          OR: [
+          { displayId: { contains: parsedQ.id, mode: 'insensitive' } },
+          { order: { OR: [{ internalOrderNumber: { contains: parsedQ.baseNumber, mode: 'insensitive' } }, { shopifyOrderName: { contains: parsedQ.baseNumber, mode: 'insensitive' } }] } },
+          ],
+        }
+      : statusWhere;
+    const standaloneWhere = parsedQ ? { id: '__none__' } as any : (status && status !== 'all' ? { returnRequestId: null, status: status.toUpperCase() } : { returnRequestId: null });
 
     // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
     const rowCap = Math.min(Math.max(limit + offset, limit), 100);
@@ -72,6 +85,10 @@ export async function GET(req: Request) {
 
         return {
           returnRequestId: r.id,
+          displayId: r.displayId || null,
+          logisticsPartner: r.logisticsPartner || null,
+          reverseAwb: r.reverseAwb || null,
+          receivedAt: r.receivedAt || null,
           orderId: r.orderId,
           shopifyOrderId: r.order?.shopifyOrderName || r.order?.internalOrderNumber || (r.order?.shopifyOrderId && `#${r.order.shopifyOrderId.replace('#', '')}`) || r.orderId,
           orderCreatedAt: r.order?.createdAt,
@@ -183,9 +200,18 @@ export async function POST(req: Request) {
       };
     }));
 
+    const parentOrder = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!parentOrder) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+    const displayId = await allocateLinkedId(prisma as any, 'return', parentOrder);
+    const manualRefundMethod = resolveRefundMethod(parentOrder, null);
+
     const returnRequest = await prisma.$transaction(async (tx: any) => {
       const rr = await tx.returnRequest.create({
         data: {
+          displayId,
+          refundType: manualRefundMethod === 'store_credit' ? 'store_credit' : 'original_source',
           orderId,
           customerId,
           estimatedRefund: parseFloat(estimatedRefund) || resolvedItems.reduce((acc: any, i: any) => acc + i.refundAmount, 0),
@@ -200,6 +226,8 @@ export async function POST(req: Request) {
               reason: item.reason,
               refundAmount: item.refundAmount,
               status: "REQUESTED",
+              refundMethod: manualRefundMethod,
+              refundStatus: "PENDING",
               variantTitle: item.variantTitle,
               size: item.size,
               title: item.title,

@@ -563,7 +563,7 @@ export default function ProfilePage() {
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <p className="text-[10px] font-bold text-foreground/80">
-                              Return for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
+                              {req.displayId || req.summary?.displayId ? `${req.displayId || req.summary?.displayId} · ` : ''}Return for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
                             </p>
                             <p className="text-[8px] text-foreground/35 mt-0.5">
                               Requested {new Date(req.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
@@ -576,7 +576,7 @@ export default function ProfilePage() {
                                 ? 'bg-foreground/5 text-foreground/40 border border-foreground/10'
                                 : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
                           }`}>
-                            {req.status?.replace('_', ' ')}
+                            {req.summary?.stageLabel || req.status?.replace(/_/g, ' ')}
                           </span>
                         </div>
 
@@ -599,6 +599,22 @@ export default function ProfilePage() {
                           ))}
                         </div>
 
+                        {req.summary?.replacement?.displayId && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">Replacement order: {req.summary.replacement.displayId}</p>
+                        )}
+                        {req.summary?.refund && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">{req.summary.refund.methodLabel} · {req.summary.refund.stateLabel}</p>
+                        )}
+                        {req.summary?.isCod && req.summary?.kind === 'return' && req.summary?.codMessage && (
+                          <p className="mt-2 text-[9px] text-foreground/50">
+                            {req.summary.codMessage}{' '}
+                            <span
+                              role="link"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.location.href = "/policies/refund-policy"; }}
+                              className="underline font-bold text-foreground/70 cursor-pointer"
+                            >Learn More</span>
+                          </p>
+                        )}
                         {req.reason && (
                           <div className="mt-3 text-[9px] text-foreground/45 italic bg-foreground/[0.02] p-2 rounded-lg border border-foreground/5">
                             Reason: {req.reason}
@@ -620,7 +636,7 @@ export default function ProfilePage() {
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <p className="text-[10px] font-bold text-foreground/80">
-                              Exchange for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
+                              {req.displayId || req.summary?.displayId ? `${req.displayId || req.summary?.displayId} · ` : ''}Exchange for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
                             </p>
                             <p className="text-[8px] text-foreground/35 mt-0.5">
                               Requested {new Date(req.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
@@ -633,7 +649,7 @@ export default function ProfilePage() {
                                 ? 'bg-foreground/5 text-foreground/40 border border-foreground/10'
                                 : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
                           }`}>
-                            {req.status?.replace('_', ' ')}
+                            {req.summary?.stageLabel || req.status?.replace(/_/g, ' ')}
                           </span>
                         </div>
 
@@ -656,6 +672,18 @@ export default function ProfilePage() {
                           ))}
                         </div>
 
+                        {req.summary?.replacement?.displayId && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">Replacement order: {req.summary.replacement.displayId}</p>
+                        )}
+                        {req.summary?.refund && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">{req.summary.refund.methodLabel} · {req.summary.refund.stateLabel}</p>
+                        )}
+                        {req.summary?.isCod && req.summary?.kind === 'return' && req.summary?.codMessage && (
+                          <p className="mt-2 text-[9px] text-foreground/50">
+                            {req.summary.codMessage}{' '}
+                            <Link href="/policies/refund-policy" onClick={(e) => e.stopPropagation()} className="underline font-bold text-foreground/70">Learn More</Link>
+                          </p>
+                        )}
                         {req.reason && (
                           <div className="mt-3 text-[9px] text-foreground/45 italic bg-foreground/[0.02] p-2 rounded-lg border border-foreground/5">
                             Reason: {req.reason}

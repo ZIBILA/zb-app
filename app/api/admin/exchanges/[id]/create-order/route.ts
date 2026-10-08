@@ -3,6 +3,8 @@ import prisma from "@/lib/db";
 import { createOrder, shopifyFetch } from "@/lib/shopify-admin";
 import { issueStoreCredits } from "@/lib/storeCreditsHelper";
 import { createDelhiveryShipment, fetchWaybill } from "@/lib/delhivery";
+import { allocateLinkedId, replacementIdForExchange } from "@/lib/linkedIds";
+import { getActiveLogisticsProvider } from "@/lib/services/logistics";
 
 /**
  * Resolves the Shopify variant_id for a given exchange item.
@@ -181,8 +183,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       });
     }
 
-    if (!["qc_passed", "received", "approved"].includes(exchangeRequest.status)) {
-      return NextResponse.json({ error: `Exchange must pass QC before creating replacement order. Current status: ${exchangeRequest.status}` }, { status: 400 });
+    if (!["qc_passed", "received"].includes(exchangeRequest.status)) {
+      return NextResponse.json({ error: `The exchange parcel must be received (and pass QC) before the replacement order is created. Current status: ${exchangeRequest.status}` }, { status: 400 });
     }
 
     // Atomic claim: prevent concurrent order creation attempts
@@ -190,7 +192,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       where: {
         id,
         newShopifyOrderId: null,
-        status: { in: ["qc_passed", "received", "approved"] }
+        status: { in: ["qc_passed", "received"] }
       },
       data: {
         status: "creating_order"
@@ -215,6 +217,15 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         error: `Exchange order creation is already in progress or exchange is not ready (status: ${current?.status || "unknown"}).`
       }, { status: 409 });
     }
+
+    // Linked ids: E_<order> for the exchange (backfilled for legacy rows) and
+    // G_E_<order> for the replacement order/shipment created from it.
+    let exchangeDisplayId = exchangeRequest.displayId;
+    if (!exchangeDisplayId) {
+      exchangeDisplayId = await allocateLinkedId(prisma as any, 'exchange', exchangeRequest.order);
+      await prisma.exchangeRequest.update({ where: { id }, data: { displayId: exchangeDisplayId } });
+    }
+    const replacementDisplayId = exchangeRequest.replacementDisplayId || replacementIdForExchange(exchangeDisplayId);
 
     const priceDiff = exchangeRequest.priceDifference || 0;
     const isCod = exchangeRequest.settlementPreference === "COD_ON_DELIVERY" && priceDiff > 0;
@@ -313,8 +324,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       financial_status: shopifyFinancialStatus,
       fulfillment_status: null,
       inventory_behaviour: "decrement_ignoring_policy",
-      note: `Exchange replacement for original order #${exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId}. Settlement: ${exchangeRequest.settlementPreference}. Size: ${resolvedVariants.map(v => v.resolvedSize || 'N/A').join(', ')}`,
-      tags: `exchange,exchange-order,original-order-${exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId}${isCod ? ',COD' : ''}`,
+      note: `Exchange replacement ${replacementDisplayId} (${exchangeDisplayId}) for original order #${exchangeRequest.order.internalOrderNumber || exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId}. Settlement: ${exchangeRequest.settlementPreference}. Size: ${resolvedVariants.map(v => v.resolvedSize || 'N/A').join(', ')}`,
+      tags: `exchange,exchange-order,${replacementDisplayId},original-order-${exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId}${isCod ? ',COD' : ''}`,
       total_discounts: totalDiscount,
       send_receipt: true,
       send_fulfillment_receipt: true,
@@ -385,15 +396,17 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         data: {
           shopId: exchangeRequest.order.shopId,
           shopifyOrderId: shopifyOrderId,
+          internalOrderNumber: replacementDisplayId,
           customerId: exchangeRequest.customerId,
           status: "confirmed",
           orderType: "EXCHANGE",
+          tags: `exchange,${replacementDisplayId}${isCod ? ',COD' : ''}`,
           totalPrice: orderTotalAmount,
           paymentStatus: paymentStatus,
           fulfillmentStatus: "unfulfilled",
           shippingAddress: exchangeRequest.order.shippingAddress,
           billingAddress: exchangeRequest.order.billingAddress,
-          note: `Exchange replacement order for #${exchangeRequest.order.shopifyOrderId}`,
+          note: `Exchange replacement ${replacementDisplayId} (${exchangeDisplayId}) for original order #${exchangeRequest.order.internalOrderNumber || exchangeRequest.order.shopifyOrderId}`,
           items: {
             create: newItems
           }
@@ -431,6 +444,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         data: {
           status: "new_order_created",
           newShopifyOrderId: shopifyOrderId,
+          replacementDisplayId,
+          replacementOrderId: localOrder.id,
         }
       });
 
@@ -455,7 +470,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     let forwardShipmentStatus = 'manifested';
     let delhiveryShipmentRaw: any = null;
 
+    // The replacement is dispatched like any other order. With Shiprocket as the active
+    // provider ops books the courier from the order page (parcel size + courier choice),
+    // so only auto-book here when Delhivery is the configured provider.
+    const activeProvider = await getActiveLogisticsProvider().catch(() => 'mock');
     try {
+      if (activeProvider !== 'delhivery') throw Object.assign(new Error('auto-dispatch skipped'), { skip: true });
       let addrObj: any = {};
       const shippingRaw = exchangeRequest.order.shippingAddress;
       if (typeof shippingRaw === 'string') {
@@ -519,7 +539,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         });
       }
     } catch (shipErr: any) {
-      console.error("[Exchange Create Order] Forward Delhivery shipment creation warning:", shipErr.message);
+      if (!shipErr?.skip) {
+        console.error("[Exchange Create Order] Forward Delhivery shipment creation warning:", shipErr.message);
+      }
     }
 
     // 6. Send WhatsApp notification with REAL forward AWB and tracking URL
@@ -534,8 +556,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           phone = parsed?.phone;
         } catch (_) {}
       }
-      if (phone) {
-        const orderIdDisplay = shopifyOrder?.name || shopifyOrderId;
+      // Only announce the dispatch once a real AWB exists.
+      if (phone && forwardAwb) {
+        const orderIdDisplay = replacementDisplayId;
         const customerName = customer?.name || 'Valued Customer';
         await sendExchangeShipped({
           phone,
@@ -553,6 +576,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       success: true,
       shopifyOrderId,
       shopifyOrderName: shopifyOrder?.name || null,
+      replacementDisplayId,
+      exchangeDisplayId,
       localOrderId: result.localOrderId,
       forwardAwb,
       storeCreditIssued: result.storeCreditIssued,

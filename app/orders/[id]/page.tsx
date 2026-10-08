@@ -1,5 +1,6 @@
 "use client";
 
+import RequestStatusCard from "@/components/RequestStatusCard";
 import { useEffect, useState, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -474,57 +475,41 @@ export default function OrderDetailsPage() {
           </div>
         )}
 
-        {/* ACTIVE RETURN REQUEST CARD */}
-        {activeReturnReq && (
-          <div className="mb-8 p-6 rounded-3xl glass-panel border border-amber-500/20 bg-amber-500/5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <RotateCcw className="w-4 h-4 text-amber-500" />
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-amber-500">Return Request</h3>
-              </div>
-              <span className="px-3 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                {activeReturnReq.status.replace('_', ' ')}
-              </span>
+        {/* RETURN / EXCHANGE REQUESTS — id, pickup, received, refund / store credit, replacement */}
+        {(order.returnRequests || [])
+          .filter((r: any) => r.status !== 'cancelled' && r.summary)
+          .map((r: any) => (
+            <div key={r.id} className="mb-8">
+              <RequestStatusCard summary={r.summary}>
+                <p className="font-medium">Requested on: {new Date(r.createdAt).toLocaleDateString('en-IN')}</p>
+                {r.reason && <p className="text-[10px] text-foreground/50">Reason: {r.reason}</p>}
+                {r.status === 'pending_approval' && (
+                  <p className="text-[9px] text-foreground/40 italic">Your return is under review. Our team will verify and arrange the pickup shortly.</p>
+                )}
+              </RequestStatusCard>
             </div>
-            <div className="text-[11px] space-y-1 text-foreground/70">
-              <p className="font-medium">Requested on: {new Date(activeReturnReq.createdAt).toLocaleDateString('en-IN')}</p>
-              <p className="font-medium">Estimated Refund: <span className="font-bold text-foreground">₹{activeReturnReq.estimatedRefund?.toLocaleString('en-IN')}</span></p>
-              {activeReturnReq.reason && <p className="text-[10px] text-foreground/50">Reason: {activeReturnReq.reason}</p>}
+          ))}
+        {(order.exchangeRequests || [])
+          .filter((e: any) => e.status !== 'cancelled' && e.summary)
+          .map((e: any) => (
+            <div key={e.id} className="mb-8">
+              <RequestStatusCard summary={e.summary}>
+                <p className="font-medium">Requested on: {new Date(e.createdAt).toLocaleDateString('en-IN')}</p>
+                <p className="font-medium">Price Difference: <span className="font-bold text-foreground">₹{e.priceDifference?.toLocaleString('en-IN')}</span> ({String(e.paymentStatus || '').replace(/_/g, ' ')})</p>
+                {e.reason && <p className="text-[10px] text-foreground/50">Reason: {e.reason}</p>}
+                {e.status === 'pending_approval' && (
+                  <p className="text-[9px] text-foreground/40 italic">Your exchange is under review. The replacement will be dispatched once we receive the original item.</p>
+                )}
+              </RequestStatusCard>
             </div>
-            {activeReturnReq.status === 'pending_approval' && (
-              <p className="text-[9px] text-foreground/40 italic">Your return is under review. Our team will verify and initiate pickup shortly.</p>
-            )}
-          </div>
-        )}
-
-        {/* ACTIVE EXCHANGE REQUEST CARD */}
-        {activeExchangeReq && (
-          <div className="mb-8 p-6 rounded-3xl glass-panel border border-blue-500/20 bg-blue-500/5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ArrowLeftRight className="w-4 h-4 text-blue-500" />
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-blue-500">Exchange Request</h3>
-              </div>
-              <span className="px-3 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest bg-blue-500/10 text-blue-500 border border-blue-500/20">
-                {activeExchangeReq.status.replace('_', ' ')}
-              </span>
-            </div>
-            <div className="text-[11px] space-y-1 text-foreground/70">
-              <p className="font-medium">Requested on: {new Date(activeExchangeReq.createdAt).toLocaleDateString('en-IN')}</p>
-              <p className="font-medium">Price Difference: <span className="font-bold text-foreground">₹{activeExchangeReq.priceDifference?.toLocaleString('en-IN')}</span> ({activeExchangeReq.paymentStatus})</p>
-              {activeExchangeReq.reason && <p className="text-[10px] text-foreground/50">Reason: {activeExchangeReq.reason}</p>}
-            </div>
-            {activeExchangeReq.status === 'pending_approval' && (
-              <p className="text-[9px] text-foreground/40 italic">Your exchange is under review. Replacement item order will be processed upon approval.</p>
-            )}
-          </div>
-        )}
+          ))}
 
         {/* SHIPMENT DETAILS CARD — hide voided/cancelled courier rows so they don't contradict order status */}
         {(() => {
           const activeShipment = (order.shipments || []).find((sh: any) => {
             const st = String(sh?.status || '').toLowerCase();
-            return !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
+            const reverse = ['reverse_pickup', 'reverse', 'return', 'exchange_pickup'].includes(String(sh?.type || '').toLowerCase());
+            return !reverse && !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
           });
           const s = activeShipment || null;
           const awb = s?.trackingNumber || s?.awb || (!isCancelled ? (order.trackingNumber || order.delhivery_awb) : null);

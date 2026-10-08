@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { createRefund } from '@/lib/shopify-admin';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
+import { resolveRefundMethod } from '@/lib/returnPolicy';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,7 +69,19 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       ? (returnRequest!.returns[0]?.refundMethod || 'original_method') 
       : (standaloneReturn!.refundMethod || 'original_method');
 
-    const refundMethod = overrideRefundMethod || initialMethod;
+    // COD orders → Store Credit only (policy). Prepaid: admin override > customer's choice.
+    const refundMethod = resolveRefundMethod(order, overrideRefundMethod || initialMethod);
+
+    // The customer's money / credit is released only after we physically hold the parcel.
+    const receivedOk = isRequestGroup
+      ? !!returnRequest!.receivedAt || ['received', 'qc_passed'].includes(String(returnRequest!.status).toLowerCase())
+      : String(standaloneReturn!.status).toUpperCase() === 'RECEIVED';
+    if (!receivedOk) {
+      return NextResponse.json(
+        { error: 'Parcel not received yet. Mark the return as received at the warehouse before releasing the refund / store credit.' },
+        { status: 400 }
+      );
+    }
 
     const calculatedAmount = isRequestGroup
       ? (returnRequest!.actualRefund || returnRequest!.estimatedRefund || returnRequest!.returns.reduce((s: number, r: any) => s + (r.refundAmount || 0), 0))
@@ -193,7 +206,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           data: {
             status: 'refunded',
             actualRefund: finalRefundAmount,
-            approvedAt: new Date()
+            refundType: refundMethod === 'store_credit' ? 'store_credit' : 'original_source',
+            refundReleasedAt: new Date()
           }
         });
 

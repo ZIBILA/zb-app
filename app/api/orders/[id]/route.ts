@@ -1,3 +1,5 @@
+import { pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
+import { summarizeRequest } from "@/lib/services/requestSummary";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
@@ -299,13 +301,12 @@ export async function GET(
     }
 
     // Enrich order with tracking data from the latest shipment
-    const latestShipment = order!.shipments?.sort(
-      (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    )[0];
+    // Outbound parcel only — a return/exchange pickup must never be shown as "your shipment".
+    const latestShipment: any = pickActiveOutboundShipment((order!.shipments || []) as any[]);
 
     const enrichedOrder = {
       ...order!,
-      trackingNumber: latestShipment?.trackingNumber || null,
+      trackingNumber: shipmentAwb(latestShipment) || null,
       trackingUrl: latestShipment?.trackingUrl || null,
       trackingStatus: latestShipment?.status || null,
       currentLocation: latestShipment?.currentLocation || null,
@@ -406,8 +407,36 @@ export async function GET(
         ? order!.shopifyOrderId
         : `#ZB${order!.id.slice(-5).toUpperCase()}`);
 
+    // Return / exchange requests with one shared summary (id, pickup, received, refund, replacement)
+    const replacementIds = (order!.exchangeRequests || []).map((e: any) => e.replacementOrderId).filter(Boolean) as string[];
+    const replacementRows: any[] = replacementIds.length
+      ? await prisma.order.findMany({
+          where: { id: { in: replacementIds } },
+          select: { id: true, internalOrderNumber: true, status: true, deliveryStatus: true, shipments: true },
+        })
+      : [];
+    const summaryOrder = { paymentMethod: finalPaymentMethod, paymentStatus: order!.paymentStatus, tags: order!.tags, note: order!.note };
+    const returnRequestsWithSummary = (order!.returnRequests || [])
+      .filter((r: any) => !r.reason || !r.reason.includes('EXCHANGE_RETURN'))
+      .map((r: any) => ({
+        ...r,
+        summary: summarizeRequest({ kind: 'return', request: r, order: summaryOrder, shipments: (order!.shipments || []) as any[] }),
+      }));
+    const exchangeRequestsWithSummary = (order!.exchangeRequests || []).map((e: any) => ({
+      ...e,
+      summary: summarizeRequest({
+        kind: 'exchange',
+        request: e,
+        order: summaryOrder,
+        shipments: (order!.shipments || []) as any[],
+        replacementOrder: replacementRows.find((r: any) => r.id === e.replacementOrderId) || null,
+      }),
+    }));
+
     const finalOrder = {
       ...enrichedOrder,
+      returnRequests: [...returnRequestsWithSummary, ...(order!.returnRequests || []).filter((r: any) => r.reason && r.reason.includes('EXCHANGE_RETURN'))],
+      exchangeRequests: exchangeRequestsWithSummary,
       orderNumber,
       paymentMethod: finalPaymentMethod,
       isCod: isCodOrder,

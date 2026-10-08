@@ -17,6 +17,7 @@ import { formatPrice } from '../utils/formatPrice';
 import { haptics } from '../utils/haptics';
 import { Typography } from '../components/Typography';
 import { resolveImageUrl } from '../utils/imageUtils';
+import RequestSummaryCard from '../components/RequestSummaryCard';
 
 type ActiveTab = 'RETURNS' | 'EXCHANGES';
 
@@ -215,7 +216,40 @@ export default function ReturnsScreen() {
     return null;
   };
 
+  const renderRequestSummary = (item: any, dateValue: any, detail: React.ReactNode) => {
+    const dateStr = dateValue ? new Date(dateValue).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
+    return (
+      <TouchableOpacity
+        activeOpacity={0.95}
+        onPress={() => {
+          haptics.buttonTap();
+          navigation.navigate('OrderDetails', { orderId: item.orderId });
+        }}
+      >
+        <RequestSummaryCard summary={item.summary}>
+          <View style={{ marginBottom: 4 }}>
+            <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 0.8 }}>
+              ORDER #{item.orderNumber?.replace(/^#/, '') || '—'}{dateStr ? `  •  ${dateStr}` : ''}
+            </Typography>
+            {detail}
+          </View>
+        </RequestSummaryCard>
+      </TouchableOpacity>
+    );
+  };
+
   const renderReturnItem = ({ item }: { item: any }) => {
+    if (item.summary) {
+      const titles = (item.items?.length ? item.items.map((i: any) => i.product?.title) : [item.product?.title]).filter(Boolean).join(', ');
+      return renderRequestSummary(
+        item,
+        item.requestedAt,
+        <>
+          <Typography size={12} weight="700" color={colors.text} numberOfLines={2} style={{ marginTop: 6 }}>{titles || 'Product'}</Typography>
+          {item.reason ? <Typography size={11} color={colors.textMuted} style={{ marginTop: 2 }}>Reason: {item.reason}</Typography> : null}
+        </>
+      );
+    }
     const { color, bg, label } = getStatusColorAndLabel(item.status);
     const dateStr = item.requestedAt ? new Date(item.requestedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
     const imgUrl = getProductImage(item.orderId, item.orderNumber, item.product);
@@ -276,6 +310,20 @@ export default function ReturnsScreen() {
   };
 
   const renderExchangeItem = ({ item }: { item: any }) => {
+    if (item.summary) {
+      const diff = item.priceDifference || 0;
+      const titles = (item.items?.length ? item.items.map((i: any) => i.originalProduct?.title) : [item.originalProduct?.title]).filter(Boolean).join(', ');
+      return renderRequestSummary(
+        item,
+        item.createdAt,
+        <>
+          <Typography size={12} weight="700" color={colors.text} numberOfLines={2} style={{ marginTop: 6 }}>{titles || 'Product'}</Typography>
+          <Typography size={11} color={colors.textMuted} style={{ marginTop: 2 }}>
+            {diff > 0 ? `Pay ${formatPrice(diff)} difference` : diff < 0 ? `Credit ${formatPrice(Math.abs(diff))}` : 'No price difference'}
+          </Typography>
+        </>
+      );
+    }
     const { color, bg, label } = getStatusColorAndLabel(item.status);
     const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
     const diff = item.priceDifference || 0;

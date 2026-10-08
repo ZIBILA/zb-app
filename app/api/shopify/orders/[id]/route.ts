@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { adminUrl, headers, ShopifyOrder } from '@/lib/shopify-admin';
 import prisma from '@/lib/db';
-import { getTrackingStatus } from '@/lib/services/logistics';
+import { resolveOutboundShipment } from '@/lib/services/orderTracking';
+import { refreshShipmentFromCarrier } from '@/lib/services/shipmentStatusService';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
@@ -53,41 +54,27 @@ export async function GET(
       }
     });
 
-    // 3. If there is a tracking number, try to refresh status
+    // 3. Refresh status of the active outbound shipment (provider-aware, applied
+    //    through the shared status service so Order.deliveryStatus stays canonical).
     let trackingInfo = null;
     const latestShipment = localOrder?.shipments?.[0];
-    
-    if (latestShipment?.trackingNumber) {
-      try {
-        const status = await getTrackingStatus(latestShipment.trackingNumber);
-        if (status && status.status !== 'unknown') {
-          trackingInfo = {
-            ...status,
-            trackingNumber: latestShipment.trackingNumber,
-            courier: latestShipment.courier,
-            shipmentId: latestShipment.id,
-          };
-          
-          // Background update local DB if status changed
-          if (status.status !== latestShipment.status) {
-            prisma.shipment.update({
-              where: { id: latestShipment.id },
-              data: { 
-                status: status.status,
-                currentLocation: status.location,
-                estimatedDelivery: status.estimatedDelivery ? new Date(status.estimatedDelivery) : undefined,
-                events: JSON.stringify(status.events)
-              }
-            }).catch((e: any) => console.error('[Order API] DB status update failed:', e));
 
-            prisma.order.update({
-              where: { id: localOrder.id },
-              data: { deliveryStatus: status.status }
-            }).catch((e: any) => console.error('[Order API] DB order update failed:', e));
+    if (localOrder) {
+      const resolved = await resolveOutboundShipment(localOrder.id, localOrder.delhivery_awb);
+      if (resolved.shipmentId && resolved.awb) {
+        try {
+          const { tracking } = await refreshShipmentFromCarrier(resolved.shipmentId);
+          if (tracking && tracking.status !== 'unknown') {
+            trackingInfo = {
+              ...tracking,
+              trackingNumber: resolved.awb,
+              courier: resolved.courier,
+              shipmentId: resolved.shipmentId,
+            };
           }
+        } catch (e) {
+          console.warn(`[Order API] Tracking refresh failed for ${resolved.awb}`);
         }
-      } catch (e) {
-        console.warn(`[Order API] Tracking refresh failed for ${latestShipment.trackingNumber}`);
       }
     }
 

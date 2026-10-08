@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/options";
+import { summarizeRequest } from '@/lib/services/requestSummary';
 import prisma from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -130,6 +131,20 @@ export async function GET(req: Request) {
       orderBy: { createdAt: "desc" }
     }) : [];
 
+    // Replacement orders (G_E_…) of exchanges, so customers can follow the new parcel too
+    const replacementIds = Array.from(
+      new Set(
+        orders.flatMap((o: any) => (o.exchangeRequests || []).map((e: any) => e.replacementOrderId).filter(Boolean))
+      )
+    ) as string[];
+    const replacementOrders = replacementIds.length
+      ? await prisma.order.findMany({
+          where: { id: { in: replacementIds } },
+          select: { id: true, internalOrderNumber: true, status: true, deliveryStatus: true, shipments: true },
+        })
+      : [];
+    const replacementById = new Map<string, any>(replacementOrders.map((r: any) => [r.id, r]));
+
     // Match each order with its corresponding webStoreOrder if any and compute eligibility
     const enrichedOrders = await Promise.all(
       orders.map(async (order: any) => {
@@ -161,8 +176,22 @@ export async function GET(req: Request) {
         const orderNumber = order.internalOrderNumber || webStoreOrder?.orderNumber || (order.shopifyOrderId && !order.shopifyOrderId.startsWith('app_pending_') ? order.shopifyOrderId : `#ZB${order.id.slice(-5).toUpperCase()}`);
         
         // Filter out auto-created internal exchange returns from customer view
-        const userReturnRequests = (order.returnRequests || []).filter((r: any) => !r.reason || !r.reason.includes('EXCHANGE_RETURN'));
-        const userExchangeRequests = order.exchangeRequests || [];
+        const userReturnRequests = (order.returnRequests || [])
+          .filter((r: any) => !r.reason || !r.reason.includes('EXCHANGE_RETURN'))
+          .map((r: any) => ({
+            ...r,
+            summary: summarizeRequest({ kind: 'return', request: r, order, shipments: order.shipments || [] }),
+          }));
+        const userExchangeRequests = (order.exchangeRequests || []).map((e: any) => ({
+          ...e,
+          summary: summarizeRequest({
+            kind: 'exchange',
+            request: e,
+            order,
+            shipments: order.shipments || [],
+            replacementOrder: e.replacementOrderId ? replacementById.get(e.replacementOrderId) : null,
+          }),
+        }));
 
         const activeReturn = userReturnRequests.find((r: any) => r.status !== 'cancelled');
         const activeExchange = userExchangeRequests.find((e: any) => e.status !== 'cancelled');

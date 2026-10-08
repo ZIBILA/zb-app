@@ -41,6 +41,7 @@ import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import DelhiveryActions from "@/components/orders/DelhiveryActions";
 import ShiprocketActions from "@/components/orders/ShiprocketActions";
 import LineItemEditor from "@/components/orders/LineItemEditor";
+import { carrierStatusLabel, isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 
@@ -511,8 +512,8 @@ export default function OrderDetailPage() {
                 </div>
               )}
               {(() => {
-                const s = order.shipments?.[0];
-                const awb = s?.trackingNumber || s?.awb || order.delhivery_awb;
+                const s = pickActiveOutboundShipment((order.shipments || []) as any[]) as any;
+                const awb = shipmentAwb(s) || order.delhivery_awb;
                 const courier = s?.courier || (order.delhivery_awb ? 'Delhivery' : 'Courier');
                 const trackUrl = s?.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
                 if (!awb) return null;
@@ -805,23 +806,73 @@ export default function OrderDetailPage() {
                   <p className="text-[10px] font-bold text-foreground/40 uppercase tracking-widest">Grand Total</p>
                   <p className="text-4xl font-black text-foreground tracking-tighter italic mb-1">₹{finalGrandTotal.toLocaleString("en-IN")}</p>
                   <p className="text-[11px] text-emerald-400 font-bold uppercase tracking-widest leading-none">
-                    Paid: ₹{(detectPaymentMethod(order) === 'COD' ? codUpfrontAmount : (order.paymentStatus === 'paid' ? finalGrandTotal : 0)).toLocaleString("en-IN")}
+                    Paid: ₹{(detectPaymentMethod(order) === 'COD' ? ((order as any).codSettled ? finalGrandTotal : codUpfrontAmount) : (order.paymentStatus === 'paid' ? finalGrandTotal : 0)).toLocaleString("en-IN")}
                   </p>
                 </div>
                 {detectPaymentMethod(order) === 'COD' && (
-                  <div className="text-right space-y-1">
-                    <p className="text-[10px] font-bold text-amber-400/80 uppercase tracking-widest">Balance Due at Delivery</p>
-                    <p className="text-xl font-bold text-amber-400">₹{Math.max(0, finalGrandTotal - codUpfrontAmount).toLocaleString("en-IN")}</p>
-                  </div>
+                  (order as any).codSettled ? (
+                    <div className="text-right space-y-1">
+                      <p className="text-[10px] font-bold text-emerald-400/80 uppercase tracking-widest">COD Collected on Delivery</p>
+                      <p className="text-xl font-bold text-emerald-400">₹{Math.max(0, finalGrandTotal - codUpfrontAmount).toLocaleString("en-IN")}</p>
+                    </div>
+                  ) : (
+                    <div className="text-right space-y-1">
+                      <p className="text-[10px] font-bold text-amber-400/80 uppercase tracking-widest">Balance Due at Delivery</p>
+                      <p className="text-xl font-bold text-amber-400">₹{Math.max(0, finalGrandTotal - codUpfrontAmount).toLocaleString("en-IN")}</p>
+                    </div>
+                  )
                 )}
               </div>
             </div>
           </div>
 
+          {/* Linked returns / exchanges (R_ / E_ / G_E_) */}
+          {(((order as any).linkedReturns?.length || 0) + ((order as any).linkedExchanges?.length || 0) > 0 || (order as any).replacementOf) && (
+            <div className="p-8 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-4">
+              <h3 className="text-sm font-semibold text-foreground tracking-tight">Linked Returns &amp; Exchanges</h3>
+              {(order as any).replacementOf && (
+                <a
+                  href={`/dashboard/orders/${(order as any).replacementOf.orderId}`}
+                  className="flex items-center justify-between text-[11px] px-4 py-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/5"
+                >
+                  <span className="font-mono font-bold text-emerald-500">Replacement for {(order as any).replacementOf.displayId}</span>
+                  <span className="text-foreground/50 font-mono">
+                    Original {(order as any).replacementOf.order?.internalOrderNumber || (order as any).replacementOf.order?.shopifyOrderName || (order as any).replacementOf.orderId}
+                  </span>
+                </a>
+              )}
+              {((order as any).linkedReturns || []).map((r: any) => (
+                <a key={r.id} href={`/dashboard/returns/${r.id}`} className="flex items-center justify-between text-[11px] px-4 py-3 rounded-2xl border border-amber-500/20 bg-amber-500/5">
+                  <span className="font-mono font-bold text-amber-500">{r.displayId || "Return"}</span>
+                  <span className="text-foreground/60 uppercase tracking-widest text-[9px] font-bold">
+                    {String(r.status || "").replace(/_/g, " ")}{r.reverseAwb ? ` · AWB ${r.reverseAwb}` : ""}
+                  </span>
+                </a>
+              ))}
+              {((order as any).linkedExchanges || []).map((e: any) => (
+                <div key={e.id} className="rounded-2xl border border-blue-500/20 bg-blue-500/5 px-4 py-3 space-y-1">
+                  <a href={`/dashboard/exchanges/${e.id}`} className="flex items-center justify-between text-[11px]">
+                    <span className="font-mono font-bold text-blue-500">{e.displayId || "Exchange"}</span>
+                    <span className="text-foreground/60 uppercase tracking-widest text-[9px] font-bold">
+                      {String(e.status || "").replace(/_/g, " ")}{e.reverseAwb ? ` · AWB ${e.reverseAwb}` : ""}
+                    </span>
+                  </a>
+                  {e.replacementDisplayId && (
+                    <a href={`/dashboard/orders/${e.replacementOrderId || ""}`} className="block text-[10px] font-mono font-bold text-emerald-500">
+                      → {e.replacementDisplayId}
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Logistics Terminal */}
           <div className={`p-10 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-8 ${(order.status === 'cancelled' || order.status === 'payment_failed') ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
             {(() => {
               const allShipments = ((order as any).shipments || []) as Array<{
+                type?: string | null;
+                createdAt?: string | Date | null;
                 status?: string | null;
                 trackingNumber?: string | null;
                 awb?: string | null;
@@ -831,12 +882,14 @@ export default function OrderDetailPage() {
               }>;
               // Prefer a live shipment; never surface AWB/tracking from a cancelled row
               // (that left Logistics showing CANCELLED while the old AWB badge stayed visible).
-              const activeShipment =
-                allShipments.find((s) => (s.status || '').toLowerCase() !== 'cancelled') || null;
+              // Return/exchange pickups (reverse) are never the order's forward shipment.
+              const activeShipment = pickActiveOutboundShipment(allShipments);
               const logisticsCancelled =
                 !activeShipment &&
                 (order.deliveryStatus === 'cancelled' ||
-                  allShipments.some((s) => (s.status || '').toLowerCase() === 'cancelled'));
+                  allShipments.some(
+                    (s) => !isReverseShipmentType(s.type) && normalizeCarrierStatus(s.status) === 'cancelled'
+                  ));
               const externalId = activeShipment?.trackingNumber || null;
               const awb = activeShipment?.awb || null;
               const courier = logisticsCancelled
@@ -867,9 +920,13 @@ export default function OrderDetailPage() {
                   (Boolean(courier) &&
                     courier.toLowerCase().includes('delhivery') &&
                     !String(courier).toLowerCase().includes('shiprocket')));
-              const displayStatus = logisticsCancelled
+              const rawDisplayStatus = logisticsCancelled
                 ? 'cancelled'
                 : activeShipment?.status || order.deliveryStatus || 'pending';
+              const displayStatus =
+                normalizeCarrierStatus(rawDisplayStatus) === 'unknown'
+                  ? rawDisplayStatus
+                  : carrierStatusLabel(rawDisplayStatus);
               const awbPending = Boolean(externalId || isShiprocketShipment) && !awb;
               const showShiprocketActions = !isNativeDelhivery;
               const showDelhiveryActions = isNativeDelhivery;

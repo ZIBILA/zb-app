@@ -4,6 +4,23 @@ import { Prisma } from '@prisma/client';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { enrichItemsWithSize } from '@/lib/enrichSize';
 import { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
+import { parseLinkedId } from '@/lib/linkedIds';
+import { isLogisticsFilter, LOGISTICS_BUCKET_STATUSES, pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
+
+/** Same definition of "COD order" the rest of the app uses (see isCodOrder below). */
+const COD_ORDER_WHERE = {
+  OR: [
+    { paymentMethod: { equals: 'cod', mode: 'insensitive' } },
+    { tags: { contains: 'cod', mode: 'insensitive' } },
+    { note: { contains: 'cod order', mode: 'insensitive' } },
+    { note: { contains: 'upfront fee paid', mode: 'insensitive' } },
+    { paymentStatus: { in: ['cod_upfront_paid', 'partially_paid'] } },
+  ],
+} as const;
+
+const PAID_LIKE = ['paid', 'PAID', 'success', 'SUCCESS'];
+const COD_PAID_LIKE = [...PAID_LIKE, 'cod_upfront_paid', 'partially_paid'];
+const REFUNDED_LIKE = ['refunded', 'REFUNDED', 'partially_refunded', 'PARTIALLY_REFUNDED'];
 
 export const dynamic = 'force-dynamic';
 
@@ -16,9 +33,14 @@ export async function GET(req: Request) {
     const status = searchParams.get('status');
     const paymentStatus = searchParams.get('paymentStatus');
     const fulfillmentStatus = searchParams.get('fulfillmentStatus');
+    const logisticsParam = searchParams.get('logistics');
     const search = searchParams.get('search');
     const conditions: Record<string, unknown>[] = [];
-    const isExplicitQuery = (paymentStatus && paymentStatus !== 'any') || (status && status !== 'any') || Boolean(search);
+    const isExplicitQuery =
+      (paymentStatus && paymentStatus !== 'any') ||
+      (status && status !== 'any') ||
+      (logisticsParam && logisticsParam !== 'any') ||
+      Boolean(search);
 
     if (!isExplicitQuery) {
       conditions.push({
@@ -62,6 +84,30 @@ export async function GET(req: Request) {
             { internalOrderNumber: { startsWith: 'ZBPF' } }
           ]
         });
+      } else if (paymentStatus === 'settled') {
+        // Paid / Settled: prepaid orders that are paid, plus COD orders whose cash was
+        // collected on delivery. COD orders still awaiting delivery are "COD Upfront".
+        conditions.push({
+          OR: [
+            { AND: [{ NOT: COD_ORDER_WHERE }, { paymentStatus: { in: PAID_LIKE } }] },
+            { AND: [COD_ORDER_WHERE, { deliveryStatus: 'delivered' }, { paymentStatus: { in: COD_PAID_LIKE } }] },
+          ],
+        });
+      } else if (paymentStatus === 'cod_upfront') {
+        conditions.push({
+          AND: [
+            COD_ORDER_WHERE,
+            { paymentStatus: { in: COD_PAID_LIKE } },
+            { NOT: { deliveryStatus: 'delivered' } },
+          ],
+        });
+      } else if (paymentStatus === 'refunded') {
+        conditions.push({
+          OR: [
+            { paymentStatus: { in: REFUNDED_LIKE } },
+            { refundStatus: { in: ['completed', 'COMPLETED'] } },
+          ],
+        });
       } else if (paymentStatus === 'pending') {
         conditions.push({ 
           OR: [
@@ -76,6 +122,41 @@ export async function GET(req: Request) {
 
     if (fulfillmentStatus && fulfillmentStatus !== 'any') {
       conditions.push({ fulfillmentStatus });
+    }
+
+    if (isLogisticsFilter(logisticsParam) && logisticsParam !== 'any') {
+      if (logisticsParam === 'returned') {
+        conditions.push({
+          OR: [
+            { returnRequests: { some: { status: { notIn: ['cancelled', 'rejected'] } } } },
+            { returns: { some: { status: { notIn: ['CANCELLED', 'REJECTED'] } } } },
+          ],
+        });
+      } else if (logisticsParam === 'exchanged') {
+        conditions.push({
+          OR: [
+            { exchangeRequests: { some: { status: { notIn: ['cancelled', 'rejected'] } } } },
+            { exchanges: { some: { status: { notIn: ['CANCELLED', 'REJECTED'] } } } },
+            { orderType: 'EXCHANGE' },
+          ],
+        });
+      } else if (logisticsParam === 'rto') {
+        // RTO bucket = RTO delivery statuses, plus orders auto-tagged RTO that have not been re-shipped yet.
+        conditions.push({
+          OR: [
+            { deliveryStatus: { in: LOGISTICS_BUCKET_STATUSES.rto } },
+            {
+              AND: [
+                { tags: { contains: 'RTO', mode: 'insensitive' } },
+                { NOT: { tags: { contains: 'Reshipped', mode: 'insensitive' } } },
+                { deliveryStatus: { notIn: ['delivered', 'cancelled'] } },
+              ],
+            },
+          ],
+        });
+      } else {
+        conditions.push({ deliveryStatus: { in: LOGISTICS_BUCKET_STATUSES[logisticsParam] } });
+      }
     }
 
     if (search) {
@@ -109,6 +190,28 @@ export async function GET(req: Request) {
         );
       }
 
+      // 3b. Linked ids: R_ZB… (return), E_ZB… (exchange), G_E_ZB… (replacement shipment)
+      const linked = parseLinkedId(trimmed);
+      if (linked) {
+        searchClauses.push(
+          { returnRequests: { some: { displayId: { contains: linked.id, mode: 'insensitive' } } } },
+          {
+            exchangeRequests: {
+              some: {
+                OR: [
+                  { displayId: { contains: linked.id, mode: 'insensitive' } },
+                  { replacementDisplayId: { contains: linked.id, mode: 'insensitive' } },
+                ],
+              },
+            },
+          },
+          // the replacement order itself (internalOrderNumber = G_E_…) and the original order
+          { internalOrderNumber: { contains: linked.id, mode: 'insensitive' } },
+          { internalOrderNumber: { equals: linked.baseNumber, mode: 'insensitive' } },
+          { shopifyOrderName: { contains: linked.baseNumber, mode: 'insensitive' } }
+        );
+      }
+
       // 4. General search: customer name, email, and order name
       if (searchClauses.length === 0) {
         searchClauses.push(
@@ -139,8 +242,10 @@ export async function GET(req: Request) {
           items: true,
           shipments: {
             orderBy: { createdAt: 'desc' },
-            take: 2
-          }
+            take: 5
+          },
+          returnRequests: { select: { id: true, displayId: true, status: true }, orderBy: { createdAt: 'desc' } },
+          exchangeRequests: { select: { id: true, displayId: true, status: true }, orderBy: { createdAt: 'desc' } },
         },
         orderBy: { createdAt: 'desc' },
         take: limit,
@@ -206,7 +311,17 @@ export async function GET(req: Request) {
       const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
       const paymentMethod = isCodOrder ? 'COD' : ((webStoreOrder?.paymentMethod as string) || (order.paymentMethod as string) || 'razorpay');
       let paymentStatus = (webStoreOrder?.paymentStatus as string) || (order.paymentStatus as string);
-      if (isCodOrder && paymentStatus === 'paid') {
+      // COD lifecycle: upfront paid → (delivered + cash collected by courier) → Paid / Settled.
+      const isDelivered = String(order.deliveryStatus || '').toLowerCase() === 'delivered';
+      const settledCod =
+        isCodOrder &&
+        isDelivered &&
+        ['paid', 'cod_upfront_paid', 'partially_paid', 'pending', 'payment_pending'].includes(
+          String(paymentStatus || '').toLowerCase()
+        );
+      if (settledCod) {
+        paymentStatus = 'paid';
+      } else if (isCodOrder && paymentStatus === 'paid') {
         paymentStatus = 'cod_upfront_paid';
       }
 
@@ -239,7 +354,7 @@ export async function GET(req: Request) {
       
       let paidAmount = 0;
       if (isCodOrder) {
-        paidAmount = codUpfrontPaid;
+        paidAmount = settledCod ? (totalPrice as number) : codUpfrontPaid;
       } else if (paymentStatus === 'paid' || paymentStatus === 'success') {
         paidAmount = totalPrice as number;
       }
@@ -248,8 +363,9 @@ export async function GET(req: Request) {
       const shopifyIdStr = order.shopifyOrderId as string;
       const displayOrderNumber = (order.internalOrderNumber as string) || (order.shopifyOrderName as string) || (shopifyIdStr && !shopifyIdStr.startsWith('app_') ? `#${shopifyIdStr.replace('#', '')}` : null) || `#${orderIdStr.slice(-6).toUpperCase()}`;
 
-      const latestShipment = (order.shipments as any[])?.[0];
-      const trackingNumber = latestShipment?.trackingNumber || latestShipment?.awb || (order.delhivery_awb as string) || (webStoreOrder?.trackingNumber as string) || null;
+      // Forward shipment only (never a cancelled one or a return/exchange pickup).
+      const latestShipment: any = pickActiveOutboundShipment(order.shipments as any[]);
+      const trackingNumber = shipmentAwb(latestShipment) || (latestShipment ? null : (order.delhivery_awb as string)) || (latestShipment ? null : (webStoreOrder?.trackingNumber as string)) || null;
       const trackingUrl = latestShipment?.trackingUrl || (webStoreOrder?.trackingUrl as string) || (trackingNumber ? `https://zicabella.shiprocket.co/tracking/${trackingNumber}` : null);
       const courier = latestShipment?.courier || (order.delhivery_awb ? 'Delhivery' : (trackingNumber ? 'Standard Express' : null));
 

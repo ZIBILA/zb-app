@@ -10,26 +10,13 @@
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { validateWebhookSignature, resolveWebhookSecret } from '@/lib/services/logistics';
+import { delhiveryRawStatus, normalizeCarrierStatus } from '@/lib/logistics/status';
 
 export const dynamic = 'force-dynamic';
 
-// Status mapping from logistics partner status codes to our internal status
-const STATUS_MAP: Record<string, string> = {
-  // Shiprocket
-  '1': 'confirmed', '2': 'packed', '3': 'packed', '4': 'shipped',
-  '5': 'shipped', '6': 'out_for_delivery', '7': 'delivered',
-  '8': 'cancelled', '9': 'rto',
-  // Generic
-  'confirmed': 'confirmed', 'picked_up': 'shipped', 'packed': 'packed',
-  'in_transit': 'shipped', 'shipped': 'shipped', 'out_for_delivery': 'out_for_delivery',
-  'delivered': 'delivered', 'cancelled': 'cancelled', 'returned': 'rto', 'failed': 'failed',
-  // Delhivery
-  'Manifested': 'confirmed', 'In Transit': 'shipped', 'Dispatched': 'shipped',
-  'Out for Delivery': 'out_for_delivery', 'Delivered': 'delivered', 'RTO': 'rto',
-};
-
 function normalizeStatus(rawStatus: string): string {
-  return STATUS_MAP[rawStatus] || rawStatus.toLowerCase().replace(/\s+/g, '_');
+  const canonical = normalizeCarrierStatus(rawStatus);
+  return canonical !== 'unknown' ? canonical : rawStatus.toLowerCase().replace(/\s+/g, '_');
 }
 
 interface ShipmentDetail {
@@ -61,6 +48,20 @@ interface ShipmentDetail {
   };
   estimated_delivery?: string;
   etd?: string;
+  // Shiprocket webhook fields
+  current_timestamp?: string;
+  current_status_id?: number | string;
+  shipment_status_id?: number | string;
+  courier_name?: string;
+  is_return?: number | string | boolean;
+  scans?: Array<{
+    date?: string;
+    activity?: string;
+    location?: string;
+    'sr-status'?: string | number;
+    'sr-status-label'?: string;
+    status?: string;
+  }>;
 }
 
 interface WebhookPayload extends ShipmentDetail {
@@ -175,11 +176,26 @@ export async function POST(req: NextRequest) {
 
     // Handle nested Status structure from default payload
     if (shipmentData.Status) {
-      rawStatus = rawStatus || shipmentData.Status.Status || shipmentData.Status.StatusType;
+      rawStatus =
+        rawStatus ||
+        delhiveryRawStatus(shipmentData.Status.Status, shipmentData.Status.StatusType) ||
+        shipmentData.Status.StatusType;
       timestamp = timestamp || shipmentData.Status.StatusDateTime || shipmentData.Status.PickUpDate;
       location = location || shipmentData.Status.StatusLocation || '';
       description = description || shipmentData.Status.Instructions || '';
     }
+
+    // Shiprocket: numeric status id when the text is missing; ISO-ish timestamp field name differs.
+    rawStatus = rawStatus || (shipmentData.current_status_id !== undefined ? String(shipmentData.current_status_id) : undefined) ||
+      (shipmentData.shipment_status_id !== undefined ? String(shipmentData.shipment_status_id) : undefined);
+    timestamp = timestamp || shipmentData.current_timestamp;
+    const scanEvents = (shipmentData.scans || []).map((sc) => ({
+      status: sc.activity || sc['sr-status-label'] || sc.status || '',
+      location: sc.location || '',
+      timestamp: sc.date || '',
+      description: sc.activity || sc['sr-status-label'] || '',
+    }));
+    if (!location && scanEvents.length > 0) location = scanEvents[scanEvents.length - 1].location;
 
     timestamp = timestamp || new Date().toISOString();
     const estimatedDelivery = shipmentData.estimated_delivery || shipmentData.etd || null;
@@ -253,6 +269,8 @@ export async function POST(req: NextRequest) {
       statusType: description,
       location,
       instructions: description,
+      events: scanEvents,
+      estimatedDelivery,
     });
 
     // Mark event processed
@@ -266,21 +284,8 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Webhook] ✅ Processed tracking update for AWB ${trackingNumber} → ${normalizedStatus}`);
 
-    // SKU lifecycle tracking: restore SKUs when RTO is detected
-    if (normalizedStatus === 'rto' && shipment) {
-      try {
-        const { restoreOrderSkus } = await import('@/lib/services/skuService');
-        const restoredCount = await restoreOrderSkus(shipment.orderId, 'RTO_RESTORE', 'System (Delhivery RTO)');
-        if (restoredCount > 0) {
-          console.log(`[Webhook] Restored ${restoredCount} SKU(s) for RTO order ${shipment.orderId}`);
-        }
-
-        const { reverseReferral } = await import('@/lib/affiliate/earnings');
-        await reverseReferral(shipment.orderId, 'delhivery_rto');
-      } catch (skuErr) {
-        console.error(`[Webhook] SKU restoration / affiliate reversal on RTO failed:`, skuErr);
-      }
-    }
+    // RTO side effects (SKU restore, affiliate reversal, RTO tag) are applied centrally
+    // by applyShipmentStatusUpdate via updateOrderTracking.
 
     return NextResponse.json({
       success: true,

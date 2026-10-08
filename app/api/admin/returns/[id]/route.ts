@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { createRefund } from '@/lib/shopify-admin';
 import { enrichSingleItem, enrichItemsWithSize } from '@/lib/enrichSize';
+import { isCodOrder } from '@/lib/returnPolicy';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,7 +36,41 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: 'Return request not found' }, { status: 404 });
     }
 
+    const currentRequestStatus = String(returnRequest.status || '').toLowerCase();
+    const alreadyReceived =
+      !!returnRequest.receivedAt || ['received', 'qc_passed', 'refunded'].includes(currentRequestStatus);
+
+    // State machine guards — the customer's money is only released after we hold the parcel.
+    if (lowerStatus === 'received') {
+      const receivable = ['approved', 'in_transit', 'delivered_to_warehouse', 'approved_pickup_failed', 'pickup_scheduled'];
+      if (!receivable.includes(currentRequestStatus) && !alreadyReceived) {
+        return NextResponse.json(
+          { error: `A request that is "${currentRequestStatus}" cannot be marked as received. Accept it first.` },
+          { status: 400 }
+        );
+      }
+    }
+    if (lowerStatus === 'refund_pending' || lowerStatus === 'refunded') {
+      if (!alreadyReceived) {
+        return NextResponse.json(
+          { error: 'The returned parcel must be received at the warehouse before the refund / store credit can be released.' },
+          { status: 400 }
+        );
+      }
+    }
+    if (lowerStatus === 'refunded' && isCodOrder(returnRequest.order)) {
+      return NextResponse.json(
+        { error: 'COD orders are refunded as Store Credit only. Use "Release Store Credit" (Refunds) to issue it.' },
+        { status: 400 }
+      );
+    }
+
     const updateData: any = { status: lowerStatus };
+    if (lowerStatus === 'received' && !returnRequest.receivedAt) updateData.receivedAt = new Date();
+    if (lowerStatus === 'refunded') {
+      updateData.refundType = 'original_source';
+      updateData.refundReleasedAt = new Date();
+    }
     const returnItemUpdateData: any = { status: status.toUpperCase() };
 
     if (lowerStatus === 'refunded') {

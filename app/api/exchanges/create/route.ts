@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
 import prisma from "@/lib/db";
 import { extractItemVariantAndSize } from "@/lib/utils";
+import { allocateLinkedId } from "@/lib/linkedIds";
 
 export async function POST(req: Request) {
   try {
@@ -203,8 +204,10 @@ export async function POST(req: Request) {
       }
     }
 
+    const displayId = await allocateLinkedId(prisma as any, 'exchange', order);
     const exchangeRequest = await prisma.exchangeRequest.create({
       data: {
+        displayId,
         orderId,
         customerId: resolvedUserId,
         status: "pending_approval",
@@ -244,6 +247,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       exchangeRequestId: exchangeRequest.id,
+      displayId: exchangeRequest.displayId,
       orderId: exchangeRequest.orderId,
       status: exchangeRequest.status,
       priceDifference: exchangeRequest.priceDifference,

@@ -1,96 +1,68 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { getTrackingStatus } from '@/lib/services/logistics';
+import { refreshShipmentFromCarrier } from '@/lib/services/shipmentStatusService';
+import { toOrderDeliveryStatus } from '@/lib/logistics/status';
 import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 import { logAudit } from '@/lib/audit';
 
 export async function POST(req: Request) {
   try {
     await requireAdmin('LOGISTICS', 'edit');
-    // 1. Find all orders that are not yet delivered
-    const orders = await prisma.order.findMany({
+    // 1. Refresh every active outbound shipment (not delivered / RTO-received / cancelled)
+    const REVERSE_TYPES = ['reverse_pickup', 'reverse', 'return', 'exchange_pickup'];
+    const activeShipments = await prisma.shipment.findMany({
       where: {
-        deliveryStatus: {
-          not: 'delivered',
+        NOT: { type: { in: REVERSE_TYPES } },
+        status: { notIn: ['delivered', 'rto_delivered', 'cancelled', 'canceled', 'lost'] },
+        order: {
+          deliveryStatus: { notIn: ['delivered', 'cancelled', 'returned_to_origin', 'lost'] },
         },
       },
-      include: {
-        shipments: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-        },
-      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
     });
 
-    const syncResults = [];
+    const syncResults: Array<Record<string, unknown>> = [];
 
-    for (const order of orders) {
-      const latestShipment = order.shipments[0];
-      if (latestShipment?.trackingNumber) {
-        try {
-          const status = await getTrackingStatus(latestShipment.trackingNumber);
-          if (status && status.status !== 'unknown') {
-            // Update shipment
-            await prisma.shipment.update({
-              where: { id: latestShipment.id },
-              data: {
-                status: status.status,
-                currentLocation: status.location,
-                estimatedDelivery: status.estimatedDelivery ? new Date(status.estimatedDelivery) : undefined,
-                events: JSON.stringify(status.events),
-              },
-            });
-
-            // Update order delivery status for meaningful carrier states (incl. cancelled)
-            const mapped = status.status.toLowerCase();
-            let nextDelivery: string | null = null;
-            if (mapped === 'delivered') nextDelivery = 'delivered';
-            else if (mapped === 'cancelled' || mapped === 'canceled') nextDelivery = 'cancelled';
-            else if (mapped === 'out_for_delivery') nextDelivery = 'out_for_delivery';
-            else if (mapped === 'in_transit' || mapped === 'shipped') nextDelivery = 'shipped';
-            else if (mapped === 'pickup_scheduled' || mapped === 'picked_up') nextDelivery = 'pickup_scheduled';
-            else if (mapped === 'rto') nextDelivery = 'returned_to_origin';
-            else if (mapped === 'confirmed') nextDelivery = 'confirmed';
-
-            if (nextDelivery && order.deliveryStatus !== nextDelivery) {
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { deliveryStatus: nextDelivery },
-              });
-            }
-
-            syncResults.push({ orderId: order.id, status: status.status, deliveryStatus: nextDelivery });
-          }
-        } catch (err) {
-          console.error(`Sync failed for order ${order.id}:`, err);
+    for (const shipment of activeShipments) {
+      if (!shipment.awb && !shipment.trackingNumber) continue;
+      try {
+        const { tracking, result } = await refreshShipmentFromCarrier(shipment.id);
+        if (tracking && tracking.status !== 'unknown') {
+          syncResults.push({
+            orderId: shipment.orderId,
+            status: result?.status && result.status !== 'unknown' ? result.status : tracking.status,
+            deliveryStatus:
+              result && result.applied && !result.isReverse ? toOrderDeliveryStatus(result.status) : null,
+          });
         }
+      } catch (err) {
+        console.error(`Sync failed for order ${shipment.orderId}:`, err);
       }
     }
 
-    // 2. Find all active returns with tracking numbers
-    const activeReturns = await prisma.return.findMany({
+    // 2. Refresh in-flight reverse pickups (returns / exchanges). Status changes also advance
+    //    the linked request through applyShipmentStatusUpdate.
+    const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    const activeReverse = await prisma.shipment.findMany({
       where: {
-        status: { in: ['REQUESTED', 'APPROVED', 'PICKED_UP'] },
-        trackingNumber: { not: null },
+        type: { in: REVERSE_TYPES },
+        awb: { not: null },
+        createdAt: { gte: since },
+        status: { notIn: ['delivered', 'cancelled', 'canceled', 'lost', 'rto_delivered'] },
       },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
     });
 
-    for (const ret of activeReturns) {
-      if (ret.trackingNumber) {
-        try {
-          const status = await getTrackingStatus(ret.trackingNumber);
-          if (status && status.status !== 'unknown') {
-            await prisma.return.update({
-              where: { id: ret.id },
-              data: {
-                status: status.status.toUpperCase(),
-              },
-            });
-            syncResults.push({ returnId: ret.id, status: status.status });
-          }
-        } catch (err) {
-          console.error(`Sync failed for return ${ret.id}:`, err);
+    for (const shipment of activeReverse) {
+      try {
+        const { tracking, result } = await refreshShipmentFromCarrier(shipment.id);
+        if (tracking && tracking.status !== 'unknown') {
+          syncResults.push({ shipmentId: shipment.id, reverse: true, status: result?.status || tracking.status });
         }
+      } catch (err) {
+        console.error(`Sync failed for reverse shipment ${shipment.id}:`, err);
       }
     }
 

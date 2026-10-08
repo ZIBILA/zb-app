@@ -3,14 +3,33 @@
 import { useState, useRef, useEffect } from "react";
 import { VolumeX, Volume2 } from "lucide-react";
 
+/** Bundled local asset — used only if the primary URL fails to load (e.g. missing .mp4 on localhost/dev). */
+const LOCAL_WEBM_FALLBACK = "/zb-video-heroo.webm";
+
+function guessVideoType(url: string): string | undefined {
+  const path = url.split("?")[0].toLowerCase();
+  if (path.endsWith(".mp4")) return "video/mp4";
+  if (path.endsWith(".webm")) return "video/webm";
+  if (path.endsWith(".ogg") || path.endsWith(".ogv")) return "video/ogg";
+  return undefined;
+}
+
 interface HeroVideoProps {
   src: string;
   mobileSrc?: string;
+  /** Tried only if `src` fails. Defaults to the local .webm so localhost/dev still work when the .mp4 is absent. */
+  fallbackSrc?: string;
   poster?: string;
   showControlOnly?: boolean;
 }
 
-export default function HeroVideo({ src, mobileSrc, poster, showControlOnly = false }: HeroVideoProps) {
+export default function HeroVideo({
+  src,
+  mobileSrc,
+  fallbackSrc = LOCAL_WEBM_FALLBACK,
+  poster,
+  showControlOnly = false,
+}: HeroVideoProps) {
   const [isMuted, setIsMuted] = useState(true);
   const [isInView, setIsInView] = useState(false);
   const [isMobile, setIsMobile] = useState(() => {
@@ -61,6 +80,10 @@ export default function HeroVideo({ src, mobileSrc, poster, showControlOnly = fa
   };
 
   const activeSrc = (isMobile && mobileSrc) ? mobileSrc : src;
+  // Primary first (prod settings / CDN keep winning). Local .webm is only reached if primary 404s / can't play.
+  const sources = [activeSrc, fallbackSrc].filter(
+    (url, i, arr): url is string => Boolean(url) && arr.indexOf(url) === i
+  );
 
   return (
     <div 
@@ -71,8 +94,7 @@ export default function HeroVideo({ src, mobileSrc, poster, showControlOnly = fa
       {!showControlOnly && (
         <video
           ref={videoRef}
-          key={activeSrc}
-          src={activeSrc}
+          key={sources.join("|")}
           autoPlay
           muted
           loop
@@ -81,7 +103,16 @@ export default function HeroVideo({ src, mobileSrc, poster, showControlOnly = fa
           poster={poster || undefined}
           className="w-full h-full object-cover transition-all duration-700"
           suppressHydrationWarning
-        />
+        >
+          {sources.map((url) => {
+            const type = guessVideoType(url);
+            return type ? (
+              <source key={url} src={url} type={type} />
+            ) : (
+              <source key={url} src={url} />
+            );
+          })}
+        </video>
       )}
       
       {/* Absolute minimal mute icon */}

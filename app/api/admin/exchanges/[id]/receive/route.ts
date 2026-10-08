@@ -23,8 +23,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "Exchange request not found" }, { status: 404 });
     }
 
-    if (!["approved", "return_created"].includes(exchangeRequest.status)) {
-      return NextResponse.json({ error: "Exchange must be in approved/return_created status to mark as received" }, { status: 400 });
+    if (!["approved", "return_created", "in_transit", "delivered_to_warehouse", "approved_pickup_failed"].includes(exchangeRequest.status)) {
+      return NextResponse.json({ error: `Exchange in status "${exchangeRequest.status}" cannot be marked as received` }, { status: 400 });
     }
 
     const result = await prisma.$transaction(async (tx: any) => {
@@ -36,6 +36,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         where: { id },
         data: {
           status: newStatus,
+          receivedAt: new Date(),
         }
       });
 
@@ -53,7 +54,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       if (exchangeRequest.returnRequestId) {
         await tx.returnRequest.update({
           where: { id: exchangeRequest.returnRequestId },
-          data: { status: "received" }
+          data: { status: "received", receivedAt: new Date() }
         }).catch(() => {
           // Ignore if return request not found
         });
