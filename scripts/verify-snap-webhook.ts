@@ -98,6 +98,20 @@ async function main() {
   check('app order captured → paid', store.orders.get('ord_app').paymentStatus === 'paid');
   check('app order → no WEB Snap Purchase', snapCalls.length === 2 && !snapCalls.some(c => c.data[0].event_id === 'ord_app'), snapCalls.length);
 
+  // ── Retry cron auth (CRON_SECRET required, Bearer only) ──
+  const cron = await import('../app/api/cron/snap-conversions/route');
+  const { NextRequest } = await import('next/server');
+  const call = (headers: Record<string, string> = {}, qs = '') =>
+    cron.GET(new NextRequest(`https://app.zicabella.com/api/cron/snap-conversions${qs}`, { headers }));
+  delete process.env.CRON_SECRET;
+  check('cron: CRON_SECRET unset → 401 (fails closed)', (await call({ authorization: 'Bearer anything' })).status === 401);
+  process.env.CRON_SECRET = 'cron_test_secret';
+  check('cron: no auth → 401', (await call()).status === 401);
+  check('cron: wrong secret → 401', (await call({ authorization: 'Bearer nope' })).status === 401);
+  check('cron: ?secret= query param not accepted → 401', (await call({}, '?secret=cron_test_secret')).status === 401);
+  const ok = await call({ authorization: 'Bearer cron_test_secret' });
+  check('cron: correct Bearer → 200 with tally', ok.status === 200 && (await ok.json()).ok === true, ok.status);
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

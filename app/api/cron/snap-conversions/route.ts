@@ -1,18 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { retryPendingSnapPurchases } from '@/lib/snap/purchase-server';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Retries Snap CAPI PURCHASE deliveries that failed or whose sending lease
- * expired. Idempotent (ledger-claimed), so it is safe to run on any schedule.
- * Not yet scheduled — add it to the cron runner when ready.
- * Auth: CRON_SECRET is REQUIRED (fails closed when unset).
+ * Snap CAPI PURCHASE retry worker. Idempotent (ledger-claimed), safe on any schedule.
+ * Scheduled by .github/workflows/snap-conversions.yml (every 15 min).
+ *
+ * Auth: `Authorization: Bearer <CRON_SECRET>` is REQUIRED; the route fails closed
+ * when CRON_SECRET is unset. (No ?secret= query param: URLs end up in logs.)
  */
+function authorized(req: NextRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  const header = req.headers.get('authorization') || '';
+  const expected = `Bearer ${secret}`;
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  const secret = new URL(req.url).searchParams.get('secret');
-  if (!cronSecret || (secret !== cronSecret && req.headers.get('Authorization') !== `Bearer ${cronSecret}`)) {
+  if (!authorized(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {

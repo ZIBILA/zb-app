@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import prisma from '@/lib/db';
-import { checkRateLimit } from '@/lib/rate-limit';
+import { rateLimit } from '@/lib/rate-limit';
+import { getClientIP } from '@/lib/ip-geo';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,8 +18,11 @@ const bodySchema = z.strictObject({
  * does not count as a new subscription.
  */
 export async function POST(req: Request) {
-  const limited = await checkRateLimit(req, 'newsletter-subscribe', { maxRequests: 5, windowMs: 60_000 });
-  if (!limited.allowed) return limited.response!;
+  // Keyed on the proxy-reported IP (do-connecting-ip first), not a spoofable header/cookie.
+  const limited = await rateLimit(`newsletter-subscribe:${getClientIP(req)}`, { maxRequests: 5, windowMs: 60_000 });
+  if (!limited.allowed) {
+    return NextResponse.json({ ok: false, error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(limited.resetAfter) } });
+  }
 
   let raw: unknown;
   try { raw = await req.json(); } catch { return NextResponse.json({ ok: false, error: 'invalid_request' }, { status: 400 }); }

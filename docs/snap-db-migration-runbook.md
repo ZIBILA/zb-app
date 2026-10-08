@@ -80,3 +80,18 @@ DROP TABLE IF EXISTS "newsletter_subscribers";
 ```
 
 No foreign keys reference these tables, so dropping them affects nothing else.
+
+## Retry worker scheduling (after the migration and merge)
+
+- Endpoint: `GET https://app.zicabella.com/api/cron/snap-conversions`
+- Auth: `Authorization: Bearer <CRON_SECRET>` only (no `?secret=`); returns 401 when
+  `CRON_SECRET` is unset, missing or wrong.
+- Scheduler: `.github/workflows/snap-conversions.yml` — same mechanism as the existing
+  `order-sync.yml` / `whatsapp-scheduler.yml` (GitHub Actions pings with the repo secret
+  `CRON_SECRET`). Runs every 15 min at :07/:22/:37/:52 with `concurrency` so runs never
+  overlap. GitHub only runs scheduled workflows from the default branch, so it activates
+  when merged to `main`; `workflow_dispatch` allows a manual first run.
+- What one run does: expires pending rows older than 7 days; resends failed / lease-expired
+  rows; recovers pending rows older than 15 min **only** when the DB order is `paid` /
+  `cod_upfront_paid` **and** Razorpay confirms the payment captured (and not refunded).
+- Check after the first run: the JSON response tally, e.g. `{"ok":true,"result":{"recovered_sent":1}}`.

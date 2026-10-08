@@ -3,8 +3,21 @@
   "compilerOptions": {
     "baseUrl": "../..",
     "paths": {
-      "@/lib/db": ["./scripts/snap-test-support/fake-db.ts"],
-      "@/*": ["./*"]
+      "@/lib/db": [
+        "./scripts/snap-test-support/fake-db.ts"
+      ],
+      "@/lib/appAuth": [
+        "./scripts/snap-test-support/fake-app-auth.ts"
+      ],
+      "@/lib/razorpay-credentials": [
+        "./scripts/snap-test-support/fake-razorpay-credentials.ts"
+      ],
+      "razorpay": [
+        "./scripts/snap-test-support/fake-razorpay.ts"
+      ],
+      "@/*": [
+        "./*"
+      ]
     }
   }
 }

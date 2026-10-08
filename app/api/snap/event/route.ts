@@ -94,8 +94,12 @@ const reject = (status: number, error: string) => NextResponse.json({ success: f
 
 export async function POST(req: NextRequest) {
   try {
-    const ipCandidate = req.cookies.get('zb_client_ip')?.value || getClientIP(req);
-    if (rateLimited(ipCandidate || 'unknown')) return reject(429, 'rate_limited');
+    // Rate-limit identity = the IP our hosting proxy reports for THIS connection
+    // (do-connecting-ip on DigitalOcean, then standard forwarding headers).
+    // Never a cookie: zb_client_ip is client-controlled and could be rotated
+    // per request to dodge the limit.
+    const trustedIp = getClientIP(req);
+    if (rateLimited(trustedIp || 'unknown')) return reject(429, 'rate_limited');
 
     let raw: unknown;
     try { raw = await req.json(); } catch { return reject(400, 'invalid_json'); }
@@ -120,7 +124,12 @@ export async function POST(req: NextRequest) {
     const scClickId = c('ScCid') || c('_sccid') || body.scClickId;
     const scCookie1 = c('_scid') || body.scCookie1;
     const externalId = c('zb_external_id') || body.externalId;
-    const ip = ipCandidate && !isPrivateIP(ipCandidate) ? ipCandidate : undefined;
+    // client_ip_address for matching: the same trusted request IP. The middleware
+    // cookie is used only when no public IP is available (e.g. local dev).
+    const cookieIp = req.cookies.get('zb_client_ip')?.value;
+    const ip = trustedIp && !isPrivateIP(trustedIp)
+      ? trustedIp
+      : (cookieIp && !isPrivateIP(cookieIp) ? cookieIp : undefined);
 
     const u = body.userData || {};
     const userData = {

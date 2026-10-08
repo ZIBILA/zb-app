@@ -189,6 +189,13 @@ async function main() {
     if (rr.status === 429) limited++;
   }
   check('per-IP rate limit kicks in after 120/min', limited === 5, { limited });
+  let limitedRotating = 0;
+  for (let i = 0; i < 125; i++) {
+    // Attacker rotates the client-controlled zb_client_ip cookie on every request.
+    const rr = await route.POST(mkReq({ ...okBody, eventId: `view_content_snap_rot${i}x` }, `zb_client_ip=203.0.113.${i % 250}`, '81.2.69.201'));
+    if (rr.status === 429) limitedRotating++;
+  }
+  check('rotating zb_client_ip cookie does NOT bypass the limit (keyed on proxy IP)', limitedRotating === 5, { limitedRotating });
 
   // ══ 6. Web events end-to-end: hook → pixel + relay → route → CAPI v3 ══
   console.log('\n— 6. Web events (pixel + CAPI)');
@@ -260,6 +267,32 @@ async function main() {
   eq('pixel PURCHASE transaction_id = order id', pp.track?.[2]?.transaction_id, 'ord_web_1');
   eq('pixel PURCHASE number_items = 3', pp.track?.[2]?.number_items, 3);
 
+  // ══ 6b. ADD_CART value/currency on Wishlist / Bookmark drawer / Complete Collection ══
+  console.log('\n— 6b. ADD_CART currency/value (new entry points, international shopper)');
+  const gp = await import('../lib/global-pricing-client');
+  const usConfig: any = { code: 'US', currencyCode: 'USD', currencySymbol: '$', locale: 'en-US', multiplier: 1.25, exchangeRate: 0.012, isBase: false };
+  const variantINR = { id: 51813148262681, price: '1499.00' };
+  const usDisplay = gp.formatPriceWithConfig(parseFloat(variantINR.price), usConfig, true);
+  // Exactly what the three components call (copied from their source, asserted below):
+  setBrowser({}, 'https://zicabella.com/wishlist');
+  pixelCalls.length = 0; relayCalls.length = 0;
+  hooks.snapTrackAddToCart(variantINR.id.toString(), 'AEROLAYER HALF DENIM', parseFloat(variantINR.price || '0'), 'INR', 'Denim');
+  const atcPixel = pixelCalls.find(c => c[0] === 'track')?.[2];
+  const atcCapi = relayCalls[0]?.body?.customData;
+  eq('ADD_CART value = Shopify variant price (INR base), currency INR', [atcPixel?.price, atcPixel?.currency, atcCapi?.value, atcCapi?.currency], [1499, 'INR', 1499, 'INR']);
+  check('US display price (USD, incl. multiplier) is NOT used as the event value', usDisplay.currencyCode === 'USD' && atcCapi?.value !== usDisplay.amount, { display: usDisplay });
+  const cartLine = hooks.snapCartPayload([{ variantId: String(variantINR.id), quantity: 1, price: variantINR.price }]);
+  eq('same value as the cart line → START_CHECKOUT / ADD_BILLING (INR base)', cartLine.contents[0].item_price, atcCapi?.value);
+  const pdpPattern = /trackSnapAddToCart\(variant\.id\.toString\(\), product\.title, parseFloat\(variant\.price \|\| "0"\), 'INR', product\.product_type\)/;
+  check('PDP uses the same (variant.price, INR) pattern', pdpPattern.test(fs.readFileSync(new URL('../app/products/[id]/ProductDetailsClient.tsx', import.meta.url), 'utf8')));
+  for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx', 'components/CompleteCollectionButton.tsx']) {
+    const src = fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
+    const calls = src.match(/snapTrackAddToCart\([^;]*\);/g) || [];
+    check(`${f}: every Snap ADD_CART passes variant.price with 'INR' (no display/converted price)`,
+      calls.length > 0 && calls.every(c => /parseFloat\(variant\.price \|\| "0"\), 'INR'/.test(c) && !/fmtPrice|formatPrice|useCountryPrice/.test(c)), calls);
+    check(`${f}: cart line gets the same variant.price`, /price: variant\.price/.test(src));
+  }
+
   // ══ 7. Authoritative server PURCHASE + idempotency ══
   console.log('\n— 7. Server PURCHASE ledger');
   report.push('## Server PURCHASE (lib/snap/purchase.ts)', '');
@@ -277,6 +310,8 @@ async function main() {
       if (w.status?.in && !w.status.in.includes(row.status)) return false;
     }
     if (w.leaseUntil?.lt && !(row.leaseUntil && row.leaseUntil < w.leaseUntil.lt)) return false;
+    if (w.createdAt?.lt && !(row.createdAt < w.createdAt.lt)) return false;
+    if (w.createdAt?.gt && !(row.createdAt > w.createdAt.gt)) return false;
     if (w.OR && !w.OR.some((o: any) => matchWhere(row, o))) return false;
     return true;
   };
@@ -306,7 +341,7 @@ async function main() {
         }
         return { count };
       },
-      findMany: async ({ where, take }: any) => { await tick(); return [...rows.values()].filter(r0 => matchWhere(r0, where)).slice(0, take); },
+      findMany: async ({ where, take }: any) => { await tick(); return [...rows.values()].filter(r0 => matchWhere(r0, where)).sort((a, b) => a.createdAt - b.createdAt).slice(0, take); },
     },
   };
   const sent: any[] = [];
@@ -424,7 +459,7 @@ async function main() {
   check('failed send → status failed, sentAt null', first.status === 'failed' && failedRow.status === 'failed' && failedRow.sentAt === null, failedRow);
   sendMode = 'ok';
   const tally = await delivery.retryPendingSnapPurchases(10);
-  check('retry job resends failed row', tally.sent === 1, tally);
+  check('retry job resends failed row', tally.retry_sent === 1, tally);
   check('retry uses same event_id', sent[0].eventId === sent[1].eventId && sent[1].eventId === 'ord_retry');
   check('retry uses same event_time', sent[0].eventTime === sent[1].eventTime);
   check('sentAt set only after success', rows.get('snap|PURCHASE|ord_retry').status === 'sent' && rows.get('snap|PURCHASE|ord_retry').sentAt instanceof Date);
@@ -459,6 +494,65 @@ async function main() {
     await delivery.emitSnapPurchase(oid, scClick, PAID);
     eq(`${label} customer phone hash`, capi.buildSnapCapiEvent(sent[0]).user_data.ph, [h(want)]);
   }
+
+  // ══ 7b. Stranded PENDING rows: recovered only after DB paid + verified capture ══
+  console.log('\n— 7b. Pending-row recovery');
+  const captured = new Set<string>();
+  const verifyCapture = async (o: any) => captured.has(o.id);
+  const recovering = purchase.createSnapPurchaseDelivery({ db: fakeDb, send: fakeSend, verifyCapture });
+  const ageRow = (orderId: string, ms: number) => { const r0 = rows.get(`snap|PURCHASE|${orderId}`); r0.createdAt = new Date(Date.now() - ms); };
+  const MIN = 60e3;
+  sent.length = 0;
+  // a) checkout could not confirm capture, captured webhook never arrived
+  orders.set('ord_stranded', baseOrder('ord_stranded', { razorpayPaymentId: 'pay_strand' }));
+  await recovering.emitSnapPurchase('ord_stranded', scClick, { paymentConfirmed: false });
+  ageRow('ord_stranded', 20 * MIN);
+  let tallyR = await recovering.retryPendingSnapPurchases(25);
+  check('paid in DB but capture NOT verified → stays pending, nothing sent', sent.length === 0 && rows.get('snap|PURCHASE|ord_stranded').status === 'pending', tallyR);
+  captured.add('ord_stranded');
+  tallyR = await recovering.retryPendingSnapPurchases(25);
+  check('capture verified → recovered and sent once', sent.length === 1 && tallyR.recovered_sent === 1, tallyR);
+  eq('recovered event keeps the original ScCid', capi.buildSnapCapiEvent(sent[0]).user_data.sc_click_id, 'snap-click-123');
+  await recovering.retryPendingSnapPurchases(25);
+  check('second retry run → no resend', sent.length === 1);
+  // b) unpaid order with a pending row → never sent
+  orders.set('ord_abandoned', baseOrder('ord_abandoned', { paymentStatus: 'payment_pending' }));
+  await recovering.recordSnapPurchaseContext('ord_abandoned', scClick);
+  ageRow('ord_abandoned', 30 * MIN); captured.add('ord_abandoned');
+  tallyR = await recovering.retryPendingSnapPurchases(25);
+  check('pending row for unpaid order → not sent', sent.length === 1 && rows.get('snap|PURCHASE|ord_abandoned').status === 'pending', tallyR);
+  // c) too fresh → left to the live paths
+  orders.set('ord_fresh', baseOrder('ord_fresh'));
+  await recovering.recordSnapPurchaseContext('ord_fresh', scClick); captured.add('ord_fresh');
+  ageRow('ord_fresh', 5 * MIN);
+  await recovering.retryPendingSnapPurchases(25);
+  check('pending row younger than 15 min → untouched', rows.get('snap|PURCHASE|ord_fresh').status === 'pending' && sent.length === 1);
+  // d) older than Snap window → expired, never sent
+  orders.set('ord_ancient', baseOrder('ord_ancient'));
+  await recovering.recordSnapPurchaseContext('ord_ancient', scClick); captured.add('ord_ancient');
+  ageRow('ord_ancient', 8 * DAY);
+  tallyR = await recovering.retryPendingSnapPurchases(25);
+  check('pending row older than 7 days → expired (skipped), not sent', rows.get('snap|PURCHASE|ord_ancient').status === 'skipped' && sent.length === 1, tallyR);
+  // e) native app order row on the web platform → never sent as WEB
+  orders.set('ord_app_pending', baseOrder('ord_app_pending', { orderType: 'MOBILE_APP' }));
+  await recovering.recordSnapPurchaseContext('ord_app_pending', scClick); captured.add('ord_app_pending');
+  ageRow('ord_app_pending', 30 * MIN);
+  await recovering.retryPendingSnapPurchases(25);
+  check('app order pending row → not sent as WEB', sent.length === 1);
+  // f) without a capture verifier, pending rows are never recovered
+  orders.set('ord_noverifier', baseOrder('ord_noverifier'));
+  await delivery.recordSnapPurchaseContext('ord_noverifier', scClick);
+  ageRow('ord_noverifier', 30 * MIN);
+  await delivery.retryPendingSnapPurchases(25);
+  check('no capture verifier configured → pending never recovered', rows.get('snap|PURCHASE|ord_noverifier').status === 'pending' && sent.length === 1);
+
+  // Production capture proof (lib/razorpay-payment.ts fetchCapturedPayment) semantics
+  const { fetchCapturedPayment } = await import('../lib/razorpay-payment');
+  const fakeRzp = (p: any) => (async () => ({ ok: true, json: async () => p })) as any;
+  const creds = { key_id: 'k', key_secret: 's' };
+  check('Razorpay captured → proof accepted', await fetchCapturedPayment('pay_A1', creds, fakeRzp({ id: 'pay_A1', status: 'captured', captured: true, amount_refunded: 0 })).then(() => true, () => false));
+  check('Razorpay authorized → proof rejected', await fetchCapturedPayment('pay_A2', creds, fakeRzp({ id: 'pay_A2', status: 'authorized', captured: false })).then(() => false, () => true));
+  check('Razorpay refunded → proof rejected', await fetchCapturedPayment('pay_A3', creds, fakeRzp({ id: 'pay_A3', status: 'captured', captured: true, amount_refunded: 100 })).then(() => false, () => true));
 
   // ══ 8. Static guarantees in route files ══
   console.log('\n— 8. Static checks');

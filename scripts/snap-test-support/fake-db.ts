@@ -37,13 +37,29 @@ const matchWhere = (row: any, w: any): boolean => {
 };
 let seq = 0;
 
+export const created: { orders: any[]; mobileOrders: any[]; customers: any[] } = { orders: [], mobileOrders: [], customers: [] };
+
 const models: Record<string, any> = {
+  shop: { findFirst: async () => ({ id: 'shop_1' }) },
+  customer: {
+    findUnique: async ({ where }: any) => (where.id === 'cust_app_1' ? { id: 'cust_app_1', email: 'aarav@example.com', phone: '9876543210', name: 'Aarav Mehta' } : null),
+    findFirst: async () => null,
+    create: async ({ data }: any) => { const c = { id: `cust${++seq}`, ...data }; created.customers.push(c); return c; },
+  },
+  mobileOrder: {
+    create: async ({ data }: any) => { const m = { id: `mo${++seq}`, ...data, items: data.items?.create || [] }; created.mobileOrders.push(m); return m; },
+    updateMany: async () => ({ count: 0 }),
+  },
   webhookEvent: {
     findFirst: async () => null,
     create: async ({ data }: any) => { const r = { id: `wh${++seq}`, ...data }; store.webhookEvents.push(r); return r; },
     update: async ({ where, data }: any) => { const r = store.webhookEvents.find(e => e.id === where.id); Object.assign(r || {}, data); return r; },
   },
   order: {
+    create: async ({ data }: any) => {
+      const o = { id: `ord${++seq}`, ...data, items: (data.items?.create || []).map((it: any) => ({ ...it })) };
+      created.orders.push(o); store.orders.set(o.id, o); return { ...o };
+    },
     findUnique: async ({ where }: any) => { await tick(); const o = findOrder(where); return o ? { ...o } : null; },
     findFirst: async ({ where }: any) => findOrder(where || {}),
     update: async ({ where, data }: any) => { const o = findOrder(where); store.calls.push(`order.update:${o?.id}:${data.paymentStatus ?? ''}`); Object.assign(o, data); return { ...o }; },

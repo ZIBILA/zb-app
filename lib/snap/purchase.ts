@@ -19,14 +19,13 @@
  *  - app/api/webhooks/razorpay/route.ts  (payment.captured safety net)
  *  - app/api/checkout/razorpay/route.ts  (records click context before payment)
  */
-import { isEventTimeSendable, type SnapCapiEventPayload } from '@/lib/snap-capi';
+import type { SnapCapiEventPayload } from '@/lib/snap-capi';
+import { createDeliveryLedger, type DeliveryResult } from '@/lib/snap/ledger';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
 
 const PLATFORM = 'snap';
 const EVENT = 'PURCHASE';
-const LEASE_MS = 60_000;
-const MAX_ATTEMPTS = 5;
 
 /** Payment states that represent a completed conversion. */
 export const SNAP_PURCHASE_PAYMENT_STATUSES = new Set(['paid', 'cod_upfront_paid']);
@@ -41,10 +40,6 @@ export interface SnapClickContext {
   userAgent?: string;
 }
 
-type DeliveryResult =
-  | { status: 'sent' }
-  | { status: 'skipped'; reason: string }
-  | { status: 'failed'; reason: string };
 
 function readCookie(header: string, name: string): string | undefined {
   const m = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
@@ -76,17 +71,6 @@ function clean(ctx: SnapClickContext | undefined): SnapClickContext {
     if (typeof v === 'string' && v.trim()) (out as any)[k] = v.trim().slice(0, 1024);
   }
   return out;
-}
-
-/** Existing values win; new request fills only the gaps. */
-function mergeContext(existing: unknown, incoming: SnapClickContext): SnapClickContext {
-  const base = (existing && typeof existing === 'object' ? existing : {}) as SnapClickContext;
-  return { ...incoming, ...clean(base) };
-}
-
-function isMissingTable(err: any): boolean {
-  const msg = String(err?.message || '');
-  return err?.code === 'P2021' || /ad_conversion_deliveries/.test(msg) && /does not exist/i.test(msg);
 }
 
 function parseAddress(raw: unknown): Record<string, any> {
@@ -147,40 +131,31 @@ export interface SnapPurchaseDeps {
   /** Prisma client (or a compatible fake in tests). */
   db: any;
   send: (payload: SnapCapiEventPayload) => Promise<{ success: boolean; error?: any; skipped?: boolean }>;
+  /**
+   * Independent proof the order's money was captured (used ONLY to recover
+   * stranded pending rows). Production: Razorpay payment fetch must report
+   * status=captured, captured=true, nothing refunded; full store-credit orders
+   * have no gateway payment. Absent → pending rows are never recovered.
+   */
+  verifyCapture?: (order: { id: string; paymentMethod?: string | null; razorpayPaymentId?: string | null }) => Promise<boolean>;
 }
 
-export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent }: SnapPurchaseDeps) {
+export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, verifyCapture }: SnapPurchaseDeps) {
+  const ledger = createDeliveryLedger(prisma, '[Snap Purchase]');
+
   /**
    * Store the shopper's Snap click context against an order BEFORE payment
    * (called from the Razorpay pre-create request), so a webhook-only completion
    * still carries ScCid/_scid. Never throws.
    */
   async function recordSnapPurchaseContext(orderId: string, ctx: SnapClickContext): Promise<void> {
-    try {
-      const incoming = clean(ctx);
-      if (!orderId || Object.keys(incoming).length === 0) return;
-      const key = { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } };
-      const existing = await prisma.adConversionDelivery.findUnique({ where: key, select: { context: true } });
-      if (existing) {
-        await prisma.adConversionDelivery.update({
-          where: key,
-          data: { context: mergeContext(existing.context, incoming) as any },
-        });
-      } else {
-        await prisma.adConversionDelivery.create({
-          data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, context: incoming as any },
-        }).catch((e: any) => { if (e?.code !== 'P2002') throw e; });
-      }
-    } catch (err: any) {
-      console.warn('[Snap Purchase] could not record click context:', isMissingTable(err) ? 'ledger table missing' : err?.message);
-    }
+    await ledger.recordContext(PLATFORM, EVENT, orderId, clean(ctx));
   }
 
   /**
-   * Send the Snap PURCHASE for a web order exactly once. Safe to call from
+   * Send the Snap PURCHASE for a WEB order exactly once. Safe to call from
    * several paths concurrently and repeatedly; never throws.
-   */
-  /**
+   *
    * @param opts.paymentConfirmed must be true only when the caller has proof the
    *   payment was CAPTURED (Razorpay payment.captured / order.paid, a verified
    *   captured fetch, or a full store-credit order). Without it nothing is sent;
@@ -196,125 +171,69 @@ export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent }: 
       if (ctx) await recordSnapPurchaseContext(orderId, ctx);
       return { status: 'skipped', reason: 'payment capture not confirmed' };
     }
-    const key = { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } };
+    let order: any;
     try {
-      const order: any = await prisma.order.findUnique({
+      order = await prisma.order.findUnique({
         where: { id: orderId },
         include: { customer: { select: { email: true, phone: true, name: true } }, items: true },
       });
-      if (!order) return { status: 'skipped', reason: 'order not found' };
-      if (NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) {
-        return { status: 'skipped', reason: 'native app order (MOBILE_APP not configured)' };
-      }
-      const payStatus = String(order.paymentStatus || '').toLowerCase();
-      if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
-        return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
-      }
-      const value = Number(order.totalPrice);
-      if (!Number.isFinite(value) || value <= 0) {
-        return { status: 'skipped', reason: 'non-positive order value' };
-      }
-
-      // 1) Ensure the ledger row exists (unique key makes concurrent creates safe).
-      const incoming = clean(ctx);
-      let row = await prisma.adConversionDelivery.findUnique({ where: key });
-      if (!row) {
-        try {
-          row = await prisma.adConversionDelivery.create({
-            data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, context: incoming as any },
-          });
-        } catch (e: any) {
-          if (e?.code !== 'P2002') throw e;
-          row = await prisma.adConversionDelivery.findUnique({ where: key });
-        }
-      } else if (Object.keys(incoming).length) {
-        await prisma.adConversionDelivery.update({
-          where: key, data: { context: mergeContext(row.context, incoming) as any },
-        });
-      }
-      if (!row) return { status: 'failed', reason: 'ledger row missing' };
-      if (row.status === 'sent' || row.status === 'skipped') {
-        return { status: 'skipped', reason: `already ${row.status}` };
-      }
-
-      // 2) Atomic claim: only one process can move the row into "sending".
-      const now = new Date();
-      const claimed = await prisma.adConversionDelivery.updateMany({
-        where: {
-          id: row.id,
-          attempts: { lt: MAX_ATTEMPTS },
-          OR: [
-            { status: { in: ['pending', 'failed'] } },
-            { status: 'sending', leaseUntil: { lt: now } },
-          ],
-        },
-        data: { status: 'sending', leaseUntil: new Date(now.getTime() + LEASE_MS), attempts: { increment: 1 } },
-      });
-      if (claimed.count !== 1) return { status: 'skipped', reason: 'claimed by another process or max attempts' };
-
-      const fresh = await prisma.adConversionDelivery.findUnique({ where: key });
-      const context = mergeContext(fresh?.context, incoming);
-
-      // 3) Conversion time is fixed once and reused on every retry.
-      const eventTime: Date = fresh?.eventTime || order.paymentCapturedAt || order.createdAt || now;
-      if (!fresh?.eventTime) {
-        await prisma.adConversionDelivery.update({ where: key, data: { eventTime } });
-      }
-      if (!isEventTimeSendable(eventTime.getTime())) {
-        await prisma.adConversionDelivery.update({
-          where: key,
-          data: { status: 'skipped', leaseUntil: null, lastError: 'event older than Snap 7-day window' },
-        });
-        console.warn(`[Snap Purchase] ${orderId} skipped: event older than 7 days`);
-        return { status: 'skipped', reason: 'event too old' };
-      }
-
-      // 4) Send.
-      const payload = buildPurchaseFromOrder(order, context, eventTime.getTime());
-      const res = await sendSnapEvent(payload);
-
-      if (res.success) {
-        await prisma.adConversionDelivery.update({
-          where: key,
-          data: { status: 'sent', sentAt: new Date(), leaseUntil: null, lastError: null },
-        });
-        return { status: 'sent' };
-      }
-      const reason = typeof res.error === 'string' ? res.error : JSON.stringify(res.error ?? 'unknown').slice(0, 500);
-      await prisma.adConversionDelivery.update({
-        where: key,
-        data: { status: res.skipped ? 'skipped' : 'failed', leaseUntil: null, lastError: reason },
-      });
-      return res.skipped ? { status: 'skipped', reason } : { status: 'failed', reason };
     } catch (err: any) {
-      console.error('[Snap Purchase] delivery error:', isMissingTable(err) ? 'ledger table missing — run prisma db push' : err?.message);
-      return { status: 'failed', reason: err?.message || 'error' };
+      return { status: 'failed', reason: err?.message || 'order lookup failed' };
     }
+    if (!order) return { status: 'skipped', reason: 'order not found' };
+    if (NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) {
+      return { status: 'skipped', reason: 'native app order — never sent as a WEB conversion' };
+    }
+    const payStatus = String(order.paymentStatus || '').toLowerCase();
+    if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
+      return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
+    }
+    const value = Number(order.totalPrice);
+    if (!Number.isFinite(value) || value <= 0) return { status: 'skipped', reason: 'non-positive order value' };
+
+    return ledger.deliver({
+      platform: PLATFORM,
+      eventName: EVENT,
+      orderId,
+      ctx: clean(ctx),
+      defaultEventTime: order.paymentCapturedAt || order.createdAt || new Date(),
+      build: (context, eventTimeMs) => buildPurchaseFromOrder(order, context as SnapClickContext, eventTimeMs),
+      send: sendSnapEvent,
+    });
   }
 
-  /** Retry failed / stale-leased web purchases (used by the cron route). */
+  /**
+   * Retry job (cron):
+   *  1. expire pending rows older than Snap's 7-day window (never sendable);
+   *  2. resend failed rows / rows whose sending lease expired;
+   *  3. recover PENDING rows (> 15 min old) whose order is paid / cod_upfront_paid
+   *     in the DB AND whose capture is independently verified (verifyCapture).
+   */
   async function retryPendingSnapPurchases(limit = 25): Promise<Record<string, number>> {
-    const now = new Date();
-    const rows = await prisma.adConversionDelivery.findMany({
-      where: {
-        platform: PLATFORM,
-        eventName: EVENT,
-        attempts: { lt: MAX_ATTEMPTS },
-        OR: [
-          // "pending" rows are only made sendable by the payment paths themselves.
-          { status: 'failed' },
-          { status: 'sending', leaseUntil: { lt: now } },
-        ],
-      },
-      orderBy: { updatedAt: 'asc' },
-      take: limit,
-      select: { orderId: true },
-    });
     const tally: Record<string, number> = {};
-    for (const r of rows) {
+    const bump = (k: string) => { tally[k] = (tally[k] || 0) + 1; };
+    const expired = await ledger.expireStalePending(PLATFORM, EVENT);
+    if (expired) tally.expired = expired;
+
+    for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
       // Rows only reach failed / sending after a payment-confirmed attempt.
-      const out = await emitSnapPurchase(r.orderId, undefined, { paymentConfirmed: true });
-      tally[out.status] = (tally[out.status] || 0) + 1;
+      const out = await emitSnapPurchase(orderId, undefined, { paymentConfirmed: true });
+      bump(`retry_${out.status}`);
+    }
+
+    if (!verifyCapture) return tally;
+    for (const orderId of await ledger.recoverablePending(PLATFORM, EVENT, limit)) {
+      const order: any = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, paymentStatus: true, paymentMethod: true, razorpayPaymentId: true, orderType: true },
+      }).catch(() => null);
+      if (!order) { bump('pending_no_order'); continue; }
+      if (NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) { bump('pending_not_web'); continue; }
+      if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(String(order.paymentStatus || '').toLowerCase())) { bump('pending_unpaid'); continue; }
+      const captured = await verifyCapture(order).catch(() => false);
+      if (!captured) { bump('pending_capture_unverified'); continue; }
+      const out = await emitSnapPurchase(orderId, undefined, { paymentConfirmed: true });
+      bump(`recovered_${out.status}`);
     }
     return tally;
   }

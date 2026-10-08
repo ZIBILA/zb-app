@@ -182,18 +182,6 @@ export function MetaPixelRouteTracker() {
           setClientCookie('zb_guest_email', hashedEmail, 365);
         }
 
-        const phone = (session.user as any).phone || (session as any).customer?.phone;
-        if (phone && !isDemoValue('phone', phone)) {
-          // OTP-login phones are stored with their "+<dial code>", so they parse
-          // correctly for any country; bare 10-digit numbers fall back to India.
-          const formattedPhone = normalizePhone(phone);
-          if (formattedPhone) {
-            const hashedPhone = await sha256(formattedPhone);
-            sessionUserData.ph = hashedPhone;
-            setClientCookie('zb_guest_phone', hashedPhone, 365);
-          }
-        }
-
         const name = session.user.name;
         if (name && !isDemoValue('name', name)) {
           const parts = name.trim().split(/\s+/);
@@ -218,6 +206,20 @@ export function MetaPixelRouteTracker() {
             }
           } catch (e) {
             console.error('Failed to fetch default address/profile:', e);
+          }
+        }
+
+        // Phone after the profile fetch so a number saved without "+<dial code>"
+        // is read in the customer's own country. OTP-login numbers carry their
+        // dial code and parse correctly regardless; with no country known, a bare
+        // number falls back to India (same as before).
+        const phone = (session.user as any).phone || (session as any).customer?.phone;
+        if (phone && !isDemoValue('phone', phone)) {
+          const formattedPhone = normalizePhone(phone, cachedProfileData?.country);
+          if (formattedPhone) {
+            const hashedPhone = await sha256(formattedPhone);
+            sessionUserData.ph = hashedPhone;
+            setClientCookie('zb_guest_phone', hashedPhone, 365);
           }
         }
 
