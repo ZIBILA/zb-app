@@ -95,6 +95,14 @@ function CheckoutSuccessInner() {
 
         if (verifyRes.ok && verifyData.orderId) {
           sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
+          if (verifyData.order) {
+            try {
+              sessionStorage.setItem(
+                `zb_confirmation_${verifyData.orderId}`,
+                JSON.stringify(verifyData.order)
+              );
+            } catch { /* ignore */ }
+          }
           sessionStorage.removeItem(PENDING_KEY);
           router.replace(`/orders/${verifyData.orderId}/confirmation`);
           return;

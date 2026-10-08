@@ -313,6 +313,8 @@ export default function CheckoutPage() {
     amount: number; // paise
     keyId: string;
     currency?: string;
+    localOrderId?: string | null;
+    internalOrderNumber?: string | null;
   } | null>(null);
 
   const paymentLockRef = useRef<boolean>(false);
@@ -1019,6 +1021,8 @@ export default function CheckoutPage() {
               amount: orderData.amount,
               keyId: orderData.keyId || orderData.key_id,
               currency: orderData.currency || countryConfig?.currencyCode || "INR",
+              localOrderId: orderData.localOrderId || null,
+              internalOrderNumber: orderData.internalOrderNumber || null,
             });
           } else {
             setPrefetchedOrder(null);
@@ -1623,6 +1627,14 @@ export default function CheckoutPage() {
             sessionStorage.setItem("last_placed_order_id", completeData.orderId);
             const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ');
             sessionStorage.setItem(`order_categories_${completeData.orderId}`, joinedCategories);
+            if (completeData.order) {
+              try {
+                sessionStorage.setItem(
+                  `zb_confirmation_${completeData.orderId}`,
+                  JSON.stringify(completeData.order)
+                );
+              } catch { /* ignore quota */ }
+            }
           }
           clear();
           router.push(`/orders/${completeData.orderId}/confirmation`);
@@ -1677,6 +1689,8 @@ export default function CheckoutPage() {
       let keyId = "";
       let orderAmountPaise = 0;
       let orderCurrency = countryConfig?.currencyCode || "INR";
+      let localOrderId = "";
+      let internalOrderNumber = "";
 
       const prefetchMatches =
         !!prefetchedOrder &&
@@ -1689,7 +1703,9 @@ export default function CheckoutPage() {
         keyId = prefetchedOrder.keyId;
         orderAmountPaise = Number(prefetchedOrder.amount);
         orderCurrency = prefetchedOrder.currency || orderCurrency;
-        console.log("[Razorpay] Using pre-fetched order:", orderId);
+        localOrderId = prefetchedOrder.localOrderId || "";
+        internalOrderNumber = prefetchedOrder.internalOrderNumber || "";
+        console.log("[Razorpay] Using pre-fetched order:", orderId, "local:", localOrderId);
       } else {
         console.log("[Razorpay] Pre-fetched order missing or mismatch, fetching fresh...");
         const res = await fetch("/api/checkout/razorpay", {
@@ -1724,11 +1740,15 @@ export default function CheckoutPage() {
         keyId = data.keyId || data.key_id;
         orderAmountPaise = Number(data.amount);
         orderCurrency = data.currency || orderCurrency;
+        localOrderId = data.localOrderId || "";
+        internalOrderNumber = data.internalOrderNumber || "";
         setPrefetchedOrder({
           id: orderId,
           amount: orderAmountPaise,
           keyId,
           currency: orderCurrency,
+          localOrderId: localOrderId || null,
+          internalOrderNumber: internalOrderNumber || null,
         });
       }
 
@@ -1754,47 +1774,119 @@ export default function CheckoutPage() {
 
       // ═══════════════════════════════════════════════════════════
       // Shared success handler — called by Razorpay Standard Checkout
+      // Optimistic: navigate to confirmation immediately; complete runs there.
       // ═══════════════════════════════════════════════════════════
       const handlePaymentSuccess = async (response: any) => {
-        // Immediately cover checkout — Razorpay modal closes before complete finishes
         paymentSucceededRef.current = true;
         setIsConfirmingPayment(true);
         setIsOrderPlaced(true);
-        setLoading(true);
         setError("");
 
+        const completeBody = {
+          address: checkoutAddress,
+          paymentMethod,
+          items: convertedItems,
+          total: convertedTotal,
+          subtotal: convertedSubtotal,
+          currency: countryConfig?.currencyCode || "INR",
+          displayCountry: countryCode,
+          codFee: paymentMethod === "COD" ? codFee : 0,
+          razorpay: response,
+          couponCode: couponValid ? couponCode : null,
+          couponDiscount: fmtPrice(couponDiscount).amount,
+          applyAsStoreCredit,
+          cashbackAmount: fmtPrice(cashbackAmount).amount,
+          storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
+          guestId: getClientCookie("zb_device_id"),
+          fbp: getClientCookie("_fbp") || undefined,
+          fbc: getClientCookie("_fbc") || undefined,
+          externalId: getClientCookie("zb_external_id") || undefined,
+          localOrderId: localOrderId || undefined,
+        };
+
+        // Prefer pre-created local order id so we can land on a real URL immediately
+        const navOrderId = localOrderId || "";
+        if (navOrderId) {
+          const isCod = paymentMethod === "COD";
+          const paidOnline = isCod ? Number(codFee || 0) : Number(convertedTotal || 0);
+          const optimisticOrder = {
+            id: navOrderId,
+            orderNumber: internalOrderNumber || null,
+            shopifyOrderId: null,
+            paymentMethod: isCod ? "COD" : "RAZORPAY",
+            isCod,
+            codUpfrontPaid: isCod ? paidOnline : 0,
+            codBalanceDue: isCod ? Math.max(0, Number(convertedTotal || 0) - paidOnline) : 0,
+            totalPrice: Number(convertedTotal || 0),
+            subtotalPrice: Number(convertedSubtotal || 0),
+            discountCode: couponValid ? couponCode : null,
+            discountAmount: Number(fmtPrice(couponDiscount).amount || 0),
+            storeCreditAmount: Number(fmtPrice(appliedStoreCredit).amount || 0),
+            currency: countryConfig?.currencyCode || "INR",
+            createdAt: new Date().toISOString(),
+            shippingAddress: JSON.stringify(checkoutAddress),
+            items: convertedItems.map((item: any) => ({
+              id: item.id || `${item.productId}_${item.variantId}`,
+              title: item.title,
+              quantity: item.quantity,
+              price: Number(item.price || 0),
+              sku: item.variantId || item.productId || null,
+              size: item.size || null,
+              variantId: item.variantId || null,
+              productId: item.productId || null,
+              image: item.image || null,
+            })),
+            customer: {
+              id: null,
+              name: address.name || null,
+              email: address.email || null,
+              phone: address.phone || null,
+            },
+            customerId: null,
+            customerPhone: address.phone || null,
+            registrationStatus: "confirming",
+            razorpayPaymentId: response?.razorpay_payment_id || null,
+          };
+
+          try {
+            sessionStorage.setItem(`zb_confirmation_${navOrderId}`, JSON.stringify(optimisticOrder));
+            sessionStorage.setItem(
+              `zb_complete_pending_${navOrderId}`,
+              JSON.stringify({ body: completeBody, paymentId: response?.razorpay_payment_id || null })
+            );
+            sessionStorage.setItem("last_placed_order_id", navOrderId);
+            const joinedCategories = items.map(item => item.category).filter(Boolean).join(", ");
+            sessionStorage.setItem(`order_categories_${navOrderId}`, joinedCategories);
+            sessionStorage.removeItem("zb_pending_checkout");
+          } catch { /* ignore quota */ }
+
+          clear();
+          router.replace(`/orders/${navOrderId}/confirmation`);
+          return;
+        }
+
+        // Fallback (no pre-created local id): await complete before navigate (old path)
+        setLoading(true);
         try {
           const verifyRes = await fetch("/api/checkout/complete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              address: checkoutAddress,
-              paymentMethod,
-              items: convertedItems,
-              total: convertedTotal,
-              subtotal: convertedSubtotal,
-              currency: countryConfig?.currencyCode || "INR",
-              displayCountry: countryCode,
-              codFee: paymentMethod === "COD" ? codFee : 0,
-              razorpay: response,
-              couponCode: couponValid ? couponCode : null,
-              couponDiscount: fmtPrice(couponDiscount).amount,
-              applyAsStoreCredit,
-              cashbackAmount: fmtPrice(cashbackAmount).amount,
-              storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
-              guestId: getClientCookie("zb_device_id"),
-              fbp: getClientCookie("_fbp") || undefined,
-              fbc: getClientCookie("_fbc") || undefined,
-              externalId: getClientCookie("zb_external_id") || undefined,
-            }),
+            body: JSON.stringify(completeBody),
           });
-
           const verifyData = await verifyRes.json();
           if (verifyRes.ok && verifyData.orderId) {
             if (typeof window !== "undefined") {
               sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
-              const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ');
+              const joinedCategories = items.map(item => item.category).filter(Boolean).join(", ");
               sessionStorage.setItem(`order_categories_${verifyData.orderId}`, joinedCategories);
+              if (verifyData.order) {
+                try {
+                  sessionStorage.setItem(
+                    `zb_confirmation_${verifyData.orderId}`,
+                    JSON.stringify(verifyData.order)
+                  );
+                } catch { /* ignore */ }
+              }
               try {
                 sessionStorage.removeItem("zb_pending_checkout");
               } catch { /* ignore */ }
@@ -1804,7 +1896,6 @@ export default function CheckoutPage() {
             return;
           }
 
-          // Payment captured but complete failed — try recovery by Razorpay order id
           const rzpOrderId = response?.razorpay_order_id;
           if (rzpOrderId) {
             try {
@@ -1823,8 +1914,6 @@ export default function CheckoutPage() {
             } catch { /* fall through */ }
           }
 
-          // CRITICAL: Payment was captured successfully, but database registration failed.
-          // Do not allow retry to prevent double-charging the customer.
           setIsConfirmingPayment(false);
           setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered an issue registering your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can verify and manually create your order.`);
           setLoading(false);
@@ -1833,7 +1922,6 @@ export default function CheckoutPage() {
           setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered a connection issue confirming your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can confirm your order manually.`);
           setLoading(false);
         }
-        // Keep lock held after success to prevent double-charge retries until navigation
       };
 
       // ═══════════════════════════════════════════════════════════
