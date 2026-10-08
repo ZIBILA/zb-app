@@ -169,14 +169,9 @@ export function canAdvanceCarrierStatus(current: unknown, next: CarrierStatus): 
   const cur = normalizeCarrierStatus(current);
   if (cur === 'unknown') return true;
   if (cur === next) return true;
-  // Cancellation Requested may only move to Cancelled (or stay).
+  // Cancellation Requested is NOT terminal — only exact Cancelled ends the void.
   if (cur === 'cancellation_requested') {
     return next === 'cancelled';
-  }
-  // Allow correcting an overshoot: we used to mark Cancelled while SR was still
-  // Cancellation Requested — let sync/webhooks pull the true intermediate state back.
-  if (cur === 'cancelled' && next === 'cancellation_requested') {
-    return true;
   }
   if (TERMINAL.has(cur)) return false;
   if (next === 'cancelled' || next === 'cancellation_requested' || next === 'lost' || next === 'rto') {
@@ -371,7 +366,7 @@ function isFullyCancelledOutboundStatus(status: unknown): boolean {
 }
 
 export function pickActiveOutboundShipment<T extends ShipmentLike>(shipments: T[] | null | undefined): T | null {
-  // Keep Cancellation Requested visible (AWB still exists on Shiprocket).
+  // Keep Cancellation Requested (AWB still live on Shiprocket — sync until Cancelled).
   // Only drop fully Cancelled rows from the live booking panel.
   const active = (shipments || [])
     .filter((s) => !isReverseShipmentType(s.type) && !isFullyCancelledOutboundStatus(s.status))

@@ -737,7 +737,8 @@ export async function syncOrderLogisticsStatus(orderId: string): Promise<{
     };
   }
 
-  // Prefer live AWB; fall back to voided_awb preserved at cancel time.
+  // Prefer live AWB; fall back to voided_awb preserved at cancel time (do NOT
+  // write voided_awb back onto the row — cancel clears AWB so ops can rebook).
   const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
   const trackRef =
     String(shipment.awb || meta?.voided_awb || '').trim() ||
@@ -751,17 +752,6 @@ export async function syncOrderLogisticsStatus(orderId: string): Promise<{
       deliveryStatus: null,
       message: 'Shipment has no AWB/tracking number yet',
     };
-  }
-
-  // If AWB was cleared on final cancel but we still have voided_awb, restore it
-  // temporarily on the row so refreshShipmentFromCarrier can poll Shiprocket.
-  if (!shipment.awb && meta?.voided_awb) {
-    await prisma.shipment
-      .update({
-        where: { id: shipment.id },
-        data: { awb: String(meta.voided_awb) },
-      })
-      .catch(() => {});
   }
 
   const { refreshShipmentFromCarrier } = await import('@/lib/services/shipmentStatusService');
@@ -2400,6 +2390,7 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     'pickup_scheduled',
     'new',
     'processing',
+    'cancellation_requested', // re-hit Shiprocket if void still pending
     'cancelled', // allow re-attempt when local was marked cancelled but SR order still open
   ];
   if (!cancellableStatuses.includes(shipment.status)) {
@@ -2490,13 +2481,32 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     shiprocketCancelInProgress = true;
   }
 
-  // Shiprocket cancel is async: stay on cancellation_requested (keep AWB) until sync/webhook
-  // confirms final Canceled. Jumping straight to cancelled hid the real SR status.
+  // If Shiprocket already flipped to exact Cancelled, finalize now. Otherwise
+  // stay on Cancellation Requested and keep polling — never stop at "Requested".
+  if (shiprocketCancelInProgress && config.provider === 'shiprocket') {
+    const trackRef = String(shipment.awb || trackingNumber || '').trim();
+    if (trackRef && !/^MOCK/i.test(trackRef) && !/^CANCELLED-/i.test(trackRef)) {
+      try {
+        const tracked = await getTrackingStatus(trackRef);
+        const code = normalizeCarrierStatus(tracked.rawStatus || tracked.status);
+        if (code === 'cancelled') {
+          shiprocketCancelInProgress = false;
+        }
+      } catch {
+        /* keep cancellation_requested; sync will retry */
+      }
+    }
+  }
+
+  // Cancel is already sent to Shiprocket above (stops shipping). Locally we only
+  // mark Cancellation Requested and KEEP the AWB so status sync can keep polling
+  // until the carrier reports exact Cancelled — then applyShipmentStatusUpdate
+  // clears the AWB. Never treat "Cancellation Requested" as the final state.
   const localStatus = shiprocketCancelInProgress ? 'cancellation_requested' : 'cancelled';
-  const clearAwb = localStatus === 'cancelled';
-  const voidedAwb = clearAwb ? String(shipment.awb || trackingNumber || '').trim() : '';
+  const finalized = localStatus === 'cancelled';
+  const voidedAwb = finalized ? String(shipment.awb || trackingNumber || '').trim() : '';
   let cancelMeta: string | undefined;
-  if (clearAwb && voidedAwb && !/^CANCELLED-/i.test(voidedAwb) && !/^MOCK/i.test(voidedAwb)) {
+  if (finalized && voidedAwb && !/^CANCELLED-/i.test(voidedAwb) && !/^MOCK/i.test(voidedAwb)) {
     const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse) || {
       provider: 'shiprocket' as const,
       shipment_id: null,
@@ -2511,7 +2521,7 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     data: {
       status: localStatus,
       ...(cancelMeta ? { rawDelhiveryResponse: cancelMeta } : {}),
-      ...(clearAwb
+      ...(finalized
         ? {
             awb: null,
             trackingNumber: voidedAwb
@@ -2525,17 +2535,14 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
   });
 
   if (shipment.orderId) {
-    // Shipment cancel is not an order cancel — customer order stays ACTIVE.
+    // Shipment cancel ≠ order cancel. Keep delivery on cancellation_requested so
+    // lazy sync / webhooks keep checking until exact Cancelled.
     await prisma.order.update({
       where: { id: shipment.orderId },
       data: {
         deliveryStatus: localStatus,
-        // Keep the exact Shiprocket-facing phrase for admin display.
-        tracking_status:
-          localStatus === 'cancellation_requested'
-            ? 'Cancellation Requested'
-            : 'Canceled',
-        ...(clearAwb ? { delhivery_awb: null } : {}),
+        tracking_status: finalized ? 'Canceled' : 'Cancellation Requested',
+        ...(finalized ? { delhivery_awb: null } : {}),
       },
     }).catch(() => {});
 
@@ -2552,19 +2559,23 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
       await prisma.webStoreOrder.updateMany({
         where: { OR: wsWhere },
         data: {
-          deliveryStatus: localStatus === 'cancelled' ? 'pending' : localStatus,
-          ...(clearAwb ? { trackingNumber: null, trackingUrl: null } : {}),
+          deliveryStatus: finalized ? 'pending' : localStatus,
+          ...(finalized ? { trackingNumber: null, trackingUrl: null } : {}),
         },
       }).catch(() => {});
+    }
+
+    // Kick a sync so we pick up final Cancelled as soon as Shiprocket flips.
+    if (!finalized) {
+      void syncOrderLogisticsStatus(shipment.orderId).catch(() => {});
     }
   }
 
   return {
     success: true,
-    message:
-      localStatus === 'cancellation_requested'
-        ? 'Cancellation requested in Shiprocket — awaiting courier void'
-        : 'Shipment cancelled successfully',
+    message: finalized
+      ? 'Shipment cancelled successfully'
+      : 'Cancel sent to Shiprocket — syncing until status is Cancelled',
   };
 }
 

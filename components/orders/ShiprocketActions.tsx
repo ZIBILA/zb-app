@@ -282,9 +282,9 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       }
       setShowCancelModal(false);
       setMessage(
-        'Cancellation requested in Shiprocket — status will move to Cancelled when the courier voids the AWB.'
+        'Cancel sent to Shiprocket. Status will stay Cancellation Requested until Shiprocket reports Cancelled — sync keeps checking.'
       );
-      // Stay on the booked panel while SR is Cancellation Requested (AWB still exists).
+      // Keep AWB visible while void is in progress so status checks can continue.
       setLocallyCancelled(false);
       await Promise.resolve(onRefresh());
     } catch (err: any) {
@@ -360,7 +360,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             </div>
             {isCancellationRequested ? (
               <p className="text-[11px] font-medium text-rose-400/90">
-                Cancellation requested in Shiprocket — AWB void is in progress. Sync will move this to Cancelled when finished.
+                Cancel sent to Shiprocket — waiting for exact Cancelled (not done yet). Sync will keep checking.
               </p>
             ) : !isRto ? (
               <p className={`text-[11px] font-medium ${pickupDone ? 'text-emerald-400/90' : 'text-foreground/50'}`}>

@@ -214,25 +214,31 @@ export default function OrderDetailPage() {
   }, [id, fetchOrder]);
 
   // Lazy logistics sync: page renders from DB first, then after paint we pull
-  // Shiprocket status once per order visit (does not block initial load).
+  // Shiprocket. While Cancellation Requested, keep polling until exact Cancelled.
   useEffect(() => {
     if (loading || !order?.id) return;
-    if (logisticsSyncedForOrderRef.current === order.id) return;
 
     const live = pickActiveOutboundShipment((order.shipments || []) as any[]);
+    const liveCode = normalizeCarrierStatus(live?.status || order.deliveryStatus);
+    const awaitingFinalCancel = liveCode === 'cancellation_requested';
     const awb = live?.awb || order.delhivery_awb;
-    if (!awb) {
+
+    if (!awb && !awaitingFinalCancel) {
       logisticsSyncedForOrderRef.current = order.id;
       return;
     }
 
+    // One-shot sync for normal statuses; poll while void is in progress.
+    if (!awaitingFinalCancel && logisticsSyncedForOrderRef.current === order.id) return;
+
     let cancelled = false;
     let idleId: number | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let pollId: ReturnType<typeof setInterval> | null = null;
 
     const runSync = async () => {
-      if (cancelled || logisticsSyncedForOrderRef.current === order.id) return;
-      logisticsSyncedForOrderRef.current = order.id;
+      if (cancelled) return;
+      if (!awaitingFinalCancel) logisticsSyncedForOrderRef.current = order.id;
       setLogisticsSyncing(true);
       try {
         const res = await fetch('/api/logistics/sync-status', {
@@ -263,12 +269,19 @@ export default function OrderDetailPage() {
 
     schedule();
 
+    if (awaitingFinalCancel) {
+      pollId = setInterval(() => {
+        void runSync();
+      }, 15_000);
+    }
+
     return () => {
       cancelled = true;
       if (idleId != null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
         window.cancelIdleCallback(idleId);
       }
       if (timeoutId) clearTimeout(timeoutId);
+      if (pollId) clearInterval(pollId);
     };
   }, [loading, order, fetchOrder]);
 
@@ -942,7 +955,8 @@ export default function OrderDetailPage() {
                   allShipments.some(
                     (s) => !isReverseShipmentType(s.type) && normalizeCarrierStatus(s.status) === 'cancelled'
                   ));
-              // Cancellation Requested still has an AWB on Shiprocket — keep it visible.
+              // Only hide AWB when fully Cancelled. Cancellation Requested keeps
+              // the AWB so status sync can continue until Shiprocket says Cancelled.
               const showAsCancelled = logisticsFullyCancelled || activeCode === 'cancelled';
               const externalId = showAsCancelled ? null : activeShipment?.trackingNumber || null;
               const awb = showAsCancelled ? null : activeShipment?.awb || null;
