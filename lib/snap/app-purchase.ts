@@ -33,6 +33,8 @@ export interface SnapAppPurchaseDeps {
   db: any;
   send: (input: SnapAppEventInput, cfg: { snapAppId: string; token: string }) => Promise<{ success: boolean; error?: any; skipped?: boolean }>;
   env?: NodeJS.ProcessEnv;
+  /** Independent capture proof (Razorpay captured, not refunded) for stranded pending rows. */
+  verifyCapture?: (order: { id: string; paymentMethod?: string | null; razorpayPaymentId?: string | null }) => Promise<boolean>;
 }
 
 function parseAddress(raw: unknown): Record<string, any> {
@@ -96,7 +98,7 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
   };
 }
 
-export function createSnapAppPurchaseDelivery({ db, send, env = process.env }: SnapAppPurchaseDeps) {
+export function createSnapAppPurchaseDelivery({ db, send, env = process.env, verifyCapture }: SnapAppPurchaseDeps) {
   const ledger = createDeliveryLedger(db, '[Snap App Purchase]');
 
   /** Called at payment start with the app's device context. Never throws. */
@@ -153,11 +155,32 @@ export function createSnapAppPurchaseDelivery({ db, send, env = process.env }: S
     });
   }
 
+  /**
+   * Retry job: expire pending rows past Snap's window, resend failed / lease-expired
+   * rows, and recover PENDING rows (>15 min) only when the DB order is paid /
+   * cod_upfront_paid AND the capture is independently verified.
+   */
   async function retryPendingSnapAppPurchases(limit = 25): Promise<Record<string, number>> {
     const tally: Record<string, number> = {};
+    const bump = (k: string) => { tally[k] = (tally[k] || 0) + 1; };
+    const expired = await ledger.expireStalePending(PLATFORM, EVENT);
+    if (expired) tally.expired = expired;
     for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
       const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
-      tally[out.status] = (tally[out.status] || 0) + 1;
+      bump(`retry_${out.status}`);
+    }
+    if (!verifyCapture) return tally;
+    for (const orderId of await ledger.recoverablePending(PLATFORM, EVENT, limit)) {
+      const order: any = await db.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, paymentStatus: true, paymentMethod: true, razorpayPaymentId: true, orderType: true },
+      }).catch(() => null);
+      if (!order) { bump('pending_no_order'); continue; }
+      if (!NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) { bump('pending_not_app'); continue; }
+      if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(String(order.paymentStatus || '').toLowerCase())) { bump('pending_unpaid'); continue; }
+      if (!(await verifyCapture(order).catch(() => false))) { bump('pending_capture_unverified'); continue; }
+      const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
+      bump(`recovered_${out.status}`);
     }
     return tally;
   }

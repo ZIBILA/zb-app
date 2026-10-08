@@ -6,8 +6,9 @@ import prisma from '@/lib/db';
 import { sendSnapAppEvent } from '@/lib/snap/app-capi';
 import { createSnapAppPurchaseDelivery, type AppRequestContext } from '@/lib/snap/app-purchase';
 import { isPrivateIP } from '@/lib/ip-geo';
+import { verifyCapture } from '@/lib/snap/purchase-server';
 
-const delivery = createSnapAppPurchaseDelivery({ db: prisma, send: sendSnapAppEvent });
+const delivery = createSnapAppPurchaseDelivery({ db: prisma, send: sendSnapAppEvent, verifyCapture });
 
 export const recordSnapAppContext = delivery.recordSnapAppContext;
 export const emitSnapAppPurchase = delivery.emitSnapAppPurchase;

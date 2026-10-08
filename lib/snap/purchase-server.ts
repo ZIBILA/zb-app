@@ -16,7 +16,7 @@ export type { SnapClickContext } from '@/lib/snap/purchase';
  * payment captured with nothing refunded (fetchCapturedPayment throws otherwise).
  * 100% store-credit web orders have no gateway payment to check.
  */
-async function verifyCapture(order: { paymentMethod?: string | null; razorpayPaymentId?: string | null }): Promise<boolean> {
+export async function verifyCapture(order: { paymentMethod?: string | null; razorpayPaymentId?: string | null }): Promise<boolean> {
   if (String(order.paymentMethod || '').toLowerCase() === 'store_credit') return true;
   if (!order.razorpayPaymentId) return false;
   try {

@@ -45,6 +45,8 @@ async function main() {
     if (w.attempts?.lt !== undefined && !(row.attempts < w.attempts.lt)) return false;
     if (w.status !== undefined) { if (typeof w.status === 'string' && row.status !== w.status) return false; if (w.status?.in && !w.status.in.includes(row.status)) return false; }
     if (w.leaseUntil?.lt && !(row.leaseUntil && row.leaseUntil < w.leaseUntil.lt)) return false;
+    if (w.createdAt?.lt && !(row.createdAt < w.createdAt.lt)) return false;
+    if (w.createdAt?.gt && !(row.createdAt > w.createdAt.gt)) return false;
     if (w.OR && !w.OR.some((o: any) => match(row, o))) return false;
     return true;
   };
@@ -61,7 +63,7 @@ async function main() {
       updateMany: async ({ where, data }: any) => { await tick(); let count = 0;
         for (const r of rows.values()) { if (!match(r, where)) continue; for (const [k, v] of Object.entries<any>(data)) r[k] = v && typeof v === 'object' && 'increment' in v ? r[k] + v.increment : v; count++; }
         return { count }; },
-      findMany: async ({ where, take }: any) => [...rows.values()].filter(r => match(r, where)).slice(0, take),
+      findMany: async ({ where, take }: any) => [...rows.values()].filter(r => match(r, where)).sort((a, b) => a.createdAt - b.createdAt).slice(0, take),
     },
   };
   const delivery = createSnapAppPurchaseDelivery({ db, send: appCapi.sendSnapAppEvent, env: ENV as any });
@@ -190,6 +192,27 @@ async function main() {
   await unconfigured.recordSnapAppContext('app_noconf', iosDevice, req);
   const nc = await unconfigured.emitSnapAppPurchase('app_noconf', PAID);
   check('Snap App IDs not configured → skipped, nothing sent', nc.status === 'skipped' && httpCalls.length === 0, nc);
+
+  // ── Stranded pending app row: recovered only with DB paid + verified capture ──
+  console.log('\n— Pending recovery (app)');
+  const capturedIds = new Set<string>();
+  const rec = createSnapAppPurchaseDelivery({ db, send: appCapi.sendSnapAppEvent, env: ENV as any, verifyCapture: async (o: any) => capturedIds.has(o.id) });
+  orders.set('app_stranded', order('app_stranded'));
+  await rec.recordSnapAppContext('app_stranded', androidDevice, req); // create-order; app crashed, webhook missed
+  rows.get('snap_app|PURCHASE|app_stranded').createdAt = new Date(Date.now() - 20 * 60e3);
+  httpCalls.length = 0;
+  await rec.retryPendingSnapAppPurchases(25);
+  check('capture not verified → stays pending, nothing sent', httpCalls.length === 0 && rows.get('snap_app|PURCHASE|app_stranded').status === 'pending');
+  capturedIds.add('app_stranded');
+  const t = await rec.retryPendingSnapAppPurchases(25);
+  check('capture verified → one MOBILE_APP Purchase to the Android endpoint', httpCalls.length === 1 && lastEvent().url.includes('/v3/snap-app-android-uuid/') && t.recovered_sent === 1, t);
+  await rec.retryPendingSnapAppPurchases(25);
+  check('next run → no resend', httpCalls.length === 1);
+  orders.set('app_stale_pending', order('app_stale_pending', { paymentStatus: 'pending' }));
+  await rec.recordSnapAppContext('app_stale_pending', iosDevice, req);
+  rows.get('snap_app|PURCHASE|app_stale_pending').createdAt = new Date(Date.now() - 8 * 864e5);
+  await rec.retryPendingSnapAppPurchases(25);
+  check('pending app row older than 7 days → expired', rows.get('snap_app|PURCHASE|app_stale_pending').status === 'skipped' && httpCalls.length === 1);
 
   // ── Device context hygiene ──
   console.log('\n— Device context parsing');
