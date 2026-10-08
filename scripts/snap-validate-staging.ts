@@ -16,6 +16,8 @@
  */
 import { buildSnapCapiEvent, type SnapCapiEventPayload } from '../lib/snap-capi';
 import { buildPurchaseFromOrder } from '../lib/snap/purchase';
+import { buildSnapAppEvent, snapAppConfig, parseSnapDeviceContext } from '../lib/snap/app-capi';
+import { buildAppPurchaseInput } from '../lib/snap/app-purchase';
 
 const token = process.env.SNAP_CAPI_ACCESS_TOKEN;
 const pixel = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd';
@@ -77,6 +79,25 @@ async function main() {
     const ok = res.ok && body?.status === 'VALID';
     if (!ok) bad++;
     console.log(`${ok ? 'VALID  ' : 'INVALID'}  ${event.event_name.padEnd(16)} HTTP ${res.status}  ${JSON.stringify(body).slice(0, 400)}`);
+  }
+  // Native app PURCHASE (MOBILE_APP) — validated against each Snap App ID that is configured.
+  const devices = {
+    ios: { platform: 'ios', appVersion: '1.0.2', buildNumber: '9', osVersion: '17.5.1', deviceModel: 'iPhone15,2', locale: 'en_IN', timezoneAbbr: 'GMT+5:30', timezone: 'Asia/Kolkata', attStatus: 'denied', idfv: '3F2504E0-4F89-11D3-9A0C-0305E82C3301' },
+    android: { platform: 'android', appVersion: '1.0.4', buildNumber: '5', osVersion: '14', deviceModel: 'SM-S918B', locale: 'en_IN', timezoneAbbr: 'GMT+5:30', timezone: 'Asia/Kolkata' },
+  } as const;
+  for (const platform of ['ios', 'android'] as const) {
+    const cfg = snapAppConfig(platform);
+    if (!cfg) { console.log(`SKIPPED  MOBILE_APP ${platform}: SNAP_APP_ID_${platform.toUpperCase()}${platform === 'ios' ? ' / SNAP_IOS_APP_STORE_ID' : ''} not set`); continue; }
+    const device = parseSnapDeviceContext(devices[platform])!;
+    const event = buildSnapAppEvent(buildAppPurchaseInput({ ...order, id: `validate_app_${platform}_${now}` }, device,
+      { ipAddress: '49.36.10.20', userAgent: 'ZicaBella', externalId: 'cust_validate' }, cfg.appId, now));
+    const res = await fetch(`https://tr.snapchat.com/v3/${cfg.snapAppId}/events/validate?access_token=${cfg.token}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: [event] }),
+    });
+    const body: any = await res.json().catch(() => ({}));
+    const ok = res.ok && body?.status === 'VALID';
+    if (!ok) bad++;
+    console.log(`${ok ? 'VALID  ' : 'INVALID'}  MOBILE_APP ${platform.padEnd(7)} HTTP ${res.status}  ${JSON.stringify(body).slice(0, 400)}`);
   }
   console.log(bad ? `\n${bad} event(s) not VALID` : '\nAll events VALID');
   process.exit(bad ? 1 : 0);

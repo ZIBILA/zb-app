@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { retryPendingSnapPurchases } from '@/lib/snap/purchase-server';
+import { retryPendingSnapAppPurchases } from '@/lib/snap/app-purchase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,8 +27,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {
-    const result = await retryPendingSnapPurchases(25);
-    return NextResponse.json({ ok: true, result });
+    const web = await retryPendingSnapPurchases(25);
+    const app = await retryPendingSnapAppPurchases(25);
+    return NextResponse.json({ ok: true, result: { web, app } });
   } catch (err: any) {
     console.error('[Cron snap-conversions]', err?.message);
     return NextResponse.json({ ok: false }, { status: 500 });

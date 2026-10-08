@@ -13,6 +13,7 @@ import { config, getPaymentApiBaseUrl } from '../../constants/config';
 import { useAuth } from '../../hooks/useAuth';
 import { useAuthStore } from '../../store/authStore';
 import { Image } from 'expo-image';
+import { getSnapDeviceContext } from '../../services/snapDeviceContext';
 
 const { width } = Dimensions.get('window');
 
@@ -281,6 +282,7 @@ export default function OrderReviewScreen() {
             currency: 'INR',
             receipt: `zb_cod_${Date.now()}`,
             orderData: orderData,
+            snapDevice: await getSnapDeviceContext(),
           }),
         });
 
@@ -334,7 +336,8 @@ export default function OrderReviewScreen() {
           amount: grandTotal, 
           currency: 'INR', 
           receipt: `zb_${Date.now()}`,
-          orderData: orderData // Pass the full order data to pre-create the record
+          orderData: orderData, // Pass the full order data to pre-create the record
+          snapDevice: await getSnapDeviceContext(),
         }),
       });
       

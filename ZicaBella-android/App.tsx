@@ -8,6 +8,7 @@ import * as Notifications from 'expo-notifications';
 
 import RootNavigator from './src/navigation/RootNavigator';
 import { ConsentModal } from './src/components/ConsentModal';
+import { requestTrackingConsentOnce } from './src/services/snapDeviceContext';
 import { useThemeStore } from './src/store/themeStore';
 import { useFonts } from 'expo-font';
 import { getColors } from './src/constants/colors';
@@ -108,7 +109,7 @@ function App() {
           />
           <InAppNotificationBanner />
           <RootNavigator />
-          <ConsentModal />
+          <ConsentModal onConsentComplete={requestTrackingConsentOnce} />
         </SafeAreaProvider>
       </ErrorBoundary>
     </GestureHandlerRootView>

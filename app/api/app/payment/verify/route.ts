@@ -8,6 +8,7 @@ import { sendOpenAiEvent, toMinorUnits as oaiToMinorUnits } from '@/lib/openai-c
 import { assignUniversalOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
 
 import { getCorsHeaders, handleCorsOptions } from '@/lib/cors';
+import { emitSnapAppPurchase, appRequestContext } from '@/lib/snap/app-purchase-server';
 
 export async function OPTIONS(req: Request) {
   return handleCorsOptions(req);
@@ -16,7 +17,10 @@ export async function OPTIONS(req: Request) {
 export async function POST(req: Request) {
   const corsHeaders = getCorsHeaders(req);
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = await req.json();
+    const verifyBody = await req.json();
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = verifyBody;
+    // Snap MOBILE_APP Purchase is sent only when Razorpay reports the money CAPTURED.
+    let paymentCaptured = false;
     
     if (!razorpay_order_id || !razorpay_payment_id) {
       console.error('[Verify] Missing fields:', { razorpay_order_id, razorpay_payment_id, has_signature: !!razorpay_signature });
@@ -87,6 +91,7 @@ export async function POST(req: Request) {
           { status: 400, headers: corsHeaders }
         );
       }
+      paymentCaptured = payment.status === 'captured' && payment.captured === true;
     }
 
     console.log(`[Verify] ✅ Payment verified: ${razorpay_payment_id} for order ${razorpay_order_id}`);
@@ -249,15 +254,15 @@ export async function POST(req: Request) {
           }
           console.log(`[Verify] Local order ${order.id} marked as ${targetPaymentStatus}`);
 
-          // ─── Snap: intentionally NOT sent for native-app purchases ───
-          // These are iOS/Android app conversions. Sending them through the
-          // website pixel (action_source WEB) misclassified app sales. A correct
-          // Snap app event needs action_source MOBILE_APP against the Snap App ID
-          // endpoint (/v3/{SNAP_APP_ID}/events) with app_data.app_id and extinfo
-          // (version i2/a2 + OS version required), plus ATT status / IDFV on iOS.
-          // The apps do not yet send platform, OS/app version, ATT or IDFV to the
-          // server, and no Snap App IDs are configured — so nothing is sent until
-          // that exists. Payment/order handling above is unaffected.
+          // ─── Snap MOBILE_APP Purchase (never the website pixel) ───
+          // lib/snap/app-purchase.ts rebuilds it from the stored order + the device
+          // context the app sent at payment start, and sends once (ledger). Only a
+          // CAPTURED payment counts; otherwise the payment.captured webhook sends it.
+          emitSnapAppPurchase(order.id, {
+            paymentConfirmed: paymentCaptured,
+            device: verifyBody?.snapDevice,
+            req: appRequestContext(req, order.customerId),
+          }).catch(() => {});
 
           // ─── Authoritative server-side OpenAI Ads order_created ───
           // Mobile app — no browser pixel to dedup against, so action_source = 'mobile_app'.

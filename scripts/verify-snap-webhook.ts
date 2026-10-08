@@ -12,11 +12,19 @@ import crypto from 'crypto';
 process.env.RAZORPAY_WEBHOOK_SECRET = 'whsec_test';
 process.env.SNAP_CAPI_ACCESS_TOKEN = 'test-token';
 process.env.NEXT_PUBLIC_SITE_URL = 'https://zicabella.com';
+process.env.SNAP_APP_ID_IOS = 'snap-app-ios-uuid';
+process.env.SNAP_IOS_APP_STORE_ID = '6740012345';
+process.env.SNAP_APP_ID_ANDROID = 'snap-app-android-uuid';
 
-const snapCalls: any[] = [];
+const snapCalls: any[] = [];   // website pixel endpoint
+const appCalls: any[] = [];    // Snap APP endpoints
 const metaCalls: any[] = [];
 (globalThis as any).fetch = async (url: string, opt: any = {}) => {
   const u = String(url);
+  if (u.startsWith('https://tr.snapchat.com/v3/snap-app-')) {
+    appCalls.push({ url: u, body: JSON.parse(opt.body) });
+    return { ok: true, status: 200, json: async () => ({ status: 'VALID' }) };
+  }
   if (u.startsWith('https://tr.snapchat.com/')) {
     snapCalls.push(JSON.parse(opt.body));
     return { ok: true, status: 200, json: async () => ({ status: 'VALID' }) };
@@ -92,11 +100,22 @@ async function main() {
   check('COD captured → cod_upfront_paid + one Purchase', store.orders.get('ord_cod').paymentStatus === 'cod_upfront_paid' && snapCalls.length === 2,
     { status: store.orders.get('ord_cod').paymentStatus, snap: snapCalls.length });
 
-  // ── Native app order captured → no WEB Purchase ──
+  // ── Native app order: device context stored at create-order; authorized → nothing; captured → ONE MOBILE_APP ──
   store.orders.set('ord_app', mkOrder('ord_app', 'order_rzp_app', { orderType: 'MOBILE_APP' }));
+  store.ledger.set('snap_app|PURCHASE|ord_app', {
+    id: 'led_app', platform: 'snap_app', eventName: 'PURCHASE', orderId: 'ord_app', eventId: 'ord_app',
+    status: 'pending', attempts: 0, leaseUntil: null, eventTime: null, sentAt: null,
+    context: { platform: 'ios', osVersion: '17.5', attStatus: 'denied', idfv: '3F2504E0-4F89-11D3-9A0C-0305E82C3301', appVersion: '1.0.2' },
+  });
+  await send('payment.authorized', 'order_rzp_app', 'pay_app_1');
+  check('app authorized → not paid, no app event', store.orders.get('ord_app').paymentStatus === 'pending' && appCalls.length === 0);
   await send('payment.captured', 'order_rzp_app', 'pay_app_1');
   check('app order captured → paid', store.orders.get('ord_app').paymentStatus === 'paid');
-  check('app order → no WEB Snap Purchase', snapCalls.length === 2 && !snapCalls.some(c => c.data[0].event_id === 'ord_app'), snapCalls.length);
+  check('app order → NO website-pixel Purchase', !snapCalls.some(c => c.data[0].event_id === 'ord_app'), snapCalls.length);
+  check('app order → exactly one MOBILE_APP Purchase to the iOS app endpoint',
+    appCalls.length === 1 && appCalls[0].url.includes('/v3/snap-app-ios-uuid/events') && appCalls[0].body.data[0].action_source === 'MOBILE_APP', appCalls);
+  await send('order.paid', 'order_rzp_app', 'pay_app_1');
+  check('order.paid afterwards → still one app Purchase', appCalls.length === 1, appCalls.length);
 
   // ── Retry cron auth (CRON_SECRET required, Bearer only) ──
   const cron = await import('../app/api/cron/snap-conversions/route');

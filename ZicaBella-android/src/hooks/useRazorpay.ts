@@ -23,6 +23,7 @@ import { getPaymentApiBaseUrl } from '../constants/config';
 import { useAuthStore } from '../store/authStore';
 import { checkOrderStatus } from '../api/payment';
 import { WALLET_APPS } from '../utils/razorpayBridge';
+import { getSnapDeviceContext } from '../services/snapDeviceContext';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -330,6 +331,8 @@ export function useRazorpay(): UseRazorpayReturn {
               currency: opts.currency || 'INR',
               receipt: opts.receipt || `zb_${Date.now()}`,
               orderData: opts.orderData,
+              // Device context for the Snap MOBILE_APP Purchase (server-side, never the web pixel)
+              snapDevice: await getSnapDeviceContext(),
             }),
           });
 
@@ -525,7 +528,7 @@ export function useRazorpay(): UseRazorpayReturn {
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
-          body: JSON.stringify(verifyBody),
+          body: JSON.stringify({ ...verifyBody, snapDevice: await getSnapDeviceContext() }),
         });
 
         const verifyText = await verifyRes.text();
