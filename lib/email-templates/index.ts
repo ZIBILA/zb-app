@@ -486,7 +486,7 @@ export function enrichEmailVariables(rawVars: Record<string, any>): Record<strin
   vars.orderStatusUrl = vars.orderStatusUrl || `https://zicabella.com/account/orders`;
 
   // 6. Shipping / Courier / Tracking
-  const courier = vars.courier || vars.carrier || vars.courierName || 'Delhivery';
+  const courier = vars.courier || vars.carrier || vars.courierName || 'Shiprocket';
   vars.courier = courier;
   vars.carrier = courier;
   vars.courierName = courier;

@@ -521,7 +521,7 @@ export default function ReturnDetailPage() {
                   <a
                     href={
                       String(data.logisticsPartner || "").toLowerCase().includes("delhivery")
-                        ? `https://www.delhivery.com/track/package/${data.reverseAwb}`
+                        ? `https://shiprocket.co/tracking/${data.reverseAwb}`
                         : `https://shiprocket.co/tracking/${data.reverseAwb}`
                     }
                     target="_blank"

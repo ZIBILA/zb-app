@@ -553,10 +553,10 @@ export default function OrderDetailsScreen() {
                   {trackingData.awb && (
                     <TouchableOpacity 
                       style={{ marginTop: 12, alignItems: 'center' }} 
-                      onPress={() => Linking.openURL('https://www.delhivery.com/track/package/' + trackingData.awb)}
+                      onPress={() => Linking.openURL('https://shiprocket.co/tracking/' + trackingData.awb)}
                     >
                       <Typography color={colors.iosBlue} style={{ textDecorationLine: 'underline', fontSize: 13, fontWeight: '600' }}>
-                        Track on Delhivery website
+                        Track shipment
                       </Typography>
                     </TouchableOpacity>
                   )}

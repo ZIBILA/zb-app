@@ -2,7 +2,7 @@
  * Provider-aware tracking for a single order.
  *
  * The AWB of an order can live on `Shipment.awb` (Shiprocket / any aggregator),
- * `Shipment.trackingNumber` (direct Delhivery) or the legacy `Order.delhivery_awb`.
+ * `Shipment.trackingNumber` / `Shipment.awb`, or the legacy `Order.delhivery_awb` column.
  * This module resolves the right one and returns one tracking payload shape for
  * the customer web app, the mobile app and the admin UI.
  */
@@ -135,10 +135,10 @@ export async function resolveOutboundShipment(
     return {
       shipmentId: null,
       awb,
-      courier: 'Delhivery',
-      provider: 'delhivery',
+      courier: null,
+      provider: 'shiprocket',
       status: 'confirmed',
-      trackingUrl: `https://www.delhivery.com/track/package/${awb}`,
+      trackingUrl: `https://shiprocket.co/tracking/${awb}`,
       labelUrl: null,
       awbPending: false,
       source: 'order',
@@ -211,43 +211,17 @@ export async function getOrderTracking(order: {
     });
   }
 
-  // Legacy Delhivery-only order with no Shipment row: query Delhivery directly.
+  // No Shipment row (legacy AWB only): show stored AWB without a live Delhivery API call.
   if (!resolved.shipmentId) {
-    const { trackShipment } = await import('@/lib/delhivery/api');
-    const data = await trackShipment(resolved.awb);
-    const pkg = data?.ShipmentData?.[0]?.Shipment;
-    if (!pkg) {
-      return emptyTracking({
-        awb: resolved.awb,
-        courier: resolved.courier,
-        provider: 'delhivery',
-        currentStatus: order.tracking_status || 'Manifested',
-        statusCode: 'confirmed',
-        statusDateTime: order.createdAt ? order.createdAt.toISOString() : null,
-        location: 'Warehouse',
-        trackingUrl: resolved.trackingUrl,
-      });
-    }
-    const timeline = buildTimeline(
-      (pkg.Scans || []).map((sc: any) => ({
-        status: sc.ScanDetail?.Scan || '',
-        location: sc.ScanDetail?.ScannedLocation || '',
-        timestamp: sc.ScanDetail?.ScanDateTime || '',
-        description: sc.ScanDetail?.Instructions || '',
-      }))
-    );
-    const raw = pkg.Status?.Status || 'Manifested';
     return emptyTracking({
       awb: resolved.awb,
       courier: resolved.courier,
-      provider: 'delhivery',
-      currentStatus: raw,
-      statusCode: normalizeCarrierStatus(raw),
-      statusDateTime: pkg.Status?.StatusDateTime || null,
-      location: pkg.Status?.StatusLocation || null,
-      estimatedDelivery: pkg.ExpectedDeliveryDate || null,
-      trackingUrl: resolved.trackingUrl,
-      timeline,
+      provider: resolved.provider,
+      currentStatus: order.tracking_status || 'Manifested',
+      statusCode: 'confirmed',
+      statusDateTime: order.createdAt ? order.createdAt.toISOString() : null,
+      location: 'Warehouse',
+      trackingUrl: resolved.trackingUrl || (resolved.awb ? `https://shiprocket.co/tracking/${resolved.awb}` : null),
     });
   }
 
@@ -279,9 +253,7 @@ export async function getOrderTracking(order: {
     estimatedDelivery: shipment.estimatedDelivery ? shipment.estimatedDelivery.toISOString() : null,
     trackingUrl:
       shipment.trackingUrl ||
-      (resolved.provider === 'delhivery'
-        ? `https://www.delhivery.com/track/package/${resolved.awb}`
-        : `https://shiprocket.co/tracking/${resolved.awb}`),
+      (resolved.awb ? `https://shiprocket.co/tracking/${resolved.awb}` : null),
     timeline,
   });
 }

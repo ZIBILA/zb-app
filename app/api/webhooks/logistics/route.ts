@@ -1,5 +1,5 @@
 /**
- * POST /api/webhooks/logistics — Delhivery/Shiprocket Webhook Handler
+ * POST /api/webhooks/logistics — Shiprocket (and legacy carrier) webhook handler
  * 
  * Validates signature, uses webhook_events table for idempotency,
  * updates shipment status, and triggers push notifications.
@@ -104,27 +104,18 @@ export async function POST(req: NextRequest) {
     let earlyPayload: { Shipment?: unknown } | null = null;
     try { earlyPayload = JSON.parse(rawBody) as { Shipment?: unknown }; } catch {}
 
-    // Detect provider: Delhivery sends x-delhivery-signature or nested Shipment object
-    const isDelhivery =
-      !!req.headers.get('x-delhivery-signature') ||
-      !!earlyPayload?.Shipment;
+    const provider = 'shiprocket';
 
-    const provider = isDelhivery ? 'delhivery' : 'generic';
-
-    // Signature precedence: for Delhivery, x-delhivery-signature MUST take priority
-    // over stray authorization header
-    const signature = (isDelhivery
-      ? (req.headers.get('x-delhivery-signature') ||
-         req.headers.get('x-webhook-signature') ||
-         req.headers.get('authorization') || '')
-      : (req.headers.get('authorization') ||
-         req.headers.get('x-webhook-signature') ||
-         req.headers.get('x-shiprocket-signature') ||
-         req.headers.get('x-delhivery-signature') || '')).trim();
+    const signature = (
+      req.headers.get('authorization') ||
+      req.headers.get('x-webhook-signature') ||
+      req.headers.get('x-shiprocket-signature') ||
+      ''
+    ).trim();
 
     // Validate webhook signature using the unified secret resolver
     const { secret, source } = await resolveWebhookSecret();
-    const mode = (process.env.DELHIVERY_WEBHOOK_MODE || 'token').trim().toLowerCase();
+    const mode = 'hmac';
 
     const ip =
       req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
@@ -139,7 +130,7 @@ export async function POST(req: NextRequest) {
         console.warn(`[Webhook] Signature mismatch. provider=${provider}, mode=${mode}, source=${source}, secret tail=****${secretTail}, token head=${sigHead}..., rawBody length=${rawBody.length}`);
         
         const debugPayload = `Provider: ${provider} | Mode: ${mode} | Secret source: ${source} | Secret tail: ****${secretTail} | Received token head: ${sigHead}... | IP: ${ip} | RawBody length: ${rawBody.length}`;
-        await logToWebhookLogs('delhivery', debugPayload, 'unauthorized_signature_mismatch');
+        await logToWebhookLogs('shiprocket', debugPayload, 'unauthorized_signature_mismatch');
         return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 });
       }
     } else if (!signature && secret) {
@@ -148,7 +139,7 @@ export async function POST(req: NextRequest) {
       console.warn(`[Webhook] No signature provided from IP ${ip} at ${new Date().toISOString()} but webhook secret is configured. provider=${provider}, mode=${mode}, source=${source}, secret tail=****${secretTail}, rawBody length=${rawBody.length}`);
       
       const debugPayload = `Provider: ${provider} | Mode: ${mode} | Secret source: ${source} | Secret tail: ****${secretTail} | IP: ${ip} | RawBody length: ${rawBody.length}`;
-      await logToWebhookLogs('delhivery', debugPayload, 'unauthorized_missing_signature');
+      await logToWebhookLogs('shiprocket', debugPayload, 'unauthorized_missing_signature');
       return NextResponse.json({ error: 'Missing webhook signature' }, { status: 401 });
     }
 
@@ -255,22 +246,18 @@ export async function POST(req: NextRequest) {
         data: { processed: true, processedAt: new Date() },
       });
       // Log to webhook_logs with skipped status
-      await logToWebhookLogs('delhivery', rawBody, 'skipped_unknown_awb');
+      await logToWebhookLogs('shiprocket', rawBody, 'skipped_unknown_awb');
       return NextResponse.json({ success: true, message: 'AWB not tracked' }, { status: 200 });
     }
 
-    // Use central tracking helper to update shipment, order, and reverse requests
-    const { updateOrderTracking } = await import('@/lib/delhivery/tracking');
-    await updateOrderTracking({
-      awb: trackingNumber,
-      shopifyOrderId: shipmentData.ReferenceNo || '',
-      status: rawStatus,
-      statusDateTime: timestamp,
-      statusType: description,
+    // Central status update (order + reverse request side-effects)
+    const { applyShipmentStatusUpdate } = await import('@/lib/services/shipmentStatusService');
+    await applyShipmentStatusUpdate({
+      shipmentId: shipment.id,
+      rawStatus,
       location,
-      instructions: description,
+      estimatedDelivery: estimatedDelivery || null,
       events: scanEvents,
-      estimatedDelivery,
     });
 
     // Mark event processed
@@ -280,12 +267,12 @@ export async function POST(req: NextRequest) {
     });
 
     // Log successful processing to webhook_logs
-    await logToWebhookLogs('delhivery', rawBody, 'processed');
+    await logToWebhookLogs('shiprocket', rawBody, 'processed');
 
     console.log(`[Webhook] ✅ Processed tracking update for AWB ${trackingNumber} → ${normalizedStatus}`);
 
     // RTO side effects (SKU restore, affiliate reversal, RTO tag) are applied centrally
-    // by applyShipmentStatusUpdate via updateOrderTracking.
+    // by applyShipmentStatusUpdate.
 
     return NextResponse.json({
       success: true,

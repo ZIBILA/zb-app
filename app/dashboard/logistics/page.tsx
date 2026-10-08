@@ -199,23 +199,8 @@ export default function LogisticsPage() {
     if (!pickupDate || !pickupCount) return;
     setSchedulingPickup(true);
     try {
-      const res = await fetch("/api/delhivery/schedule-pickup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pickupDatetime: pickupDate,
-          packageCount: parseInt(pickupCount, 10),
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast("Pickup scheduled successfully");
-        setPickupModal(false);
-        setPickupDate("");
-        setPickupCount("1");
-      } else {
-        showToast(data.error || "Failed to schedule pickup", "error");
-      }
+      showToast("Schedule pickup from the order page via Shiprocket actions.", "error");
+      setPickupModal(false);
     } catch {
       showToast("Failed to schedule pickup", "error");
     } finally {
@@ -229,18 +214,7 @@ export default function LogisticsPage() {
     const actualOrderId = orderId.replace("pending-", "");
     setManifestingOrderId(orderId);
     try {
-      const res = await fetch("/api/delhivery/create-shipment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: actualOrderId }),
-      });
-      const data = await res.json();
-      if (data.awb) {
-        showToast(`Shipment created — AWB: ${data.awb}`);
-        fetchShipments();
-      } else {
-        showToast(data.error || "Failed to create shipment", "error");
-      }
+      showToast("Book the shipment from the order page via Shiprocket.", "error");
     } catch {
       showToast("Failed to create shipment", "error");
     } finally {
@@ -368,7 +342,7 @@ export default function LogisticsPage() {
             <div className="w-8 h-8 rounded-lg bg-foreground/5 border border-foreground/10 flex items-center justify-center">
               <Truck className="w-4 h-4 text-foreground/40" />
             </div>
-            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/20">Shiprocket · Delhivery</span>
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/20">Shiprocket</span>
           </div>
           <h1 className="text-4xl font-semibold tracking-tight text-foreground">Logistics</h1>
           <p className="text-[13px] text-foreground/40 max-w-md font-medium leading-relaxed">
@@ -522,9 +496,7 @@ export default function LogisticsPage() {
                             {!s.isReverse && (
                             <a
                               href={
-                                s.provider === "delhivery"
-                                  ? `/api/delhivery/label?awb=${s.awb}`
-                                  : `/api/logistics/label?order_id=${s.orderId}`
+                                `/api/logistics/label?order_id=${s.orderId}`
                               }
                               target="_blank"
                               rel="noopener noreferrer"
@@ -548,9 +520,7 @@ export default function LogisticsPage() {
                             <a
                               href={
                                 s.trackingUrl ||
-                                (s.provider === "delhivery"
-                                  ? `https://www.delhivery.com/track/package/${s.awb}`
-                                  : `https://shiprocket.co/tracking/${s.awb}`)
+                                `https://shiprocket.co/tracking/${s.awb}`
                               }
                               target="_blank"
                               rel="noopener noreferrer"
@@ -626,7 +596,7 @@ export default function LogisticsPage() {
             <div className="absolute -left-20 -top-20 w-40 h-40 bg-blue-500/10 blur-[80px] rounded-full" />
 
             <div className="space-y-2 relative z-10">
-              <h3 className="text-[10px] font-bold text-foreground/20 uppercase tracking-[0.4em]">Delhivery TAT</h3>
+              <h3 className="text-[10px] font-bold text-foreground/20 uppercase tracking-[0.4em]">Delivery TAT</h3>
               <p className="text-[18px] font-semibold text-foreground tracking-tight italic">Expected Delivery Time</p>
             </div>
 
@@ -739,7 +709,7 @@ export default function LogisticsPage() {
                   </div>
                   <div>
                     <p className="text-[12px] font-bold text-foreground tracking-tight">Schedule Pickup</p>
-                    <p className="text-[10px] text-foreground/30">Request Delhivery collection</p>
+                    <p className="text-[10px] text-foreground/30">Request courier collection</p>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-foreground/10 group-hover:text-foreground/40 transition-colors" />
@@ -756,7 +726,7 @@ export default function LogisticsPage() {
                   </div>
                   <div>
                     <p className="text-[12px] font-bold text-foreground tracking-tight">Sync All Statuses</p>
-                    <p className="text-[10px] text-foreground/30">Pull latest from Delhivery</p>
+                    <p className="text-[10px] text-foreground/30">Pull latest tracking</p>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-foreground/10 group-hover:text-foreground/40 transition-colors" />
@@ -813,7 +783,7 @@ export default function LogisticsPage() {
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
                   <h3 className="text-[18px] font-semibold text-foreground tracking-tight">Schedule Pickup</h3>
-                  <p className="text-[11px] text-foreground/40">Request Delhivery courier collection</p>
+                  <p className="text-[11px] text-foreground/40">Request courier collection</p>
                 </div>
                 <button onClick={() => setPickupModal(false)} className="p-2 hover:bg-foreground/10 rounded-xl transition-colors">
                   <X className="w-4 h-4 text-foreground/40" />

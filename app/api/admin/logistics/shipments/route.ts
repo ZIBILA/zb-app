@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
-import { getActiveLogisticsProvider, parseShiprocketMeta } from '@/lib/services/logistics';
+import { getActiveLogisticsProvider } from '@/lib/services/logistics';
 import { isReverseShipmentType, normalizeCarrierStatus, shipmentAwb } from '@/lib/logistics/status';
 
 export const dynamic = 'force-dynamic';
@@ -101,23 +101,12 @@ export async function GET(req: Request) {
         })
       : [];
 
-    const activeProvider = await getActiveLogisticsProvider();
-
     const shipmentRows = shipments.map((s: any) => {
-      const aggregator = Boolean(parseShiprocketMeta(s.rawDelhiveryResponse));
-      const courierIsDelhivery = String(s.courier || '').trim().toLowerCase() === 'delhivery';
-      const provider = aggregator
-        ? 'shiprocket'
-        : courierIsDelhivery
-          ? 'delhivery'
-          : activeProvider === 'delhivery'
-            ? 'delhivery'
-            : 'shiprocket';
       return {
         ...s,
         // Aggregator order ids must not be shown as AWBs.
         awb: shipmentAwb(s),
-        provider,
+        provider: 'shiprocket',
         isReverse: isReverseShipmentType(s.type),
         statusCode: normalizeCarrierStatus(s.status),
         order: {
@@ -136,11 +125,11 @@ export async function GET(req: Request) {
           id: `pending-${o.id}`,
           orderId: o.id,
           awb: o.delhivery_awb || null,
-          courier: o.delhivery_awb ? 'Delhivery' : 'Pending',
-          provider: o.delhivery_awb ? 'delhivery' : activeProvider === 'delhivery' ? 'delhivery' : 'shiprocket',
+          courier: o.delhivery_awb ? 'Courier' : 'Pending',
+          provider: 'shiprocket',
           isReverse: false,
           status: o.delhivery_awb ? 'manifested' : 'manifest_required',
-          trackingUrl: o.delhivery_awb ? `https://www.delhivery.com/track/package/${o.delhivery_awb}` : null,
+          trackingUrl: o.delhivery_awb ? `https://shiprocket.co/tracking/${o.delhivery_awb}` : null,
           createdAt: o.createdAt,
           order: {
             shopifyOrderId: o.internalOrderNumber || o.shopifyOrderName || o.shopifyOrderId || '',

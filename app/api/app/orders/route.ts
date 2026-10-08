@@ -295,7 +295,7 @@ export async function GET(req: Request) {
         awb: latestAwb,
         trackingUrl: latestShipment?.trackingUrl || (latestAwb
           ? latestShipment?.courier?.toLowerCase() === 'delhivery'
-            ? `https://www.delhivery.com/track/package/${latestAwb}`
+            ? `https://shiprocket.co/tracking/${latestAwb}`
             : `https://shiprocket.co/tracking/${latestAwb}`
           : null),
         courier: latestShipment?.courier || null,

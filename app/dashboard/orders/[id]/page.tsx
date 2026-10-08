@@ -38,7 +38,6 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
-import DelhiveryActions from "@/components/orders/DelhiveryActions";
 import ShiprocketActions from "@/components/orders/ShiprocketActions";
 import LineItemEditor from "@/components/orders/LineItemEditor";
 import { carrierStatusLabel, isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
@@ -173,7 +172,6 @@ export default function OrderDetailPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [delhiveryLoading, setDelhiveryLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -333,25 +331,6 @@ export default function OrderDetailPage() {
       throw e;
     } finally {
       setSaving(false);
-      setTimeout(() => setToast(null), 3000);
-    }
-  };
-
-  const handleAction = async (action: string) => {
-    setDelhiveryLoading(true);
-    try {
-      const res = await fetch(`/api/admin/orders/${id}/delhivery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, weight: "500", shippingMode: "Surface" })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setToast("Protocol Executed");
-        fetchOrder(true);
-      }
-    } finally {
-      setDelhiveryLoading(false);
       setTimeout(() => setToast(null), 3000);
     }
   };
@@ -894,13 +873,12 @@ export default function OrderDetailPage() {
               const awb = activeShipment?.awb || null;
               const courier = logisticsCancelled
                 ? 'Courier Logistics Hub'
-                : activeShipment?.courier || (order.delhivery_awb ? 'Delhivery Logistics' : 'Courier Logistics Hub');
+                : activeShipment?.courier || 'Courier Logistics Hub';
               const trackingUrl =
                 activeShipment?.trackingUrl ||
                 (awb ? `https://shiprocket.co/tracking/${awb}` : null);
-              // Shiprocket often assigns a *Delhivery* courier (e.g. "Delhivery Surface 5kg").
-              // Never treat courier name alone as native Delhivery — that wrongly swaps in
-              // DelhiveryActions and hides the Shiprocket resume/book flow.
+              // Shiprocket is the only booking path. Courier may still display "Delhivery …"
+              // when Shiprocket assigns that last-mile partner.
               let isShiprocketShipment = false;
               try {
                 const raw = activeShipment?.rawDelhiveryResponse;
@@ -910,16 +888,10 @@ export default function OrderDetailPage() {
                     meta?.provider === 'shiprocket' || Boolean(meta?.shipment_id);
                 }
               } catch { /* ignore */ }
-              if (!isShiprocketShipment && externalId && !awb && !order.delhivery_awb) {
+              if (!isShiprocketShipment && externalId && !awb) {
                 // Preliminary Shiprocket row stores shipment_id as trackingNumber before AWB
                 isShiprocketShipment = true;
               }
-              const isNativeDelhivery =
-                !isShiprocketShipment &&
-                (Boolean(order.delhivery_awb) ||
-                  (Boolean(courier) &&
-                    courier.toLowerCase().includes('delhivery') &&
-                    !String(courier).toLowerCase().includes('shiprocket')));
               const rawDisplayStatus = logisticsCancelled
                 ? 'cancelled'
                 : activeShipment?.status || order.deliveryStatus || 'pending';
@@ -928,8 +900,6 @@ export default function OrderDetailPage() {
                   ? rawDisplayStatus
                   : carrierStatusLabel(rawDisplayStatus);
               const awbPending = Boolean(externalId || isShiprocketShipment) && !awb;
-              const showShiprocketActions = !isNativeDelhivery;
-              const showDelhiveryActions = isNativeDelhivery;
 
               return (
                 <>
@@ -988,12 +958,7 @@ export default function OrderDetailPage() {
                     </div>
                   )}
 
-                  {showShiprocketActions && (
-                    <ShiprocketActions order={order as any} onRefresh={() => fetchOrder(true)} />
-                  )}
-                  {showDelhiveryActions && (
-                    <DelhiveryActions order={order as any} onRefresh={() => fetchOrder(true)} />
-                  )}
+                  <ShiprocketActions order={order as any} onRefresh={() => fetchOrder(true)} />
                 </>
               );
             })()}

@@ -17,7 +17,6 @@ interface PickupOptions {
   couriers: CourierOption[];
   recommendedCourierId: number | null;
   message: string | null;
-  delhiveryAvailable: boolean;
 }
 
 interface Props {
@@ -35,7 +34,7 @@ const BOOKABLE = ["approved", "approved_pickup_failed"];
 
 /**
  * "Select Logistics Partner" step shown after a return/exchange is accepted:
- * ops picks Shiprocket courier (or direct Delhivery) → AWB is generated and pickup requested.
+ * ops picks a Shiprocket courier → AWB is generated and pickup requested.
  */
 export default function ReversePickupPanel({
   kind,
@@ -68,8 +67,6 @@ export default function ReversePickupPanel({
       setOptions(json);
       if (json.activeProvider === "shiprocket" && json.couriers?.length) {
         setChoice(`sr:${json.recommendedCourierId || json.couriers[0].courier_company_id}`);
-      } else if (json.delhiveryAvailable) {
-        setChoice("delhivery");
       } else {
         setChoice("");
       }
@@ -85,15 +82,11 @@ export default function ReversePickupPanel({
     setBooking(true);
     try {
       const body: Record<string, unknown> = { weight, length, breadth, height };
-      if (choice === "delhivery") {
-        body.provider = "delhivery";
-      } else {
-        const id = Number(choice.replace("sr:", ""));
-        const courier = options?.couriers.find((c) => c.courier_company_id === id);
-        body.provider = "shiprocket";
-        body.courier_id = id;
-        body.courier_name = courier?.courier_name;
-      }
+      const id = Number(choice.replace("sr:", ""));
+      const courier = options?.couriers.find((c) => c.courier_company_id === id);
+      body.provider = "shiprocket";
+      body.courier_id = id;
+      body.courier_name = courier?.courier_name;
       const res = await fetch(base, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -208,21 +201,6 @@ export default function ReversePickupPanel({
                     </span>
                   </label>
                 ))}
-                {options.delhiveryAvailable && (
-                  <label
-                    className={`flex items-center gap-2 px-2.5 py-2 rounded-md border cursor-pointer text-[11px] ${
-                      choice === "delhivery" ? "border-foreground/40 bg-foreground/[0.04]" : "border-foreground/[0.06]"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="reverse-courier"
-                      checked={choice === "delhivery"}
-                      onChange={() => setChoice("delhivery")}
-                    />
-                    <span className="font-semibold">Delhivery (direct)</span>
-                  </label>
-                )}
               </div>
             </div>
           )}

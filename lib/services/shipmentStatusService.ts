@@ -20,13 +20,12 @@ import {
   type CarrierStatus,
 } from '@/lib/logistics/status';
 import {
-  getActiveLogisticsProvider,
   getTrackingStatus,
   isShiprocketCodOrder,
   parseShiprocketMeta,
   type TrackingStatus,
 } from '@/lib/services/logistics';
-import { delhiveryRawStatus, isReverseShipmentType, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
+import { isReverseShipmentType, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
 
 export interface ShipmentScanEvent {
   status: string;
@@ -316,43 +315,17 @@ export async function applyShipmentStatusUpdate(
 
 // ─── Provider resolution & live refresh ─────────────────────────────
 
-export type ShipmentProvider = 'shiprocket' | 'delhivery';
+export type ShipmentProvider = 'shiprocket';
 
 /**
- * Which carrier API owns this shipment's AWB.
- * Shiprocket bookings always carry Shiprocket ids in rawDelhiveryResponse; direct
- * Delhivery bookings are stored with courier "Delhivery". Anything else follows
- * the shop's configured provider.
+ * All live bookings go through Shiprocket. Historical rows may still say "Delhivery"
+ * as the courier name (Shiprocket last-mile), but tracking is always via Shiprocket.
  */
-export async function resolveShipmentProvider(shipment: {
+export async function resolveShipmentProvider(_shipment: {
   rawDelhiveryResponse?: string | null;
   courier?: string | null;
 }): Promise<ShipmentProvider> {
-  if (parseShiprocketMeta(shipment.rawDelhiveryResponse)) return 'shiprocket';
-  if (String(shipment.courier || '').trim().toLowerCase() === 'delhivery') return 'delhivery';
-  const active = await getActiveLogisticsProvider();
-  return active === 'delhivery' ? 'delhivery' : 'shiprocket';
-}
-
-async function fetchDelhiveryTracking(awb: string): Promise<TrackingStatus | null> {
-  const { trackShipment } = await import('@/lib/delhivery/api');
-  const data = await trackShipment(awb);
-  const pkg = data?.ShipmentData?.[0]?.Shipment;
-  if (!pkg) return null;
-  const raw = delhiveryRawStatus(pkg.Status?.Status, pkg.Status?.StatusType);
-  return {
-    status: normalizeCarrierStatus(raw),
-    rawStatus: raw || undefined,
-    location: pkg.Status?.StatusLocation || null,
-    estimatedDelivery: pkg.ExpectedDeliveryDate || null,
-    trackingUrl: `https://www.delhivery.com/track/package/${awb}`,
-    events: (pkg.Scans || []).map((sc: any) => ({
-      status: delhiveryRawStatus(sc.ScanDetail?.Scan, sc.ScanDetail?.ScanType) || sc.ScanDetail?.Scan || '',
-      location: sc.ScanDetail?.ScannedLocation || '',
-      timestamp: sc.ScanDetail?.ScanDateTime || '',
-      description: sc.ScanDetail?.Instructions || sc.ScanDetail?.Scan || '',
-    })),
-  };
+  return 'shiprocket';
 }
 
 /**
@@ -377,14 +350,7 @@ export async function refreshShipmentFromCarrier(shipmentId: string): Promise<{
 
   try {
     const provider = await resolveShipmentProvider(shipment);
-    const active = await getActiveLogisticsProvider();
-
-    let tracking: TrackingStatus | null;
-    if (provider === 'delhivery' && active !== 'delhivery') {
-      tracking = await fetchDelhiveryTracking(ref);
-    } else {
-      tracking = await getTrackingStatus(ref);
-    }
+    const tracking = await getTrackingStatus(ref);
     if (!tracking || tracking.status === 'unknown') {
       return { provider, tracking, result: null };
     }

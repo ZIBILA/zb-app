@@ -15,7 +15,7 @@ import {
  */
 
 export type ReverseKind = 'return' | 'exchange';
-export type ReverseProvider = 'shiprocket' | 'delhivery';
+export type ReverseProvider = 'shiprocket';
 
 export interface Parcel {
   weight: number;
@@ -167,8 +167,6 @@ export interface ReversePickupOptions {
   couriers: CourierOption[];
   recommendedCourierId: number | null;
   message: string | null;
-  /** Direct Delhivery can always be used as an alternative partner. */
-  delhiveryAvailable: boolean;
 }
 
 export async function getReversePickupOptions(
@@ -192,14 +190,6 @@ export async function getReversePickupOptions(
       message = err?.message || 'Could not load courier options';
     }
   }
-  let delhiveryAvailable = false;
-  try {
-    const { getDelhiveryClient } = await import('@/lib/delhivery');
-    await getDelhiveryClient();
-    delhiveryAvailable = true;
-  } catch {
-    delhiveryAvailable = false;
-  }
   return {
     activeProvider,
     displayId: ctx.displayId,
@@ -207,7 +197,6 @@ export async function getReversePickupOptions(
     couriers,
     recommendedCourierId: recommended,
     message,
-    delhiveryAvailable,
   };
 }
 
@@ -247,50 +236,25 @@ export async function bookReversePickupForRequest(
   const parcel = normalizeParcel(input.parcel);
   let result: { awb: string; courier: string; pickupScheduled: boolean };
 
-  if (input.provider === 'shiprocket') {
-    const courierId = Number(input.courierId);
-    if (!Number.isFinite(courierId) || courierId <= 0) {
-      throw new Error('Select a courier for the Shiprocket pickup.');
-    }
-    const booking = await bookShiprocketReversePickup({
-      localOrderId: ctx.orderId,
-      requestKind: kind,
-      requestId: ctx.requestId,
-      channelOrderId: ctx.displayId,
-      customer: ctx.customer,
-      items: ctx.items,
-      parcel,
-      courierId,
-      courierName: input.courierName || 'Shiprocket',
-    });
-    result = { awb: booking.awb, courier: booking.courier, pickupScheduled: booking.pickupScheduled };
-  } else {
-    const { createReversePickup } = await import('@/lib/delhivery');
-    const pickup = await createReversePickup({
-      name: ctx.customer.name,
-      add: ctx.customer.address1 || 'Address Not Specified',
-      pin: ctx.customer.zip,
-      phone: ctx.customer.phone,
-      order: ctx.displayId,
-      products_desc: `${kind === 'return' ? 'Return' : 'Exchange Return'}: ${ctx.items.map((i) => i.sku).join(', ')}`,
-      weight: String(Math.round(parcel.weight * 1000)),
-      seller_name: 'Zica Bella',
-      pickup_location_name: process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Warehouse',
-    });
-    await prisma.shipment.create({
-      data: {
-        orderId: ctx.orderId,
-        awb: pickup.awb,
-        trackingNumber: pickup.awb,
-        courier: 'Delhivery',
-        status: pickup.status || 'pickup_pending',
-        type: 'reverse_pickup',
-        trackingUrl: `https://www.delhivery.com/track/package/${pickup.awb}`,
-        rawDelhiveryResponse: JSON.stringify(pickup.rawResponse),
-      },
-    });
-    result = { awb: pickup.awb, courier: 'Delhivery', pickupScheduled: false };
+  if (input.provider !== 'shiprocket') {
+    throw new Error('Only Shiprocket reverse pickups are supported.');
   }
+  const courierId = Number(input.courierId);
+  if (!Number.isFinite(courierId) || courierId <= 0) {
+    throw new Error('Select a courier for the Shiprocket pickup.');
+  }
+  const booking = await bookShiprocketReversePickup({
+    localOrderId: ctx.orderId,
+    requestKind: kind,
+    requestId: ctx.requestId,
+    channelOrderId: ctx.displayId,
+    customer: ctx.customer,
+    items: ctx.items,
+    parcel,
+    courierId,
+    courierName: input.courierName || 'Shiprocket',
+  });
+  result = { awb: booking.awb, courier: booking.courier, pickupScheduled: booking.pickupScheduled };
 
   const data = { reverseAwb: result.awb, logisticsPartner: result.courier, status: 'approved' };
   if (kind === 'return') {

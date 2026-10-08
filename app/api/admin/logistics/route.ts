@@ -95,12 +95,11 @@ export async function GET(req: NextRequest) {
       select: {
         shiprocketToken: true,
         shiprocketEmail: true,
-        delhiveryApiKey: true,
         domain: true,
       },
     });
 
-    const activeProvider = shop?.shiprocketToken ? 'shiprocket' : shop?.delhiveryApiKey ? 'delhivery' : 'none';
+    const activeProvider = shop?.shiprocketToken ? 'shiprocket' : 'none';
     const baseUrl = activeProvider !== 'none' ? PROVIDER_PRESETS[activeProvider]?.baseUrl : '';
 
     // Build webhook URL

@@ -23,9 +23,9 @@ export function orderShippedEmail(
   }
 
   // Determine CTA Link
-  // If we have Delhivery logistics integration, we might link to tracking, or just a default tracking link
+  // Prefer Shiprocket public tracking when an AWB is present
   const trackingUrl = data.trackingNumber 
-    ? `https://track.delhivery.com/track/package/${data.trackingNumber}`
+    ? `https://shiprocket.co/tracking/${data.trackingNumber}`
     : `https://zicabella.com/orders/${data.orderId}`;
 
   // HTML Content

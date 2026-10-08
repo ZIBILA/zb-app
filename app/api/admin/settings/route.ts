@@ -139,7 +139,7 @@ export async function PATCH(req: Request) {
 
     const allowedKeys = [
       'domain', 'accessToken',
-      'delhiveryApiKey', 'razorpayKeyId', 'razorpayKeySecret',
+      'razorpayKeyId', 'razorpayKeySecret',
       'codUpfrontAmount',
       'shiprocketEmail', 'shiprocketPassword', 'shiprocketToken', 'webhookSecret',
       'whatsappPhoneId', 'whatsappToken', 'firebaseProjectId', 'firebaseClientEmail',

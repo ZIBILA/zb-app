@@ -623,7 +623,7 @@ export default function ExchangeDetailPage() {
                   <a
                     href={
                       String(data.logisticsPartner || "").toLowerCase().includes("delhivery")
-                        ? `https://www.delhivery.com/track/package/${data.reverseAwb}`
+                        ? `https://shiprocket.co/tracking/${data.reverseAwb}`
                         : `https://shiprocket.co/tracking/${data.reverseAwb}`
                     }
                     target="_blank"
@@ -665,7 +665,7 @@ export default function ExchangeDetailPage() {
                 <div className="flex items-center gap-2">
                   {order?.delhivery_awb ? (
                     <a
-                      href={`https://www.delhivery.com/track/package/${order.delhivery_awb}`}
+                      href={`https://shiprocket.co/tracking/${order.delhivery_awb}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-[11px] font-semibold text-emerald-500 hover:underline flex items-center gap-1 font-mono"

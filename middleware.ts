@@ -115,7 +115,6 @@ export default withAuth(
       pathname.startsWith('/api/webhooks') ||
       pathname.startsWith('/api/shopify/webhooks') ||
       pathname.startsWith('/api/payments/webhook') ||
-      pathname.startsWith('/api/delhivery/webhook') ||
       pathname.startsWith('/api/razorpay')
     ) {
       return NextResponse.next();

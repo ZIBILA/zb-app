@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
  * GET  /api/admin/returns/[id]/pickup?weight=0.5&length=30&breadth=20&height=5
  *   → logistics partners / couriers available for the reverse pickup.
  * POST /api/admin/returns/[id]/pickup
- *   body { provider: 'shiprocket' | 'delhivery', courier_id?, courier_name?, weight?, length?, breadth?, height? }
+ *   body { provider: 'shiprocket', courier_id?, courier_name?, weight?, length?, breadth?, height? }
  *   → creates the reverse order, assigns the AWB and requests pickup.
  */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
@@ -38,9 +38,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   try {
     await requirePermission('RETURNS_EXCHANGES', 'edit');
     const body = await req.json().catch(() => ({}));
-    const provider = body.provider === 'delhivery' ? 'delhivery' : 'shiprocket';
+    if (body.provider && body.provider !== 'shiprocket') {
+      return NextResponse.json({ error: 'Only Shiprocket reverse pickups are supported.' }, { status: 400 });
+    }
     const result = await bookReversePickupForRequest('return', params.id, {
-      provider,
+      provider: 'shiprocket',
       courierId: body.courier_id != null ? Number(body.courier_id) : undefined,
       courierName: typeof body.courier_name === 'string' ? body.courier_name : undefined,
       parcel: {

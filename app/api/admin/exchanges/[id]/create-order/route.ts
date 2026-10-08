@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { createOrder, shopifyFetch } from "@/lib/shopify-admin";
 import { issueStoreCredits } from "@/lib/storeCreditsHelper";
-import { createDelhiveryShipment, fetchWaybill } from "@/lib/delhivery";
 import { allocateLinkedId, replacementIdForExchange } from "@/lib/linkedIds";
-import { getActiveLogisticsProvider } from "@/lib/services/logistics";
+import { } from "@/lib/services/logistics";
 
 /**
  * Resolves the Shopify variant_id for a given exchange item.
@@ -466,83 +465,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     });
 
     // 5. Create Forward Delhivery Shipment for the replacement order
+    // Replacement dispatch is booked from the order page via Shiprocket (ops chooses courier + parcel).
     let forwardAwb: string | null = null;
-    let forwardShipmentStatus = 'manifested';
-    let delhiveryShipmentRaw: any = null;
-
-    // The replacement is dispatched like any other order. With Shiprocket as the active
-    // provider ops books the courier from the order page (parcel size + courier choice),
-    // so only auto-book here when Delhivery is the configured provider.
-    const activeProvider = await getActiveLogisticsProvider().catch(() => 'mock');
-    try {
-      if (activeProvider !== 'delhivery') throw Object.assign(new Error('auto-dispatch skipped'), { skip: true });
-      let addrObj: any = {};
-      const shippingRaw = exchangeRequest.order.shippingAddress;
-      if (typeof shippingRaw === 'string') {
-        try { addrObj = JSON.parse(shippingRaw); } catch (_) { addrObj = { add: shippingRaw }; }
-      } else if (shippingRaw && typeof shippingRaw === 'object') {
-        addrObj = shippingRaw;
-      }
-
-      const name = addrObj.name || (addrObj.first_name ? `${addrObj.first_name} ${addrObj.last_name || ''}`.trim() : customer?.name || 'Customer');
-      const add = addrObj.add || addrObj.address1 || addrObj.street || addrObj.fullAddress || (typeof shippingRaw === 'string' ? shippingRaw : 'Address Not Specified');
-      const pin = addrObj.pin || addrObj.zip || addrObj.pincode || addrObj.postalCode || '110001';
-      const phone = addrObj.phone || customer?.phone || '9876543210';
-      const prodDesc = exchangeRequest.exchanges.map((ex: any) => {
-        const size = (ex as any).newSize || '';
-        return `${ex.newProduct?.sku || 'Replacement Item'}${size ? ` (${size})` : ''}`;
-      }).join(', ');
-
-      const delhRes = await createDelhiveryShipment({
-        name,
-        add,
-        pin: String(pin),
-        phone: String(phone),
-        order: shopifyOrderId,
-        payment_mode: isCod ? 'COD' : 'Prepaid',
-        total_amount: String(orderTotalAmount),
-        cod_amount: isCod ? String(priceDiff) : '0',
-        products_desc: `Exchange Replacement: ${prodDesc}`,
-        weight: '500',
-        shipping_mode: 'Surface',
-        seller_name: 'Zica Bella',
-      }, process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Warehouse');
-
-      delhiveryShipmentRaw = delhRes;
-      forwardAwb = delhRes?.packages?.[0]?.waybill || delhRes?.packages?.[0]?.wbn || delhRes?.upload_wbn || null;
-
-      if (!forwardAwb) {
-        // Fallback waybill fetch
-        try {
-          const wbData = await fetchWaybill();
-          if (wbData?.waybill) forwardAwb = wbData.waybill;
-        } catch (_) {}
-      }
-
-      if (forwardAwb) {
-        await prisma.order.update({
-          where: { id: result.localOrderId },
-          data: { delhivery_awb: forwardAwb }
-        });
-
-        await prisma.shipment.create({
-          data: {
-            orderId: result.localOrderId,
-            awb: forwardAwb,
-            trackingNumber: forwardAwb,
-            courier: "Delhivery",
-            status: forwardShipmentStatus,
-            type: "outbound",
-            trackingUrl: `https://www.delhivery.com/track/package/${forwardAwb}`,
-            rawDelhiveryResponse: JSON.stringify(delhiveryShipmentRaw)
-          }
-        });
-      }
-    } catch (shipErr: any) {
-      if (!shipErr?.skip) {
-        console.error("[Exchange Create Order] Forward Delhivery shipment creation warning:", shipErr.message);
-      }
-    }
 
     // 6. Send WhatsApp notification with REAL forward AWB and tracking URL
     try {
@@ -565,7 +489,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           customerName,
           orderId: orderIdDisplay,
           trackingNumber: forwardAwb || shopifyOrderId || 'N/A',
-          trackingUrl: forwardAwb ? `https://www.delhivery.com/track/package/${forwardAwb}` : `https://app.zicabella.com/orders/${shopifyOrderId}`,
+          trackingUrl: forwardAwb ? `https://shiprocket.co/tracking/${forwardAwb}` : `https://app.zicabella.com/orders/${shopifyOrderId}`,
         });
       }
     } catch (waErr: any) {

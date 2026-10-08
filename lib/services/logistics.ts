@@ -1,7 +1,7 @@
 /**
  * Logistics Service — Server-side only
  * 
- * Unified interface for logistics partner APIs (Shiprocket, Delhivery, Blue Dart, FedEx, Custom).
+ * Unified interface for logistics partner APIs (Shiprocket primary; Blue Dart/FedEx/Custom presets unused).
  * API keys are NEVER exposed to the client or mobile app.
  * 
  * Data flow: Logistics API → Backend → DB → GET /api/orders/{id} → App
@@ -77,16 +77,6 @@ export const PROVIDER_PRESETS: Record<string, { baseUrl: string; endpoints: Reco
       ping: '/orders',
     },
   },
-  delhivery: {
-    baseUrl: 'https://track.delhivery.com',
-    endpoints: {
-      createShipment: '/api/cmu/create.json',
-      trackShipment: '/api/v1/packages/json',
-      createReturn: '/api/cmu/create.json',
-      cancelShipment: '/api/p/edit',
-      ping: '/waybill/api/fetch/json/',
-    },
-  },
   bluedart: {
     baseUrl: 'https://api.bluedart.com',
     endpoints: {
@@ -151,7 +141,6 @@ async function getLogisticsConfig(): Promise<LogisticsConfig> {
         shiprocketToken: true,
         shiprocketEmail: true,
         shiprocketPassword: true,
-        delhiveryApiKey: true,
         webhookSecret: true,
       },
     });
@@ -191,16 +180,6 @@ async function getLogisticsConfig(): Promise<LogisticsConfig> {
       };
     }
 
-    const delhiveryKey = process.env.DELHIVERY_API_KEY || shop.delhiveryApiKey;
-    if (delhiveryKey) {
-      return {
-        provider: 'delhivery',
-        baseUrl: process.env.DELHIVERY_BASE_URL || PROVIDER_PRESETS.delhivery.baseUrl,
-        apiKey: delhiveryKey,
-        webhookSecret: process.env.DELHIVERY_WEBHOOK_SECRET || shop.webhookSecret || '',
-      };
-    }
-
     // Fallback to mock provider
     return {
       provider: 'mock',
@@ -214,7 +193,7 @@ async function getLogisticsConfig(): Promise<LogisticsConfig> {
   }
 }
 
-/** Provider currently configured for this shop ('shiprocket' | 'delhivery' | 'mock'). */
+/** Provider currently configured for this shop ('shiprocket' | 'mock'). */
 export async function getActiveLogisticsProvider(): Promise<string> {
   const config = await getLogisticsConfig();
   return config.provider;
@@ -244,13 +223,7 @@ async function logisticsApiFetch(
   };
 
   // Provider-specific auth headers
-  if (config.provider === 'shiprocket') {
-    headers['Authorization'] = `Bearer ${config.apiKey}`;
-  } else if (config.provider === 'delhivery') {
-    headers['Authorization'] = `Token ${config.apiKey}`;
-  } else {
-    headers['Authorization'] = `Bearer ${config.apiKey}`;
-  }
+  headers['Authorization'] = `Bearer ${config.apiKey}`;
 
   const res = await fetch(url, {
     method,
@@ -626,129 +599,6 @@ export async function shipOrder(
         return result;
       }
 
-      if (config.provider === 'delhivery') {
-        const formData = new URLSearchParams();
-        formData.append('format', 'json');
-
-        const dbOrder = await prisma.order.findFirst({
-          where: {
-            OR: [
-              { id: orderId },
-              { shopifyOrderId: orderId }
-            ]
-          }
-        });
-
-        const isCodOrder = isShiprocketCodOrder({
-          paymentMethod: dbOrder?.paymentMethod,
-          paymentStatus: dbOrder?.paymentStatus,
-          tags: dbOrder?.tags,
-          note: dbOrder?.note,
-        });
-
-        let codUpfront = 0;
-        if (isCodOrder) {
-          const wsOrder = dbOrder?.razorpayOrderId
-            ? await prisma.webStoreOrder.findFirst({ where: { razorpayOrderId: dbOrder.razorpayOrderId } })
-            : null;
-          const { resolveStoredCodUpfrontPaid, getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-          const fallbackFee = await getConfiguredCodUpfrontAmount();
-          codUpfront = resolveStoredCodUpfrontPaid({
-            storedPaid: Number((dbOrder as any)?.codUpfrontPaid) || Number(wsOrder?.codUpfrontPaid) || 0,
-            paymentStatus: dbOrder?.paymentStatus,
-            paymentMethod: dbOrder?.paymentMethod,
-            tags: dbOrder?.tags,
-            note: dbOrder?.note,
-            configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
-          });
-        }
-
-        const calculatedTotalPrice = Number(dbOrder?.totalPrice || items.reduce((s: number, i: any) => s + (Number(i.price) * Number(i.quantity)), 0));
-        const { getCodBalanceDue } = await import('@/lib/cod-upfront');
-        const codBalanceDue = isCodOrder ? getCodBalanceDue(calculatedTotalPrice, codUpfront) : 0;
-        const paymentMode = (isCodOrder && codBalanceDue > 0) ? 'COD' : 'Prepaid';
-
-        const payload = {
-          shipments: [
-            {
-              name: address.name,
-              add: address.address1,
-              pin: address.zip,
-              city: address.city,
-              state: address.province,
-              country: address.country || 'India',
-              phone: address.phone || '',
-              order: orderId.replace('#', ''),
-              payment_mode: paymentMode,
-              return_pin: process.env.WAREHOUSE_PIN || '201301',
-              return_city: process.env.WAREHOUSE_CITY || 'Noida',
-              return_phone: process.env.WAREHOUSE_PHONE || '9220385011',
-              return_name: 'Zica Bella Returns',
-              return_add: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
-              products_desc: items.map(i => i.title).join(', '),
-              cod_amount: paymentMode === 'COD' ? String(Math.round(codBalanceDue)) : '',
-              order_date: new Date().toISOString(),
-              total_amount: String(Math.round(calculatedTotalPrice)),
-              seller_add: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
-              seller_name: 'Zica Bella',
-              seller_inv: orderId.replace('#', ''),
-              quantity: String(items.reduce((s, i) => s + i.quantity, 0)),
-              weight: '500',
-              seller_gst_tin: process.env.GST_NUMBER || '',
-              shipment_length: 30,
-              shipment_width: 20,
-              shipment_height: 5,
-              shipping_mode: 'Surface',
-              address_type: 'home'
-            }
-          ],
-          pickup_location: {
-            name: process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Manufacturing Unit'
-          }
-        };
-
-        formData.append('data', JSON.stringify(payload));
-
-        const res = await fetch(`${config.baseUrl || PROVIDER_PRESETS.delhivery.baseUrl}${preset.endpoints.createShipment}`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Token ${config.apiKey}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: formData.toString()
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Delhivery Ship Error: ${errText}`);
-        }
-
-        const data = await res.json();
-        if (data.packages && data.packages.length > 0) {
-          const pkg = data.packages[0];
-          if (pkg.waybill) {
-            const trackingNumber = String(pkg.waybill);
-            const result: ShipmentResult = {
-              trackingNumber,
-              trackingUrl: `https://www.delhivery.com/track/package/${trackingNumber}`,
-              courier: 'Delhivery',
-            };
-
-            // Save shipment + delivery status on local Order / WebStoreOrder
-            await persistShipmentAndDeliveryStatus(dbOrder?.id || orderId, result, {
-              delhivery_awb: result.trackingNumber,
-              status: 'Shipped',
-            });
-
-            return result;
-          } else {
-            throw new Error(pkg.remarks ? pkg.remarks.join(', ') : 'Fulfillment registration failed');
-          }
-        }
-
-        throw new Error(data.errors ? data.errors.join(', ') : 'Unknown Delhivery response');
-      }
-
       // Generic handler for other providers
       data = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', {
         order_id: orderId,
@@ -775,7 +625,7 @@ export async function shipOrder(
     `[Logistics] shipOrder aborted for ${orderId}: no logistics provider configured`
   );
   throw new Error(
-    'Logistics booking failed: no Shiprocket/Delhivery provider configured'
+    'Logistics booking failed: no Shiprocket provider configured'
   );
 }
 
@@ -850,23 +700,7 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
         };
       }
 
-      if (config.provider === 'delhivery') {
-        data = await logisticsApiFetch(`${preset.endpoints.trackShipment}/?waybill=${trackingNumber}`, 'GET');
-        const pkg = data?.ShipmentData?.[0]?.Shipment;
-        return {
-          status: pkg?.Status?.Status || 'unknown',
-          rawStatus: pkg?.Status?.Status || undefined,
-          location: pkg?.Status?.StatusLocation || null,
-          estimatedDelivery: pkg?.ExpectedDeliveryDate || null,
-          trackingUrl: `https://www.delhivery.com/track/package/${trackingNumber}`,
-          events: (pkg?.Scans || []).map((s: any) => ({
-            status: s.ScanDetail?.Scan || '',
-            location: s.ScanDetail?.ScannedLocation || '',
-            timestamp: s.ScanDetail?.ScanDateTime || '',
-            description: s.ScanDetail?.Instructions || '',
-          })),
-        };
-      }
+
 
       // Generic
       data = await logisticsApiFetch(`${preset.endpoints.trackShipment}/${trackingNumber}`, 'GET');
@@ -1001,86 +835,7 @@ export async function createReturnShipment(
         };
       }
 
-      if (config.provider === 'delhivery') {
-        const formData = new URLSearchParams();
-        formData.append('format', 'json');
-        
-        const returnOrder = await prisma.return.findFirst({
-          where: {
-            OR: [
-              { id: returnId },
-              { returnRequestId: returnId }
-            ]
-          },
-          include: { order: true }
-        });
 
-        const payload = {
-          shipments: [
-            {
-              name: pickupAddress.name,
-              add: pickupAddress.address1,
-              pin: pickupAddress.zip,
-              city: pickupAddress.city,
-              state: pickupAddress.province,
-              country: pickupAddress.country || 'India',
-              phone: pickupAddress.phone || '',
-              order: returnOrder?.order?.shopifyOrderId?.replace('#', '') || returnId,
-              payment_mode: 'Prepaid',
-              product_type: 'R', // Reverse pickup
-              return_pin: process.env.WAREHOUSE_PIN || '201301',
-              return_city: process.env.WAREHOUSE_CITY || 'Noida',
-              return_phone: process.env.WAREHOUSE_PHONE || '9220385011',
-              return_name: 'Zica Bella Returns',
-              return_add: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
-              products_desc: 'Return Items',
-              order_date: new Date().toISOString(),
-              total_amount: String(returnOrder?.refundAmount || '0'),
-              seller_add: process.env.WAREHOUSE_ADDRESS || 'C-43 sector-88 Noida 201301',
-              seller_name: 'Zica Bella',
-              quantity: '1',
-              weight: '500',
-              shipment_length: 30,
-              shipment_width: 20,
-              shipment_height: 5,
-              shipping_mode: 'Surface',
-              address_type: 'home'
-            }
-          ],
-          pickup_location: {
-            name: process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Manufacturing Unit'
-          }
-        };
-
-        formData.append('data', JSON.stringify(payload));
-
-        const res = await fetch(`${config.baseUrl || PROVIDER_PRESETS.delhivery.baseUrl}${preset.endpoints.createReturn}`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Token ${config.apiKey}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: formData.toString()
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Delhivery Return Error: ${errText}`);
-        }
-
-        const data = await res.json();
-        if (data.packages && data.packages.length > 0) {
-          const pkg = data.packages[0];
-          if (pkg.waybill) {
-            return {
-              trackingNumber: String(pkg.waybill),
-              trackingUrl: `https://www.delhivery.com/track/package/${pkg.waybill}`,
-              courier: 'Delhivery Returns',
-            };
-          }
-        }
-        throw new Error(data.errors ? data.errors.join(', ') : 'Unknown Delhivery response');
-      }
     } catch (err: any) {
       console.error(`[Logistics] Return shipment creation failed:`, err.message);
       throw err;
@@ -1088,7 +843,7 @@ export async function createReturnShipment(
   }
 
   console.error('[Logistics] createReturnShipment aborted: no logistics provider configured');
-  throw new Error('Return shipment failed: no Shiprocket/Delhivery provider configured');
+  throw new Error('Return shipment failed: no Shiprocket provider configured');
 }
 
 /**
@@ -2381,77 +2136,55 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     return { success: false, message: `Cannot cancel shipment in "${shipment.status}" state. Only cancellable in: ${cancellableStatuses.join(', ')}` };
   }
 
-  if (config.provider !== 'mock' && preset) {
+  if (config.provider === 'shiprocket' && preset) {
     try {
-      if (config.provider === 'delhivery') {
-        const res = await fetch(`${config.baseUrl || PROVIDER_PRESETS.delhivery.baseUrl}${preset.endpoints.cancelShipment}`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Token ${config.apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            waybill: trackingNumber,
-            cancellation: true
-          })
-        });
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Delhivery Cancel Error: ${text}`);
-        }
-      } else if (config.provider === 'shiprocket') {
-        const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
-        const awb = (shipment.awb || trackingNumber || '').trim();
-        const orderCancelId = meta?.order_id;
-        let orderCancelled = false;
-        let awbCancelled = false;
-        const errors: string[] = [];
+      const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+      const awb = (shipment.awb || trackingNumber || '').trim();
+      const orderCancelId = meta?.order_id;
+      let orderCancelled = false;
+      let awbCancelled = false;
+      const errors: string[] = [];
 
-        // 1) Cancel AWB if present
-        if (awb && !/^MOCK/i.test(awb)) {
-          try {
-            await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', {
-              awbs: [awb],
-            });
-            awbCancelled = true;
-            console.log(`[Logistics] Shiprocket AWB cancel ok for ${awb}`);
-          } catch (awbCancelErr: any) {
-            errors.push(`AWB cancel: ${awbCancelErr.message}`);
-            console.warn(`[Logistics] Shiprocket AWB cancel failed for ${awb}:`, awbCancelErr.message);
-          }
+      // 1) Cancel AWB if present
+      if (awb && !/^MOCK/i.test(awb)) {
+        try {
+          await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', {
+            awbs: [awb],
+          });
+          awbCancelled = true;
+          console.log(`[Logistics] Shiprocket AWB cancel ok for ${awb}`);
+        } catch (awbCancelErr: any) {
+          errors.push(`AWB cancel: ${awbCancelErr.message}`);
+          console.warn(`[Logistics] Shiprocket AWB cancel failed for ${awb}:`, awbCancelErr.message);
         }
+      }
 
-        // 2) Always cancel Shiprocket ORDER (otherwise it stays NEW with no AWB)
-        if (orderCancelId) {
-          try {
-            await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
-              ids: [Number(orderCancelId) || orderCancelId],
-            });
-            orderCancelled = true;
-            console.log(`[Logistics] Shiprocket order cancel ok for id=${orderCancelId}`);
-          } catch (orderCancelErr: any) {
-            errors.push(`Order cancel: ${orderCancelErr.message}`);
-            console.warn(
-              `[Logistics] Shiprocket order cancel failed for ${orderCancelId}:`,
-              orderCancelErr.message
-            );
-          }
-        } else {
-          errors.push('No Shiprocket order_id on shipment — SR order may remain NEW');
-        }
-
-        if (!orderCancelled && !awbCancelled) {
-          throw new Error(errors.join('; ') || 'Shiprocket cancel failed');
-        }
-        if (!orderCancelled) {
-          throw new Error(
-            `Shipment/AWB may be cleared, but Shiprocket order was not cancelled: ${errors.join('; ')}`
+      // 2) Always cancel Shiprocket ORDER (otherwise it stays NEW with no AWB)
+      if (orderCancelId) {
+        try {
+          await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
+            ids: [Number(orderCancelId) || orderCancelId],
+          });
+          orderCancelled = true;
+          console.log(`[Logistics] Shiprocket order cancel ok for id=${orderCancelId}`);
+        } catch (orderCancelErr: any) {
+          errors.push(`Order cancel: ${orderCancelErr.message}`);
+          console.warn(
+            `[Logistics] Shiprocket order cancel failed for ${orderCancelId}:`,
+            orderCancelErr.message
           );
         }
       } else {
-        await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
-          ids: [trackingNumber],
-        });
+        errors.push('No Shiprocket order_id on shipment — SR order may remain NEW');
+      }
+
+      if (!orderCancelled && !awbCancelled) {
+        throw new Error(errors.join('; ') || 'Shiprocket cancel failed');
+      }
+      if (!orderCancelled) {
+        throw new Error(
+          `Shipment/AWB may be cleared, but Shiprocket order was not cancelled: ${errors.join('; ')}`
+        );
       }
     } catch (err: any) {
       console.error(`[Logistics] Cancel shipment failed:`, err.message);
@@ -2526,10 +2259,12 @@ export async function testConnection(): Promise<{ success: boolean; provider: st
 }
 
 /**
- * Resolves the Delhivery webhook secret prioritizing process.env over DB.
+ * Resolves the logistics webhook secret (Shiprocket / shared), preferring env over DB.
  */
 export async function resolveWebhookSecret(): Promise<{ secret: string; source: 'env' | 'db' | 'none' }> {
-  const envSecret = process.env.DELHIVERY_WEBHOOK_SECRET?.trim();
+  const envSecret =
+    process.env.SHIPROCKET_WEBHOOK_SECRET?.trim() ||
+    process.env.LOGISTICS_WEBHOOK_SECRET?.trim();
   if (envSecret) return { secret: envSecret, source: 'env' };
 
   const shop = await prisma.shop.findFirst({ select: { webhookSecret: true } });
@@ -2539,15 +2274,13 @@ export async function resolveWebhookSecret(): Promise<{ secret: string; source: 
 }
 
 /**
- * Validate a webhook signature from the logistics partner.
- * - provider === 'delhivery': supports static shared-secret token comparison (default) or HMAC-SHA256 based on DELHIVERY_WEBHOOK_MODE env ('token' | 'hmac').
- * - provider === 'shiprocket' / 'generic': HMAC-SHA256 hex comparison.
+ * Validate a logistics webhook signature (HMAC-SHA256 hex, with optional sha256=/Bearer/Token prefixes).
  */
 export function validateWebhookSignature(
   payload: string,
   signature: string,
   secret: string,
-  provider: 'delhivery' | 'shiprocket' | 'generic' = 'generic'
+  _provider: 'shiprocket' | 'generic' = 'generic'
 ): boolean {
   if (!secret || !signature) return false;
 
@@ -2559,54 +2292,17 @@ export function validateWebhookSignature(
       .trim();
     const cleanSecret = secret.trim();
 
-    if (provider === 'delhivery') {
-      const mode = (process.env.DELHIVERY_WEBHOOK_MODE || 'token').trim().toLowerCase();
-      if (mode === 'token') {
-        const sigBuf = Buffer.from(cleanSignature);
-        const secretBuf = Buffer.from(cleanSecret);
-
-        // Safe diagnostic fragments — never log full secrets
-        const secretTail = cleanSecret.slice(-4);
-        const tokenHead = cleanSignature.slice(0, 12);
-
-        if (sigBuf.length !== secretBuf.length) {
-          console.warn(`[Logistics] Webhook validation failed: mode=token, provider=delhivery, reason=length_mismatch (received=${sigBuf.length}, expected=${secretBuf.length}), token_head=${tokenHead}..., secret_tail=****${secretTail}`);
-          return false;
-        }
-
-        const matches = crypto.timingSafeEqual(sigBuf, secretBuf);
-        if (!matches) {
-          console.warn(`[Logistics] Webhook validation failed: mode=token, provider=delhivery, reason=stored secret does not match received token, token_head=${tokenHead}..., secret_tail=****${secretTail}`);
-        }
-        return matches;
-      }
-    }
-
-    // HMAC-SHA256 comparison for shiprocket/generic or delhivery in hmac mode
     const expectedSignature = crypto
       .createHmac('sha256', cleanSecret)
       .update(payload)
       .digest('hex');
 
-    if (cleanSignature.length !== expectedSignature.length) {
-      if (provider === 'delhivery') {
-        const secretTail = cleanSecret.slice(-4);
-        const tokenHead = cleanSignature.slice(0, 12);
-        console.warn(`[Logistics] Webhook validation failed: mode=hmac, provider=delhivery, reason=signature_length_mismatch (received=${cleanSignature.length}, expected=${expectedSignature.length}), token_head=${tokenHead}..., secret_tail=****${secretTail}`);
-      }
-      return false;
-    }
+    if (cleanSignature.length !== expectedSignature.length) return false;
 
-    const matches = crypto.timingSafeEqual(
+    return crypto.timingSafeEqual(
       Buffer.from(cleanSignature),
       Buffer.from(expectedSignature)
     );
-    if (!matches && provider === 'delhivery') {
-      const secretTail = cleanSecret.slice(-4);
-      const tokenHead = cleanSignature.slice(0, 12);
-      console.warn(`[Logistics] Webhook validation failed: mode=hmac, provider=delhivery, reason=hmac_digest_mismatch, token_head=${tokenHead}..., secret_tail=****${secretTail}`);
-    }
-    return matches;
   } catch (err) {
     console.error('[Logistics] Webhook signature validation error:', err);
     return false;
