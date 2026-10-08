@@ -325,19 +325,20 @@ async function main() {
     ],
     ...over,
   });
+  const PAID = { paymentConfirmed: true };
   const scClick = { scClickId: 'snap-click-123', scCookie1: 'scid-cookie-456', externalId: 'zb.ext-789', ipAddress: '81.2.69.142', userAgent: 'UA' };
 
   // Scenario: Snap-ad visitor, prepaid, concurrent paths (checkout/complete + webhook ×4)
   orders.set('ord_prepaid', baseOrder('ord_prepaid'));
   await delivery.recordSnapPurchaseContext('ord_prepaid', scClick); // Razorpay pre-create
   const results = await Promise.all([
-    delivery.emitSnapPurchase('ord_prepaid', scClick), delivery.emitSnapPurchase('ord_prepaid'),
-    delivery.emitSnapPurchase('ord_prepaid'), delivery.emitSnapPurchase('ord_prepaid'), delivery.emitSnapPurchase('ord_prepaid'),
+    delivery.emitSnapPurchase('ord_prepaid', scClick, PAID), delivery.emitSnapPurchase('ord_prepaid', undefined, PAID),
+    delivery.emitSnapPurchase('ord_prepaid', undefined, PAID), delivery.emitSnapPurchase('ord_prepaid', undefined, PAID), delivery.emitSnapPurchase('ord_prepaid', undefined, PAID),
   ]);
   check('5 concurrent emits → exactly ONE send', sent.length === 1, { sends: sent.length, results });
   const row = rows.get('snap|PURCHASE|ord_prepaid');
   check('ledger row sent with sentAt', row.status === 'sent' && row.sentAt instanceof Date, row);
-  await delivery.emitSnapPurchase('ord_prepaid', scClick);
+  await delivery.emitSnapPurchase('ord_prepaid', scClick, PAID);
   check('later emit after success → no resend', sent.length === 1);
   const ev = capi.buildSnapCapiEvent(sent[0]);
   dump('PURCHASE — Snap-ad visitor, prepaid Razorpay (CAPI v3 as sent)', ev);
@@ -361,13 +362,13 @@ async function main() {
   sent.length = 0;
   orders.set('ord_webhook', baseOrder('ord_webhook'));
   await delivery.recordSnapPurchaseContext('ord_webhook', scClick);
-  await delivery.emitSnapPurchase('ord_webhook'); // webhook: no request context
+  await delivery.emitSnapPurchase('ord_webhook', undefined, PAID); // webhook: no request context
   eq('webhook-only purchase keeps ScCid from pre-create', capi.buildSnapCapiEvent(sent[0]).user_data.sc_click_id, 'snap-click-123');
 
   // Scenario: direct visitor (no Snap click)
   sent.length = 0;
   orders.set('ord_direct', baseOrder('ord_direct'));
-  await delivery.emitSnapPurchase('ord_direct', { ipAddress: '81.2.69.142', userAgent: 'UA' });
+  await delivery.emitSnapPurchase('ord_direct', { ipAddress: '81.2.69.142', userAgent: 'UA' }, PAID);
   const evDirect = capi.buildSnapCapiEvent(sent[0]);
   check('direct visitor: no sc_click_id, PII still present', !evDirect.user_data.sc_click_id && !!evDirect.user_data.em);
   dump('PURCHASE — direct visitor (no ScCid)', evDirect);
@@ -375,14 +376,24 @@ async function main() {
   // Scenario: COD order with Razorpay upfront → counts
   sent.length = 0;
   orders.set('ord_cod', baseOrder('ord_cod', { paymentStatus: 'cod_upfront_paid', totalPrice: 2499 }));
-  await delivery.emitSnapPurchase('ord_cod', scClick);
+  await delivery.emitSnapPurchase('ord_cod', scClick, PAID);
   check('COD (cod_upfront_paid) sends once with full order value', sent.length === 1 && capi.buildSnapCapiEvent(sent[0]).custom_data.value === 2499);
+
+  // Scenario: capture not confirmed (e.g. checkout/complete could not verify capture,
+  // or only payment.authorized) → nothing sent, click context kept for the confirming path
+  sent.length = 0;
+  orders.set('ord_unconfirmed', baseOrder('ord_unconfirmed'));
+  const unconf = await delivery.emitSnapPurchase('ord_unconfirmed', scClick, { paymentConfirmed: false });
+  check('capture not confirmed → nothing sent', unconf.status === 'skipped' && sent.length === 0, unconf);
+  eq('…but ScCid kept for the webhook', (rows.get('snap|PURCHASE|ord_unconfirmed')?.context as any)?.scClickId, 'snap-click-123');
+  await delivery.emitSnapPurchase('ord_unconfirmed', undefined, PAID); // later payment.captured webhook
+  check('captured webhook later → sent once with stored ScCid', sent.length === 1 && capi.buildSnapCapiEvent(sent[0]).user_data.sc_click_id === 'snap-click-123');
 
   // Scenario: failed / pending / underpaid payment → never sends
   sent.length = 0;
   for (const st of ['payment_pending', 'failed', 'partially_paid', '']) {
     orders.set(`ord_${st || 'empty'}`, baseOrder(`ord_${st || 'empty'}`, { paymentStatus: st }));
-    const out = await delivery.emitSnapPurchase(`ord_${st || 'empty'}`, scClick);
+    const out = await delivery.emitSnapPurchase(`ord_${st || 'empty'}`, scClick, PAID);
     check(`paymentStatus "${st}" → no Purchase`, out.status === 'skipped');
   }
   check('nothing sent for unpaid orders', sent.length === 0);
@@ -390,7 +401,7 @@ async function main() {
   // Scenario: native app orders are never sent through the web pixel
   for (const t of ['MOBILE_APP', 'MOBILE', 'APP']) {
     orders.set(`ord_${t}`, baseOrder(`ord_${t}`, { orderType: t }));
-    const out = await delivery.emitSnapPurchase(`ord_${t}`, scClick);
+    const out = await delivery.emitSnapPurchase(`ord_${t}`, scClick, PAID);
     check(`orderType ${t} → not sent as WEB`, out.status === 'skipped');
   }
   check('no app purchase sent', sent.length === 0);
@@ -401,14 +412,14 @@ async function main() {
     { sku: 'ZB-EXOSHELL-32', quantity: 1, price: 1999 },
     { variantId: FEED_GIDS[1], sku: 'ZB-AERO-S', quantity: 1, price: 1499 },
   ], totalPrice: 3498 }));
-  await delivery.emitSnapPurchase('ord_sku', scClick);
+  await delivery.emitSnapPurchase('ord_sku', scClick, PAID);
   eq('SKU-only item left out of content_ids', capi.buildSnapCapiEvent(sent[0]).custom_data.content_ids, [FEED_GIDS[1]]);
   eq('…but still counted in num_items', capi.buildSnapCapiEvent(sent[0]).custom_data.num_items, '2');
 
   // Scenario: Snap failure → failed (no sentAt) → retry keeps the same event_id and conversion time
   sent.length = 0; sendMode = 'fail';
   orders.set('ord_retry', baseOrder('ord_retry'));
-  const first = await delivery.emitSnapPurchase('ord_retry', scClick);
+  const first = await delivery.emitSnapPurchase('ord_retry', scClick, PAID);
   const failedRow = { ...rows.get('snap|PURCHASE|ord_retry') };
   check('failed send → status failed, sentAt null', first.status === 'failed' && failedRow.status === 'failed' && failedRow.sentAt === null, failedRow);
   sendMode = 'ok';
@@ -422,16 +433,16 @@ async function main() {
   sent.length = 0;
   orders.set('ord_lease', baseOrder('ord_lease'));
   await fakeDb.adConversionDelivery.create({ data: { platform: 'snap', eventName: 'PURCHASE', orderId: 'ord_lease', eventId: 'ord_lease', status: 'sending', leaseUntil: new Date(Date.now() + 30e3), attempts: 1 } });
-  await delivery.emitSnapPurchase('ord_lease', scClick);
+  await delivery.emitSnapPurchase('ord_lease', scClick, PAID);
   check('live lease held by another process → no send', sent.length === 0);
   rows.get('snap|PURCHASE|ord_lease').leaseUntil = new Date(Date.now() - 1000);
-  await delivery.emitSnapPurchase('ord_lease', scClick);
+  await delivery.emitSnapPurchase('ord_lease', scClick, PAID);
   check('expired lease → reclaimed and sent once', sent.length === 1);
 
   // Scenario: 20-day-old order → skipped, never re-dated
   sent.length = 0;
   orders.set('ord_old', baseOrder('ord_old', { paymentCapturedAt: new Date(Date.now() - 20 * DAY), createdAt: new Date(Date.now() - 20 * DAY) }));
-  const old = await delivery.emitSnapPurchase('ord_old', scClick);
+  const old = await delivery.emitSnapPurchase('ord_old', scClick, PAID);
   check('20-day-old purchase skipped, nothing sent', old.status === 'skipped' && sent.length === 0, old);
   eq('…and marked non-sendable in the ledger', rows.get('snap|PURCHASE|ord_old').status, 'skipped');
 
@@ -445,7 +456,7 @@ async function main() {
     const oid = `ord_${label}`;
     orders.set(oid, baseOrder(oid, { customer: { email: 'x@example.com', phone, name: 'A B' },
       shippingAddress: JSON.stringify({ country, city: 'X' }) }));
-    await delivery.emitSnapPurchase(oid, scClick);
+    await delivery.emitSnapPurchase(oid, scClick, PAID);
     eq(`${label} customer phone hash`, capi.buildSnapCapiEvent(sent[0]).user_data.ph, [h(want)]);
   }
 
@@ -461,6 +472,13 @@ async function main() {
     const tracks = (src.match(/snapTrackAddToCart\(/g) || []).length;
     check(`${f}: one Snap ADD_CART per direct add (${adds} adds)`, adds > 0 && adds === tracks, { adds, tracks });
   }
+  const wh = read('app/api/webhooks/razorpay/route.ts');
+  check('webhook: payment.authorized is not in the paid path',
+    !/eventType === 'payment\.captured' \|\| eventType === 'order\.paid' \|\| eventType === 'payment\.authorized'/.test(wh)
+    && /if \(eventType === 'payment\.authorized'\) \{[\s\S]*?return NextResponse\.json/.test(wh));
+  const co = read('app/api/app/payment/create-order/route.ts');
+  check('app create-order persists variantId on pending OrderItem + MobileOrderItem',
+    (co.match(/variantId: item\.variantId/g) || []).length === 2 && /normalizeVariantId\(li\.variantId \|\| li\.variant_id\)/.test(co));
   check('footer fires SUBSCRIBE only after confirmed save',
     /if \(!res\.ok \|\| !data\?\.ok\)[\s\S]*?return;[\s\S]*?trackSnapSubscribe/.test(read('components/StorefrontFooterClient.tsx')));
 

@@ -6,6 +6,7 @@ import prisma from '@/lib/db';
 import { assignFailedOrderNumber } from '@/lib/orderNumber';
 
 import { getCorsHeaders, handleCorsOptions } from '@/lib/cors';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 
 export async function OPTIONS(req: Request) {
   return handleCorsOptions(req);
@@ -139,8 +140,12 @@ export async function POST(req: Request) {
               }
             }
             
+            // Shopify backend variant id = Snap catalog <g:id> (feed.xml). Stored on the
+            // PENDING item so it survives even if the app never calls orders/create.
+            const variantId = normalizeVariantId(li.variantId || li.variant_id);
             return {
               productId: resolvedPid,
+              variantId,
               title: li.name || li.title || 'Product',
               quantity: Number(li.quantity || 1),
               price: Number(li.price || 0),
@@ -193,6 +198,7 @@ export async function POST(req: Request) {
                     quantity: item.quantity,
                     price: item.price,
                     sku: item.sku,
+                    variantId: item.variantId,
                     image: item.image,
                   }))
                 }
@@ -221,6 +227,7 @@ export async function POST(req: Request) {
                 items: {
                   create: resolvedItems.map(item => ({
                     productId: item.productId,
+                    variantId: item.variantId,
                     title: item.title,
                     quantity: item.quantity,
                     price: item.price,

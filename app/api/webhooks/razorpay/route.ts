@@ -64,7 +64,24 @@ export async function POST(req: Request) {
     paymentLog('info', 'webhook', { message: `Received event: ${eventType}`, eventId });
 
     // 4. Process specific webhook events
-    if (eventType === 'payment.captured' || eventType === 'order.paid' || eventType === 'payment.authorized') {
+    //
+    // payment.authorized means the bank has only RESERVED the money; it is not
+    // collected and is auto-refunded if never captured. It must not mark an
+    // order paid, recover an order, or count as a conversion (Meta/Snap).
+    // Orders become paid on payment.captured / order.paid only.
+    if (eventType === 'payment.authorized') {
+      paymentLog('info', 'webhook', {
+        message: 'payment.authorized received — not treated as paid; waiting for payment.captured / order.paid',
+        eventId,
+      });
+      await prisma.webhookEvent.update({
+        where: { id: webhookRecord.id },
+        data: { processed: true, processedAt: new Date() },
+      });
+      return NextResponse.json({ success: true, ignored: 'payment.authorized is not a completed payment' });
+    }
+
+    if (eventType === 'payment.captured' || eventType === 'order.paid') {
       const payment = data.payment?.entity;
       if (!payment) {
         return NextResponse.json({ success: true, message: 'No payment entity in payload' });
@@ -300,7 +317,8 @@ export async function POST(req: Request) {
         // unpaid orders are skipped inside emitSnapPurchase.
         try {
           const { emitSnapPurchase } = await import('@/lib/snap/purchase-server');
-          await emitSnapPurchase(order.id);
+          // Only captured / order.paid reach this point → payment is confirmed.
+          await emitSnapPurchase(order.id, undefined, { paymentConfirmed: true });
         } catch (snapErr: any) {
           console.warn('[Razorpay Webhook] Snap Purchase dispatch failed:', snapErr?.message);
         }

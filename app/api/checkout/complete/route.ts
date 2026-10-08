@@ -861,7 +861,12 @@ export async function POST(req: Request) {
     // currency, variant ids, quantities, payment status) and sends it exactly
     // once via the AdConversionDelivery ledger. This request comes from the
     // shopper's browser, so its cookies carry ScCid/_scid for attribution.
-    emitSnapPurchase(localOrder.id, snapContextFromRequest(req))
+    // Conversion requires Razorpay to have CAPTURED the money (fetchCapturedPayment
+    // succeeded above) or a 100% store-credit order. If capture could not be
+    // confirmed yet, the payment.captured / order.paid webhook sends it instead.
+    emitSnapPurchase(localOrder.id, snapContextFromRequest(req), {
+      paymentConfirmed: isFullStoreCredit || capturedRupees !== null,
+    })
       .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Snap Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
       .catch(() => {});
 

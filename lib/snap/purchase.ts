@@ -180,8 +180,22 @@ export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent }: 
    * Send the Snap PURCHASE for a web order exactly once. Safe to call from
    * several paths concurrently and repeatedly; never throws.
    */
-  async function emitSnapPurchase(orderId: string, ctx?: SnapClickContext): Promise<DeliveryResult> {
+  /**
+   * @param opts.paymentConfirmed must be true only when the caller has proof the
+   *   payment was CAPTURED (Razorpay payment.captured / order.paid, a verified
+   *   captured fetch, or a full store-credit order). Without it nothing is sent;
+   *   the click context is still stored for the confirming path to use.
+   */
+  async function emitSnapPurchase(
+    orderId: string,
+    ctx?: SnapClickContext,
+    opts: { paymentConfirmed?: boolean } = {},
+  ): Promise<DeliveryResult> {
     if (!orderId) return { status: 'skipped', reason: 'no order id' };
+    if (!opts.paymentConfirmed) {
+      if (ctx) await recordSnapPurchaseContext(orderId, ctx);
+      return { status: 'skipped', reason: 'payment capture not confirmed' };
+    }
     const key = { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } };
     try {
       const order: any = await prisma.order.findUnique({
@@ -298,7 +312,8 @@ export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent }: 
     });
     const tally: Record<string, number> = {};
     for (const r of rows) {
-      const out = await emitSnapPurchase(r.orderId);
+      // Rows only reach failed / sending after a payment-confirmed attempt.
+      const out = await emitSnapPurchase(r.orderId, undefined, { paymentConfirmed: true });
       tally[out.status] = (tally[out.status] || 0) + 1;
     }
     return tally;

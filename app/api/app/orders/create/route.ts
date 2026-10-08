@@ -3,6 +3,7 @@ import { getAppAuthFromRequest } from '@/lib/appAuth';
 import prisma from '@/lib/db';
 import { syncOrderToShopify } from '@/lib/services/shopifyOrderSyncService';
 import { extractNumericId } from '@/lib/utils';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
 
 export const dynamic = 'force-dynamic';
@@ -272,7 +273,7 @@ export async function POST(req: Request) {
               quantity: Number(li.quantity || 0),
               price: Number(li.price || 0),
               sku: li.sku || (vid ? `variant:${vid}` : null),
-            variantId: vid || null,
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
               image: li.image || li.imageUrl || null,
             };
           }));
@@ -346,7 +347,7 @@ export async function POST(req: Request) {
             quantity: Math.max(1, Number(li.quantity) || 1),
             price: Number(li.price || 0),
             sku: li.sku || (vid ? `variant:${vid}` : null),
-            variantId: vid || null,
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
             image: li.image || li.imageUrl || null,
           };
         }));
@@ -553,7 +554,7 @@ export async function POST(req: Request) {
                 quantity: Number(li.quantity || 0),
                 price: Number(li.price || 0),
                 sku: li.sku || (vid ? `variant:${vid}` : null),
-            variantId: vid || null,
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
                 image: li.image || li.imageUrl || null,
               };
             })),
@@ -599,7 +600,7 @@ export async function POST(req: Request) {
           quantity: Number(li.quantity || 0),
           price: Number(li.price || 0),
           sku: li.sku || (vid ? `variant:${vid}` : null),
-            variantId: vid || null,
+            variantId: normalizeVariantId(li.variantId || li.variant_id),
           image: li.image || li.imageUrl || null,
         };
       }));
