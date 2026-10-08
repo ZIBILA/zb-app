@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -127,6 +127,8 @@ const STATUS_THEME: Record<string, { label: string; color: string; bg: string; d
   unfulfilled: { label: "Draft", color: "text-foreground/40", bg: "bg-foreground/5", dot: "bg-foreground/20" },
   delivered: { label: "Arrived", color: "text-emerald-500", bg: "bg-emerald-500/10", dot: "bg-emerald-500" },
   cancelled: { label: "Cancelled", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  cancellation_requested: { label: "Cancellation Requested", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  'cancellation requested': { label: "Cancellation Requested", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   payment_failed: { label: "Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   failed: { label: "Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   payment_pending: { label: "Unpaid", color: "text-amber-500", bg: "bg-amber-500/10", dot: "bg-amber-500" },
@@ -171,6 +173,8 @@ export default function OrderDetailPage() {
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [logisticsSyncing, setLogisticsSyncing] = useState(false);
+  const logisticsSyncedForOrderRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -205,8 +209,68 @@ export default function OrderDetailPage() {
   }, [id]);
 
   useEffect(() => {
+    logisticsSyncedForOrderRef.current = null;
     if (id) fetchOrder();
   }, [id, fetchOrder]);
+
+  // Lazy logistics sync: page renders from DB first, then after paint we pull
+  // Shiprocket status once per order visit (does not block initial load).
+  useEffect(() => {
+    if (loading || !order?.id) return;
+    if (logisticsSyncedForOrderRef.current === order.id) return;
+
+    const live = pickActiveOutboundShipment((order.shipments || []) as any[]);
+    const awb = live?.awb || order.delhivery_awb;
+    if (!awb) {
+      logisticsSyncedForOrderRef.current = order.id;
+      return;
+    }
+
+    let cancelled = false;
+    let idleId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const runSync = async () => {
+      if (cancelled || logisticsSyncedForOrderRef.current === order.id) return;
+      logisticsSyncedForOrderRef.current = order.id;
+      setLogisticsSyncing(true);
+      try {
+        const res = await fetch('/api/logistics/sync-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_id: order.id }),
+        });
+        if (!cancelled && res.ok) await fetchOrder(true);
+      } catch {
+        /* best-effort — manual Sync Status still available */
+      } finally {
+        if (!cancelled) setLogisticsSyncing(false);
+      }
+    };
+
+    const schedule =
+      typeof window !== 'undefined' && 'requestIdleCallback' in window
+        ? () => {
+            idleId = window.requestIdleCallback(() => {
+              void runSync();
+            }, { timeout: 2500 });
+          }
+        : () => {
+            timeoutId = setTimeout(() => {
+              void runSync();
+            }, 0);
+          };
+
+    schedule();
+
+    return () => {
+      cancelled = true;
+      if (idleId != null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [loading, order, fetchOrder]);
 
   useEffect(() => {
     if (order) {
@@ -596,9 +660,17 @@ export default function OrderDetailPage() {
               { 
                 label: "Logistics", 
                 key: 'deliveryStatus', 
-                value: isEditing ? editValues.deliveryStatus : (order.status === 'cancelled' ? 'cancelled' : (order.paymentStatus === 'failed' || order.status === 'payment_failed' ? 'failed' : (order.deliveryStatus || 'awaiting'))), 
+                value: isEditing
+                  ? editValues.deliveryStatus
+                  : (order.status === 'cancelled'
+                    ? 'cancelled'
+                    : (order.paymentStatus === 'failed' || order.status === 'payment_failed'
+                      ? 'failed'
+                      : (order.tracking_status?.trim()
+                          || order.deliveryStatus
+                          || 'awaiting'))), 
                 icon: Truck,
-                options: ['awaiting', 'manifested', 'in transit', 'out for delivery', 'delivered']
+                options: ['awaiting', 'manifested', 'in transit', 'out for delivery', 'delivered', 'cancellation_requested', 'cancelled']
               },
               { 
                 label: "Method", 
@@ -863,20 +935,24 @@ export default function OrderDetailPage() {
               // (that left Logistics showing CANCELLED while the old AWB badge stayed visible).
               // Return/exchange pickups (reverse) are never the order's forward shipment.
               const activeShipment = pickActiveOutboundShipment(allShipments);
-              const logisticsCancelled =
+              const activeCode = normalizeCarrierStatus(activeShipment?.status || order.deliveryStatus);
+              const logisticsFullyCancelled =
                 !activeShipment &&
                 (order.deliveryStatus === 'cancelled' ||
                   allShipments.some(
                     (s) => !isReverseShipmentType(s.type) && normalizeCarrierStatus(s.status) === 'cancelled'
                   ));
-              const externalId = activeShipment?.trackingNumber || null;
-              const awb = activeShipment?.awb || null;
-              const courier = logisticsCancelled
+              // Cancellation Requested still has an AWB on Shiprocket — keep it visible.
+              const showAsCancelled = logisticsFullyCancelled || activeCode === 'cancelled';
+              const externalId = showAsCancelled ? null : activeShipment?.trackingNumber || null;
+              const awb = showAsCancelled ? null : activeShipment?.awb || null;
+              const courier = showAsCancelled
                 ? 'Courier Logistics Hub'
                 : activeShipment?.courier || 'Courier Logistics Hub';
-              const trackingUrl =
-                activeShipment?.trackingUrl ||
-                (awb ? `https://shiprocket.co/tracking/${awb}` : null);
+              const trackingUrl = showAsCancelled
+                ? null
+                : activeShipment?.trackingUrl ||
+                  (awb ? `https://shiprocket.co/tracking/${awb}` : null);
               // Shiprocket is the only booking path. Courier may still display "Delhivery …"
               // when Shiprocket assigns that last-mile partner.
               let isShiprocketShipment = false;
@@ -892,13 +968,17 @@ export default function OrderDetailPage() {
                 // Preliminary Shiprocket row stores shipment_id as trackingNumber before AWB
                 isShiprocketShipment = true;
               }
-              const rawDisplayStatus = logisticsCancelled
-                ? 'cancelled'
-                : activeShipment?.status || order.deliveryStatus || 'pending';
-              const displayStatus =
-                normalizeCarrierStatus(rawDisplayStatus) === 'unknown'
-                  ? rawDisplayStatus
-                  : carrierStatusLabel(rawDisplayStatus);
+              // Prefer the exact Shiprocket phrase from the last sync/webhook.
+              const displayStatus = (
+                order.tracking_status?.trim() ||
+                (showAsCancelled
+                  ? 'Canceled'
+                  : activeCode === 'cancellation_requested'
+                    ? 'Cancellation Requested'
+                    : carrierStatusLabel(
+                        activeShipment?.status || order.deliveryStatus || 'pending'
+                      ))
+              );
               const awbPending = Boolean(externalId || isShiprocketShipment) && !awb;
 
               return (
@@ -910,6 +990,12 @@ export default function OrderDetailPage() {
                         <Truck className="w-3.5 h-3.5 text-indigo-400" />
                         {courier}
                       </p>
+                      {logisticsSyncing && (
+                        <p className="text-[10px] text-foreground/35 font-medium flex items-center gap-1.5 pt-0.5">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Updating status from Shiprocket…
+                        </p>
+                      )}
                     </div>
                     {(awb || externalId) && (
                       <div className="flex flex-wrap items-center gap-2">
@@ -1276,18 +1362,21 @@ export default function OrderDetailPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const theme = STATUS_THEME[status.toLowerCase()] || { 
-    label: status.replace('_', ' '), 
-    color: "text-foreground/40", 
-    bg: "bg-foreground/5", 
-    dot: "bg-foreground/20" 
-  };
+  const key = status.toLowerCase().trim();
+  const theme = STATUS_THEME[key];
+  // Prefer exact carrier phrase (e.g. "Cancellation Requested") over mapped theme labels.
+  const label = theme && !key.includes(' ')
+    ? theme.label
+    : status.replace(/_/g, ' ');
+  const color = theme?.color || "text-foreground/40";
+  const bg = theme?.bg || "bg-foreground/5";
+  const dot = theme?.dot || "bg-foreground/20";
   
   return (
-    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg border border-foreground/5 ${theme.bg}`}>
-      <div className={`w-1 h-1 rounded-full ${theme.dot}`} />
-      <span className={`text-[9px] font-bold uppercase tracking-widest ${theme.color}`}>
-        {theme.label}
+    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg border border-foreground/5 ${bg}`}>
+      <div className={`w-1 h-1 rounded-full ${dot}`} />
+      <span className={`text-[9px] font-bold uppercase tracking-widest ${color}`}>
+        {label}
       </span>
     </div>
   );

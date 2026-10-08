@@ -50,6 +50,8 @@ export type ShiprocketShipmentMeta = {
   order_id: string | number | null;
   pickup_scheduled_at?: string | null;
   invoice_url?: string | null;
+  /** Preserved after final cancel so sync can still poll Shiprocket. */
+  voided_awb?: string | null;
 };
 
 export interface LogisticsConfig {
@@ -401,7 +403,7 @@ export async function shipOrder(
               { shopifyOrderId: orderId }
             ]
           },
-          include: { items: true, customer: { select: { email: true } } },
+          include: { items: true, customer: { select: { name: true, email: true, phone: true } } },
         });
 
         const isCodOrder = isShiprocketCodOrder({
@@ -469,33 +471,17 @@ export async function shipOrder(
           dbOrder?.id ||
           orderId;
 
-        const nameParts = String(address.name || 'Customer')
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean);
-        const billingFirstName = nameParts[0] || 'Customer';
-        const billingLastName = nameParts.slice(1).join(' ') || '.';
-
-        const phoneDigits = String(address.phone || '').replace(/\D/g, '');
-        const billingPhone =
-          phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
-        const billingPincode = Number(String(address.zip || '').replace(/\D/g, '')) || 0;
         const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
-
-        const billingState = String(address.province || '').trim();
-        const billingCity = String(address.city || '').trim();
-        const billingAddress1 = String(address.address1 || '').trim();
-        const invalidState =
-          !billingState ||
-          /^unknown$/i.test(billingState) ||
-          billingState === '000000';
-        if (!billingAddress1 || !billingCity || invalidState || !billingPincode) {
-          throw new Error(
-            `Cannot book Shiprocket: incomplete shipping address ` +
-              `(state="${billingState || '(empty)'}", city="${billingCity || '(empty)'}", ` +
-              `pincode=${billingPincode || 0}). Fix the order address before booking.`
-          );
-        }
+        const consignee = buildShiprocketConsignee({
+          name: address.name || (dbOrder as any)?.customer?.name,
+          address1: address.address1,
+          city: address.city,
+          state: address.province,
+          zip: address.zip,
+          country: address.country,
+          phone: address.phone || (dbOrder as any)?.customer?.phone,
+          email: address.email || (dbOrder as any)?.customer?.email,
+        });
 
         const orderItems = buildShiprocketOrderItems(shipItems, defaultHsn);
         const pickup = await resolveShiprocketPickupLocation();
@@ -504,16 +490,7 @@ export async function shipOrder(
           order_id: shiprocketOrderId,
           order_date: new Date().toISOString().split('T')[0],
           pickup_location: pickup.name,
-          billing_customer_name: billingFirstName,
-          billing_last_name: billingLastName,
-          billing_address: billingAddress1,
-          billing_city: billingCity,
-          billing_pincode: billingPincode,
-          billing_state: billingState,
-          billing_country: address.country || 'India',
-          billing_email:
-            address.email || (dbOrder as any)?.customer?.email || undefined,
-          billing_phone: billingPhone ? Number(billingPhone) : undefined,
+          ...consignee,
           shipping_is_billing: true,
           order_items: orderItems,
           payment_method: paymentFields.payment_method,
@@ -760,7 +737,13 @@ export async function syncOrderLogisticsStatus(orderId: string): Promise<{
     };
   }
 
-  const trackRef = shipment.awb || shipment.trackingNumber;
+  // Prefer live AWB; fall back to voided_awb preserved at cancel time.
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  const trackRef =
+    String(shipment.awb || meta?.voided_awb || '').trim() ||
+    (shipment.trackingNumber && !/^CANCELLED-/i.test(shipment.trackingNumber)
+      ? shipment.trackingNumber
+      : '');
   if (!trackRef) {
     return {
       success: false,
@@ -768,6 +751,17 @@ export async function syncOrderLogisticsStatus(orderId: string): Promise<{
       deliveryStatus: null,
       message: 'Shipment has no AWB/tracking number yet',
     };
+  }
+
+  // If AWB was cleared on final cancel but we still have voided_awb, restore it
+  // temporarily on the row so refreshShipmentFromCarrier can poll Shiprocket.
+  if (!shipment.awb && meta?.voided_awb) {
+    await prisma.shipment
+      .update({
+        where: { id: shipment.id },
+        data: { awb: String(meta.voided_awb) },
+      })
+      .catch(() => {});
   }
 
   const { refreshShipmentFromCarrier } = await import('@/lib/services/shipmentStatusService');
@@ -888,6 +882,93 @@ export function isShiprocketCodOrder(order: {
     noteLower.includes('cod order') ||
     noteLower.includes('upfront fee paid')
   );
+}
+
+/**
+ * Normalize consignee fields for Shiprocket create/assign.
+ * Delhivery (via Shiprocket) rejects with ER0005 "suspicious order/consignee" when
+ * phone is missing/short, last name is a placeholder like ".", or address has junk chars.
+ */
+function sanitizeShiprocketText(value: string, maxLen = 190): string {
+  return String(value || '')
+    .replace(/[&#%;\\]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function buildShiprocketConsignee(args: {
+  name?: string | null;
+  address1?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  country?: string | null;
+  phone?: string | null;
+  email?: string | null;
+}): {
+  billing_customer_name: string;
+  billing_last_name: string;
+  billing_address: string;
+  billing_city: string;
+  billing_state: string;
+  billing_pincode: number;
+  billing_country: string;
+  billing_email?: string;
+  billing_phone: string;
+} {
+  const nameParts = sanitizeShiprocketText(args.name || 'Customer')
+    .split(/\s+/)
+    .filter(Boolean);
+  const firstName = nameParts[0] || 'Customer';
+  // Never send "." / "-" — Delhivery flags those as suspicious last names.
+  const lastName = nameParts.slice(1).join(' ').trim() || firstName;
+
+  const phoneDigits = String(args.phone || '').replace(/\D/g, '');
+  const billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+  if (!/^[6-9]\d{9}$/.test(billingPhone)) {
+    throw new Error(
+      `Cannot book Shiprocket: consignee needs a valid 10-digit Indian mobile (got "${args.phone || '(empty)'}"). ` +
+        `Update the order shipping phone, then cancel any pending Shiprocket shipment and rebook.`
+    );
+  }
+
+  const billingAddress = sanitizeShiprocketText(args.address1 || '', 190);
+  const billingCity = sanitizeShiprocketText(args.city || '', 50);
+  const billingState = sanitizeShiprocketText(args.state || '', 50);
+  const billingPincode = Number(String(args.zip || '').replace(/\D/g, '')) || 0;
+  const invalidState =
+    !billingState ||
+    /^unknown$/i.test(billingState) ||
+    billingState === '000000';
+
+  if (
+    !billingAddress ||
+    billingAddress.length < 5 ||
+    !billingCity ||
+    invalidState ||
+    !/^[1-9]\d{5}$/.test(String(billingPincode))
+  ) {
+    throw new Error(
+      `Cannot book Shiprocket: incomplete or invalid shipping address ` +
+        `(address="${billingAddress || '(empty)'}", city="${billingCity || '(empty)'}", ` +
+        `state="${billingState || '(empty)'}", pincode=${billingPincode || 0}).`
+    );
+  }
+
+  const email = sanitizeShiprocketText(args.email || '', 100);
+  return {
+    billing_customer_name: firstName,
+    billing_last_name: lastName,
+    billing_address: billingAddress,
+    billing_city: billingCity,
+    billing_state: billingState,
+    billing_pincode: billingPincode,
+    billing_country: sanitizeShiprocketText(args.country || 'India', 50) || 'India',
+    ...(email.includes('@') ? { billing_email: email } : {}),
+    // Shiprocket accepts string; keep as string so leading digits are never coerced away.
+    billing_phone: billingPhone,
+  };
 }
 
 /**
@@ -1239,9 +1320,16 @@ async function assignCourierAwbAndPersist(
       assignPayload?.packages?.[0] ||
       assignData?.response?.data?.packages?.[0] ||
       null;
+    const errCode = String(pkg?.err_code || '').trim();
+    const remarksRaw = pkg?.remarks;
+    const remarks = Array.isArray(remarksRaw)
+      ? remarksRaw.filter(Boolean).map(String).join('; ')
+      : remarksRaw
+        ? String(remarksRaw)
+        : '';
     const carrierReason =
-      pkg?.err_code ||
-      pkg?.remarks ||
+      errCode ||
+      remarks ||
       pkg?.reason ||
       pkg?.status ||
       assignPayload?.awb_assign_error ||
@@ -1265,8 +1353,22 @@ async function assignCourierAwbAndPersist(
         },
       });
     }
+
+    const isSuspiciousConsignee =
+      /ER0005/i.test(errCode) || /suspicious\s+order\/consignee/i.test(remarks);
+
+    if (isSuspiciousConsignee) {
+      // Prefix lets bookShiprocketOrderWithCourier auto-cancel + recreate once.
+      throw new Error(
+        `SHIPROCKET_CONSIGNEE_REJECT: ${courierName} rejected this consignee (ER0005` +
+          `${remarks ? ` — ${remarks}` : ''}).`
+      );
+    }
+
     throw new Error(
-      `${courierName} could not assign an AWB for this shipment. ` +
+      `${courierName} could not assign an AWB` +
+        `${errCode ? ` (${errCode})` : ''}` +
+        `${remarks ? `: ${remarks}` : ''}. ` +
         `Try a different courier (another provider often works when one rejects). ` +
         `Shipment is saved — you can retry without recreating the order.`
     );
@@ -1307,6 +1409,35 @@ async function assignCourierAwbAndPersist(
     `[Shiprocket] AWB ${assignedAwb} assigned via courier ${finalCourierName} for order ${localOrderId}`
   );
 
+  // Best-effort pickup request at the Shiprocket warehouse (`pickup_location` from create).
+  // Many couriers already queue pickup on AWB assign — "Already in Pickup Queue" is success.
+  let pickupScheduled = false;
+  try {
+    const pickup = await requestShiprocketPickup(srShipmentId);
+    pickupScheduled = pickup.queued;
+    if (pickupScheduled) {
+      meta.pickup_scheduled_at = pickup.pickup_scheduled_date || new Date().toISOString();
+      await prisma.shipment.update({
+        where: { id: shipmentRowId },
+        data: {
+          status: 'pickup_scheduled',
+          rawDelhiveryResponse: JSON.stringify(meta),
+        },
+      });
+      await prisma.order
+        .update({
+          where: { id: localOrderId },
+          data: { deliveryStatus: 'pickup_scheduled' },
+        })
+        .catch(() => {});
+    }
+  } catch (pickupErr: any) {
+    console.warn(
+      `[Shiprocket] Pickup request after AWB failed for ${srShipmentId}:`,
+      pickupErr?.message || pickupErr
+    );
+  }
+
   return {
     trackingNumber: assignedAwb,
     trackingUrl: `https://shiprocket.co/tracking/${assignedAwb}`,
@@ -1314,8 +1445,8 @@ async function assignCourierAwbAndPersist(
     shipmentId: String(srShipmentId),
     shiprocketOrderId: srOrderId != null ? String(srOrderId) : undefined,
     awb: assignedAwb,
-    status: 'confirmed',
-    deliveryStatus: 'confirmed',
+    status: pickupScheduled ? 'pickup_scheduled' : 'confirmed',
+    deliveryStatus: pickupScheduled ? 'pickup_scheduled' : 'confirmed',
   };
 }
 
@@ -1381,20 +1512,63 @@ export async function bookShiprocketOrderWithCourier(
   }
 
   // Resume: Shiprocket order exists locally but AWB assign previously failed
+  // (e.g. try another courier). Cannot assign AWB on a Shiprocket order that is
+  // already cancelled — mark local draft dead and create a fresh SR order below.
+  let rebookAfterSrCancelled = false;
   if (existing && !isFakeExisting && !existing.awb) {
     const meta = parseShiprocketMeta(existing.rawDelhiveryResponse);
     if (meta?.shipment_id) {
       console.log(
         `[Shiprocket] Resuming AWB assign for ${localOrderId}: shipment=${meta.shipment_id} courier_id=${courierId}`
       );
-      return assignCourierAwbAndPersist(
-        localOrderId,
-        existing.id,
-        String(meta.shipment_id),
-        meta.order_id,
-        courierId,
-        courierName
-      );
+      try {
+        return await assignCourierAwbAndPersist(
+          localOrderId,
+          existing.id,
+          String(meta.shipment_id),
+          meta.order_id,
+          courierId,
+          courierName
+        );
+      } catch (resumeErr: any) {
+        const resumeMsg = String(resumeErr?.message || '');
+        const isConsigneeReject = /SHIPROCKET_CONSIGNEE_REJECT/i.test(resumeMsg);
+        const isSrCancelled = /order is in cancelled state/i.test(resumeMsg);
+
+        if (isConsigneeReject) {
+          console.warn(
+            `[Shiprocket] Consignee reject on resume for ${localOrderId} — cancelling draft SR shipment ${meta.shipment_id}`
+          );
+          const cancelKey = existing.trackingNumber || existing.awb || String(meta.shipment_id);
+          const cancelled = await cancelShipment(cancelKey);
+          if (!cancelled.success) {
+            // SR may already be cancelled — still clear local so we can create fresh.
+            await prisma.shipment
+              .update({
+                where: { id: existing.id },
+                data: { status: 'cancelled', awb: null, trackingUrl: null, labelUrl: null },
+              })
+              .catch(() => {});
+            console.warn(
+              `[Shiprocket] Draft cancel note for ${cancelKey}: ${cancelled.message} — clearing local row`
+            );
+          }
+          rebookAfterSrCancelled = true;
+        } else if (isSrCancelled) {
+          console.warn(
+            `[Shiprocket] Resume blocked — SR shipment ${meta.shipment_id} is already cancelled. Creating a fresh order.`
+          );
+          await prisma.shipment
+            .update({
+              where: { id: existing.id },
+              data: { status: 'cancelled', awb: null, trackingUrl: null, labelUrl: null },
+            })
+            .catch(() => {});
+          rebookAfterSrCancelled = true;
+        } else {
+          throw resumeErr;
+        }
+      }
     }
   }
 
@@ -1406,32 +1580,31 @@ export async function bookShiprocketOrderWithCourier(
 
   const dbOrder = await prisma.order.findFirst({
     where: { OR: [{ id: orderId }, { id: localOrderId }, { shopifyOrderId: orderId }] },
-    include: { items: true, customer: { select: { email: true } } },
+    include: { items: true, customer: { select: { name: true, email: true, phone: true } } },
   });
   if (!dbOrder) throw new Error(`Order ${orderId} not found`);
 
   const rawShippingAddress = dbOrder.shippingAddress ? JSON.parse(dbOrder.shippingAddress) : {};
   const address = {
-    name: rawShippingAddress.name || dbOrder.customer?.email || 'Customer',
+    name: rawShippingAddress.name || (dbOrder as any).customer?.name || 'Customer',
     address1: rawShippingAddress.street || rawShippingAddress.address1 || rawShippingAddress.line1 || '',
     city: rawShippingAddress.city || '',
     province: rawShippingAddress.state || rawShippingAddress.province || '',
     zip: rawShippingAddress.zip || rawShippingAddress.pincode || '',
     country: rawShippingAddress.country || 'India',
-    phone: rawShippingAddress.phone || '',
-    email: rawShippingAddress.email || dbOrder.customer?.email || '',
+    phone: rawShippingAddress.phone || (dbOrder as any).customer?.phone || '',
+    email: rawShippingAddress.email || (dbOrder as any).customer?.email || '',
   };
-
-  const billingState = String(address.province).trim();
-  const billingCity = String(address.city).trim();
-  const billingPincode = Number(String(address.zip).replace(/\D/g, '')) || 0;
-  const billingAddress1 = String(address.address1).trim();
-  if (!billingAddress1 || !billingCity || !billingState || !billingPincode) {
-    throw new Error(
-      `Cannot book Shiprocket: incomplete shipping address (state="${billingState || '(empty)'}",` +
-      ` city="${billingCity || '(empty)'}", pincode=${billingPincode || 0})`
-    );
-  }
+  const consignee = buildShiprocketConsignee({
+    name: address.name,
+    address1: address.address1,
+    city: address.city,
+    state: address.province,
+    zip: address.zip,
+    country: address.country,
+    phone: address.phone,
+    email: address.email,
+  });
 
   const isCodOrder = isShiprocketCodOrder(dbOrder);
 
@@ -1466,16 +1639,18 @@ export async function bookShiprocketOrderWithCourier(
     isCod: isCodOrder,
   });
 
-  // Re-shipping after an RTO: the first Shiprocket order for this reference is still on
-  // file (as RTO), so give the new booking its own channel order id.
+  // Re-shipping after an RTO, or rebooking after a cancelled SR draft: the previous
+  // channel order_id is still reserved on Shiprocket, so use a fresh suffix.
   const baseChannelOrderId = dbOrder.internalOrderNumber || dbOrder.id;
-  const priorOutboundBookings = isRtoReship ? await prisma.shipment.count({ where: outboundOnly }) : 0;
+  const priorOutboundBookings =
+    isRtoReship || rebookAfterSrCancelled
+      ? await prisma.shipment.count({ where: outboundOnly })
+      : 0;
   const shiprocketOrderId = isRtoReship
     ? `${baseChannelOrderId}-RS${Math.max(priorOutboundBookings, 1)}`
-    : baseChannelOrderId;
-  const nameParts = String(address.name).trim().split(/\s+/).filter(Boolean);
-  const phoneDigits = String(address.phone).replace(/\D/g, '');
-  const billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits;
+    : rebookAfterSrCancelled
+      ? `${baseChannelOrderId}-R${Math.max(priorOutboundBookings, 1)}`
+      : baseChannelOrderId;
   const defaultHsn = Number(process.env.SHIPROCKET_DEFAULT_HSN || 61091000);
 
   const orderItems = buildShiprocketOrderItems(
@@ -1505,15 +1680,7 @@ export async function bookShiprocketOrderWithCourier(
     order_id: shiprocketOrderId,
     order_date: new Date().toISOString().split('T')[0],
     pickup_location: pickup.name,
-    billing_customer_name: nameParts[0] || 'Customer',
-    billing_last_name: nameParts.slice(1).join(' ') || '.',
-    billing_address: billingAddress1,
-    billing_city: billingCity,
-    billing_pincode: billingPincode,
-    billing_state: billingState,
-    billing_country: address.country || 'India',
-    billing_email: address.email || (dbOrder as any)?.customer?.email || undefined,
-    billing_phone: billingPhone ? Number(billingPhone) : undefined,
+    ...consignee,
     shipping_is_billing: true,
     order_items: orderItems,
     payment_method: paymentFields.payment_method,
@@ -1524,6 +1691,40 @@ export async function bookShiprocketOrderWithCourier(
     height: parcel.height,
     weight: parcel.weight,
   };
+
+  console.log('[Shiprocket] Create shipment payload', {
+    localOrderId,
+    courierId,
+    courierName,
+    rawAddress: {
+      name: address.name,
+      address1: address.address1,
+      city: address.city,
+      province: address.province,
+      zip: address.zip,
+      country: address.country,
+      phone: address.phone,
+      email: address.email,
+    },
+    consignee,
+    payment: {
+      payment_method: paymentFields.payment_method,
+      sub_total: paymentFields.sub_total,
+      total_discount: paymentFields.total_discount ?? null,
+      isCod: isCodOrder,
+      codUpfront,
+    },
+    parcel,
+    pickup_location: pickup.name,
+    order_id: payload.order_id,
+    order_items: orderItems.map((i) => ({
+      name: i.name,
+      sku: i.sku,
+      units: i.units,
+      selling_price: i.selling_price,
+      hsn: i.hsn,
+    })),
+  });
 
   const createData = await logisticsApiFetch(preset.endpoints.createShipment, 'POST', payload);
   const srOrderId = createData?.order_id ?? createData?.payload?.order_id;
@@ -1537,7 +1738,8 @@ export async function bookShiprocketOrderWithCourier(
     );
   }
 
-  // Persist before AWB assign so a failed/timed-out assign can be resumed
+  // Persist before AWB assign so a transient courier reject can resume with another courier.
+  // If assign ultimately fails in a way we don't resume, we cancel this draft below.
   const localId =
     (await persistShipmentAndDeliveryStatus(localOrderId, {
       trackingNumber: String(srShipmentId),
@@ -1565,14 +1767,35 @@ export async function bookShiprocketOrderWithCourier(
     `[Shiprocket] Order created for ${shiprocketOrderId}: sr_order=${srOrderId} shipment=${srShipmentId}`
   );
 
-  const booked = await assignCourierAwbAndPersist(
-    localId,
-    pendingShipment.id,
-    String(srShipmentId),
-    srOrderId,
-    courierId,
-    courierName
-  );
+  let booked: ShipmentResult;
+  try {
+    booked = await assignCourierAwbAndPersist(
+      localId,
+      pendingShipment.id,
+      String(srShipmentId),
+      srOrderId,
+      courierId,
+      courierName
+    );
+  } catch (assignErr: any) {
+    const assignMsg = String(assignErr?.message || '');
+    const isConsigneeReject = /SHIPROCKET_CONSIGNEE_REJECT/i.test(assignMsg);
+    // All-or-nothing for consignee rejects: cancel the draft so Shiprocket does not
+    // keep NEW / -R copies. Other courier rejects leave the draft for "try another courier".
+    if (isConsigneeReject) {
+      const cancelKey = pendingShipment.trackingNumber || String(srShipmentId);
+      const cancelled = await cancelShipment(cancelKey);
+      console.warn(
+        `[Shiprocket] AWB consignee reject — cancelled draft shipment ${srShipmentId}`,
+        cancelled
+      );
+      throw new Error(
+        `${courierName} rejected this consignee (ER0005). The draft Shiprocket order was cancelled — ` +
+          `no open shipment left. Fix phone/name/address or dims, or try a different courier, then book again.`
+      );
+    }
+    throw assignErr;
+  }
 
   if (isRtoReship) {
     // Keep the RTO history visible but mark the order as re-shipped.
@@ -1851,10 +2074,8 @@ export async function bookShiprocketReversePickup(args: {
   // Request the pickup (best effort — AWB is already assigned and visible to ops)
   let pickupScheduled = false;
   try {
-    const pickup = await logisticsApiFetch(preset.endpoints.generatePickup, 'POST', {
-      shipment_id: [Number(srShipmentId) || srShipmentId],
-    });
-    pickupScheduled = pickup?.pickup_status === 1 || Boolean(pickup?.response?.pickup_scheduled_date);
+    const pickup = await requestShiprocketPickup(srShipmentId);
+    pickupScheduled = pickup.queued;
     if (pickupScheduled) {
       await prisma.shipment.update({
         where: { id: rowId },
@@ -1864,7 +2085,7 @@ export async function bookShiprocketReversePickup(args: {
             ...baseMeta,
             shipment_id: srShipmentId,
             order_id: srOrderId,
-            pickup_scheduled_at: pickup?.response?.pickup_scheduled_date || new Date().toISOString(),
+            pickup_scheduled_at: pickup.pickup_scheduled_date || new Date().toISOString(),
           }),
         },
       });
@@ -1947,8 +2168,58 @@ export async function assignShiprocketAwb(orderId: string): Promise<ShipmentResu
   };
 }
 
+/** True when Shiprocket/courier already queued pickup for this shipment. */
+function isAlreadyInPickupQueueError(err: unknown): boolean {
+  return /Already in Pickup Queue/i.test(String((err as any)?.message || err || ''));
+}
+
 /**
- * Schedule courier pickup for a Shiprocket shipment (dashboard).
+ * Request courier pickup for a Shiprocket shipment_id.
+ * Treats "Already in Pickup Queue" as success (common after AWB assign).
+ */
+async function requestShiprocketPickup(shipmentId: string | number): Promise<{
+  queued: boolean;
+  alreadyQueued: boolean;
+  pickup_scheduled_date: string | null;
+  message: string;
+}> {
+  const preset = PROVIDER_PRESETS.shiprocket;
+  try {
+    const data = await logisticsApiFetch(preset.endpoints.generatePickup, 'POST', {
+      shipment_id: [Number(shipmentId) || shipmentId],
+    });
+    const pickupDate =
+      data?.response?.pickup_scheduled_date ||
+      data?.pickup_scheduled_date ||
+      data?.data?.pickup_scheduled_date ||
+      null;
+    const queued = data?.pickup_status === 1 || Boolean(pickupDate) || data?.status_code === 200;
+    const message =
+      (typeof data?.response?.data === 'string' && data.response.data) ||
+      data?.message ||
+      (queued ? 'Pickup scheduled' : JSON.stringify(data).slice(0, 200));
+    return {
+      queued: queued || true,
+      alreadyQueued: false,
+      pickup_scheduled_date: pickupDate,
+      message: String(message),
+    };
+  } catch (err: any) {
+    if (isAlreadyInPickupQueueError(err)) {
+      return {
+        queued: true,
+        alreadyQueued: true,
+        pickup_scheduled_date: null,
+        message: 'Already in Pickup Queue',
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Schedule courier pickup for a Shiprocket shipment (API / legacy callers).
+ * Forward booking now auto-requests pickup after AWB; this remains idempotent.
  */
 export async function generateShiprocketPickup(orderId: string): Promise<{
   success: boolean;
@@ -1969,19 +2240,7 @@ export async function generateShiprocketPickup(orderId: string): Promise<{
   }
 
   const shipmentId = await resolveShiprocketShipmentId(shipment);
-  const data = await logisticsApiFetch(PROVIDER_PRESETS.shiprocket.endpoints.generatePickup, 'POST', {
-    shipment_id: [Number(shipmentId) || shipmentId],
-  });
-
-  const pickupDate =
-    data?.response?.pickup_scheduled_date ||
-    data?.pickup_scheduled_date ||
-    data?.data?.pickup_scheduled_date ||
-    null;
-  const message =
-    data?.response?.data ||
-    data?.message ||
-    (data?.pickup_status === 1 ? 'Pickup scheduled' : JSON.stringify(data).slice(0, 200));
+  const pickup = await requestShiprocketPickup(shipmentId);
 
   const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse) || {
     provider: 'shiprocket' as const,
@@ -1989,7 +2248,8 @@ export async function generateShiprocketPickup(orderId: string): Promise<{
     order_id: null,
   };
   meta.shipment_id = shipmentId;
-  meta.pickup_scheduled_at = pickupDate || new Date().toISOString();
+  meta.pickup_scheduled_at =
+    pickup.pickup_scheduled_date || meta.pickup_scheduled_at || new Date().toISOString();
 
   await prisma.shipment.update({
     where: { id: shipment.id },
@@ -2005,8 +2265,10 @@ export async function generateShiprocketPickup(orderId: string): Promise<{
 
   return {
     success: true,
-    message: typeof message === 'string' ? message : 'Pickup scheduled',
-    pickup_scheduled_date: pickupDate,
+    message: pickup.alreadyQueued
+      ? 'Pickup already queued at your Shiprocket primary address'
+      : pickup.message,
+    pickup_scheduled_date: pickup.pickup_scheduled_date,
   };
 }
 
@@ -2101,6 +2363,14 @@ export async function generateShiprocketInvoice(orderId: string): Promise<{ invo
   return { invoiceUrl: String(invoiceUrl) };
 }
 
+/** Shiprocket already voided / is voiding this shipment or order. */
+function isShiprocketAlreadyCancellingOrCancelled(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '');
+  return /cancellation requested|already cancel+ed|order is in cancelled state|cannot cancel order when shipment status is cancel|shipment (is )?already cancel/i.test(
+    msg
+  );
+}
+
 /**
  * Cancel a shipment (only if in Confirmed/Packed state).
  */
@@ -2136,6 +2406,9 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     return { success: false, message: `Cannot cancel shipment in "${shipment.status}" state. Only cancellable in: ${cancellableStatuses.join(', ')}` };
   }
 
+  /** True when Shiprocket reported cancel already in progress (not final Canceled yet). */
+  let shiprocketCancelInProgress = false;
+
   if (config.provider === 'shiprocket' && preset) {
     try {
       const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
@@ -2146,7 +2419,7 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
       const errors: string[] = [];
 
       // 1) Cancel AWB if present
-      if (awb && !/^MOCK/i.test(awb)) {
+      if (awb && !/^MOCK/i.test(awb) && !/^CANCELLED-/i.test(awb)) {
         try {
           await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', {
             awbs: [awb],
@@ -2154,64 +2427,115 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
           awbCancelled = true;
           console.log(`[Logistics] Shiprocket AWB cancel ok for ${awb}`);
         } catch (awbCancelErr: any) {
-          errors.push(`AWB cancel: ${awbCancelErr.message}`);
-          console.warn(`[Logistics] Shiprocket AWB cancel failed for ${awb}:`, awbCancelErr.message);
+          if (isShiprocketAlreadyCancellingOrCancelled(awbCancelErr)) {
+            awbCancelled = true;
+            shiprocketCancelInProgress = /cancellation requested/i.test(String(awbCancelErr?.message || ''));
+            console.log(
+              `[Logistics] Shiprocket AWB already cancelling/cancelled for ${awb} — treating as success`
+            );
+          } else {
+            errors.push(`AWB cancel: ${awbCancelErr.message}`);
+            console.warn(`[Logistics] Shiprocket AWB cancel failed for ${awb}:`, awbCancelErr.message);
+          }
         }
       }
 
-      // 2) Always cancel Shiprocket ORDER (otherwise it stays NEW with no AWB)
+      // 2) Cancel Shiprocket ORDER (otherwise NEW drafts stay open)
       if (orderCancelId) {
         try {
           await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
             ids: [Number(orderCancelId) || orderCancelId],
           });
           orderCancelled = true;
+          // Fresh cancel requests land in Cancellation Requested until SR finalizes.
+          shiprocketCancelInProgress = true;
           console.log(`[Logistics] Shiprocket order cancel ok for id=${orderCancelId}`);
         } catch (orderCancelErr: any) {
-          errors.push(`Order cancel: ${orderCancelErr.message}`);
-          console.warn(
-            `[Logistics] Shiprocket order cancel failed for ${orderCancelId}:`,
-            orderCancelErr.message
-          );
+          // e.g. "Cannot cancel order when shipment status is Cancellation Requested"
+          if (isShiprocketAlreadyCancellingOrCancelled(orderCancelErr)) {
+            orderCancelled = true;
+            shiprocketCancelInProgress =
+              shiprocketCancelInProgress ||
+              /cancellation requested/i.test(String(orderCancelErr?.message || '')) ||
+              !/order is in cancelled state/i.test(String(orderCancelErr?.message || ''));
+            console.log(
+              `[Logistics] Shiprocket order ${orderCancelId} already cancelling/cancelled — treating as success`
+            );
+          } else {
+            errors.push(`Order cancel: ${orderCancelErr.message}`);
+            console.warn(
+              `[Logistics] Shiprocket order cancel failed for ${orderCancelId}:`,
+              orderCancelErr.message
+            );
+          }
         }
-      } else {
+      } else if (!awbCancelled) {
         errors.push('No Shiprocket order_id on shipment — SR order may remain NEW');
       }
 
       if (!orderCancelled && !awbCancelled) {
         throw new Error(errors.join('; ') || 'Shiprocket cancel failed');
       }
-      if (!orderCancelled) {
-        throw new Error(
-          `Shipment/AWB may be cleared, but Shiprocket order was not cancelled: ${errors.join('; ')}`
+      if (!orderCancelled && awbCancelled) {
+        shiprocketCancelInProgress = true;
+        console.warn(
+          `[Logistics] AWB/cancel-in-progress ok for ${awb}; order cancel note: ${errors.join('; ') || 'n/a'}`
         );
       }
     } catch (err: any) {
       console.error(`[Logistics] Cancel shipment failed:`, err.message);
       return { success: false, message: err.message || 'Cancel failed on carrier' };
     }
+  } else {
+    shiprocketCancelInProgress = true;
   }
 
-  // Clear AWB/tracking on the row so admin UI cannot keep showing a voided label.
-  // This cancels the *courier shipment* only — customer order stays ACTIVE so ops can rebook.
+  // Shiprocket cancel is async: stay on cancellation_requested (keep AWB) until sync/webhook
+  // confirms final Canceled. Jumping straight to cancelled hid the real SR status.
+  const localStatus = shiprocketCancelInProgress ? 'cancellation_requested' : 'cancelled';
+  const clearAwb = localStatus === 'cancelled';
+  const voidedAwb = clearAwb ? String(shipment.awb || trackingNumber || '').trim() : '';
+  let cancelMeta: string | undefined;
+  if (clearAwb && voidedAwb && !/^CANCELLED-/i.test(voidedAwb) && !/^MOCK/i.test(voidedAwb)) {
+    const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse) || {
+      provider: 'shiprocket' as const,
+      shipment_id: null,
+      order_id: null,
+    };
+    meta.voided_awb = voidedAwb;
+    cancelMeta = JSON.stringify(meta);
+  }
+
   await prisma.shipment.update({
     where: { id: shipment.id },
     data: {
-      status: 'cancelled',
-      awb: null,
-      trackingUrl: null,
-      labelUrl: null,
+      status: localStatus,
+      ...(cancelMeta ? { rawDelhiveryResponse: cancelMeta } : {}),
+      ...(clearAwb
+        ? {
+            awb: null,
+            trackingNumber: voidedAwb
+              ? `CANCELLED-${voidedAwb.slice(-8)}`
+              : `CANCELLED-${shipment.id.slice(-8)}`,
+            trackingUrl: null,
+            labelUrl: null,
+          }
+        : {}),
     },
   });
 
   if (shipment.orderId) {
-    // Reset delivery to pending — shipment cancel is not an order cancel.
-    // Customer Order History must stay Active until admin cancels the order itself.
+    // Shipment cancel is not an order cancel — customer order stays ACTIVE.
     await prisma.order.update({
       where: { id: shipment.orderId },
-      data: { 
-        deliveryStatus: 'pending',
-        delhivery_awb: null,
+      data: {
+        deliveryStatus: localStatus,
+        // Keep the exact Shiprocket-facing phrase for admin display.
+        tracking_status:
+          localStatus === 'cancellation_requested'
+            ? 'Cancellation Requested'
+            : 'Canceled',
+        ...(clearAwb ? { delhivery_awb: null } : {}),
       },
     }).catch(() => {});
 
@@ -2227,12 +2551,21 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     if (wsWhere.length) {
       await prisma.webStoreOrder.updateMany({
         where: { OR: wsWhere },
-        data: { deliveryStatus: 'pending', trackingNumber: null, trackingUrl: null },
+        data: {
+          deliveryStatus: localStatus === 'cancelled' ? 'pending' : localStatus,
+          ...(clearAwb ? { trackingNumber: null, trackingUrl: null } : {}),
+        },
       }).catch(() => {});
     }
   }
 
-  return { success: true, message: 'Shipment cancelled successfully' };
+  return {
+    success: true,
+    message:
+      localStatus === 'cancellation_requested'
+        ? 'Cancellation requested in Shiprocket — awaiting courier void'
+        : 'Shipment cancelled successfully',
+  };
 }
 
 /**

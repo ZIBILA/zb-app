@@ -37,6 +37,7 @@ interface ShiprocketOrder {
   status: string;
   paymentMethod: string | null;
   deliveryStatus?: string | null;
+  tracking_status?: string | null;
   delhivery_awb?: string | null;
   shipments?: Array<{
     type?: string | null;
@@ -76,22 +77,35 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   const [selectedCourierId, setSelectedCourierId] = useState<number | null>(null);
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [step, setStep] = useState<FlowStep>('idle');
+  // Optimistic: hide booked UI immediately after a successful cancel, before props refresh.
+  const [locallyCancelled, setLocallyCancelled] = useState(false);
 
   // Never fall back to a cancelled row — that kept showing the old AWB after cancel.
   // Forward shipment only: never a cancelled one or a return/exchange pickup.
   const activeShipment = pickActiveOutboundShipment(order.shipments || []);
   const isShipmentCancelled =
-    !activeShipment &&
-    (order.deliveryStatus === 'cancelled' ||
-      Boolean(
-        order.shipments?.some(
-          (s) => !isReverseShipmentType(s.type) && (s.status || '').toLowerCase().startsWith('cancel')
-        )
-      ));
+    locallyCancelled ||
+    (!activeShipment &&
+      (order.deliveryStatus === 'cancelled' ||
+        Boolean(
+          order.shipments?.some((s) => {
+            if (isReverseShipmentType(s.type)) return false;
+            return normalizeCarrierStatus(s.status) === 'cancelled';
+          })
+        )));
   const shipment = isShipmentCancelled ? null : activeShipment;
   const awb = shipment?.awb || (!isShipmentCancelled ? order.delhivery_awb : null) || null;
   const trackingNumber = shipment?.trackingNumber || null;
-  const status = isShipmentCancelled ? 'cancelled' : (shipment?.status || order.deliveryStatus || 'pending');
+  const status = isShipmentCancelled
+    ? 'cancelled'
+    : (shipment?.status || order.deliveryStatus || 'pending');
+  // Prefer exact Shiprocket phrase from last sync/webhook when present.
+  const statusLabel =
+    order.tracking_status?.trim() ||
+    (isShipmentCancelled ? 'Canceled' : String(status).replace(/_/g, ' '));
+  const isCancellationRequested =
+    normalizeCarrierStatus(status) === 'cancellation_requested' ||
+    /cancellation\s*requested/i.test(order.tracking_status || '');
   const trackingUrl =
     shipment?.trackingUrl || (awb ? `https://shiprocket.co/tracking/${awb}` : null);
 
@@ -179,41 +193,27 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to book shipment');
+      setLocallyCancelled(false);
       setMessage(`AWB ${data.awb} assigned via ${data.courier}`);
       setStep('booked');
       setReship(false);
       onRefresh();
     } catch (err: any) {
       const raw = String(err.message || '');
-      if (/awb assign failed|could not assign an awb|try a different courier/i.test(raw)) {
+      if (/SHIPROCKET_CONSIGNEE_REJECT|ER0005|suspicious order\/consignee|still rejected this consignee/i.test(raw)) {
         setError(
-          raw.includes('Try a different courier')
+          raw.replace(/^SHIPROCKET_CONSIGNEE_REJECT:\s*/i, '') ||
+            'Courier rejected consignee. Fix phone/name/address or try another courier.'
+        );
+      } else if (/awb assign failed|could not assign an awb|try a different courier/i.test(raw)) {
+        setError(
+          raw.includes('Try a different courier') || raw.includes('(')
             ? raw
             : 'This courier could not assign an AWB. Choose another courier/provider and try again — the shipment is already saved.'
         );
       } else {
         setError(raw || 'Failed to book shipment');
       }
-    } finally {
-      setLoading(null);
-    }
-  };
-
-  const handlePickup = async () => {
-    setLoading('pickup');
-    setError(null);
-    try {
-      const res = await fetch('/api/logistics/generate-pickup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: order.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to schedule pickup');
-      setMessage(data.message || 'Pickup scheduled');
-      onRefresh();
-    } catch (err: any) {
-      setError(err.message || 'Request failed');
     } finally {
       setLoading(null);
     }
@@ -277,10 +277,16 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
         body: JSON.stringify({ awb: awb || trackingNumber }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || data.message || 'Failed to cancel');
-      setMessage('Shipment cancelled — courier AWB has been voided.');
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || data.message || 'Failed to cancel');
+      }
       setShowCancelModal(false);
-      onRefresh();
+      setMessage(
+        'Cancellation requested in Shiprocket — status will move to Cancelled when the courier voids the AWB.'
+      );
+      // Stay on the booked panel while SR is Cancellation Requested (AWB still exists).
+      setLocallyCancelled(false);
+      await Promise.resolve(onRefresh());
     } catch (err: any) {
       setError(err.message || 'Request failed');
     } finally {
@@ -298,7 +304,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   };
 
   // ─── AWB Already Assigned ──────────────────────────────────────────────────
-  if (awb && !reship) {
+  if (awb && !reship && !locallyCancelled) {
     return (
       <div className="space-y-6">
         <Alerts error={error} message={message} onClearError={() => setError(null)} />
@@ -337,7 +343,7 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
           <div className="p-6 rounded-[24px] bg-foreground/[0.03] border border-foreground/5 space-y-6">
             <div className="space-y-2">
               <p className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest">Status</p>
-              <StatusBadge status={status} />
+              <StatusBadge status={statusLabel} />
             </div>
             <div className="space-y-2">
               <p className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest">AWB Number</p>
@@ -352,11 +358,17 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
                 </button>
               </div>
             </div>
-            {pickupDone && (
-              <p className="text-[11px] text-emerald-400/90 font-medium">
-                Pickup has been requested in Shiprocket.
+            {isCancellationRequested ? (
+              <p className="text-[11px] font-medium text-rose-400/90">
+                Cancellation requested in Shiprocket — AWB void is in progress. Sync will move this to Cancelled when finished.
               </p>
-            )}
+            ) : !isRto ? (
+              <p className={`text-[11px] font-medium ${pickupDone ? 'text-emerald-400/90' : 'text-foreground/50'}`}>
+                {pickupDone
+                  ? 'Pickup queued at your Shiprocket primary address.'
+                  : 'Pickup is requested automatically after AWB assign (Shiprocket primary pickup location).'}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-3 justify-center">
@@ -378,21 +390,6 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
               <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
               Download Invoice
             </a>
-            {!pickupDone && !isRto && (
-              <div className="space-y-2">
-                <button
-                  onClick={handlePickup}
-                  disabled={blocked || loading !== null}
-                  className="w-full flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
-                >
-                  {loading === 'pickup' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
-                  Generate Pickup
-                </button>
-                <p className="text-[11px] text-foreground/40 px-1 leading-relaxed">
-                  AWB only reserves the waybill. Click this when the parcel is packed so the courier schedules a warehouse pickup.
-                </p>
-              </div>
-            )}
             <button
               onClick={handleSync}
               disabled={loading !== null}
@@ -530,9 +527,9 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             Shiprocket shipment {trackingNumber} — AWB pending
           </p>
           <p className="text-[12px] text-foreground/60">
-            Order already exists in Shiprocket. Re-enter dimensions, pick a courier that fits the weight
-            (avoid Surface 5kg if the parcel is heavier), and book again to resume AWB assign — do not
-            use the old Delhivery panel.
+            A draft Shiprocket shipment is waiting for AWB. Re-enter dimensions and pick a courier to
+            resume. If that draft was cancelled in Shiprocket, booking creates a fresh order (AWB
+            cannot be assigned on a cancelled Shiprocket order).
           </p>
         </div>
       )}

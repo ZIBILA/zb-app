@@ -172,6 +172,18 @@ export async function applyShipmentStatusUpdate(
     isReverse,
   };
 
+  // Always persist the exact carrier phrase for admin display, even when we do not
+  // advance Shipment.status (e.g. stale scan). UI prefers Order.tracking_status.
+  const rawPhrase = String(update.rawStatus || '').trim();
+  if (rawPhrase && shipment.orderId) {
+    await prisma.order
+      .update({
+        where: { id: shipment.orderId },
+        data: { tracking_status: rawPhrase },
+      })
+      .catch(() => {});
+  }
+
   if (!canAdvanceCarrierStatus(shipment.status, next)) {
     await prisma.shipment.update({
       where: { id: shipment.id },
@@ -184,6 +196,24 @@ export async function applyShipmentStatusUpdate(
     return base;
   }
 
+  const clearAwbOnFinalCancel = next === 'cancelled';
+  const voidedAwb = clearAwbOnFinalCancel ? String(shipment.awb || '').trim() || null : null;
+  let nextMeta: string | undefined;
+  if (clearAwbOnFinalCancel && voidedAwb) {
+    try {
+      const { parseShiprocketMeta } = await import('@/lib/services/logistics');
+      const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse) || {
+        provider: 'shiprocket' as const,
+        shipment_id: null,
+        order_id: null,
+      };
+      meta.voided_awb = voidedAwb;
+      nextMeta = JSON.stringify(meta);
+    } catch {
+      nextMeta = undefined;
+    }
+  }
+
   await prisma.shipment.update({
     where: { id: shipment.id },
     data: {
@@ -191,7 +221,18 @@ export async function applyShipmentStatusUpdate(
       events: JSON.stringify(events),
       ...(update.location ? { currentLocation: update.location } : {}),
       ...(eta ? { estimatedDelivery: eta } : {}),
-      ...(update.trackingUrl ? { trackingUrl: update.trackingUrl } : {}),
+      ...(update.trackingUrl && !clearAwbOnFinalCancel ? { trackingUrl: update.trackingUrl } : {}),
+      ...(nextMeta ? { rawDelhiveryResponse: nextMeta } : {}),
+      ...(clearAwbOnFinalCancel
+        ? {
+            awb: null,
+            trackingNumber: voidedAwb
+              ? `CANCELLED-${voidedAwb.slice(-8)}`
+              : `CANCELLED-${shipment.id.slice(-8)}`,
+            trackingUrl: null,
+            labelUrl: null,
+          }
+        : {}),
     },
   });
 
@@ -219,13 +260,14 @@ export async function applyShipmentStatusUpdate(
 
   // A stale/cancelled earlier shipment must not rewrite the order once a newer
   // active shipment exists (e.g. after cancel + re-ship on another courier).
-  if (next !== 'cancelled') {
+  const inactiveStatuses = ['cancelled', 'canceled', 'cancellation_requested'];
+  if (next !== 'cancelled' && next !== 'cancellation_requested') {
     const newerActive = await prisma.shipment.findFirst({
       where: {
         orderId: shipment.orderId,
         id: { not: shipment.id },
         createdAt: { gt: shipment.createdAt },
-        status: { notIn: ['cancelled', 'canceled'] },
+        status: { notIn: inactiveStatuses },
         NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
       },
       select: { id: true },
@@ -236,7 +278,7 @@ export async function applyShipmentStatusUpdate(
       where: {
         orderId: shipment.orderId,
         id: { not: shipment.id },
-        status: { notIn: ['cancelled', 'canceled'] },
+        status: { notIn: inactiveStatuses },
         NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
       },
       select: { id: true },
@@ -250,6 +292,7 @@ export async function applyShipmentStatusUpdate(
     tracking_status: update.rawStatus,
   };
   if (deliveryStatus) orderData.deliveryStatus = deliveryStatus;
+  if (clearAwbOnFinalCancel) orderData.delhivery_awb = null;
 
   if (isRtoCarrierStatus(next)) {
     orderData.tags = addTag(order.tags, 'RTO');
@@ -340,17 +383,21 @@ export async function refreshShipmentFromCarrier(shipmentId: string): Promise<{
   const shipment = await prisma.shipment.findUnique({ where: { id: shipmentId } });
   if (!shipment) return { provider: null, tracking: null, result: null };
 
-  const ref = shipment.awb || shipment.trackingNumber;
-  if (!ref) return { provider: null, tracking: null, result: null };
-
-  // A Shiprocket booking without an AWB only has a Shiprocket order id — not trackable.
-  if (!shipment.awb && parseShiprocketMeta(shipment.rawDelhiveryResponse)) {
-    return { provider: 'shiprocket', tracking: null, result: null };
+  const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+  const voidedAwb = meta?.voided_awb ? String(meta.voided_awb).trim() : '';
+  const ref = String(shipment.awb || voidedAwb || '').trim();
+  // AWB-less Shiprocket drafts (order id only) are not trackable — unless we preserved voided_awb.
+  if (!ref) {
+    if (meta && !voidedAwb) return { provider: 'shiprocket', tracking: null, result: null };
+    const fallback = String(shipment.trackingNumber || '').trim();
+    if (!fallback || /^CANCELLED-/i.test(fallback)) {
+      return { provider: null, tracking: null, result: null };
+    }
   }
 
   try {
     const provider = await resolveShipmentProvider(shipment);
-    const tracking = await getTrackingStatus(ref);
+    const tracking = await getTrackingStatus(ref || String(shipment.trackingNumber));
     if (!tracking || tracking.status === 'unknown') {
       return { provider, tracking, result: null };
     }

@@ -18,6 +18,7 @@ export type CarrierStatus =
   | 'delivered'
   | 'rto' // RTO initiated / in transit back to seller
   | 'rto_delivered' // RTO shipment received back at origin
+  | 'cancellation_requested' // Shiprocket accepted cancel; AWB void in progress
   | 'cancelled'
   | 'lost'
   | 'unknown';
@@ -89,8 +90,9 @@ export function normalizeCarrierStatus(raw: unknown): CarrierStatus {
   if (s === 'returned' || s.includes('reached back at seller')) return 'rto';
 
   if (s.includes('cancel')) {
-    // "Cancellation Requested" is not final.
-    return s.includes('request') ? 'unknown' : 'cancelled';
+    // Shiprocket order status "Cancellation Requested" (filter id 18) vs final "Canceled".
+    if (s.includes('request')) return 'cancellation_requested';
+    return 'cancelled';
   }
   if (/\b(lost|destroyed|damaged|disposed)\b/.test(s)) return 'lost';
 
@@ -128,6 +130,7 @@ const CANONICAL_SET = new Set<string>([
   'delivered',
   'rto',
   'rto_delivered',
+  'cancellation_requested',
   'cancelled',
   'lost',
 ]);
@@ -153,6 +156,7 @@ const RANK: Record<CarrierStatus, number> = {
   rto_delivered: 7,
   delivered: 8,
   lost: 8,
+  cancellation_requested: 8,
   cancelled: 9,
 };
 
@@ -165,8 +169,19 @@ export function canAdvanceCarrierStatus(current: unknown, next: CarrierStatus): 
   const cur = normalizeCarrierStatus(current);
   if (cur === 'unknown') return true;
   if (cur === next) return true;
+  // Cancellation Requested may only move to Cancelled (or stay).
+  if (cur === 'cancellation_requested') {
+    return next === 'cancelled';
+  }
+  // Allow correcting an overshoot: we used to mark Cancelled while SR was still
+  // Cancellation Requested — let sync/webhooks pull the true intermediate state back.
+  if (cur === 'cancelled' && next === 'cancellation_requested') {
+    return true;
+  }
   if (TERMINAL.has(cur)) return false;
-  if (next === 'cancelled' || next === 'lost' || next === 'rto') return true;
+  if (next === 'cancelled' || next === 'cancellation_requested' || next === 'lost' || next === 'rto') {
+    return true;
+  }
   return RANK[next] >= RANK[cur];
 }
 
@@ -191,6 +206,8 @@ export function toOrderDeliveryStatus(status: CarrierStatus): string | null {
       return 'rto';
     case 'rto_delivered':
       return 'returned_to_origin';
+    case 'cancellation_requested':
+      return 'cancellation_requested';
     case 'cancelled':
       return 'cancelled';
     case 'lost':
@@ -211,6 +228,7 @@ const CARRIER_STATUS_LABELS: Record<CarrierStatus, string> = {
   delivered: 'Delivered',
   rto: 'RTO In Progress',
   rto_delivered: 'RTO Received',
+  cancellation_requested: 'Cancellation Requested',
   cancelled: 'Cancelled',
   lost: 'Lost / Damaged',
   unknown: 'Processing',
@@ -348,9 +366,15 @@ function createdMs(s: ShipmentLike): number {
  * non-cancelled shipment (preferring one that already has an AWB).
  * Reverse (return/exchange pickup) and cancelled shipments are never chosen.
  */
+function isFullyCancelledOutboundStatus(status: unknown): boolean {
+  return normalizeCarrierStatus(status) === 'cancelled';
+}
+
 export function pickActiveOutboundShipment<T extends ShipmentLike>(shipments: T[] | null | undefined): T | null {
+  // Keep Cancellation Requested visible (AWB still exists on Shiprocket).
+  // Only drop fully Cancelled rows from the live booking panel.
   const active = (shipments || [])
-    .filter((s) => !isReverseShipmentType(s.type) && normalizeCarrierStatus(s.status) !== 'cancelled')
+    .filter((s) => !isReverseShipmentType(s.type) && !isFullyCancelledOutboundStatus(s.status))
     .sort((a, b) => createdMs(b) - createdMs(a));
   // A parcel that already came back (RTO) or was lost is superseded by any newer booking.
   const live = active.filter((s) => {
