@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Poppins } from "next/font/google";
 import localFont from "next/font/local";
 import Script from "next/script";
 import { Providers } from "./providers";
@@ -27,15 +26,24 @@ const geistSans = localFont({
 /* ISR/SSG enabled — force-dynamic removed from root layout.
    Only truly dynamic pages (checkout, cart, search) set their own dynamic mode. */
 
-const inter = Inter({
-  subsets: ["latin"],
+// Self-hosted — avoids Google Fonts network fetch warnings during `next build`
+const inter = localFont({
+  src: [
+    { path: "./fonts/inter-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/inter-latin-700.woff2", weight: "700", style: "normal" },
+  ],
   variable: "--font-inter",
   display: "swap",
 });
 
-const poppins = Poppins({
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+const poppins = localFont({
+  src: [
+    { path: "./fonts/poppins-latin-300.woff2", weight: "300", style: "normal" },
+    { path: "./fonts/poppins-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/poppins-latin-500.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/poppins-latin-600.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/poppins-latin-700.woff2", weight: "700", style: "normal" },
+  ],
   variable: "--font-poppins",
   display: "swap",
 });

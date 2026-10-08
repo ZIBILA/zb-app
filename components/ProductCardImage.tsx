@@ -368,7 +368,7 @@ export default function ProductCardImage({
               blurDataURL={isFallback ? undefined : blurUrl(firstSrc)}
               onError={handleImageError}
               onLoad={onFirstLoad}
-              className={`object-cover transition-all duration-[800ms] ease-out ${!isSoldOut ? "group-hover:scale-[1.03]" : ""}`}
+              className={`object-cover transition-all duration-800 ease-out ${!isSoldOut ? "group-hover:scale-[1.03]" : ""}`}
               style={
                 isSoldOut
                   ? { filter: "grayscale(0.4)" }

@@ -116,7 +116,7 @@ export default function CollectionProductGrid({ products, viewMode, selectedSize
                   alt={product.title}
                   fill
                   sizes="100vw"
-                  className={`object-cover transition-transform duration-[800ms] ease-out ${!isSoldOut ? "group-hover:scale-[1.02]" : ""}`}
+                  className={`object-cover transition-transform duration-800 ease-out ${!isSoldOut ? "group-hover:scale-[1.02]" : ""}`}
                   style={isSoldOut ? { filter: "grayscale(0.4)" } : image === "/zb-logo-220px.png" ? { objectFit: "contain", padding: "25%", opacity: 0.3 } : {}}
                   onError={handleImageError}
                 />

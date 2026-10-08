@@ -20,7 +20,18 @@ const config: Config = {
           '"Helvetica Neue"',
           'Arial',
           'sans-serif'
-        ]
+        ],
+        inter: ['var(--font-inter)', 'system-ui', 'sans-serif'],
+        poppins: ['var(--font-poppins)', 'system-ui', 'sans-serif'],
+      },
+      transitionDuration: {
+        800: '800ms',
+        1200: '1200ms',
+        2000: '2000ms',
+        4000: '4000ms',
+      },
+      transitionTimingFunction: {
+        'apple': 'cubic-bezier(0.16, 1, 0.3, 1)',
       },
       colors: {
         border: 'hsl(var(--border))',

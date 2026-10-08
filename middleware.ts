@@ -187,12 +187,12 @@ export default withAuth(
       ? (req.nextUrl.searchParams.get('ref') || req.nextUrl.searchParams.get('aff'))?.trim()
       : null;
 
-    const attachStorefrontCookies = (res: NextResponse) => {
+    const attachStorefrontCookies = async (res: NextResponse) => {
       attachClientIpCookie(res);
       if (refParam) {
         try {
-          const { signAffiliateCookie, getAffiliateCookieOptions } = require('@/lib/affiliate/cookie');
-          const token = signAffiliateCookie({
+          const { signAffiliateCookie, getAffiliateCookieOptions } = await import('@/lib/affiliate/cookie');
+          const token = await signAffiliateCookie({
             code: refParam.toUpperCase(),
             ts: Date.now(),
           });
@@ -207,7 +207,7 @@ export default withAuth(
 
     // Allow public API routes for the React Native app and Zica AI
     if (pathname.startsWith('/api/app/') || pathname.startsWith('/api/zica-ai')) {
-      return attachStorefrontCookies(NextResponse.next());
+      return await attachStorefrontCookies(NextResponse.next());
     }
 
     // CSRF for admin mutations only — never storefront checkout/cart/orders.
@@ -432,7 +432,7 @@ export default withAuth(
       }
     }
 
-    return attachStorefrontCookies(NextResponse.next());
+    return await attachStorefrontCookies(NextResponse.next());
   },
   {
     callbacks: {

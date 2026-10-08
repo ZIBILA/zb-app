@@ -12,6 +12,9 @@ export { API_VERSION };
  * Production DigitalOcean must leave those unset and keep using the legacy static token.
  */
 export function shouldAutoRefreshShopifyAdminToken(): boolean {
+  // Never mint rotating tokens during `next build` static generation —
+  // cache: 'no-store' fetch throws DYNAMIC_SERVER_USAGE and floods build logs.
+  if (process.env.NEXT_PHASE === 'phase-production-build') return false;
   if (process.env.SHOPIFY_AUTO_REFRESH_TOKEN === 'true') return true;
   if (String(process.env.SHOPIFY_ENV || '').toLowerCase() === 'render') return true;
   return String(process.env.NODE_ENV) === 'render';

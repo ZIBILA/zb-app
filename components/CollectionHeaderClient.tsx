@@ -132,7 +132,7 @@ export default function CollectionHeaderClient({
                       src={col.image.src}
                       alt={col.title}
                       fill
-                      className={`object-cover transition-transform duration-[2000ms] ease-out ${isActive ? "scale-105" : "scale-100"}`}
+                      className={`object-cover transition-transform duration-2000 ease-out ${isActive ? "scale-105" : "scale-100"}`}
                       sizes="(max-width: 768px) 80vw, 360px"
                       priority={isActive}
                     />
