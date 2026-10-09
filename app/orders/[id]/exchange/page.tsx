@@ -132,7 +132,10 @@ export default function ExchangeRequestPage() {
 
   const [settlementPreference, setSettlementPreference] = useState<"PREPAID_NOW" | "COD_ON_DELIVERY">("PREPAID_NOW");
 
-  const submitExchangeRequest = async (paymentId: string | null = null, paymentMethod: string = 'cod') => {
+  const submitExchangeRequest = async (
+    razorpayResponse: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string } | null = null,
+    paymentMethod: string = 'cod'
+  ) => {
     const exchangeItemsPayload = Array.from(selectedItems).map(itemId => {
       const item = order.items.find((i: any) => i.id === itemId);
       const rep = replacements[itemId];
@@ -151,9 +154,11 @@ export default function ExchangeRequestPage() {
         orderId: order.id,
         exchangeItems: exchangeItemsPayload,
         settlementPreference,
+        // The server recalculates the price difference and verifies this payment with Razorpay.
         paymentDetails: {
-          priceDifference,
-          paymentId,
+          razorpayPaymentId: razorpayResponse?.razorpay_payment_id || null,
+          razorpayOrderId: razorpayResponse?.razorpay_order_id || null,
+          razorpaySignature: razorpayResponse?.razorpay_signature || null,
           paymentMethod: settlementPreference === 'COD_ON_DELIVERY' ? 'cod' : 'razorpay'
         }
       })
@@ -231,7 +236,14 @@ export default function ExchangeRequestPage() {
           order_id: orderData.id,
           handler: async function (response: any) {
             try {
-              await submitExchangeRequest(response.razorpay_payment_id, "razorpay");
+              await submitExchangeRequest(
+                {
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_signature: response.razorpay_signature,
+                },
+                "razorpay"
+              );
             } catch (err: any) {
               setError(err.message || "Exchange submission failed. Contact support.");
               setIsSubmitting(false);

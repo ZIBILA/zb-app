@@ -1,44 +1,17 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "../../auth/[...nextauth]/options";
 import prisma from "@/lib/db";
 import { allocateLinkedId } from "@/lib/linkedIds";
-import { resolveRefundMethod } from "@/lib/returnPolicy";
+import { resolveRefundMethod, requestEligibilityError } from "@/lib/returnPolicy";
+import { resolveRequestCustomer } from "@/lib/requestAuth";
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    let resolvedUserId = null;
-
-    if (session && session.user) {
-      const whereClause: any = { OR: [] };
-      if (session.user.email) {
-        whereClause.OR.push({ email: session.user.email });
-      }
-      const sessionUserId = (session.user as any).id;
-      if (sessionUserId) {
-        whereClause.OR.push({ id: sessionUserId });
-      }
-
-      if (whereClause.OR.length > 0) {
-        const customer = await prisma.customer.findFirst({
-          where: whereClause
-        });
-        if (customer) {
-          resolvedUserId = customer.id;
-        }
-      }
-    }
+    // Identity comes from the verified app JWT / web session only — never from the body.
+    const authCustomer = await resolveRequestCustomer(req);
+    const resolvedUserId: string | null = authCustomer?.id ?? null;
 
     const body = await req.json();
-    const { orderId, userId: bodyUserId, returnItems, refundMethod } = body;
-
-    if (!resolvedUserId) {
-      const authHeader = req.headers.get('authorization');
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        resolvedUserId = bodyUserId;
-      }
-    }
+    const { orderId, returnItems, refundMethod } = body;
 
     if (!resolvedUserId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -65,29 +38,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized: Order does not belong to user" }, { status: 403 });
     }
 
-    const isDelivered = String(order.status || '').toLowerCase() === "delivered" ||
-                        String(order.deliveryStatus || '').toLowerCase() === "delivered";
-    if (!isDelivered) {
-      return NextResponse.json({ error: "Returns are only available for delivered orders" }, { status: 400 });
-    }
-
-    // 15-Day Delivery Window Enforcement
-    const deliveredTimestamp = order.deliveredAt || order.createdAt;
-    const diffDays = Math.ceil(Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays > 15) {
-      return NextResponse.json({ error: "The 15-day return/exchange window for this order has expired." }, { status: 400 });
-    }
-
-    // Mutual Exclusivity Check: prevent duplicate or conflicting active requests
-    const activeReturn = order.returnRequests?.find(
-      (r: any) => r.status !== 'cancelled' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))
-    );
-    const activeExchange = order.exchangeRequests?.find((e: any) => e.status !== 'cancelled');
-
-    if (activeReturn || activeExchange) {
-      return NextResponse.json({
-        error: "An active return or exchange request already exists for this order."
-      }, { status: 400 });
+    // Delivered + inside the window + no other active request (shared with mobile + exchange create).
+    const eligibilityError = requestEligibilityError(order, 'return');
+    if (eligibilityError) {
+      return NextResponse.json({ error: eligibilityError }, { status: 400 });
     }
 
     // COD orders can only be refunded as store credit (policy); prepaid may choose.
@@ -118,13 +72,18 @@ export async function POST(req: Request) {
         }, { status: 400 });
       }
 
-      const itemRefund = orderItem.price * returnItem.quantity;
+      // Never trust the client quantity: 1..ordered quantity, whole units only.
+      const orderedQty = Math.max(1, Math.floor(Number(orderItem.quantity) || 1));
+      const quantity = Math.min(orderedQty, Math.max(1, Math.floor(Number(returnItem.quantity) || 1)));
+
+      const itemRefund = orderItem.price * quantity;
       estimatedRefund += itemRefund;
 
       itemsToReturn.push({
         productId,
         orderId: order.id,
         customerId: resolvedUserId,
+        quantity,
         sku: orderItem.sku,
         reason: returnItem.reason,
         status: "REQUESTED",
@@ -152,6 +111,7 @@ export async function POST(req: Request) {
             productId: item.productId,
             customerId: item.customerId,
             orderId: item.orderId,
+            quantity: item.quantity,
             sku: item.sku,
             reason: item.comments ? `${item.reason} - ${item.comments}` : item.reason,
             status: item.status,

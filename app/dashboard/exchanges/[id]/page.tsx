@@ -182,7 +182,12 @@ export default function ExchangeDetailPage() {
         body: JSON.stringify({ reason: "Admin rejected" }),
       });
       if (res.ok) {
-        showToast("Exchange rejected");
+        const json = await res.json().catch(() => ({}));
+        showToast(
+          json?.refund?.amount
+            ? `Exchange rejected — ₹${json.refund.amount} refunded to the customer's original payment`
+            : "Exchange rejected"
+        );
         fetchDetail();
       } else {
         const err = await res.json();
@@ -805,7 +810,30 @@ export default function ExchangeDetailPage() {
                   Mark as Received & QC
                 </button>
               )}
-              {(currentStatus === "received" || currentStatus === "qc_passed") && (
+              {currentStatus === "received" && (
+                <>
+                  <p className="text-[9px] text-amber-500 leading-relaxed">
+                    The returned parcel did not pass QC, so no replacement can be created. Reject the exchange to refund any amount the customer paid.
+                  </p>
+                  <button
+                    onClick={handleReject}
+                    disabled={!!actionLoading}
+                    className="w-full py-2.5 border border-rose-500/20 text-rose-500 rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50 hover:bg-rose-500/5"
+                  >
+                    {actionLoading === "reject" ? <Loader2 className="w-3 h-3 animate-spin" /> : "Reject Exchange"}
+                  </button>
+                </>
+              )}
+              {isRejected && ["paid", "refund_pending"].includes(String(data?.paymentStatus || "").toLowerCase()) && (
+                <button
+                  onClick={handleReject}
+                  disabled={!!actionLoading}
+                  className="w-full py-2.5 bg-rose-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50"
+                >
+                  {actionLoading === "reject" ? <Loader2 className="w-3 h-3 animate-spin" /> : "Retry Payment Refund"}
+                </button>
+              )}
+              {currentStatus === "qc_passed" && (
                 <button
                   onClick={handleCreateShopifyOrder}
                   disabled={!!actionLoading}

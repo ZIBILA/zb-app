@@ -51,6 +51,60 @@ export function resolveRefundMethod(
   return r === 'store_credit' || r === 'storecredit' || r === 'store-credit' ? 'store_credit' : 'original_method';
 }
 
+// ─── Request eligibility (shared by web, mobile and admin create paths) ────
+
+/** Days after delivery during which a return / exchange can be requested. */
+export const RETURN_WINDOW_DAYS = 15;
+
+type EligibilityOrder = {
+  status?: string | null;
+  deliveryStatus?: string | null;
+  deliveredAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  returnRequests?: Array<{ status?: string | null; reason?: string | null }> | null;
+  exchangeRequests?: Array<{ status?: string | null }> | null;
+};
+
+/**
+ * Single source of truth for "can this order get a new return / exchange request?":
+ * delivered, inside the window, and no other active request.
+ * Returns an error message, or null when the order is eligible.
+ */
+export function requestEligibilityError(
+  order: EligibilityOrder,
+  kind: 'return' | 'exchange'
+): string | null {
+  const delivered =
+    String(order.status || '').toLowerCase() === 'delivered' ||
+    String(order.deliveryStatus || '').toLowerCase() === 'delivered';
+  if (!delivered) {
+    return kind === 'return'
+      ? 'Returns are only available for delivered orders'
+      : 'Exchanges are only available for delivered orders';
+  }
+
+  const deliveredTimestamp = order.deliveredAt || order.createdAt;
+  if (deliveredTimestamp) {
+    const diffDays = Math.ceil(
+      Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (diffDays > RETURN_WINDOW_DAYS) {
+      return `The ${RETURN_WINDOW_DAYS}-day return/exchange window for this order has expired.`;
+    }
+  }
+
+  const activeReturn = order.returnRequests?.find(
+    (r) => String(r.status || '').toLowerCase() !== 'cancelled' && !String(r.reason || '').includes('EXCHANGE_RETURN')
+  );
+  const activeExchange = order.exchangeRequests?.find(
+    (e) => String(e.status || '').toLowerCase() !== 'cancelled'
+  );
+  if (activeReturn || activeExchange) {
+    return 'An active return or exchange request already exists for this order.';
+  }
+  return null;
+}
+
 // ─── Reverse (return / exchange pickup) stages ─────────────────────────────
 
 export type ReverseStage =

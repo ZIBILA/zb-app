@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { orderBaseNumber } from '@/lib/linkedIds';
 import { buildRequestSummaries, isInternalExchangeReturn } from '@/lib/services/requestEnrichment';
+import { resolveRequestCustomer, resolveCustomerIdentityIds } from '@/lib/requestAuth';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,34 +26,17 @@ export async function OPTIONS() {
  */
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
-    const customerId = url.searchParams.get('customerId')?.trim();
-    const phone = url.searchParams.get('phone')?.trim();
-    const email = url.searchParams.get('email')?.trim();
-
-    if (!customerId && !phone && !email) {
+    // Identity comes from the verified token only. The customerId / phone / email query params
+    // are ignored — they used to let anyone read another customer's returns.
+    const authCustomer = await resolveRequestCustomer(req);
+    if (!authCustomer) {
       return NextResponse.json(
-        { returns: [], error: 'customerId, phone or email query parameter required' },
-        { status: 400, headers: corsHeaders }
+        { returns: [], error: 'Unauthorized' },
+        { status: 401, headers: corsHeaders }
       );
     }
 
-    // Resolve customer IDs
-    const customerWhere: any = { OR: [] };
-    if (customerId) customerWhere.OR.push({ id: customerId });
-    if (phone) customerWhere.OR.push({ phone });
-    if (email) customerWhere.OR.push({ email });
-
-    const customers = await prisma.customer.findMany({
-      where: customerWhere,
-      select: { id: true },
-    });
-
-    if (customers.length === 0) {
-      return NextResponse.json({ returns: [] }, { headers: corsHeaders });
-    }
-
-    const customerIds = customers.map((c: { id: string }) => c.id);
+    const customerIds = await resolveCustomerIdentityIds(authCustomer);
 
     // Grouped requests (R_… ids) — the same records the website and admin work with.
     const allRequests = await prisma.returnRequest.findMany({

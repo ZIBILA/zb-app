@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { enrichExchangeItem, enrichItemsWithSize } from '@/lib/enrichSize';
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -155,6 +156,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
  */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
     const body = await req.json();
     const { status, trackingNumber, qcNotes, qcStatus } = body;
     const exchangeId = params.id;
@@ -178,6 +180,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     // State-machine guards: these steps have dedicated endpoints that perform the real work
     // (receipt confirmation, replacement order creation) and must not be skipped.
     const currentStatus = String(exchangeRequest.status || '').toLowerCase();
+    if (status === 'rejected' || status === 'approved') {
+      return NextResponse.json({ error: `Use the dedicated ${status === 'rejected' ? 'Reject (refunds any online payment)' : 'Approve'} action.` }, { status: 400 });
+    }
     if (['received', 'qc_passed'].includes(status)) {
       return NextResponse.json({ error: 'Use "Mark as Received & QC" (receive endpoint) to confirm the parcel.' }, { status: 400 });
     }
@@ -237,6 +242,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     return NextResponse.json({ success: true, exchangeRequest: updatedRequest }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Admin Exchange API Error:', error);
     return NextResponse.json({ error: 'Failed to update exchange request' }, { status: 500 });
   }

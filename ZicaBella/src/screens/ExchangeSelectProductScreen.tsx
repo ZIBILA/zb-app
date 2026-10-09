@@ -149,25 +149,25 @@ export default function ExchangeSelectProductScreen() {
     }
 
     if (priceDifference > 0) {
+      // Online payment for the difference is verified server-side against Razorpay and is
+      // currently only available on the website. In the app the difference is paid on delivery.
       Alert.alert(
-        'Payment Option',
-        `Price difference: ${formatPrice(priceDifference)}. How would you like to settle the difference?`,
+        'Price difference',
+        `The replacement costs ${formatPrice(priceDifference)} more. You can pay this difference on delivery (COD). To pay online now, request this exchange on our website.`,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Pay on Delivery (COD)', onPress: () => processExchange(null, 'COD_ON_DELIVERY') },
-          { text: 'Pay Now (Prepaid)', onPress: () => processExchange('mock_payment_id', 'PREPAID_NOW') }
+          { text: 'Pay on Delivery (COD)', onPress: () => processExchange('COD_ON_DELIVERY') },
         ]
       );
     } else {
-      processExchange(null, 'PREPAID_NOW');
+      processExchange('PREPAID_NOW');
     }
   };
 
-  const processExchange = async (paymentId: string | null, settlementPreference: 'PREPAID_NOW' | 'COD_ON_DELIVERY' = 'PREPAID_NOW') => {
+  const processExchange = async (settlementPreference: 'PREPAID_NOW' | 'COD_ON_DELIVERY' = 'PREPAID_NOW') => {
     setIsSubmitting(true);
     try {
       const token = useAuthStore.getState().token;
-      const user = useAuthStore.getState().user;
 
       const exchangeItemsPayload = Array.from(selectedItems).map(itemId => {
         const item = order.items.find((i: any) => i.id === itemId);
@@ -187,14 +187,12 @@ export default function ExchangeSelectProductScreen() {
           Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
+          // Identity comes from the Bearer token; the server recalculates the price difference.
           orderId: order.id,
-          userId: user?.id,
           exchangeItems: exchangeItemsPayload,
           settlementPreference,
           paymentDetails: {
-            priceDifference,
-            paymentId,
-            paymentMethod: settlementPreference === 'COD_ON_DELIVERY' ? 'cod' : 'razorpay'
+            paymentMethod: settlementPreference === 'COD_ON_DELIVERY' ? 'cod' : 'free'
           }
         })
       });

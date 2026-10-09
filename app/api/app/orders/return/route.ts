@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { shopifyPatch } from '@/lib/shopify-admin';
 import { allocateLinkedId } from '@/lib/linkedIds';
-import { resolveRefundMethod } from '@/lib/returnPolicy';
+import { resolveRefundMethod, requestEligibilityError } from '@/lib/returnPolicy';
+import { resolveRequestCustomer } from '@/lib/requestAuth';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,14 @@ interface ReturnItem {
 
 export async function POST(req: Request) {
   try {
+    const authCustomer = await resolveRequestCustomer(req);
+    if (!authCustomer) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401, headers: corsHeaders }
+      );
+    }
+
     const body = await req.json();
     const { orderId, items, notes, method, refundMethod } = body as {
       orderId: string;
@@ -47,27 +56,26 @@ export async function POST(req: Request) {
         items: true,
         customer: { select: { id: true, name: true, email: true, phone: true, storeCredits: true } },
         shipments: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+        returnRequests: { select: { status: true, reason: true } },
+        exchangeRequests: { select: { status: true } },
       },
     });
 
-    if (!order) {
+    // Same response for "missing" and "not yours" so order ids can't be probed.
+    if (!order || order.customerId !== authCustomer.id) {
       return NextResponse.json(
         { success: false, error: 'Order not found' },
         { status: 404, headers: corsHeaders }
       );
     }
 
-    const deliveredDate = order.deliveryStatus === 'delivered' ? order.updatedAt : null;
-    if (deliveredDate) {
-      const daysSinceDelivery = Math.floor(
-        (Date.now() - new Date(deliveredDate).getTime()) / (1000 * 60 * 60 * 24)
+    // Delivered + inside the shared window + no other active request (same rules as the website).
+    const eligibilityError = requestEligibilityError(order as any, 'return');
+    if (eligibilityError) {
+      return NextResponse.json(
+        { success: false, error: eligibilityError },
+        { status: 400, headers: corsHeaders }
       );
-      if (daysSinceDelivery > 7) {
-        return NextResponse.json(
-          { success: false, error: 'Return/exchange window has expired (7 days from delivery)' },
-          { status: 400, headers: corsHeaders }
-        );
-      }
     }
 
     // COD orders can only be refunded as store credit (policy); prepaid may choose.
@@ -91,7 +99,9 @@ export async function POST(req: Request) {
       const action = item.action || 'return';
 
       if (action === 'return') {
-        const qty = item.quantity || 1;
+        // Never trust the client quantity: 1..ordered quantity, whole units only.
+        const orderedQty = Math.max(1, Math.floor(Number(orderItem.quantity) || 1));
+        const qty = Math.min(orderedQty, Math.max(1, Math.floor(Number(item.quantity) || 1)));
         returnRows.push({
           orderId: order.id,
           productId: orderItem.productId || '',

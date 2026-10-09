@@ -196,10 +196,13 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       };
     }
 
-    if (!["qc_passed", "received"].includes(exchangeRequest.status)) {
+    if (exchangeRequest.status !== "qc_passed") {
       return {
         success: false,
-        error: `The exchange parcel must be received (and pass QC) before the replacement order is created. Current status: ${exchangeRequest.status}`,
+        error:
+          exchangeRequest.status === "received"
+            ? "The returned parcel did not pass QC, so no replacement order can be created. Reject the exchange to refund the customer."
+            : `The exchange parcel must be received and pass QC before the replacement order is created. Current status: ${exchangeRequest.status}`,
         status: 400,
       };
     }
@@ -209,7 +212,7 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       where: {
         id,
         newShopifyOrderId: null,
-        status: { in: ["qc_passed", "received"] }
+        status: "qc_passed"
       },
       data: {
         status: "creating_order"

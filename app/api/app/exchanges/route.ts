@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { orderBaseNumber } from '@/lib/linkedIds';
 import { buildRequestSummaries } from '@/lib/services/requestEnrichment';
+import { resolveRequestCustomer, resolveCustomerIdentityIds } from '@/lib/requestAuth';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,34 +26,17 @@ export async function OPTIONS() {
  */
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
-    const customerId = url.searchParams.get('customerId')?.trim();
-    const phone = url.searchParams.get('phone')?.trim();
-    const email = url.searchParams.get('email')?.trim();
-
-    if (!customerId && !phone && !email) {
+    // Identity comes from the verified token only. The customerId / phone / email query params
+    // are ignored — they used to let anyone read another customer's exchanges.
+    const authCustomer = await resolveRequestCustomer(req);
+    if (!authCustomer) {
       return NextResponse.json(
-        { exchanges: [], error: 'customerId, phone or email query parameter required' },
-        { status: 400, headers: corsHeaders }
+        { exchanges: [], error: 'Unauthorized' },
+        { status: 401, headers: corsHeaders }
       );
     }
 
-    // Resolve customer IDs from the order → customer relationship
-    const customerWhere: any = { OR: [] };
-    if (customerId) customerWhere.OR.push({ id: customerId });
-    if (phone) customerWhere.OR.push({ phone });
-    if (email) customerWhere.OR.push({ email });
-
-    const customers = await prisma.customer.findMany({
-      where: customerWhere,
-      select: { id: true },
-    });
-
-    if (customers.length === 0) {
-      return NextResponse.json({ exchanges: [] }, { headers: corsHeaders });
-    }
-
-    const customerIds = customers.map((c: { id: string }) => c.id);
+    const customerIds = await resolveCustomerIdentityIds(authCustomer);
 
     // Find all orders for these customers, then get exchanges from those orders
     const orders = await prisma.order.findMany({
