@@ -7,6 +7,7 @@ import Image from "next/image";
 import { useBookmarks } from "@/lib/bookmark-context";
 import { useCart } from "@/lib/cart-context";
 import { snapTrackAddToCart } from "@/hooks/useSnapEvents";
+import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
@@ -18,6 +19,7 @@ export default function WishlistPage() {
   const { formatPrice: fmtPrice } = useCountry();
   const { bookmarks, removeBookmark } = useBookmarks();
   const { add: addToCart } = useCart();
+  const { trackAddToCart: trackMetaAddToCart } = useMetaEvents();
   const [isLoaded, setIsLoaded] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
 
@@ -43,6 +45,8 @@ export default function WishlistPage() {
         });
         // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
         snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+        // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
+        trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
         toast.success(`${product.title} added to bag`);
         return;
       }
@@ -66,6 +70,8 @@ export default function WishlistPage() {
       });
       // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
       snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+      // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
+      trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
 
       toast.success(`${product.title} added to bag`);
     } else {

@@ -559,7 +559,13 @@ export default function ProductDetailsClient({
                   toggleBookmark(product, variantIdStr, selectedSize || activeVariant?.option1 || undefined);
                   setIsOpen(true);
                   if (!wasBookmarked) {
-                    trackAddToWishlist(product.id.toString(), product.title, product.product_type);
+                    // feed.xml g:id = variant id: the selected size, else the default (first) variant
+                    trackAddToWishlist(
+                      variantIdStr || product.variants?.[0]?.id?.toString() || product.id.toString(),
+                      product.title,
+                      product.product_type,
+                      parseFloat((activeVariant || product.variants?.[0])?.price || "0") || undefined
+                    );
                   }
                   toast.success(wasBookmarked ? "Removed from bookmarks" : "Saved to bookmarks");
                 }}
@@ -890,7 +896,13 @@ export default function ProductDetailsClient({
                     toggleBookmark(product, variantIdStr, selectedSize || activeVariant?.option1 || undefined);
                     setIsOpen(true);
                     if (!wasBookmarked) {
-                      trackAddToWishlist(product.id.toString(), product.title, product.product_type);
+                      // feed.xml g:id = variant id: the selected size, else the default (first) variant
+                      trackAddToWishlist(
+                        variantIdStr || product.variants?.[0]?.id?.toString() || product.id.toString(),
+                        product.title,
+                        product.product_type,
+                        parseFloat((activeVariant || product.variants?.[0])?.price || "0") || undefined
+                      );
                     }
                     toast.success(wasBookmarked ? "Removed from bookmarks" : "Saved to bookmarks");
                   }}
