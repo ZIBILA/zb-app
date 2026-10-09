@@ -28,7 +28,9 @@ export async function GET(req: NextRequest) {
     const ip = getClientIP(req as unknown as Request);
     const geo = edge || (await lookupIpGeo(ip, req as unknown as Request));
 
-    if (!geo) {
+    if (!geo || geo.isDevFallback) {
+      // Unknown (or a development placeholder): never hand the browser a made-up
+      // location — it would be stored as the customer's address for a year.
       return NextResponse.json({ ok: false }, { status: 200 });
     }
 

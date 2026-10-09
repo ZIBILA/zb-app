@@ -1,5 +1,5 @@
 'use client';
-import { normalizePhone, normalizeState, normalizeZip } from '@/lib/tracking/identity-normalize';
+import { normalizePhone, normalizeState, normalizeZip, normalizeName, normalizeCity } from '@/lib/tracking/identity-normalize';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
@@ -36,9 +36,9 @@ function uuidv4() {
   });
 }
 
+/** Meta name rule (lowercase, letters/digits, unicode kept) — same as the server. */
 function cleanStringNoSpaces(val: string | undefined): string {
-  if (!val) return "";
-  return val.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return normalizeName(val);
 }
 
 export function MetaPixelRouteTracker() {
@@ -126,8 +126,12 @@ export function MetaPixelRouteTracker() {
         const geoData = JSON.parse(geoStr);
         if (!builtIdentity.country && geoData.countryCode) builtIdentity.country = geoData.countryCode.toLowerCase();
         if (!builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
-        if (!builtIdentity.ct && geoData.city) builtIdentity.ct = geoData.city.toLowerCase();
-        if (!builtIdentity.zp && geoData.zip) builtIdentity.zp = geoData.zip;
+        // IP-geolocated city / zip are the ISP's, not the shopper's — only a GPS or typed
+        // address may fill ct / zp (Meta already geo-matches on the client IP).
+        if (geoData.source !== 'ip') {
+          if (!builtIdentity.ct && geoData.city) builtIdentity.ct = geoData.city.toLowerCase();
+          if (!builtIdentity.zp && geoData.zip) builtIdentity.zp = geoData.zip;
+        }
       }
     } catch {}
 
@@ -182,6 +186,18 @@ export function MetaPixelRouteTracker() {
       if (session?.user) {
         setClientCookie('zb_user_logged_in', 'true', 365);
 
+        // Stable per-person external_id: once logged in, the browser's identity
+        // becomes the customer id (the server sends the same id on its events), so
+        // the same person is one profile across devices, sessions and guest resets.
+        // The PII-owner binding moves with it so the bound cookies stay valid.
+        const customerId = (session.user as any).id ? String((session.user as any).id) : '';
+        if (customerId && extId !== customerId) {
+          const ownedBefore = getClientCookie('zb_pii_owner') === extId;
+          setClientCookie('zb_external_id', customerId, 365);
+          if (ownedBefore) setClientCookie('zb_pii_owner', customerId, 365);
+          extId = customerId;
+        }
+
         const email = session.user.email;
         if (email && !isDemoValue('email', email)) {
           const hashedEmail = await sha256(email.trim().toLowerCase());
@@ -197,13 +213,15 @@ export function MetaPixelRouteTracker() {
         const name = session.user.name;
         if (name && !isDemoValue('name', name)) {
           const parts = name.trim().split(/\s+/);
-          if (parts[0]) {
-            const hashedFn = await sha256(cleanStringNoSpaces(parts[0]));
+          const fnNorm = cleanStringNoSpaces(parts[0]);
+          if (fnNorm) {
+            const hashedFn = await sha256(fnNorm);
             sessionUserData.fn = hashedFn;
             setClientCookie('zb_guest_fn', hashedFn, 365);
           }
-          if (parts.length > 1) {
-            const hashedLn = await sha256(cleanStringNoSpaces(parts.slice(1).join('')));
+          const lnNorm = parts.length > 1 ? cleanStringNoSpaces(parts.slice(1).join('')) : '';
+          if (lnNorm) {
+            const hashedLn = await sha256(lnNorm);
             sessionUserData.ln = hashedLn;
             setClientCookie('zb_guest_ln', hashedLn, 365);
           }
@@ -237,8 +255,9 @@ export function MetaPixelRouteTracker() {
 
         if (cachedProfileData) {
           const { city, state, zip, country, dob } = cachedProfileData;
-          if (city) {
-            const hashedCity = await sha256(cleanStringNoSpaces(city));
+          const ctNorm = normalizeCity(city);
+          if (ctNorm) {
+            const hashedCity = await sha256(ctNorm);
             sessionUserData.ct = hashedCity;
             setClientCookie('zb_guest_ct', hashedCity, 365);
           }
@@ -291,6 +310,12 @@ export function MetaPixelRouteTracker() {
         setClientCookie('zb_user_logged_in', 'false', 365);
         if (wasLoggedIn) {
           clearGuestPiiCookies();
+          // The identity was the customer id while logged in; the next visitor on
+          // this device must not inherit it — mint a fresh device id.
+          if (extId && !extId.startsWith('zb.')) {
+            extId = 'zb.' + uuidv4();
+            setClientCookie('zb_external_id', extId, 365);
+          }
         }
         // Reinit pixel with browser-only params for subsequent events
         initPixel({});

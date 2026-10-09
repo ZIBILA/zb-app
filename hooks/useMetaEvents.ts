@@ -59,8 +59,12 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
           const geoData = JSON.parse(geoStr);
           if (!builtIdentity.country && geoData.countryCode) builtIdentity.country = geoData.countryCode.toLowerCase();
           if (!builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
-          if (!builtIdentity.ct && geoData.city) builtIdentity.ct = geoData.city.toLowerCase();
-          if (!builtIdentity.zp && geoData.zip) builtIdentity.zp = geoData.zip;
+          // IP-geolocated city / zip are the ISP's, not the shopper's — only a GPS or typed
+          // address may fill ct / zp (Meta already geo-matches on the client IP).
+          if (geoData.source !== 'ip') {
+            if (!builtIdentity.ct && geoData.city) builtIdentity.ct = geoData.city.toLowerCase();
+            if (!builtIdentity.zp && geoData.zip) builtIdentity.zp = geoData.zip;
+          }
         }
       }
     } catch {}
@@ -508,7 +512,8 @@ export function useMetaEvents() {
       ln: ln || undefined,
     });
     if (Object.keys(userData).length > 0) {
-      initPixel({ ...(phDigits ? { ph: phDigits } : {}), ...(fn ? { fn } : {}), ...(ln ? { ln } : {}) });
+      // '+digits': the dial code is parsed from the number itself (never an assumed country).
+      initPixel({ ...(phDigits ? { ph: `+${phDigits}` } : {}), ...(fn ? { fn } : {}), ...(ln ? { ln } : {}) });
     }
     trackEvent('CompleteRegistration', customData, base.eventId);
     sendToCapiRoute({ ...base, customData, userData: Object.keys(userData).length ? userData : undefined });

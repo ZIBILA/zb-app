@@ -12,7 +12,7 @@ import {
   normalizeCountry as sharedNormalizeCountry,
 } from './tracking/identity-normalize';
 import {
-  isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash,
+  isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash, isPlaceholderZipHash,
 } from './tracking/placeholder-identity';
 
 const PIXEL_ID = process.env.META_PIXEL_ID || process.env.NEXT_PUBLIC_META_PIXEL_ID || '2049977412558608';
@@ -177,7 +177,8 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     const country = cleanAndHash(rawCountry, sharedNormalizeCountry);
     const st = cleanAndHash(payload.userData.st, (v) => sharedNormalizeState(v, countryIso));
     const ct = cleanAndHash(payload.userData.ct, sharedNormalizeCity);
-    const zp = cleanAndHash(payload.userData.zp, (v) => sharedNormalizeZip(v, countryIso));
+    const zpRaw = payload.userData.zp;
+    const zp = cleanAndHash(zpRaw && isHash(zpRaw) && isPlaceholderZipHash(zpRaw) ? undefined : zpRaw, (v) => sharedNormalizeZip(v, countryIso));
     const ge = cleanAndHash(payload.userData.ge, normalizeGeneric);
     const db = cleanAndHash(payload.userData.db, normalizeDob);
 

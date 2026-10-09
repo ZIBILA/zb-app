@@ -18,7 +18,7 @@
  */
 import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/min';
 import {
-  isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash,
+  isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash, isPlaceholderZipHash,
 } from './placeholder-identity';
 import { COUNTRIES } from '@/lib/countries';
 
@@ -182,6 +182,10 @@ export function normalizeZip(zip: string | undefined | null, countryIso?: string
   const iso = toCountryIso(countryIso || '');
   const compact = zip.trim().toLowerCase().replace(/[\s-]/g, '');
   if (!compact) return '';
+  // Placeholder values typed where the form demands a postcode the country does
+  // not have (UAE, Hong Kong, Ireland …): "00000", "0", "NA", "none" — shared by
+  // many customers, never an address.
+  if (/^0+$/.test(compact) || ['na', 'n/a', 'none', 'null', 'nil', 'xxx', 'xxxx', 'xxxxx'].includes(compact)) return '';
 
   if (iso === 'US') {
     const m = compact.match(/^(\d{5})/);
@@ -224,6 +228,7 @@ export function normalizeIdentity(src: RawIdentity): Record<keyof RawIdentity, s
   const ph = (isPlaceholderPhone(src.ph) && !isSha256Hash(src.ph || '')) || isPlaceholderPhoneHash(src.ph) ? '' : src.ph;
   const fn = isPlaceholderNamePart(src.fn) || isPlaceholderNameHash(src.fn) ? '' : src.fn;
   const ln = isPlaceholderNamePart(src.ln) || isPlaceholderNameHash(src.ln) ? '' : src.ln;
+  const zp = isPlaceholderZipHash(src.zp) ? '' : src.zp;
   return {
     em: pass(em) || normalizeEmail(em),
     ph: pass(ph) || normalizePhone(ph, countryIso),
@@ -231,7 +236,7 @@ export function normalizeIdentity(src: RawIdentity): Record<keyof RawIdentity, s
     ln: pass(ln) || normalizeName(ln),
     ct: pass(src.ct) || normalizeCity(src.ct),
     st: pass(src.st) || normalizeState(src.st, countryIso),
-    zp: pass(src.zp) || normalizeZip(src.zp, countryIso),
+    zp: pass(zp) || normalizeZip(zp, countryIso),
     country: pass(src.country) || countryIso.toLowerCase(),
   };
 }
