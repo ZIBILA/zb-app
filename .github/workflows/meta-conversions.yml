@@ -8,6 +8,11 @@ on:
   schedule:
     - cron: '11,26,41,56 * * * *'   # every 15 min, offset from the other schedulers
   workflow_dispatch:
+    inputs:
+      recover_since:
+        description: 'Optional backfill start (ISO time, e.g. 2026-10-09T10:00:00Z). Re-sends paid web orders since then that have no Meta delivery. Never earlier than the deploy, or Purchases double-count.'
+        required: false
+        default: ''
 
 concurrency:
   group: meta-conversions-retry
@@ -21,11 +26,16 @@ jobs:
 
     steps:
       - name: Call retry endpoint
+        env:
+          RECOVER_SINCE: ${{ github.event.inputs.recover_since }}
         run: |
+          if [ -n "$RECOVER_SINCE" ] && ! [[ "$RECOVER_SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z$ ]]; then
+            echo "::error title=Meta retry::recover_since must look like 2026-10-09T10:00:00Z"; exit 1
+          fi
           # Retries cover transport errors / 5xx only (a completed run answers 200).
           # On failure the HTTP status and the start of the server's reply are written
           # as an error annotation, so the cause is visible on the run summary page.
-          code=$(curl --retry 3 --retry-delay 10 -sS -m 60 -o /tmp/resp.txt -w '%{http_code}' -X GET "https://app.zicabella.com/api/cron/meta-conversions" \
+          code=$(curl --retry 3 --retry-delay 10 -sS -m 60 -o /tmp/resp.txt -w '%{http_code}' -X GET "https://app.zicabella.com/api/cron/meta-conversions${RECOVER_SINCE:+?recoverSince=$RECOVER_SINCE}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || code="${code:-000}"
           reply=$(sed -e 's/<[^>]*>/ /g' /tmp/resp.txt 2>/dev/null | tr -s ' \n\r\t' ' ' | head -c 400)
           echo "HTTP $code: $reply"
