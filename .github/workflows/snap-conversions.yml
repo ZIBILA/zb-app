@@ -23,5 +23,14 @@ jobs:
     steps:
       - name: Call retry endpoint
         run: |
-          curl --retry 3 --retry-delay 10 --retry-all-errors --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/snap-conversions" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          # Retries cover transport errors / 5xx only (a completed run answers 200).
+          # On failure the HTTP status and the start of the server's reply are written
+          # as an error annotation, so the cause is visible on the run summary page.
+          code=$(curl --retry 3 --retry-delay 10 -sS -m 60 -o /tmp/resp.txt -w '%{http_code}' -X GET "https://app.zicabella.com/api/cron/snap-conversions" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || code="${code:-000}"
+          reply=$(sed -e 's/<[^>]*>/ /g' /tmp/resp.txt 2>/dev/null | tr -s ' \n\r\t' ' ' | head -c 400)
+          echo "HTTP $code: $reply"
+          if [ "$code" != "200" ]; then
+            echo "::error title=Snap retry endpoint::HTTP $code — $reply"
+            exit 1
+          fi

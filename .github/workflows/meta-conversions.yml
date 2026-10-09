@@ -22,11 +22,20 @@ jobs:
     steps:
       - name: Call retry endpoint
         run: |
-          # Retries cover transport errors / 5xx only. A completed run answers 200, so
-          # the job never re-runs the worker (which would burn delivery attempts).
-          body=$(curl --retry 3 --retry-delay 10 --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/meta-conversions" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || { echo "$body"; exit 1; }
-          echo "$body"
+          # Retries cover transport errors / 5xx only (a completed run answers 200).
+          # On failure the HTTP status and the start of the server's reply are written
+          # as an error annotation, so the cause is visible on the run summary page.
+          code=$(curl --retry 3 --retry-delay 10 -sS -m 60 -o /tmp/resp.txt -w '%{http_code}' -X GET "https://app.zicabella.com/api/cron/meta-conversions" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || code="${code:-000}"
+          reply=$(sed -e 's/<[^>]*>/ /g' /tmp/resp.txt 2>/dev/null | tr -s ' \n\r\t' ' ' | head -c 400)
+          echo "HTTP $code: $reply"
+          if [ "$code" != "200" ]; then
+            echo "::error title=Meta retry endpoint::HTTP $code — $reply"
+            exit 1
+          fi
           # ok:false = an alert (Meta config missing, ledger table missing/erroring,
           # deliveries that exhausted their attempts) → fail the run so GitHub notifies.
-          echo "$body" | jq -e '.ok == true' > /dev/null
+          if ! jq -e '.ok == true' /tmp/resp.txt > /dev/null 2>&1; then
+            echo "::error title=Meta retry alert::$(jq -c '.result.alerts // .' /tmp/resp.txt 2>/dev/null | head -c 400)"
+            exit 1
+          fi
