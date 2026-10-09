@@ -1,4 +1,5 @@
 import { normalizePhone, normalizeState, normalizeZip, normalizeCountry } from '@/lib/tracking/identity-normalize';
+import { isPlaceholderEmail } from '@/lib/tracking/placeholder-identity';
 export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || '2049977412558608';
 
 /**
@@ -27,7 +28,8 @@ export function isDemoValue(field: 'phone' | 'email' | 'name', rawValue: string 
       return DEMO_PHONES_RAW.some(d => digits === d.replace(/\D/g, '') || digits.endsWith(d.replace(/\D/g, '')));
     }
     case 'email':
-      return DEMO_EMAILS_RAW.includes(cleaned);
+      // Demo accounts + synthetic placeholders (guest@…, guest_<ts>@…, recovered_<ts>@…).
+      return DEMO_EMAILS_RAW.includes(cleaned) || isPlaceholderEmail(rawValue);
     case 'name':
       return DEMO_NAMES_RAW.includes(cleaned);
   }
@@ -204,12 +206,19 @@ export function getMetaIdentityCookies(): Record<string, string | undefined> {
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 
 // Module-level guard to prevent redundant fbq('init') calls with identical data.
-// The layout.tsx inline script handles the base init (no user data).
-// This function only re-inits when advanced matching data actually changes.
+// The layout.tsx inline script does the first init WITH the identity already in
+// cookies (window.__zbMetaAM). Re-init is valid Meta usage (Meta's own GTM template
+// re-inits with Advanced Matching); this only re-inits when the data changes.
 let lastInitHash: string | null = null;
 
 export const initPixel = (additionalData: Record<string, any> = {}) => {
   withFbq((fbq) => {
+    if (lastInitHash === null && typeof window !== 'undefined') {
+      const baseAM = (window as any).__zbMetaAM;
+      if (baseAM && typeof baseAM === 'object') {
+        lastInitHash = JSON.stringify(baseAM, Object.keys(baseAM).sort());
+      }
+    }
     // Build advanced matching user data for fbq('init') using the unified builder.
     // NOTE: fbc, fbp, and client_user_agent are NOT passed here — the pixel SDK reads them
     // directly from the cookies/browser. Passing them in init is unsupported or redundant.

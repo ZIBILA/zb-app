@@ -13,6 +13,7 @@ import {
   withFbq,
   isDemoValue,
   clearGuestPiiCookies,
+  deleteClientCookie,
 } from '@/lib/metaPixel';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 
@@ -42,7 +43,8 @@ function cleanStringNoSpaces(val: string | undefined): string {
 
 export function MetaPixelRouteTracker() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  // `status` distinguishes "still loading" from "really logged out" (data is undefined in both).
+  const { data: session, status } = useSession();
   const sessionKey =
     (session?.user as any)?.id || session?.user?.email || (session ? 'anon-session' : 'no-session');
   const lastPageViewRef = useRef<{ path: string; at: number } | null>(null);
@@ -172,6 +174,11 @@ export function MetaPixelRouteTracker() {
     const enrichIdentityAsync = async () => {
       const sessionUserData: Record<string, any> = {};
 
+      // Session not resolved yet: change nothing. Treating "loading" as "logged out"
+      // used to wipe a logged-in customer's identity cookies right before the first
+      // ViewContent of an ad landing. The effect re-runs once status settles.
+      if (status === 'loading') return;
+
       if (session?.user) {
         setClientCookie('zb_user_logged_in', 'true', 365);
 
@@ -180,6 +187,11 @@ export function MetaPixelRouteTracker() {
           const hashedEmail = await sha256(email.trim().toLowerCase());
           sessionUserData.em = hashedEmail;
           setClientCookie('zb_guest_email', hashedEmail, 365);
+        } else if (email) {
+          // Demo / synthetic placeholder account email (e.g. guest_<ts>@zicabella.com):
+          // remove a hash of it that older code may have stored, never send it.
+          const placeholderHash = await sha256(email.trim().toLowerCase());
+          if (getClientCookie('zb_guest_email') === placeholderHash) deleteClientCookie('zb_guest_email');
         }
 
         const name = session.user.name;
@@ -260,13 +272,26 @@ export function MetaPixelRouteTracker() {
           }
         }
 
+        // Bind the identity cookies just written to this browser identity, so
+        // getMetaIdentityCookies() (browser) and /api/meta/event (server) agree
+        // that they belong to the current visitor.
+        if (extId && Object.keys(sessionUserData).length > 0) {
+          setClientCookie('zb_pii_owner', extId, 365);
+        }
+
         // Reinit pixel with full enriched user data for subsequent events
         initPixel(sessionUserData);
       } else {
+        // Really logged out (status === 'unauthenticated').
+        // Clear identity cookies only on the transition from logged-in to logged-out
+        // (logout or session expiry), so a previous user's data never leaks into the
+        // next user's events on a shared device. Ordinary guest navigation keeps the
+        // guest's own checkout identity (bound to zb_external_id via zb_pii_owner).
+        const wasLoggedIn = getClientCookie('zb_user_logged_in') === 'true';
         setClientCookie('zb_user_logged_in', 'false', 365);
-        // Clear all guest PII cookies to prevent stale identity data from a
-        // previous user leaking into another user's Meta events on shared devices.
-        clearGuestPiiCookies();
+        if (wasLoggedIn) {
+          clearGuestPiiCookies();
+        }
         // Reinit pixel with browser-only params for subsequent events
         initPixel({});
       }
@@ -278,7 +303,7 @@ export function MetaPixelRouteTracker() {
     });
 
 
-  }, [sessionKey, pathname, session]);
+  }, [sessionKey, pathname, session, status]);
   // `session` kept so enrichment sees latest user fields when sessionKey flips (login).
   // PageView itself is deduped above so session object churn won't double-fire CAPI.
 
