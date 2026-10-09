@@ -225,7 +225,8 @@ export default function OrdersPage() {
                   : statusConfig.label;
               const StatusIcon = statusConfig.icon;
               const orderItems = order.items || [];
-              const awbNumber = order.shipments?.[0]?.trackingNumber || order.delhivery_awb;
+              const awbNumber =
+                order.shipments?.[0]?.awb || order.delhivery_awb || null;
 
               return (
                 <motion.div

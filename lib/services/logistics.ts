@@ -359,7 +359,9 @@ export async function shipOrder(
     where: {
       orderId,
       NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
-      status: { notIn: ['cancelled', 'canceled', 'rto', 'rto_delivered', 'lost'] },
+      status: {
+        notIn: ['cancelled', 'canceled', 'cancellation_requested', 'rto', 'rto_delivered', 'lost'],
+      },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -713,6 +715,45 @@ export async function getTrackingStatus(trackingNumber: string): Promise<Trackin
   }
 
   return { status: 'unknown', location: null, estimatedDelivery: null, trackingUrl: null, events: [] };
+}
+
+export type ShiprocketOrderCancelState =
+  | 'cancelled'
+  | 'cancellation_requested'
+  | 'active'
+  | 'unknown';
+
+/**
+ * Real Shiprocket ORDER status (not courier tracking). Courier tracking never
+ * reflects an order-level cancel, so this is the source of truth for
+ * "Cancellation Requested" vs final "Canceled".
+ */
+export async function getShiprocketOrderCancelState(
+  srOrderId: string | number | null | undefined
+): Promise<{ state: ShiprocketOrderCancelState; raw: string | null }> {
+  if (srOrderId === null || srOrderId === undefined || String(srOrderId).trim() === '') {
+    return { state: 'unknown', raw: null };
+  }
+  try {
+    const res = await logisticsApiFetch(
+      `/orders/show/${encodeURIComponent(String(srOrderId).trim())}`,
+      'GET'
+    );
+    const d = res?.data || res;
+    const raw = String(d?.status ?? '').trim();
+    const code = Number(d?.status_code);
+    const norm = normalizeCarrierStatus(raw);
+    // Shiprocket order status_code: 5 = Canceled, 18 = Cancellation Requested.
+    if (norm === 'cancelled' || code === 5) return { state: 'cancelled', raw: raw || 'Canceled' };
+    if (norm === 'cancellation_requested' || code === 18) {
+      return { state: 'cancellation_requested', raw: raw || 'Cancellation Requested' };
+    }
+    if (!raw && !Number.isFinite(code)) return { state: 'unknown', raw: null };
+    return { state: 'active', raw: raw || null };
+  } catch (err: any) {
+    console.warn(`[Logistics] SR order status lookup failed for ${srOrderId}:`, err?.message || err);
+    return { state: 'unknown', raw: null };
+  }
 }
 
 /**
@@ -1477,10 +1518,13 @@ export async function bookShiprocketOrderWithCourier(
   const isRtoReship = latestOutboundCode === 'rto_delivered' || latestOutboundCode === 'lost';
 
   // Check for existing live, non-fake shipment
+  // cancellation_requested = void in progress — allow a fresh booking alongside it.
   const existing = await prisma.shipment.findFirst({
     where: {
       ...outboundOnly,
-      status: { notIn: ['cancelled', 'canceled', 'rto', 'rto_delivered', 'lost'] },
+      status: {
+        notIn: ['cancelled', 'canceled', 'cancellation_requested', 'rto', 'rto_delivered', 'lost'],
+      },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -2399,56 +2443,66 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
 
   /** True when Shiprocket reported cancel already in progress (not final Canceled yet). */
   let shiprocketCancelInProgress = false;
+  /** Shiprocket order id used for the post-cancel status check. */
+  let srOrderIdForCheck: string | number | null = null;
 
   if (config.provider === 'shiprocket' && preset) {
     try {
       const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
-      const awb = (shipment.awb || trackingNumber || '').trim();
-      const orderCancelId = meta?.order_id;
+      // Real courier AWB only — trackingNumber is often the Shiprocket order/shipment id.
+      const realAwb = String(shipment.awb || '').trim();
+      const orderCancelId =
+        meta?.order_id ||
+        (!realAwb && /^\d+$/.test(String(trackingNumber || '').trim())
+          ? String(trackingNumber).trim()
+          : null);
+      srOrderIdForCheck = orderCancelId || null;
       let orderCancelled = false;
       let awbCancelled = false;
       const errors: string[] = [];
 
-      // 1) Cancel AWB if present
-      if (awb && !/^MOCK/i.test(awb) && !/^CANCELLED-/i.test(awb)) {
+      // 1) Cancel AWB if a real AWB is present
+      if (realAwb && !/^MOCK/i.test(realAwb) && !/^CANCELLED-/i.test(realAwb)) {
         try {
           await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', {
-            awbs: [awb],
+            awbs: [realAwb],
           });
           awbCancelled = true;
-          console.log(`[Logistics] Shiprocket AWB cancel ok for ${awb}`);
+          console.log(`[Logistics] Shiprocket AWB cancel ok for ${realAwb}`);
         } catch (awbCancelErr: any) {
           if (isShiprocketAlreadyCancellingOrCancelled(awbCancelErr)) {
             awbCancelled = true;
             shiprocketCancelInProgress = /cancellation requested/i.test(String(awbCancelErr?.message || ''));
             console.log(
-              `[Logistics] Shiprocket AWB already cancelling/cancelled for ${awb} — treating as success`
+              `[Logistics] Shiprocket AWB already cancelling/cancelled for ${realAwb} — treating as success`
             );
           } else {
             errors.push(`AWB cancel: ${awbCancelErr.message}`);
-            console.warn(`[Logistics] Shiprocket AWB cancel failed for ${awb}:`, awbCancelErr.message);
+            console.warn(`[Logistics] Shiprocket AWB cancel failed for ${realAwb}:`, awbCancelErr.message);
           }
         }
       }
 
-      // 2) Cancel Shiprocket ORDER (otherwise NEW drafts stay open)
+      // 2) Cancel Shiprocket ORDER (covers AWB-less drafts / NEW orders)
       if (orderCancelId) {
         try {
           await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
             ids: [Number(orderCancelId) || orderCancelId],
           });
           orderCancelled = true;
-          // Fresh cancel requests land in Cancellation Requested until SR finalizes.
-          shiprocketCancelInProgress = true;
+          // Fresh cancel with a live AWB lands in Cancellation Requested until SR finalizes.
+          if (realAwb) shiprocketCancelInProgress = true;
           console.log(`[Logistics] Shiprocket order cancel ok for id=${orderCancelId}`);
         } catch (orderCancelErr: any) {
           // e.g. "Cannot cancel order when shipment status is Cancellation Requested"
           if (isShiprocketAlreadyCancellingOrCancelled(orderCancelErr)) {
             orderCancelled = true;
-            shiprocketCancelInProgress =
-              shiprocketCancelInProgress ||
-              /cancellation requested/i.test(String(orderCancelErr?.message || '')) ||
-              !/order is in cancelled state/i.test(String(orderCancelErr?.message || ''));
+            if (realAwb) {
+              shiprocketCancelInProgress =
+                shiprocketCancelInProgress ||
+                /cancellation requested/i.test(String(orderCancelErr?.message || '')) ||
+                !/order is in cancelled state/i.test(String(orderCancelErr?.message || ''));
+            }
             console.log(
               `[Logistics] Shiprocket order ${orderCancelId} already cancelling/cancelled — treating as success`
             );
@@ -2467,11 +2521,16 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
       if (!orderCancelled && !awbCancelled) {
         throw new Error(errors.join('; ') || 'Shiprocket cancel failed');
       }
-      if (!orderCancelled && awbCancelled) {
+      if (!orderCancelled && awbCancelled && realAwb) {
         shiprocketCancelInProgress = true;
         console.warn(
-          `[Logistics] AWB/cancel-in-progress ok for ${awb}; order cancel note: ${errors.join('; ') || 'n/a'}`
+          `[Logistics] AWB/cancel-in-progress ok for ${realAwb}; order cancel note: ${errors.join('; ') || 'n/a'}`
         );
+      }
+
+      // AWB-less draft: nothing left to void — finalize locally so ops can rebook now.
+      if (!realAwb) {
+        shiprocketCancelInProgress = false;
       }
     } catch (err: any) {
       console.error(`[Logistics] Cancel shipment failed:`, err.message);
@@ -2481,21 +2540,19 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
     shiprocketCancelInProgress = true;
   }
 
-  // If Shiprocket already flipped to exact Cancelled, finalize now. Otherwise
-  // stay on Cancellation Requested and keep polling — never stop at "Requested".
-  if (shiprocketCancelInProgress && config.provider === 'shiprocket') {
-    const trackRef = String(shipment.awb || trackingNumber || '').trim();
-    if (trackRef && !/^MOCK/i.test(trackRef) && !/^CANCELLED-/i.test(trackRef)) {
-      try {
-        const tracked = await getTrackingStatus(trackRef);
-        const code = normalizeCarrierStatus(tracked.rawStatus || tracked.status);
-        if (code === 'cancelled') {
-          shiprocketCancelInProgress = false;
-        }
-      } catch {
-        /* keep cancellation_requested; sync will retry */
-      }
+  // Ask Shiprocket for the ACTUAL order status instead of assuming "requested".
+  // Many cancels finalize instantly — show/store exactly what Shiprocket reports.
+  let actualCancelPhrase: string | null = null;
+  if (config.provider === 'shiprocket' && srOrderIdForCheck) {
+    const actual = await getShiprocketOrderCancelState(srOrderIdForCheck);
+    if (actual.state === 'cancelled') {
+      shiprocketCancelInProgress = false;
+      actualCancelPhrase = actual.raw || 'Canceled';
+    } else if (actual.state === 'cancellation_requested') {
+      shiprocketCancelInProgress = true;
+      actualCancelPhrase = actual.raw || 'Cancellation Requested';
     }
+    // 'active' / 'unknown': keep the API-derived flag; sync re-checks real status.
   }
 
   // Cancel is already sent to Shiprocket above (stops shipping). Locally we only
@@ -2535,13 +2592,14 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
   });
 
   if (shipment.orderId) {
-    // Shipment cancel ≠ order cancel. Keep delivery on cancellation_requested so
-    // lazy sync / webhooks keep checking until exact Cancelled.
+    // Shipment cancel ≠ order cancel. Keep cancellation_requested while voiding
+    // so sync continues; once finalized, reset to pending for rebook.
     await prisma.order.update({
       where: { id: shipment.orderId },
       data: {
-        deliveryStatus: localStatus,
-        tracking_status: finalized ? 'Canceled' : 'Cancellation Requested',
+        deliveryStatus: finalized ? 'pending' : localStatus,
+        tracking_status:
+          actualCancelPhrase || (finalized ? 'Canceled' : 'Cancellation Requested'),
         ...(finalized ? { delhivery_awb: null } : {}),
       },
     }).catch(() => {});

@@ -20,6 +20,7 @@ import {
   type CarrierStatus,
 } from '@/lib/logistics/status';
 import {
+  getShiprocketOrderCancelState,
   getTrackingStatus,
   isShiprocketCodOrder,
   parseShiprocketMeta,
@@ -175,7 +176,11 @@ export async function applyShipmentStatusUpdate(
   // Always persist the exact carrier phrase for admin display, even when we do not
   // advance Shipment.status (e.g. stale scan). UI prefers Order.tracking_status.
   const rawPhrase = String(update.rawStatus || '').trim();
-  if (rawPhrase && shipment.orderId) {
+  // While voiding, a stale courier scan (e.g. "Pickup Scheduled") must not overwrite
+  // the Cancellation Requested phrase — only Cancelled/Requested may update it.
+  const staleWhileVoiding =
+    previous === 'cancellation_requested' && next !== 'cancelled' && next !== 'cancellation_requested';
+  if (rawPhrase && shipment.orderId && !staleWhileVoiding) {
     await prisma.order
       .update({
         where: { id: shipment.orderId },
@@ -261,6 +266,7 @@ export async function applyShipmentStatusUpdate(
   // A stale/cancelled earlier shipment must not rewrite the order once a newer
   // active shipment exists (e.g. after cancel + re-ship on another courier).
   const inactiveStatuses = ['cancelled', 'canceled', 'cancellation_requested'];
+  // Never let an older voiding/cancelled row overwrite a newer live booking.
   if (next !== 'cancelled' && next !== 'cancellation_requested') {
     const newerActive = await prisma.shipment.findFirst({
       where: {
@@ -287,7 +293,9 @@ export async function applyShipmentStatusUpdate(
   }
 
   const order = shipment.order;
-  const deliveryStatus = toOrderDeliveryStatus(next);
+  // A voided forward shipment is not a cancelled customer order — return it to
+  // "pending" so it shows under Logistics → Pending and can be rebooked.
+  const deliveryStatus = next === 'cancelled' ? 'pending' : toOrderDeliveryStatus(next);
   const orderData: Prisma.OrderUpdateInput = {
     tracking_status: update.rawStatus,
   };
@@ -332,6 +340,8 @@ export async function applyShipmentStatusUpdate(
         data: {
           deliveryStatus,
           ...(settleCod ? { paymentStatus: 'paid' } : {}),
+          // Final cancel voids the AWB everywhere — don't leave it on the web-store copy.
+          ...(clearAwbOnFinalCancel ? { trackingNumber: null, trackingUrl: null } : {}),
         },
       })
       .catch((err: unknown) => {
@@ -384,6 +394,30 @@ export async function refreshShipmentFromCarrier(shipmentId: string): Promise<{
   if (!shipment) return { provider: null, tracking: null, result: null };
 
   const meta = parseShiprocketMeta(shipment.rawDelhiveryResponse);
+
+  // Cancellation in progress: courier tracking can't see order-level cancels, so ask
+  // Shiprocket for the real ORDER status and apply it (Cancelled clears the AWB).
+  if (normalizeCarrierStatus(shipment.status) === 'cancellation_requested' && meta?.order_id) {
+    const actual = await getShiprocketOrderCancelState(meta.order_id);
+    if (actual.state === 'cancelled' || actual.state === 'cancellation_requested') {
+      const rawStatus =
+        actual.raw || (actual.state === 'cancelled' ? 'Canceled' : 'Cancellation Requested');
+      const result = await applyShipmentStatusUpdate({ shipmentId: shipment.id, rawStatus });
+      return {
+        provider: 'shiprocket',
+        tracking: {
+          status: actual.state,
+          rawStatus,
+          location: null,
+          estimatedDelivery: null,
+          trackingUrl: null,
+          events: [],
+        },
+        result,
+      };
+    }
+  }
+
   const voidedAwb = meta?.voided_awb ? String(meta.voided_awb).trim() : '';
   const ref = String(shipment.awb || voidedAwb || '').trim();
   // AWB-less Shiprocket drafts (order id only) are not trackable — unless we preserved voided_awb.

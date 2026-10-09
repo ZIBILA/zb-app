@@ -286,6 +286,7 @@ export const LOGISTICS_BUCKET_STATUSES: Record<'pending' | 'dispatched' | 'deliv
     'pickup_scheduled',
     'packed',
     'manifested',
+    'cancellation_requested', // shipment void in progress — still needs attention
     'new',
   ],
   dispatched: [

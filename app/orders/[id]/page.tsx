@@ -512,10 +512,17 @@ export default function OrderDetailsPage() {
             return !reverse && !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
           });
           const s = activeShipment || null;
-          const awb = s?.trackingNumber || s?.awb || (!isCancelled ? (order.trackingNumber || order.delhivery_awb) : null);
+          // Prefer real courier AWB — never use Shiprocket draft/order id for tracking links.
+          const awb =
+            s?.awb ||
+            (!isCancelled ? order.delhivery_awb : null) ||
+            null;
           const courier = s?.courier || order.courier || (order.delhivery_awb ? 'Delhivery' : 'Standard Express');
           const status = s?.status || order.deliveryStatus || order.fulfillmentStatus || 'Shipped';
-          const trackUrl = s?.trackingUrl || order.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
+          const trackUrl =
+            s?.trackingUrl ||
+            order.trackingUrl ||
+            (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
 
           if (!awb || String(status || '').toLowerCase().includes('cancel')) return null;
 

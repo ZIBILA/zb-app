@@ -1017,11 +1017,11 @@ export default function OrderDetailPage() {
                           <ScanLine className="w-3.5 h-3.5" />
                           <span>{awb ? `AWB ${awb}` : `SR Order ${externalId}`}</span>
                         </div>
-                        {trackingUrl && awb && (
+                        {awb && trackingUrl ? (
                           activeCode === 'cancellation_requested' ? (
                             <span
                               className="px-4 py-2 rounded-xl bg-foreground/10 text-foreground/35 text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-not-allowed opacity-50"
-                              title="Actions locked while cancellation is in progress"
+                              title="Tracking locked while cancellation is in progress"
                             >
                               <span>Track Shipment</span>
                               <ExternalLink className="w-3.5 h-3.5" />
@@ -1037,7 +1037,14 @@ export default function OrderDetailPage() {
                               <ExternalLink className="w-3.5 h-3.5" />
                             </a>
                           )
-                        )}
+                        ) : awbPending ? (
+                          <span
+                            className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400/90 text-[11px] font-bold uppercase tracking-wider cursor-default"
+                            title="Shiprocket draft has no courier AWB yet"
+                          >
+                            AWB Pending — Not Trackable
+                          </span>
+                        ) : null}
                       </div>
                     )}
                   </div>
