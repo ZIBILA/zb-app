@@ -2661,6 +2661,111 @@ export async function cancelShipment(trackingNumber: string): Promise<{ success:
 }
 
 /**
+ * Void reverse pickup(s) for ONE return / exchange request at the carrier so ops can reassign
+ * a logistics partner. Only touches reverse `Shipment` rows for that request — never the
+ * original outbound order AWB / delivery status.
+ */
+export async function cancelReversePickupsForRequest(args: {
+  orderId: string;
+  requestId: string;
+}): Promise<{ ok: boolean; message: string; voidedAwbs: string[] }> {
+  const marker = `"request_id":"${args.requestId}"`;
+  const rows = await prisma.shipment.findMany({
+    where: {
+      orderId: args.orderId,
+      type: { in: [...REVERSE_SHIPMENT_TYPES] },
+      rawDelhiveryResponse: { contains: marker },
+      status: { notIn: ['cancelled', 'canceled'] },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (rows.length === 0) return { ok: true, message: 'No reverse pickup booked', voidedAwbs: [] };
+
+  const config = await getLogisticsConfig();
+  const preset = PROVIDER_PRESETS[config.provider];
+  const voidedAwbs: string[] = [];
+
+  for (const row of rows) {
+    const awb = String(row.awb || '').trim();
+    const hasRealAwb = !!awb && !/^MOCK/i.test(awb) && !/^CANCELLED-/i.test(awb);
+    const meta = parseShiprocketMeta(row.rawDelhiveryResponse);
+    const srOrderId = meta?.order_id != null ? String(meta.order_id) : null;
+    const carrier = normalizeCarrierStatus(row.status);
+
+    // Parcel already with the courier — do not void / reassign from here.
+    if (['picked_up', 'in_transit', 'out_for_delivery', 'delivered'].includes(carrier)) {
+      return {
+        ok: false,
+        message: `Cannot cancel pickup — carrier reports "${carrier.replace(/_/g, ' ')}".`,
+        voidedAwbs,
+      };
+    }
+
+    if (config.provider === 'shiprocket' && preset) {
+      let awbVoided = !hasRealAwb;
+      if (hasRealAwb) {
+        try {
+          await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', { awbs: [awb] });
+          awbVoided = true;
+        } catch (err: any) {
+          if (isShiprocketAlreadyCancellingOrCancelled(err)) {
+            awbVoided = true;
+          } else {
+            console.warn(`[Logistics] Could not void reverse AWB ${awb}:`, err?.message || err);
+            return {
+              ok: false,
+              message: err?.message || 'The courier could not cancel this pickup',
+              voidedAwbs,
+            };
+          }
+        }
+      }
+
+      if (srOrderId) {
+        try {
+          await logisticsApiFetch(preset.endpoints.cancelShipment, 'POST', {
+            ids: [Number(srOrderId) || srOrderId],
+          });
+        } catch (err: any) {
+          if (!isShiprocketAlreadyCancellingOrCancelled(err)) {
+            if (!awbVoided) {
+              return { ok: false, message: err?.message || 'The courier could not cancel this pickup', voidedAwbs };
+            }
+            console.warn(`[Logistics] Reverse order ${srOrderId} cancel note:`, err?.message || err);
+          }
+        }
+      } else if (!awbVoided) {
+        return { ok: false, message: 'No Shiprocket order to cancel for this pickup', voidedAwbs };
+      }
+    }
+
+    await prisma.shipment
+      .update({
+        where: { id: row.id },
+        data: {
+          status: 'cancelled',
+          rawDelhiveryResponse: JSON.stringify({
+            ...(() => {
+              try {
+                return JSON.parse(row.rawDelhiveryResponse || '{}');
+              } catch {
+                return meta || {};
+              }
+            })(),
+            request_id: args.requestId,
+            voided_awb: hasRealAwb ? awb : undefined,
+            cancelled_by: 'admin_reassign',
+          }),
+        },
+      })
+      .catch((e: any) => console.error('[Logistics] Failed to mark reverse shipment cancelled:', e?.message || e));
+    if (hasRealAwb) voidedAwbs.push(awb);
+  }
+
+  return { ok: true, message: 'Reverse pickup cancelled', voidedAwbs };
+}
+
+/**
  * Test connection to the logistics provider.
  */
 export async function testConnection(): Promise<{ success: boolean; provider: string; message: string }> {

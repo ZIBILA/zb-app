@@ -50,50 +50,59 @@ export async function POST(req: Request) {
     let estimatedRefund = 0;
     const itemsToReturn: any[] = [];
 
-    for (const returnItem of returnItems) {
-      const orderItem = order.items.find((item: any) => item.id === returnItem.orderItemId);
-      if (!orderItem) continue;
+    // Resolve product ids in parallel — sequential findFirst calls were adding latency on submit.
+    const resolved = await Promise.all(
+      returnItems.map(async (returnItem: any) => {
+        const orderItem = order.items.find((item: any) => item.id === returnItem.orderItemId);
+        if (!orderItem) return { error: null as string | null, row: null as any };
 
-      let productId = orderItem.productId;
-      if (!productId) {
-        if (orderItem.sku) {
-          const matched = await prisma.product.findFirst({ where: { sku: orderItem.sku } });
+        let productId = orderItem.productId;
+        if (!productId && orderItem.sku) {
+          const matched = await prisma.product.findFirst({ where: { sku: orderItem.sku }, select: { id: true } });
           if (matched) productId = matched.id;
         }
         if (!productId && orderItem.title) {
-          const matched = await prisma.product.findFirst({ where: { title: orderItem.title } });
+          const matched = await prisma.product.findFirst({ where: { title: orderItem.title }, select: { id: true } });
           if (matched) productId = matched.id;
         }
+        if (!productId) {
+          return {
+            error: `Cannot resolve product for "${orderItem.title || 'item'}". Product record missing.`,
+            row: null,
+          };
+        }
+
+        const orderedQty = Math.max(1, Math.floor(Number(orderItem.quantity) || 1));
+        const quantity = Math.min(orderedQty, Math.max(1, Math.floor(Number(returnItem.quantity) || 1)));
+        const itemRefund = orderItem.price * quantity;
+        return {
+          error: null,
+          row: {
+            productId,
+            orderId: order.id,
+            customerId: resolvedUserId,
+            quantity,
+            sku: orderItem.sku,
+            reason: returnItem.reason,
+            status: "REQUESTED",
+            refundAmount: itemRefund,
+            refundMethod: effectiveRefundMethod,
+            comments: returnItem.comments,
+            variantTitle: orderItem.variantTitle,
+            size: orderItem.size,
+            title: orderItem.title,
+          },
+        };
+      })
+    );
+
+    for (const entry of resolved) {
+      if (entry.error) {
+        return NextResponse.json({ error: entry.error }, { status: 400 });
       }
-
-      if (!productId) {
-        return NextResponse.json({
-          error: `Cannot resolve product for "${orderItem.title || 'item'}". Product record missing.`
-        }, { status: 400 });
-      }
-
-      // Never trust the client quantity: 1..ordered quantity, whole units only.
-      const orderedQty = Math.max(1, Math.floor(Number(orderItem.quantity) || 1));
-      const quantity = Math.min(orderedQty, Math.max(1, Math.floor(Number(returnItem.quantity) || 1)));
-
-      const itemRefund = orderItem.price * quantity;
-      estimatedRefund += itemRefund;
-
-      itemsToReturn.push({
-        productId,
-        orderId: order.id,
-        customerId: resolvedUserId,
-        quantity,
-        sku: orderItem.sku,
-        reason: returnItem.reason,
-        status: "REQUESTED",
-        refundAmount: itemRefund,
-        refundMethod: effectiveRefundMethod,
-        comments: returnItem.comments,
-        variantTitle: orderItem.variantTitle,
-        size: orderItem.size,
-        title: orderItem.title,
-      });
+      if (!entry.row) continue;
+      estimatedRefund += entry.row.refundAmount;
+      itemsToReturn.push(entry.row);
     }
 
     // Create the ReturnRequest
@@ -134,34 +143,8 @@ export async function POST(req: Request) {
       data: { status: "return_initiated" }
     });
 
-    // Dispatch notification to developer@zicabella.com
-    try {
-      const customer = await prisma.customer.findUnique({ where: { id: resolvedUserId } });
-      const { sendRefundRequestNotification } = await import("@/lib/services/refundNotificationService");
-      await sendRefundRequestNotification({
-        returnRequestId: returnRequest.id,
-        orderId: order.id,
-        shopifyOrderId: order.shopifyOrderId,
-        customerName: customer?.name || "Customer",
-        customerEmail: customer?.email,
-        customerPhone: customer?.phone,
-        items: returnRequest.returns.map((r: any) => ({
-          title: r.product?.title || r.sku || "Returned Item",
-          sku: r.sku,
-          quantity: r.quantity || 1,
-          price: r.refundAmount || 0,
-          reason: r.reason
-        })),
-        totalRefundAmount: estimatedRefund,
-        refundMethod: effectiveRefundMethod,
-        reason: returnItems[0]?.reason,
-        requestType: "RETURN"
-      });
-    } catch (notifErr: any) {
-      console.error("[CreateReturn] Failed to send notification email:", notifErr);
-    }
-
-    return NextResponse.json({
+    // Respond first — email can take many seconds and must not block the customer.
+    const responseBody = {
       returnRequestId: returnRequest.id,
       displayId: returnRequest.displayId,
       refundMethod: effectiveRefundMethod,
@@ -170,7 +153,37 @@ export async function POST(req: Request) {
       estimatedRefund: returnRequest.estimatedRefund,
       createdAt: returnRequest.createdAt,
       items: returnRequest.returns
-    });
+    };
+
+    void (async () => {
+      try {
+        const customer = await prisma.customer.findUnique({ where: { id: resolvedUserId } });
+        const { sendRefundRequestNotification } = await import("@/lib/services/refundNotificationService");
+        await sendRefundRequestNotification({
+          returnRequestId: returnRequest.id,
+          orderId: order.id,
+          shopifyOrderId: order.shopifyOrderId,
+          customerName: customer?.name || "Customer",
+          customerEmail: customer?.email,
+          customerPhone: customer?.phone,
+          items: returnRequest.returns.map((r: any) => ({
+            title: r.product?.title || r.sku || "Returned Item",
+            sku: r.sku,
+            quantity: r.quantity || 1,
+            price: r.refundAmount || 0,
+            reason: r.reason
+          })),
+          totalRefundAmount: estimatedRefund,
+          refundMethod: effectiveRefundMethod,
+          reason: returnItems[0]?.reason,
+          requestType: "RETURN"
+        });
+      } catch (notifErr: any) {
+        console.error("[CreateReturn] Failed to send notification email:", notifErr);
+      }
+    })();
+
+    return NextResponse.json(responseBody);
   } catch (error: any) {
     console.error("Create Return Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });

@@ -176,41 +176,6 @@ export async function POST(req: Request) {
       createdExchanges = exchangeRequestRow.exchanges;
     }
 
-    // Send email notification to developer@zicabella.com
-    try {
-      if (createdReturns.length > 0 || createdExchanges.length > 0) {
-        const { sendRefundRequestNotification } = await import('@/lib/services/refundNotificationService');
-        const isReturn = createdReturns.length > 0;
-        const totalAmount = createdReturns.reduce((sum, r) => sum + (r.refundAmount || 0), 0);
-        
-        await sendRefundRequestNotification({
-          returnRequestId: returnRequestRow?.id,
-          exchangeRequestId: exchangeRequestRow?.id,
-          orderId: order.id,
-          shopifyOrderId: order.shopifyOrderId,
-          customerName: order.customer?.name || 'Customer',
-          customerEmail: order.customer?.email,
-          customerPhone: order.customer?.phone,
-          items: items.map((i) => {
-            const oi = order.items.find((x: any) => x.id === i.lineItemId || x.shopifyLineItemId === i.lineItemId);
-            return {
-              title: oi?.title || oi?.name || 'Requested Item',
-              sku: oi?.sku,
-              quantity: i.quantity || 1,
-              price: oi?.price || 0,
-              reason: i.reason || notes,
-            };
-          }),
-          totalRefundAmount: totalAmount,
-          refundMethod: effectiveRefundMethod,
-          reason: notes || items[0]?.reason,
-          requestType: isReturn ? 'RETURN' : 'EXCHANGE',
-        });
-      }
-    } catch (notifErr: any) {
-      console.error('[AppOrderReturn] Notification email error:', notifErr);
-    }
-
     const totalCreated = createdReturns.length + createdExchanges.length;
     if (totalCreated === 0) {
       return NextResponse.json(
@@ -219,32 +184,62 @@ export async function POST(req: Request) {
       );
     }
 
-    // ─── SHOPIFY SYNCHRONIZATION ───
-    if (order.shopifyOrderId) {
+    // Email + Shopify sync are non-critical for the customer — do them after the response.
+    void (async () => {
       try {
-        const existingTags = (order as any).tags || '';
-        const newTags = existingTags ? `${existingTags}, APP_RETURN_REQUEST` : 'APP_RETURN_REQUEST';
-        const newNote = `${order.note || ''}\n\n[App Return/Exchange Request - ${new Date().toLocaleDateString()}]\nItems: ${items.map(i => `${i.action || 'return'}: ${i.lineItemId} (Reason: ${i.reason})`).join(', ')}${isStoreCredit ? '\nRefund: Store Credits' : ''}`;
-        
-        await shopifyPatch(`orders/${order.shopifyOrderId}.json`, {
-          order: {
-            id: parseInt(order.shopifyOrderId, 10),
-            tags: newTags,
-            note: newNote,
-          }
-        });
-
-        // Also update local tags so we don't lose them
-        await prisma.order.update({
-          where: { id: order.id },
-          data: { tags: newTags, note: newNote.trim() },
-        });
-
-        console.log(`[App API] Successfully synced return/exchange for Order ${order.shopifyOrderId} to Shopify`);
-      } catch (shopError: any) {
-        console.warn(`[App API] Failed to sync to Shopify (non-critical):`, shopError.message);
+        if (createdReturns.length > 0 || createdExchanges.length > 0) {
+          const { sendRefundRequestNotification } = await import('@/lib/services/refundNotificationService');
+          const isReturn = createdReturns.length > 0;
+          const totalAmount = createdReturns.reduce((sum, r) => sum + (r.refundAmount || 0), 0);
+          await sendRefundRequestNotification({
+            returnRequestId: returnRequestRow?.id,
+            exchangeRequestId: exchangeRequestRow?.id,
+            orderId: order.id,
+            shopifyOrderId: order.shopifyOrderId,
+            customerName: order.customer?.name || 'Customer',
+            customerEmail: order.customer?.email,
+            customerPhone: order.customer?.phone,
+            items: items.map((i) => {
+              const oi = order.items.find((x: any) => x.id === i.lineItemId || x.shopifyLineItemId === i.lineItemId);
+              return {
+                title: oi?.title || oi?.name || 'Requested Item',
+                sku: oi?.sku,
+                quantity: i.quantity || 1,
+                price: oi?.price || 0,
+                reason: i.reason || notes,
+              };
+            }),
+            totalRefundAmount: totalAmount,
+            refundMethod: effectiveRefundMethod,
+            reason: notes || items[0]?.reason,
+            requestType: isReturn ? 'RETURN' : 'EXCHANGE',
+          });
+        }
+      } catch (notifErr: any) {
+        console.error('[AppOrderReturn] Notification email error:', notifErr);
       }
-    }
+
+      if (order.shopifyOrderId) {
+        try {
+          const existingTags = (order as any).tags || '';
+          const newTags = existingTags ? `${existingTags}, APP_RETURN_REQUEST` : 'APP_RETURN_REQUEST';
+          const newNote = `${order.note || ''}\n\n[App Return/Exchange Request - ${new Date().toLocaleDateString()}]\nItems: ${items.map(i => `${i.action || 'return'}: ${i.lineItemId} (Reason: ${i.reason})`).join(', ')}${isStoreCredit ? '\nRefund: Store Credits' : ''}`;
+          await shopifyPatch(`orders/${order.shopifyOrderId}.json`, {
+            order: {
+              id: parseInt(order.shopifyOrderId, 10),
+              tags: newTags,
+              note: newNote,
+            }
+          });
+          await prisma.order.update({
+            where: { id: order.id },
+            data: { tags: newTags, note: newNote.trim() },
+          });
+        } catch (shopError: any) {
+          console.warn(`[App API] Failed to sync to Shopify (non-critical):`, shopError.message);
+        }
+      }
+    })();
 
     return NextResponse.json(
       {

@@ -2,12 +2,14 @@ import prisma from '@/lib/db';
 import { allocateLinkedId } from '@/lib/linkedIds';
 import {
   bookShiprocketReversePickup,
+  cancelReversePickupsForRequest,
   getActiveLogisticsProvider,
   getShiprocketReturnCouriers,
   type CourierOption,
   type ReverseItem,
   type ReverseParty,
 } from '@/lib/services/logistics';
+import { normalizeCarrierStatus } from '@/lib/logistics/status';
 
 /**
  * Orchestrates the "accept → choose logistics partner → AWB → pickup" leg for both
@@ -274,6 +276,76 @@ export async function bookReversePickupForRequest(
     displayId: ctx.displayId,
     pickupScheduled: result.pickupScheduled,
   };
+}
+
+/** Statuses where ops may still void a booked reverse pickup and pick another partner. */
+const CANCELLABLE_PICKUP_STATUSES = ['approved', 'approved_pickup_failed'];
+
+/**
+ * Cancel a booked reverse pickup at Shiprocket and clear the request's AWB so ops can
+ * re-select a logistics partner. Refuses once the courier has collected the parcel.
+ */
+export async function cancelReversePickupForRequest(
+  kind: ReverseKind,
+  id: string
+): Promise<{ voidedAwbs: string[]; displayId: string }> {
+  const ctx = await loadContext(kind, id);
+  if (!ctx) throw new Error(`${kind === 'return' ? 'Return' : 'Exchange'} request not found`);
+
+  const status = String(ctx.status || '').toLowerCase();
+  if (!CANCELLABLE_PICKUP_STATUSES.includes(status)) {
+    throw new Error(
+      status === 'in_transit' || status === 'delivered_to_warehouse' || status === 'received'
+        ? 'Pickup is already complete — this request can no longer be reassigned.'
+        : `Cannot cancel pickup while the request is "${ctx.status}".`
+    );
+  }
+  if (!ctx.reverseAwb) {
+    throw new Error('No reverse pickup is booked for this request.');
+  }
+
+  const ship = await prisma.shipment.findFirst({
+    where: {
+      orderId: ctx.orderId,
+      OR: [{ awb: ctx.reverseAwb }, { trackingNumber: ctx.reverseAwb }],
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  const carrier = ship ? normalizeCarrierStatus(ship.status) : null;
+  if (carrier && ['picked_up', 'in_transit', 'out_for_delivery', 'delivered'].includes(carrier)) {
+    throw new Error(`Cannot cancel pickup — carrier reports "${carrier.replace(/_/g, ' ')}".`);
+  }
+
+  const voided = await cancelReversePickupsForRequest({ orderId: ctx.orderId, requestId: ctx.requestId });
+  if (!voided.ok) {
+    throw new Error(voided.message || 'The courier could not cancel this pickup.');
+  }
+
+  const data = {
+    reverseAwb: null as string | null,
+    logisticsPartner: null as string | null,
+    status: 'approved_pickup_failed',
+  };
+  if (kind === 'return') {
+    await prisma.returnRequest.update({ where: { id }, data });
+  } else {
+    await prisma.exchangeRequest.update({ where: { id }, data });
+    // Keep the internal exchange-return mirror in step so its AWB cannot revive this pickup.
+    const er = await prisma.exchangeRequest.findUnique({
+      where: { id },
+      select: { returnRequestId: true },
+    });
+    if (er?.returnRequestId) {
+      await prisma.returnRequest
+        .update({
+          where: { id: er.returnRequestId },
+          data: { reverseAwb: null, logisticsPartner: null, status: 'approved_pickup_failed' },
+        })
+        .catch(() => {});
+    }
+  }
+
+  return { voidedAwbs: voided.voidedAwbs, displayId: ctx.displayId };
 }
 
 async function notifyPickupScheduled(kind: ReverseKind, id: string, ctx: ReverseContext, awb: string) {

@@ -481,7 +481,7 @@ export default function ProfilePage() {
               { label: "WISHLIST", value: mounted ? bookmarks.length : 0, icon: Heart },
               { 
                 label: "STORE COINS", 
-                value: storeCredits > 0 ? `${storeCredits.toLocaleString("en-IN")} Coins` : "0 Coins", 
+                value: storeCredits > 0 ? storeCredits.toLocaleString("en-IN") : "0", 
                 icon: Coins,
                 subtext: storeCredits > 0 ? `(₹${storeCredits.toLocaleString("en-IN")})` : undefined,
                 onClick: () => setShowCoinsModal(true)

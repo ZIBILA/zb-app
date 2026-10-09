@@ -48,6 +48,7 @@ export default function ReversePickupPanel({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [booking, setBooking] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [options, setOptions] = useState<PickupOptions | null>(null);
   const [weight, setWeight] = useState("0.5");
   const [length, setLength] = useState("30");
@@ -79,6 +80,27 @@ export default function ReversePickupPanel({
       setLoading(false);
     }
   }, [base, weight, length, breadth, height, onError]);
+
+  const cancelPickup = async () => {
+    if (!reverseAwb) return;
+    if (!confirm("Cancel this reverse pickup at the courier and reassign a logistics partner?")) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(
+        `/api/admin/${kind === "return" ? "returns" : "exchanges"}/${requestId}/cancel-pickup`,
+        { method: "POST" }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to cancel pickup");
+      setOpen(false);
+      setOptions(null);
+      onBooked(json.message || "Pickup cancelled. Select a new logistics partner.");
+    } catch (e: any) {
+      onError(e?.message || "Failed to cancel pickup");
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   const book = async () => {
     if (!choice) return;
@@ -131,7 +153,18 @@ export default function ReversePickupPanel({
         </div>
       </div>
 
-      {bookable && !open && (
+      {bookable && reverseAwb && !open && (
+        <button
+          onClick={cancelPickup}
+          disabled={cancelling}
+          className="w-full py-2.5 border border-rose-500/25 text-rose-500 rounded-lg text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-rose-500/5 disabled:opacity-50"
+        >
+          {cancelling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+          Cancel Pickup &amp; Reassign Partner
+        </button>
+      )}
+
+      {bookable && !open && !reverseAwb && (
         <button
           onClick={() => {
             setOpen(true);
@@ -140,7 +173,7 @@ export default function ReversePickupPanel({
           className="w-full py-2.5 bg-amber-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest flex items-center justify-center gap-2"
         >
           <TruckIcon className="w-3.5 h-3.5" />
-          {reverseAwb || status === "approved_pickup_failed" ? "Re-select Logistics Partner" : "Select Logistics Partner"}
+          {status === "approved_pickup_failed" ? "Re-select Logistics Partner" : "Select Logistics Partner"}
         </button>
       )}
 

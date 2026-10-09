@@ -39,6 +39,7 @@ type Summary = {
   in_transit: number;
   failed: number;
   received: number;
+  refund_pending: number;
   refunded: number;
   rejected: number;
   total: number;
@@ -81,6 +82,7 @@ export default function ReturnsPage() {
     in_transit: 0,
     failed: 0,
     received: 0,
+    refund_pending: 0,
     refunded: 0,
     rejected: 0,
     total: 0,
@@ -152,6 +154,7 @@ export default function ReturnsPage() {
           in_transit: sc.in_transit || 0,
           failed: sc.failed || 0,
           received: sc.received || 0,
+          refund_pending: sc.refund_pending || 0,
           refunded: sc.refunded || 0,
           rejected: sc.rejected || 0,
           total: data.total || 0,
@@ -278,7 +281,8 @@ export default function ReturnsPage() {
     { label: "Pickup Scheduled", statusKey: "pickup_scheduled", count: summary.pickup_scheduled, icon: Package, color: "text-indigo-500", bg: "bg-indigo-500/10" },
     { label: "In Transit", statusKey: "in_transit", count: summary.in_transit, icon: TruckIcon, color: "text-sky-500", bg: "bg-sky-500/10" },
     { label: "Failed", statusKey: "failed", count: summary.failed, icon: AlertTriangle, color: "text-rose-500", bg: "bg-rose-500/10" },
-    { label: "Received", statusKey: "received", count: summary.received, icon: CheckCircle2, color: "text-teal-500", bg: "bg-teal-500/10" },
+    { label: "Received", statusKey: "received", count: summary.received, icon: Inbox, color: "text-teal-500", bg: "bg-teal-500/10" },
+    { label: "Refund Pending", statusKey: "refund_pending", count: summary.refund_pending, icon: CreditCard, color: "text-amber-500", bg: "bg-amber-500/10" },
   ];
 
   return (
@@ -309,7 +313,7 @@ export default function ReturnsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {summaryCards.map((card) => {
           const Icon = card.icon;
           return (
@@ -326,7 +330,7 @@ export default function ReturnsPage() {
 
       <div className="flex flex-col md:flex-row gap-3">
         <div className="flex items-center bg-background border border-foreground/[0.05] rounded-md p-1 overflow-x-auto">
-          {["all", "pending", "pickup_scheduled", "in_transit", "failed", "received", "refunded", "rejected"].map((s) => (
+          {["all", "pending", "pickup_scheduled", "in_transit", "failed", "received", "refund_pending", "refunded", "rejected"].map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1.5 rounded-[4px] text-[8px] font-medium uppercase tracking-[0.15em] transition-colors whitespace-nowrap ${statusFilter === s ? "bg-foreground text-background" : "text-foreground/50 hover:bg-foreground/[0.03]"}`}>
               {s === "all" ? "All" : STATUS_CONFIG[s]?.label || s}
             </button>
