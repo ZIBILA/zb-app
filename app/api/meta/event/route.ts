@@ -5,16 +5,82 @@ import { authOptions } from '@/app/api/auth/[...nextauth]/options';
 import prisma from '@/lib/db';
 import { DEMO_PHONES_RAW, DEMO_EMAILS_RAW } from '@/lib/metaPixel';
 import { buildServerUserData } from '@/lib/buildMetaUserData';
-import { getClientIP, lookupIpGeo, type IpGeoResult } from '@/lib/ip-geo';
+import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/ip-geo';
+import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
+import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
+import { rateLimitInMemory } from '@/lib/rate-limit-memory';
+import { emitMetaPurchase, metaContextFromRequest } from '@/lib/meta/purchase-server';
 import crypto from 'crypto';
 
+/**
+ * Worldwide E.164 with "+" (e.g. "+447700900123"). The "+" is kept on purpose:
+ * sendCapiEvent normalizes again, and a "+" number is parsed by its own calling
+ * code there instead of falling back to India. "" → undefined.
+ */
 function normalizePhone(p: string | undefined): string | undefined {
   if (!p) return undefined;
-  const digits = p.replace(/\D/g, "");
-  let base = digits;
-  if (digits.length === 12 && digits.startsWith("91")) base = digits.slice(2);
-  else if (digits.length === 11 && digits.startsWith("0")) base = digits.slice(1);
-  return `91${base}`;
+  const digits = normalizePhoneWorldwide(p);
+  return digits ? `+${digits}` : undefined;
+}
+
+// ── Browser-facing endpoint guards ──
+// Only events the storefront's own hooks send (hooks/useMetaEvents.ts, MetaPixelRouteTracker).
+const ALLOWED_EVENTS = new Set([
+  'PageView', 'ViewContent', 'AddToCart', 'RemoveFromCart', 'AddToWishlist',
+  'InitiateCheckout', 'AddPaymentInfo', 'Purchase', 'CompleteRegistration',
+  'Search', 'Lead', 'Subscribe', 'Contact', 'FindLocation', 'Schedule', 'StartTrial',
+]);
+const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+/** Events whose caller-supplied identity (typed/verified for that event) survives the guest strip. */
+const EXPLICIT_IDENTITY_EVENTS = new Set(['Lead', 'Subscribe', 'CompleteRegistration']);
+const MAX_VALUE = 10_000_000;
+const MAX_LIST = 100;
+
+function allowedHosts(): Set<string> {
+  const hosts = new Set(['zicabella.com', 'www.zicabella.com', 'app.zicabella.com']);
+  try {
+    if (process.env.NEXT_PUBLIC_SITE_URL) hosts.add(new URL(process.env.NEXT_PUBLIC_SITE_URL).hostname);
+  } catch {}
+  if (process.env.NODE_ENV !== 'production') hosts.add('localhost');
+  return hosts;
+}
+const ALLOWED_HOSTS = allowedHosts();
+
+function isAllowedSourceUrl(url: unknown): boolean {
+  if (typeof url !== 'string' || url.length > 2048) return false;
+  try {
+    const u = new URL(url);
+    return (u.protocol === 'https:' || u.protocol === 'http:') && ALLOWED_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Drop out-of-range commerce values instead of forwarding them to Meta. */
+function sanitizeCustomData(cd: unknown): Record<string, any> | undefined {
+  if (!cd || typeof cd !== 'object' || Array.isArray(cd)) return undefined;
+  const out: Record<string, any> = { ...(cd as Record<string, any>) };
+  if (out.value !== undefined) {
+    const v = Number(out.value);
+    if (!Number.isFinite(v) || v < 0 || v > MAX_VALUE) delete out.value;
+    else out.value = v;
+  }
+  if (out.currency !== undefined && !(typeof out.currency === 'string' && /^[A-Za-z]{3}$/.test(out.currency))) {
+    delete out.currency;
+  }
+  if (out.content_ids !== undefined) {
+    if (!Array.isArray(out.content_ids)) delete out.content_ids;
+    else out.content_ids = out.content_ids.slice(0, MAX_LIST).map(String);
+  }
+  if (out.contents !== undefined) {
+    if (!Array.isArray(out.contents)) delete out.contents;
+    else out.contents = out.contents.slice(0, MAX_LIST).filter((c: any) => c && typeof c === 'object');
+  }
+  if (out.num_items !== undefined) {
+    const n = Number(out.num_items);
+    if (!Number.isInteger(n) || n < 0 || n > 10_000) delete out.num_items;
+  }
+  return out;
 }
 
 // ── Dev-mode duplicate PII detection safeguard ──
@@ -84,29 +150,80 @@ export async function POST(req: NextRequest) {
     const {
       eventName,
       eventId,
-      eventTime, // Received from client for perfect browser-server timestamp sync
+      eventTime: rawEventTime, // Received from client for browser-server timestamp sync
       eventSourceUrl,
       userAgent,
       userData,
       customData,
-      actionSource,
     } = body;
+    // This endpoint only relays the storefront's own website events.
+    const actionSource = 'website' as const;
+    // Client clock is trusted only within Meta's window (7 days back, 1 hour ahead).
+    const nowSec = Math.floor(Date.now() / 1000);
+    const eventTime =
+      typeof rawEventTime === 'number' && Number.isFinite(rawEventTime) &&
+      rawEventTime > nowSec - 7 * 86400 && rawEventTime <= nowSec + 3600
+        ? Math.floor(rawEventTime)
+        : nowSec;
 
     // Strict payload validation
     if (!eventName || !eventId || !eventSourceUrl || !userAgent) {
       console.warn('[Meta CAPI Route] Rejected invalid payload: Missing required event metadata');
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+    if (
+      typeof eventName !== 'string' || !ALLOWED_EVENTS.has(eventName) ||
+      typeof eventId !== 'string' || !EVENT_ID_RE.test(eventId) ||
+      typeof userAgent !== 'string' || userAgent.length > 1024 ||
+      !isAllowedSourceUrl(eventSourceUrl) ||
+      (userData !== undefined && userData !== null && (typeof userData !== 'object' || Array.isArray(userData)))
+    ) {
+      return NextResponse.json({ error: 'Invalid event' }, { status: 400 });
+    }
 
-    // Extract request-scoped data (synchronous — no I/O)
-    const ip = req.cookies.get('zb_client_ip')?.value || getClientIP(req);
+    // Live request IP first; the zb_client_ip cookie (up to 7 days old) is only a fallback.
+    const headerIp = getClientIP(req);
+    const ip = headerIp && !isPrivateIP(headerIp)
+      ? headerIp
+      : (req.cookies.get('zb_client_ip')?.value || headerIp);
+
+    // Abuse throttle (in-memory, no DB): generous for real browsing, blocks floods.
+    const limited = rateLimitInMemory(`meta-event:${ip}`, { maxRequests: 120, windowMs: 60_000 });
+    if (!limited.allowed) {
+      return NextResponse.json({ error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(limited.resetAfter) } });
+    }
+
+    // ── Purchase: never sent from browser-submitted data ──
+    // Delegated to the authoritative ledger delivery, which reads value, items and
+    // payment status from the stored order (event_id = order id) and sends at most
+    // once across checkout/complete, the Razorpay webhook and this route. This
+    // request's own UA / IP / _fbp / _fbc only fill gaps in the stored context.
+    if (eventName === 'Purchase') {
+      const ud = (userData || {}) as Record<string, any>;
+      const result = await emitMetaPurchase(
+        eventId,
+        metaContextFromRequest(req, { fbp: ud.fbp, fbc: ud.fbc, externalId: ud.external_id }),
+        { paymentConfirmed: true }, // stored paymentStatus is re-checked inside
+      );
+      const cd = sanitizeCustomData(customData);
+      // Shape kept for browsers still running the previous bundle (they read reportedValue).
+      return NextResponse.json({
+        success: true,
+        delivery: result.status,
+        reportedValue: cd?.value,
+        currency: cd?.currency,
+        contents: cd?.contents,
+      });
+    }
 
     const fbp = req.cookies.get('_fbp')?.value;
     const fbc = req.cookies.get('_fbc')?.value;
     const externalId = req.cookies.get('zb_external_id')?.value;
     const isLoggedIn = req.cookies.get('zb_user_logged_in')?.value === 'true';
 
-    const guestEmail = req.cookies.get('zb_guest_email')?.value;
+    // Hashed placeholder emails (guest@zicabella.com etc.) are never a customer identity.
+    const guestEmailCookie = req.cookies.get('zb_guest_email')?.value;
+    const guestEmail = guestEmailCookie && !isPlaceholderEmailHash(guestEmailCookie) ? guestEmailCookie : undefined;
     const guestPhone = req.cookies.get('zb_guest_phone')?.value;
     const guestFn = req.cookies.get('zb_guest_fn')?.value;
     const guestLn = req.cookies.get('zb_guest_ln')?.value;
@@ -132,7 +249,7 @@ export async function POST(req: NextRequest) {
     // The client sends the real order/cart value; the adjustment happens here so
     // the real value is never exposed in browser JS or network traffic to Meta.
     // This runs BEFORE any I/O so it's available for the fast-path response.
-    let adjustedCustomData = customData ? { ...customData } : undefined;
+    let adjustedCustomData = sanitizeCustomData(customData);
     if (adjustedCustomData?.value !== undefined) {
       const realValue = adjustedCustomData.value;
       const reportedValue = getReportedValue(eventName, realValue);
@@ -162,11 +279,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // === FAST PATH: Purchase/InitiateCheckout ===
+    // === FAST PATH: InitiateCheckout (Purchase is handled above) ===
     // Return reportedValue/currency immediately; fire session/Prisma/CAPI in background.
     // This ensures the client receives the adjusted value well within the 2500ms timeout,
     // eliminating the Pixel↔CAPI value mismatch that was degrading Data Quality Score.
-    if (['Purchase', 'InitiateCheckout'].includes(eventName)) {
+    if (eventName === 'InitiateCheckout') {
       // Build mergedUserData from cookies + body userData (no session await needed).
       // By the time a user reaches checkout/purchase, MetaPixelRouteTracker has already
       // hashed and stored all session PII in cookies (email, phone, name, DOB, address).
@@ -213,7 +330,7 @@ export async function POST(req: NextRequest) {
         userAgent,
         userData: mergedUserData,
         customData: adjustedCustomData,
-        actionSource: actionSource ?? 'website',
+        actionSource,
       }).catch((err: any) => {
         console.error(`[Meta CAPI] ${eventName} send failed:`, err?.message || 'error');
       });
@@ -236,7 +353,9 @@ export async function POST(req: NextRequest) {
       const rawPhone = (session.user as any).phone || (session as any).customer?.phone || undefined;
       const rawPhoneDigits = rawPhone ? rawPhone.replace(/\D/g, '').slice(-10) : '';
       const isPhoneDemo = DEMO_PHONES_RAW.some(d => d.replace(/\D/g, '').slice(-10) === rawPhoneDigits);
-      const isEmailDemo = rawEmail ? DEMO_EMAILS_RAW.includes(rawEmail.trim().toLowerCase()) : false;
+      const isEmailDemo = rawEmail
+        ? DEMO_EMAILS_RAW.includes(rawEmail.trim().toLowerCase()) || isPlaceholderEmail(rawEmail)
+        : false;
 
       if (!isEmailDemo) sessionUserData.em = rawEmail;
       if (!isPhoneDemo) sessionUserData.ph = normalizePhone(rawPhone);
@@ -317,6 +436,16 @@ export async function POST(req: NextRequest) {
       delete mergedUserData.ln;
       delete mergedUserData.db;
       delete mergedUserData.fb_login_id;
+
+      // Identity the shopper typed / verified for THIS event is kept (newsletter email on
+      // Lead/Subscribe, OTP phone + name on CompleteRegistration). The browser hook only
+      // forwards these fields for these events; they pass the same demo/placeholder filter.
+      if (EXPLICIT_IDENTITY_EVENTS.has(eventName) && userData) {
+        const explicit = buildServerUserData({ em: userData.em, ph: userData.ph, fn: userData.fn, ln: userData.ln });
+        for (const k of ['em', 'ph', 'fn', 'ln'] as const) {
+          if (explicit[k]) (mergedUserData as any)[k] = explicit[k];
+        }
+      }
     }
 
     const result = await sendCapiEvent({
@@ -327,7 +456,7 @@ export async function POST(req: NextRequest) {
       userAgent,
       userData: mergedUserData,
       customData: adjustedCustomData,
-      actionSource: actionSource ?? 'website',
+      actionSource,
     });
 
     // Missing Meta token / config: skip quietly (200) so storefront polls stay clean
