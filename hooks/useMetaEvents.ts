@@ -568,32 +568,6 @@ export function useMetaEvents() {
     trackGAEvent('start_trial');
   };
 
-  const trackSubscribe = async (email?: string, contentName = 'Newsletter Signup') => {
-    const base = getBasePayload('Subscribe');
-    
-    let hashedEmail: string | undefined = undefined;
-    if (email) {
-      hashedEmail = await sha256(email);
-    }
-
-    const customData = cleanCustomData({
-      content_name: contentName,
-      content_type: 'lead'
-    });
-
-    const userData = hashedEmail ? { em: hashedEmail } : undefined;
-
-    if (userData) {
-      initPixel(userData);
-    }
-
-    trackEvent('Subscribe', customData, base.eventId);
-    sendToCapiRoute({ ...base, customData, userData });
-    
-    // GA4 equivalent: subscribe
-    trackGAEvent('subscribe');
-  };
-
   /**
    * Free newsletter sign-up → Meta Lead (non-monetary; no invented value). Call only
    * after the backend confirmed the subscription was saved.
@@ -638,7 +612,6 @@ export function useMetaEvents() {
     trackFindLocation,
     trackSchedule,
     trackStartTrial,
-    trackSubscribe,
     trackNewsletterLead,
     trackLead,
   };

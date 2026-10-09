@@ -28,7 +28,9 @@ function normalizePhone(p: string | undefined): string | undefined {
 const ALLOWED_EVENTS = new Set([
   'PageView', 'ViewContent', 'AddToCart', 'RemoveFromCart', 'AddToWishlist',
   'InitiateCheckout', 'AddPaymentInfo', 'Purchase', 'CompleteRegistration',
-  'Search', 'Lead', 'Subscribe', 'Contact', 'FindLocation', 'Schedule', 'StartTrial',
+  // 'Subscribe' is intentionally absent: the store has no paid subscription; the free
+  // newsletter is a Lead (Meta flags Subscribe without a real price/currency).
+  'Search', 'Lead', 'Contact', 'FindLocation', 'Schedule', 'StartTrial',
 ]);
 const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 /** Events whose caller-supplied identity (typed/verified for that event) survives the guest strip. */
