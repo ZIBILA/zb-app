@@ -33,6 +33,10 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/cron/sync-shipments",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/cron/sync-failed-shopify-orders",
       "schedule": "*/30 * * * *"
     },
