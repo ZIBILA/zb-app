@@ -19,7 +19,8 @@
  * No database import: deps are injected (lib/meta/purchase-server.ts binds them).
  */
 import type { CapiEventPayload } from '@/lib/metaCapi';
-import { createDeliveryLedger, type DeliveryResult } from '@/lib/snap/ledger';
+import { createDeliveryLedger, isMissingTable, type DeliveryResult } from '@/lib/snap/ledger';
+import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder } from '@/lib/meta/order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
 import { isPlaceholderEmail } from '@/lib/tracking/placeholder-identity';
@@ -91,11 +92,19 @@ function parseAddress(raw: unknown): Record<string, any> {
 
 /**
  * Purchase value = Order.totalPrice (net sale: products − coupon − store credit;
- * COD upfront is not deducted). Same value the browser Pixel sends from the order.
+ * COD upfront is not deducted). Shared with the browser Pixel via lib/meta/order-value.
  */
-export function metaPurchaseValue(order: { totalPrice?: unknown }): number | null {
-  const v = Number(order?.totalPrice);
-  return Number.isFinite(v) && v >= 0 ? Math.round(v * 100) / 100 : null;
+export const metaPurchaseValue = sharedValue;
+
+/**
+ * Orders created by the webhook recovery path when no order existed: items are an
+ * unknown placeholder and the amount is only what Razorpay captured (for COD, just
+ * the upfront). Not a reportable sale until staff fill in the real items.
+ */
+function isUnresolvedRecoveryOrder(order: any): boolean {
+  const tags = String(order?.tags || '').toLowerCase();
+  if (!tags.includes('webhook-recovered')) return false;
+  return !(order.items || []).some((it: any) => snapCatalogIdFromOrderItem(it));
 }
 
 /** Build the CAPI Purchase from the stored order. Exported for tests. */
@@ -146,7 +155,7 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
     },
     customData: {
       value: value ?? undefined,
-      currency: String(order.currency || 'INR').toUpperCase(),
+      currency: metaPurchaseCurrency(order),
       order_id: order.id,
       content_type: 'product',
       content_ids: Array.from(new Set(contents.map(c => c.id))),
@@ -198,12 +207,38 @@ export function createMetaPurchaseDelivery({ db: prisma, send }: MetaPurchaseDep
       return { status: 'failed', reason: err?.message || 'order lookup failed' };
     }
     if (!order) return { status: 'skipped', reason: 'order not found' };
+    // Website Purchase only. Native iOS/Android app orders must never be reported as
+    // website conversions; exchange and Shopify-synced orders are not new web sales.
+    if (!isWebsiteOrder(order)) {
+      return { status: 'skipped', reason: `not a website order (orderType=${order.orderType})` };
+    }
+    if (isUnresolvedRecoveryOrder(order)) {
+      return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
+    }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!META_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
       if (ctx) await recordMetaPurchaseContext(orderId, ctx);
       return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     }
     if (metaPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
+
+    // Safety net: if the AdConversionDelivery table has not been migrated yet, send
+    // directly (previous behaviour; Meta still dedups on event_id = order id) instead
+    // of silently dropping every Purchase.
+    try {
+      await prisma.adConversionDelivery.findUnique({
+        where: { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } },
+        select: { id: true },
+      });
+    } catch (err: any) {
+      if (isMissingTable(err)) {
+        console.warn('[Meta Purchase] ad_conversion_deliveries table missing — sending without the ledger. Apply migration 20261009010000_snap_delivery_and_newsletter.');
+        const when = order.paymentCapturedAt || order.createdAt || new Date();
+        const res = await send(buildMetaPurchaseFromOrder(order, clean(ctx), new Date(when).getTime()));
+        return res.success ? { status: 'sent' } : { status: 'failed', reason: JSON.stringify(res.error ?? 'unknown').slice(0, 300) };
+      }
+      return { status: 'failed', reason: err?.message || 'ledger lookup failed' };
+    }
 
     return ledger.deliver({
       platform: PLATFORM,

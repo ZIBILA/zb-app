@@ -24,6 +24,7 @@ import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
 import { isPlaceholderEmail } from "@/lib/tracking/placeholder-identity";
+import { metaPurchaseValue, metaPurchaseCurrency, isWebsiteOrder } from "@/lib/meta/order-value";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -115,13 +116,6 @@ export default function OrderConfirmationPage() {
           storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
         }
 
-        const contents = order.items?.map((item: any) => ({
-          id: toSnapId(item),
-          quantity: item.quantity || 1,
-          item_price: parseFloat(item.price || "0"),
-          title: item.title
-        })) || [];
-
         // Meta: browser Pixel only for a confirmed payment (paid / cod_upfront_paid),
         // matching the server rule in lib/meta/purchase.ts. The CAPI Purchase is sent
         // once by the server from the stored order. Content ids are proven variant ids
@@ -151,11 +145,16 @@ export default function OrderConfirmationPage() {
               ph: addr?.phone || cust.phone || undefined,
             } : undefined;
           } catch {}
-          trackPurchase(
-            order.id, val, orderCurrency,
-            metaContents.map((c: any) => c.id),
-            metaUserData, storedCategory, metaContents
-          );
+          // Same value/currency definition as the server CAPI Purchase (lib/meta/order-value):
+          // confirmed net total after coupon and redeemed store credit, in the order's currency.
+          const metaValue = metaPurchaseValue(order);
+          if (metaValue !== null && isWebsiteOrder(order)) {
+            trackPurchase(
+              order.id, metaValue, metaPurchaseCurrency(order),
+              metaContents.map((c: any) => c.id),
+              metaUserData, storedCategory, metaContents
+            );
+          }
         }
         // Snap: browser pixel only, and only for a confirmed payment. The CAPI
         // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
