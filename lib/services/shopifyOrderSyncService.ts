@@ -359,23 +359,40 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       : null;
 
     const { resolveStoredCodUpfrontPaid, getCodBalanceDue, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-    // Prefer amount locked on the order at payment time; fall back only for legacy rows
-    let codUpfrontPaid = resolveStoredCodUpfrontPaid({
-      storedPaid: (order as any).codUpfrontPaid,
+    // Prefer amount locked at payment time — never invent ₹99 without a Razorpay pay_ id
+    const codUpfrontPaid = resolveStoredCodUpfrontPaid({
+      storedPaid:
+        Number((order as any).codUpfrontPaid) ||
+        Number(webStoreOrder?.codUpfrontPaid) ||
+        0,
       paymentStatus: order.paymentStatus,
       paymentMethod: order.paymentMethod,
       tags: order.tags,
       note: order.note,
+      paymentId:
+        (order as any).codUpfrontPaymentId ||
+        order.razorpayPaymentId ||
+        webStoreOrder?.codUpfrontPaymentId ||
+        webStoreOrder?.razorpayPaymentId ||
+        null,
       configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
     });
     if (isCod && codUpfrontPaid <= 0) {
-      try {
-        if (webStoreOrder?.codUpfrontPaid && Number(webStoreOrder.codUpfrontPaid) > 0) {
-          codUpfrontPaid = Number(webStoreOrder.codUpfrontPaid);
-        }
-      } catch {}
+      console.error(
+        `[ShopifyOrderSync] Refusing COD sync for ${order.id}: no verified upfront payment id`
+      );
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          shopifySyncStatus: 'failed',
+          shopifySyncError: 'COD upfront payment not verified on Razorpay — cannot sync',
+        },
+      });
+      return {
+        success: false,
+        error: 'Skipping Shopify sync: COD upfront payment not verified',
+      };
     }
-    if (isCod && codUpfrontPaid <= 0) codUpfrontPaid = DEFAULT_COD_UPFRONT_AMOUNT;
     const codBalanceDue = getCodBalanceDue(order.totalPrice || 0, codUpfrontPaid);
     const resolvedMethodTag = isCod ? 'COD' : 'Prepaid, Razorpay';
     const emailToUse = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';

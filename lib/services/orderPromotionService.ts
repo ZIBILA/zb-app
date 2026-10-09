@@ -60,6 +60,10 @@ export async function promoteMasterOrderToWebStoreOrder(mOrder: Record<string, u
       paymentMethod: mOrder.paymentMethod as string,
       tags: mOrder.tags as string,
       note: mOrder.note as string,
+      paymentId:
+        ((mOrder as any).codUpfrontPaymentId as string) ||
+        (mOrder.razorpayPaymentId as string) ||
+        null,
       configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
     });
 

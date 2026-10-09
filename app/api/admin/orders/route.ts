@@ -304,7 +304,6 @@ export async function GET(req: Request) {
         }
       }
 
-      let codUpfrontPaid = webStoreOrder?.codUpfrontPaid ? Number(webStoreOrder.codUpfrontPaid) : 0;
       const rawMethod = ((webStoreOrder?.paymentMethod as string) || (order.paymentMethod as string) || '').toLowerCase();
       const tagsLower = ((order.tags as string) || '').toLowerCase();
       const noteLower = ((order.note as string) || '').toLowerCase();
@@ -334,21 +333,26 @@ export async function GET(req: Request) {
         discountAmount = 0;
       }
 
-      if (isCodOrder && codUpfrontPaid === 0 && (paymentStatus === 'cod_upfront_paid' || paymentStatus === 'paid')) {
-        codUpfrontPaid = resolveStoredCodUpfrontPaid({
-          storedPaid: Number((order as any).codUpfrontPaid) || 0,
-          paymentStatus,
-          paymentMethod: order.paymentMethod as string,
-          tags: order.tags as string,
-          note: order.note as string,
-          paymentId:
-            (webStoreOrder?.codUpfrontPaymentId as string) ||
-            (webStoreOrder?.razorpayPaymentId as string) ||
-            (order.razorpayPaymentId as string) ||
-            null,
-          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-        });
-      }
+      const paymentProofId =
+        (webStoreOrder?.codUpfrontPaymentId as string) ||
+        (webStoreOrder?.razorpayPaymentId as string) ||
+        ((order as any).codUpfrontPaymentId as string) ||
+        (order.razorpayPaymentId as string) ||
+        null;
+      const codUpfrontPaid = isCodOrder
+        ? resolveStoredCodUpfrontPaid({
+            storedPaid:
+              Number(webStoreOrder?.codUpfrontPaid) ||
+              Number((order as any).codUpfrontPaid) ||
+              0,
+            paymentStatus,
+            paymentMethod: order.paymentMethod as string,
+            tags: order.tags as string,
+            note: order.note as string,
+            paymentId: paymentProofId,
+            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+          })
+        : 0;
 
       const totalPrice = order.totalPrice;
       

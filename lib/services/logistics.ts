@@ -433,6 +433,12 @@ export async function shipOrder(
             paymentMethod: dbOrder?.paymentMethod,
             tags: dbOrder?.tags,
             note: dbOrder?.note,
+            paymentId:
+              (dbOrder as any)?.codUpfrontPaymentId ||
+              dbOrder?.razorpayPaymentId ||
+              wsOrder?.codUpfrontPaymentId ||
+              wsOrder?.razorpayPaymentId ||
+              null,
             configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
           });
         }
@@ -1661,6 +1667,12 @@ export async function bookShiprocketOrderWithCourier(
       paymentMethod: dbOrder.paymentMethod,
       tags: dbOrder.tags,
       note: dbOrder.note,
+      paymentId:
+        (dbOrder as any)?.codUpfrontPaymentId ||
+        dbOrder.razorpayPaymentId ||
+        wsOrder?.codUpfrontPaymentId ||
+        wsOrder?.razorpayPaymentId ||
+        null,
       configuredFallback: fallbackFee || DEFAULT_COD_UPFRONT_AMOUNT,
     });
   }

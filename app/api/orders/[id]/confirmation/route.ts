@@ -203,7 +203,15 @@ export async function GET(
 
       const rawMethod = String(wso.paymentMethod || "").toLowerCase();
       const isCodOrder = rawMethod === "cod";
-      const codUpfrontPaid = Number(wso.codUpfrontPaid || 0);
+      const codUpfrontPaid = isCodOrder
+        ? resolveStoredCodUpfrontPaid({
+            storedPaid: Number(wso.codUpfrontPaid || 0),
+            paymentStatus: wso.paymentStatus,
+            paymentMethod: wso.paymentMethod,
+            paymentId: wso.codUpfrontPaymentId || wso.razorpayPaymentId || null,
+            configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+          })
+        : 0;
       const totalPrice = Number(wso.totalAmount || 0);
 
       return NextResponse.json({
@@ -269,19 +277,25 @@ export async function GET(
       ? "COD"
       : (webStoreOrder?.paymentMethod || order!.paymentMethod || "razorpay").toUpperCase();
 
-    let codUpfrontPaid = webStoreOrder?.codUpfrontPaid
-      ? Number(webStoreOrder.codUpfrontPaid)
-      : Number((order as any).codUpfrontPaid) || 0;
-    if (isCodOrder && codUpfrontPaid === 0) {
-      codUpfrontPaid = resolveStoredCodUpfrontPaid({
-        storedPaid: 0,
-        paymentStatus: webStoreOrder?.paymentStatus || order!.paymentStatus,
-        paymentMethod: order!.paymentMethod,
-        tags: order!.tags,
-        note: order!.note,
-        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-      });
-    }
+    const codUpfrontPaid = isCodOrder
+      ? resolveStoredCodUpfrontPaid({
+          storedPaid:
+            Number(webStoreOrder?.codUpfrontPaid) ||
+            Number((order as any).codUpfrontPaid) ||
+            0,
+          paymentStatus: webStoreOrder?.paymentStatus || order!.paymentStatus,
+          paymentMethod: order!.paymentMethod,
+          tags: order!.tags,
+          note: order!.note,
+          paymentId:
+            webStoreOrder?.codUpfrontPaymentId ||
+            webStoreOrder?.razorpayPaymentId ||
+            (order as any).codUpfrontPaymentId ||
+            order!.razorpayPaymentId ||
+            null,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        })
+      : 0;
 
     const discountCode = webStoreOrder?.discountCode || order!.discountCode || null;
     let discountAmount = webStoreOrder?.discountAmount

@@ -29,7 +29,10 @@ export function isCapturedPaymentEntity(
   const p = payment as RazorpayPaymentEntity;
   if (p.status !== 'captured' || p.captured !== true) return false;
   if (Number(p.amount_refunded || 0) !== 0) return false;
-  if (opts?.orderId && p.order_id && p.order_id !== opts.orderId) return false;
+  // When a Razorpay order id is required, payment must be bound to that exact order.
+  if (opts?.orderId) {
+    if (!p.order_id || p.order_id !== opts.orderId) return false;
+  }
   const min = Number(opts?.minRupees);
   if (Number.isFinite(min) && min > 0) {
     const tol = Number.isFinite(Number(opts?.toleranceRupees)) ? Number(opts!.toleranceRupees) : 1;

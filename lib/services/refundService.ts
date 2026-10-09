@@ -118,6 +118,12 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
         paymentMethod: order.paymentMethod,
         tags: order.tags,
         note: order.note,
+        paymentId:
+          (order as any).codUpfrontPaymentId ||
+          order.razorpayPaymentId ||
+          webStoreOrder?.codUpfrontPaymentId ||
+          webStoreOrder?.razorpayPaymentId ||
+          null,
         configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
       });
     } else {

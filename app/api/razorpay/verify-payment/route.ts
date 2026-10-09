@@ -16,10 +16,21 @@ export async function POST(req: Request) {
 
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = parsed.data;
 
-    // Handle MOCK payment verification for testing
-    if (razorpay_order_id.startsWith('order_mock_') || razorpay_signature === 'mock_sig_valid') {
+    // Accept mock payments ONLY in non-production with explicit opt-in (same as checkout/complete)
+    const allowMock =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.ALLOW_MOCK_PAYMENTS === 'true' &&
+      (razorpay_order_id.startsWith('order_mock_') || razorpay_signature === 'mock_sig_valid');
+    if (allowMock) {
       paymentLog('warn', 'verify-payment', { orderId: razorpay_order_id, message: 'Mock verification' });
       return NextResponse.json({ success: true, payment_id: razorpay_payment_id, mock: true });
+    }
+    if (razorpay_order_id.startsWith('order_mock_') || razorpay_signature === 'mock_sig_valid') {
+      paymentLog('warn', 'verify-payment', {
+        orderId: razorpay_order_id,
+        message: 'Mock verification rejected (production or ALLOW_MOCK_PAYMENTS unset)',
+      });
+      return NextResponse.json({ success: false, error: 'Mock payments are disabled' }, { status: 400 });
     }
 
     let secret: string;

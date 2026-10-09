@@ -86,6 +86,23 @@ export async function POST(req: Request) {
       if (!paymentId) {
         return jsonError('paymentId is required to mark an order as paid', 400);
       }
+      if (!rzpOrderId) {
+        return jsonError('razorpayOrderId is required to mark an order as paid', 400);
+      }
+      // One captured payment may confirm only one local order
+      const paymentAlreadyUsed = await prisma.order.findFirst({
+        where: {
+          OR: [
+            { razorpayPaymentId: paymentId },
+            { codUpfrontPaymentId: paymentId },
+          ],
+          ...(rzpOrderId ? { NOT: { razorpayOrderId: rzpOrderId } } : {}),
+        },
+        select: { id: true, internalOrderNumber: true },
+      });
+      if (paymentAlreadyUsed) {
+        return jsonError('This payment is already linked to another order', 409);
+      }
       try {
         const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
         const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
@@ -94,7 +111,7 @@ export async function POST(req: Request) {
           paymentId,
           credentials: creds,
           expectedMinRupees: isCod ? resolvedCodFee || DEFAULT_COD_UPFRONT_AMOUNT : 0,
-          orderId: rzpOrderId || null,
+          orderId: rzpOrderId,
         });
         verifiedCodUpfrontPaid = paymentAmountRupees(captured);
         paymentStatus = isCod ? 'cod_upfront_paid' : 'paid';

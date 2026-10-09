@@ -228,21 +228,26 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       resolvedDiscountAmount = 0;
     }
 
-    let resolvedCodUpfrontPaid = webStoreOrder?.codUpfrontPaid
-      ? Number(webStoreOrder.codUpfrontPaid)
-      : Number((order as any).codUpfrontPaid) || 0;
-    if (isCodOrder && resolvedCodUpfrontPaid === 0) {
-      const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-      resolvedCodUpfrontPaid = resolveStoredCodUpfrontPaid({
-        storedPaid: 0,
-        paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
-        paymentMethod: order.paymentMethod,
-        tags: order.tags,
-        note: order.note,
-        paymentId: webStoreOrder?.codUpfrontPaymentId || order.razorpayPaymentId || null,
-        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-      });
-    }
+    const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+    const resolvedCodUpfrontPaid = isCodOrder
+      ? resolveStoredCodUpfrontPaid({
+          storedPaid:
+            Number(webStoreOrder?.codUpfrontPaid) ||
+            Number((order as any).codUpfrontPaid) ||
+            0,
+          paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
+          paymentMethod: order.paymentMethod,
+          tags: order.tags,
+          note: order.note,
+          paymentId:
+            webStoreOrder?.codUpfrontPaymentId ||
+            webStoreOrder?.razorpayPaymentId ||
+            order.codUpfrontPaymentId ||
+            order.razorpayPaymentId ||
+            null,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        })
+      : 0;
 
     const baseStatus = String(webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
     const codSettled =

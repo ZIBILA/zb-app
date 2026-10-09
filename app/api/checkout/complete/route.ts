@@ -129,6 +129,7 @@ export async function POST(req: Request) {
     let authoritativeSubtotal = Math.max(0, Number(subtotal || 0));
     let paymentUnderpaid = false;
     let capturedRupees: number | null = null;
+    let acceptedMockPayment = false;
     const paymentAlreadyReturned = Boolean(razorpay?.razorpay_payment_id);
     try {
       if (paymentAlreadyReturned) {
@@ -290,6 +291,7 @@ export async function POST(req: Request) {
             );
           }
         } else {
+          acceptedMockPayment = true;
           console.warn('[Checkout] Accepting MOCK payment for testing');
         }
       } else {
@@ -589,11 +591,17 @@ export async function POST(req: Request) {
         : paymentUnderpaid
           ? "partially_paid"
           : "paid";
+    // COD upfront amount is locked from live capture only (mock fee only in non-prod opt-in).
     const lockedCodUpfrontPaid = isCodOrder
       ? (Number.isFinite(capturedRupees as number) && (capturedRupees as number) > 0
           ? (capturedRupees as number)
-          : resolvedCodFee)
+          : acceptedMockPayment
+            ? resolvedCodFee
+            : 0)
       : 0;
+    if (isCodOrder && lockedCodUpfrontPaid <= 0) {
+      return NextResponse.json({ error: 'COD upfront payment not captured' }, { status: 402 });
+    }
     const orderTotalPrice = priceVerified
       ? authoritativeTotal
       : Math.max(0, Number(subtotal || total || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
