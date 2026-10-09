@@ -17,7 +17,7 @@ import { WebsiteJsonLd } from "@/components/seo/WebsiteJsonLd";
 import { Analytics } from "@/components/seo/Analytics";
 import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
-import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES } from "@/lib/tracking/placeholder-identity";
+import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES, PLACEHOLDER_ZIP_HASHES } from "@/lib/tracking/placeholder-identity";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -144,7 +144,7 @@ export default function RootLayout({
 }>) {
   const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || "2049977412558608";
   // Demo-account and synthetic placeholder hashes never used as Advanced Matching.
-  const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES, ...PLACEHOLDER_PHONE_HASHES];
+  const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES, ...PLACEHOLDER_PHONE_HASHES, ...PLACEHOLDER_ZIP_HASHES];
   // Name placeholders are checked against fn / ln only (sha256('na') is also Namibia's country code).
   const metaBlockedNameHashes = [...PLACEHOLDER_NAME_HASHES];
   const snapPixelId = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || "7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd";

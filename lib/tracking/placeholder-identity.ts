@@ -153,6 +153,21 @@ export function isPlaceholderPhoneHash(hash: string | null | undefined): boolean
   return PLACEHOLDER_PHONE_HASHES.includes(hash.trim().toLowerCase());
 }
 
+/** SHA-256 of placeholder postcodes an old zb_guest_zp cookie may hold. */
+export const PLACEHOLDER_ZIP_HASHES: readonly string[] = [
+  "e7042ac7d09c7bc41c8cfa5749e41858f6980643bc0db1a83cc793d3e24d3f77", // 00000
+  "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9", // 0
+  "91b4d142823f7d20c5f08df69122de43f35f057a988d9619f6d3138485c9a203", // 000000
+  "9af15b336e6a9619928537df30b2e6a2376569fcf9d7e773eccede65606529a0", // 0000
+  "3d9fc4bde7ceef058d65b00186e79c1f14b42687b491644c303065135b644e18", // na
+  "140bedbf9c3f6d56a9846d2ba7088798683f4da0c248231336e6a05679e4fdfe", // none
+];
+
+export function isPlaceholderZipHash(hash: string | null | undefined): boolean {
+  if (!hash) return false;
+  return PLACEHOLDER_ZIP_HASHES.includes(hash.trim().toLowerCase());
+}
+
 /** First candidate that is a real (non-placeholder) email. */
 export function pickRealEmail(...candidates: unknown[]): string | undefined {
   for (const c of candidates) {

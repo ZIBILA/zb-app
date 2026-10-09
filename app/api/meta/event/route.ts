@@ -235,14 +235,27 @@ export async function POST(req: NextRequest) {
     const guestDob = req.cookies.get('zb_guest_dob')?.value;
     const piiOwnerCookie = req.cookies.get('zb_pii_owner')?.value;
 
+    // Every zb_guest_* cookie value belongs to the visitor whose external_id was
+    // bound to them (zb_pii_owner). If the browser now carries a different
+    // external_id (new guest on a shared device, expired id cookie), none of those
+    // cookies — name, address, DOB included — describe the current visitor.
+    const ownerForCookies = (userData as any)?.piiOwner || piiOwnerCookie;
+    const currentExtId = (userData as any)?.external_id || externalId;
+    // Strict: cookies with no owner binding (written before the binding existed) are
+    // not proven to be this visitor's, and the browser does not send them either.
+    const cookiePiiBound = !!ownerForCookies && !!currentExtId && ownerForCookies === currentExtId;
+    const bound = <T,>(v: T): T | undefined => (cookiePiiBound ? v : undefined);
+
     // ── IP Geolocation Fallback ──
     // If all client-side address cookies are absent (user denied/ignored location prompt),
     // look up city/state/country from the visitor's IP address.
     // Applies to ALL events so country/region parameters are always sent to Meta.
     let ipGeo: IpGeoResult | null = null;
-    const hasClientGeo = !!(guestCountry || guestState || guestCity || guestZip);
+    const hasClientGeo = cookiePiiBound && !!(guestCountry || guestState || guestCity || guestZip);
     if (!hasClientGeo) {
-      ipGeo = await lookupIpGeo(ip, req);
+      const looked = await lookupIpGeo(ip, req);
+      // A development placeholder is never customer data.
+      ipGeo = looked && !looked.isDevFallback ? looked : null;
     }
 
     // Issue 5 fix: Apply server-side value adjustment for Purchase and InitiateCheckout.
@@ -293,16 +306,16 @@ export async function POST(req: NextRequest) {
         fbp: userData?.fbp || fbp,
         fbc: userData?.fbc || fbc,
         external_id: userData?.external_id || externalId,
-        em: userData?.em || guestEmail,
-        ph: userData?.ph || guestPhone,
-        fn: userData?.fn || guestFn,
-        ln: userData?.ln || guestLn,
-        country: userData?.country || guestCountry || ipGeo?.countryCode?.toLowerCase(),
-        st: userData?.st || guestState || ipGeo?.region,
-        ct: userData?.ct || guestCity || ipGeo?.city,
-        zp: userData?.zp || guestZip || ipGeo?.zip || undefined,
+        em: userData?.em || bound(guestEmail),
+        ph: userData?.ph || bound(guestPhone),
+        fn: userData?.fn || bound(guestFn),
+        ln: userData?.ln || bound(guestLn),
+        country: userData?.country || bound(guestCountry) || ipGeo?.countryCode?.toLowerCase(),
+        st: userData?.st || bound(guestState) || ipGeo?.region,
+        ct: userData?.ct || bound(guestCity), // IP city / zip are the ISP's, not the shopper's
+        zp: userData?.zp || bound(guestZip),
         fb_login_id: userData?.fb_login_id || fbLoginId,
-        db: userData?.db || guestDob,
+        db: userData?.db || bound(guestDob),
       });
 
       // FIX 1c: Drop em/ph if they came from a cookie owned by a different identity
@@ -394,17 +407,19 @@ export async function POST(req: NextRequest) {
       client_user_agent: userData?.client_user_agent || userAgent,
       fbp: userData?.fbp || fbp,
       fbc: userData?.fbc || fbc,
-      external_id: userData?.external_id || externalId || sessionUserData.external_id,
-      em: userData?.em || guestEmail || sessionUserData.em,
-      ph: userData?.ph || guestPhone || sessionUserData.ph,
-      fn: userData?.fn || guestFn || sessionUserData.fn,
-      ln: userData?.ln || guestLn || sessionUserData.ln,
-      country: userData?.country || guestCountry || ipGeo?.countryCode?.toLowerCase(),
-      st: userData?.st || guestState || ipGeo?.region,
-      ct: userData?.ct || guestCity || ipGeo?.city,
-      zp: userData?.zp || guestZip || ipGeo?.zip || undefined,
+      // Logged-in: the stable customer id (one person across devices, sessions and
+      // guest resets — the browser cookie is set to the same id on login).
+      external_id: sessionUserData.external_id || userData?.external_id || externalId,
+      em: userData?.em || bound(guestEmail) || sessionUserData.em,
+      ph: userData?.ph || bound(guestPhone) || sessionUserData.ph,
+      fn: userData?.fn || bound(guestFn) || sessionUserData.fn,
+      ln: userData?.ln || bound(guestLn) || sessionUserData.ln,
+      country: userData?.country || bound(guestCountry) || ipGeo?.countryCode?.toLowerCase(),
+      st: userData?.st || bound(guestState) || ipGeo?.region,
+      ct: userData?.ct || bound(guestCity), // IP city / zip are the ISP's, not the shopper's
+      zp: userData?.zp || bound(guestZip),
       fb_login_id: userData?.fb_login_id || fbLoginId,
-      db: userData?.db || guestDob || sessionUserData.db,
+      db: userData?.db || bound(guestDob) || sessionUserData.db,
     });
 
     // FIX 1c: Drop em/ph if they came from a cookie owned by a different identity
@@ -427,13 +442,20 @@ export async function POST(req: NextRequest) {
     const userIsLoggedIn = isLoggedIn || !!session?.user;
     const isCheckoutEvent = ['InitiateCheckout', 'AddPaymentInfo', 'Purchase'].includes(eventName);
 
-    // If the visitor is not logged in and it's not a checkout event, strip identity PII parameters (em, ph, name, DOB, fb_login_id).
-    // Address fields (country, st, ct, zp) are preserved to improve Meta EMQ via consented session location enrichment.
+    // Guest, non-checkout event: identity is kept ONLY when it is the guest's own —
+    // hashed cookies bound to this browser's external_id via zb_pii_owner (written
+    // by this shopper's own checkout / sign-up). The browser Pixel already sends the
+    // same bound hashes as Advanced Matching; sending them on the server copy too
+    // means Meta matches the event whichever copy of the deduplicated pair it keeps.
+    // Unbound / foreign cookie values were already dropped above (bound()).
+    // DOB / fb_login_id stay logged-in-only.
     if (!userIsLoggedIn && !isCheckoutEvent) {
-      delete mergedUserData.em;
-      delete mergedUserData.ph;
-      delete mergedUserData.fn;
-      delete mergedUserData.ln;
+      if (!cookiePiiBound) {
+        delete mergedUserData.em;
+        delete mergedUserData.ph;
+        delete mergedUserData.fn;
+        delete mergedUserData.ln;
+      }
       delete mergedUserData.db;
       delete mergedUserData.fb_login_id;
 

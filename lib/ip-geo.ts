@@ -117,7 +117,9 @@ export function isPrivateIP(ip: string): boolean {
   return false;
 }
 
-/** Default development / testing geolocation fallback when on localhost / private IP */
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/** Default development / testing geolocation fallback when on localhost / private IP (never used in production). */
 const DEV_FALLBACK_GEO: IpGeoResult = {
   countryCode: 'IN',
   country: 'India',
@@ -234,6 +236,10 @@ export async function lookupIpGeo(ip: string, req?: Request): Promise<IpGeoResul
 
   // 2. Handle private / local IPs: attempt real public IP lookup first for accurate local testing
   if (isPrivateIP(ip)) {
+    // Production: a private / missing client IP means we do not know where the
+    // visitor is. Never invent a location (the Mumbai dev fallback used to be
+    // hashed into Meta events as the customer's city / state / zip).
+    if (IS_PRODUCTION) return null;
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -284,8 +290,9 @@ export async function lookupIpGeo(ip: string, req?: Request): Promise<IpGeoResul
     }
   }
 
-  // Fallback to dev geo if all providers fail
-  if (!result) {
+  // All providers failed: in production the answer is "unknown" (null, cached
+  // briefly so the APIs are not hammered); the dev fallback is for local work only.
+  if (!result && !IS_PRODUCTION) {
     result = DEV_FALLBACK_GEO;
   }
 

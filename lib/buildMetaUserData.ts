@@ -12,7 +12,7 @@
  */
 
 import { isDemoValue } from './metaPixel';
-import { isPlaceholderEmailHash, isPlaceholderNameHash, isPlaceholderPhoneHash } from './tracking/placeholder-identity';
+import { isPlaceholderEmailHash, isPlaceholderNameHash, isPlaceholderPhoneHash, isPlaceholderZipHash } from './tracking/placeholder-identity';
 import {
   normalizePhone as sharedNormalizePhone,
   normalizeCountry as sharedNormalizeCountry,
@@ -153,7 +153,7 @@ export function buildClientUserData(signals: MetaUserSignals): MetaUserData {
   if (isRealValue(signals.ln) && isHash(signals.ln) && !isPlaceholderNameHash(signals.ln)) result.ln = signals.ln!;
   if (isRealValue(signals.ct) && isHash(signals.ct)) result.ct = signals.ct!;
   if (isRealValue(signals.st) && isHash(signals.st)) result.st = signals.st!;
-  if (isRealValue(signals.zp) && isHash(signals.zp)) result.zp = signals.zp!;
+  if (isRealValue(signals.zp) && isHash(signals.zp) && !isPlaceholderZipHash(signals.zp)) result.zp = signals.zp!;
   if (isRealValue(signals.country) && isHash(signals.country)) result.country = signals.country!;
   if (isRealValue(signals.ge) && isHash(signals.ge)) result.ge = signals.ge!;
   if (isRealValue(signals.db) && isHash(signals.db)) result.db = signals.db!;
