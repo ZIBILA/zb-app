@@ -97,11 +97,6 @@ export default function OrderDetailsScreen() {
     return m;
   }, [order]);
 
-  const reverseShipment = useMemo(() => {
-    if (!order || !Array.isArray(order.shipments)) return null;
-    return order.shipments.find((s: any) => String(s.awb || s.trackingNumber || '').startsWith('ZBRET') || String(s.status || '').includes('pickup'));
-  }, [order]);
-
   const fetchOrderDetails = useCallback(async (isPolling = false) => {
     if (!orderId) return;
     try {
@@ -387,7 +382,14 @@ export default function OrderDetailsScreen() {
 
   const hasActiveReturn = order.returnRequests?.some((r: any) => r.status !== 'cancelled') || false;
   const hasActiveExchange = order.exchangeRequests?.some((e: any) => e.status !== 'cancelled') || false;
-  const hasPendingRequest = order.returnRequests?.some((r: any) => r.status === 'pending_approval') || 
+  // Customer-visible return / exchange requests (internal exchange pickups and cancelled ones are hidden).
+  const visibleRequests = [
+    ...(order.returnRequests || []).filter((r: any) => !r.isInternal && r.status !== 'cancelled' && r.summary),
+    ...(order.exchangeRequests || []).filter((e: any) => e.status !== 'cancelled' && e.summary),
+  ];
+  // While a return / exchange is in progress the screen stays minimal: status, timeline, request card, actions.
+  const isRequestView = visibleRequests.length > 0;
+  const hasPendingRequest = order.returnRequests?.some((r: any) => r.status === 'pending_approval') ||
                             order.exchangeRequests?.some((e: any) => e.status === 'pending_approval') || false;
 
   return (
@@ -445,6 +447,21 @@ export default function OrderDetailsScreen() {
           </View>
         )}
 
+        {/* Return / exchange status card(s): id, pickup, refund / store credit, replacement */}
+        {visibleRequests.map((req: any) => (
+          <RequestSummaryCard key={req.id} summary={req.summary}>
+            {req.createdAt ? (
+              <Typography size={11} color={colors.textMuted} style={{ marginBottom: 2 }}>
+                Requested on {new Date(req.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </Typography>
+            ) : null}
+            {req.reason ? <Typography size={11} color={colors.textMuted}>Reason: {req.reason}</Typography> : null}
+          </RequestSummaryCard>
+        ))}
+
+        {/* Items, address, order info, billing and courier tracking only show for normal orders. */}
+        {!isRequestView && (
+        <>
         {order.trackingNumber && (
           <TouchableOpacity style={[styles.trackingPill, { borderColor: colors.borderExtraLight }]} onPress={() => order.trackingUrl && Linking.openURL(order.trackingUrl)}>
             <View style={{ flex: 1 }}>
@@ -452,24 +469,6 @@ export default function OrderDetailsScreen() {
               <Typography size={13} weight="600" color={colors.text} style={{ marginTop: 2 }}>{order.courier ? `${order.courier} • ` : ''}{order.trackingNumber}</Typography>
             </View>
             <Ionicons name="chevron-forward" size={16} color={colors.textExtraLight} />
-          </TouchableOpacity>
-        )}
-
-        {reverseShipment && (
-          <TouchableOpacity 
-            style={[styles.trackingPill, { borderColor: '#E0A96D', borderStyle: 'dashed', borderWidth: 1.5, marginTop: 12, backgroundColor: isDark ? 'rgba(224, 169, 109, 0.05)' : 'rgba(224, 169, 109, 0.02)' }]} 
-            onPress={() => reverseShipment.trackingUrl && Linking.openURL(reverseShipment.trackingUrl)}
-          >
-            <View style={{ flex: 1 }}>
-              <Typography size={10} weight="800" color="#E0A96D" style={{ letterSpacing: 0.5 }}>RETURN PICKUP LOGISTICS</Typography>
-              <Typography size={13} weight="600" color={colors.text} style={{ marginTop: 2 }}>
-                {reverseShipment.courier ? `${reverseShipment.courier} • ` : ''}{reverseShipment.awb || reverseShipment.trackingNumber}
-              </Typography>
-              <Typography size={11} color={colors.textMuted} style={{ marginTop: 2 }}>
-                Status: {reverseShipment.status === 'pickup_pending' ? 'Awaiting Pickup Agent' : reverseShipment.status.toUpperCase()}
-              </Typography>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color="#E0A96D" />
           </TouchableOpacity>
         )}
 
@@ -566,30 +565,6 @@ export default function OrderDetailsScreen() {
           </>
         ) : null}
 
-        {/* Returns & exchanges linked to this order (R_ / E_ ids, pickup, refund, replacement) */}
-        {(() => {
-          const requestCards = [
-            ...(order.returnRequests || []).filter((r: any) => !r.isInternal && r.status !== 'cancelled' && r.summary),
-            ...(order.exchangeRequests || []).filter((e: any) => e.status !== 'cancelled' && e.summary),
-          ];
-          if (requestCards.length === 0) return null;
-          return (
-            <>
-              <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 1, marginTop: 24, marginBottom: 12 }}>RETURNS & EXCHANGES</Typography>
-              {requestCards.map((req: any) => (
-                <RequestSummaryCard key={req.id} summary={req.summary}>
-                  {req.createdAt ? (
-                    <Typography size={11} color={colors.textMuted} style={{ marginBottom: 2 }}>
-                      Requested on {new Date(req.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-                    </Typography>
-                  ) : null}
-                  {req.reason ? <Typography size={11} color={colors.textMuted}>Reason: {req.reason}</Typography> : null}
-                </RequestSummaryCard>
-              ))}
-            </>
-          );
-        })()}
-
         <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 1, marginTop: 24, marginBottom: 12 }}>BILLING SUMMARY</Typography>
         <View style={[styles.infoCard, { backgroundColor: isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.01)' }]}>
           <View style={styles.priceRow}>
@@ -607,6 +582,8 @@ export default function OrderDetailsScreen() {
             <Typography size={20} weight="800" color={colors.text}>{formatPrice(order.totalPrice)}</Typography>
           </View>
         </View>
+        </>
+        )}
       </Animated.ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>

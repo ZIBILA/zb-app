@@ -239,8 +239,16 @@ export default function OrderDetailsPage() {
 
   const hasActiveReturn = useMemo(() => !!activeReturnReq, [activeReturnReq]);
   const hasActiveExchange = useMemo(() => !!activeExchangeReq, [activeExchangeReq]);
+  // Clean, minimal layout while a return / exchange is in progress (no shipment, items, address or billing cards).
+  const isRequestView = useMemo(() => {
+    const hasReturn = order?.returnRequests?.some(
+      (r: any) => r.status !== 'cancelled' && r.summary && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))
+    );
+    const hasExchange = order?.exchangeRequests?.some((e: any) => e.status !== 'cancelled' && e.summary);
+    return !!(hasReturn || hasExchange);
+  }, [order]);
   const hasPendingRequest = useMemo(() => {
-    return order?.returnRequests?.some((r: any) => r.status === 'pending_approval' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))) || 
+    return order?.returnRequests?.some((r: any) => r.status === 'pending_approval' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))) ||
            order?.exchangeRequests?.some((e: any) => e.status === 'pending_approval') || false;
   }, [order]);
 
@@ -504,6 +512,10 @@ export default function OrderDetailsPage() {
             </div>
           ))}
 
+        {/* While a return / exchange is in progress the page stays minimal: status, timeline, request card, actions.
+            Shipment, items, address, order info and billing sections only show for normal orders. */}
+        {!isRequestView && (
+        <>
         {/* SHIPMENT DETAILS CARD — hide voided/cancelled courier rows so they don't contradict order status */}
         {(() => {
           const activeShipment = (order.shipments || []).find((sh: any) => {
@@ -563,19 +575,6 @@ export default function OrderDetailsPage() {
             </div>
           );
         })()}
-
-        {/* Reverse Shipment (Return Pickup) */}
-        {order.shipments?.find((s: any) => String(s.awb || s.trackingNumber || '').startsWith('ZBRET') || String(s.status || '').includes('pickup')) && (
-          <div className="mb-8 p-5 rounded-3xl glass-panel border-amber-500/20 overflow-hidden">
-            <p className="text-[7px] font-black uppercase tracking-[0.3em] text-amber-500/60 mb-2">Return Pickup Logistics</p>
-            <p className="text-[10px] font-mono text-foreground/60">
-              {(() => {
-                const rs = order.shipments.find((s: any) => String(s.awb || s.trackingNumber || '').startsWith('ZBRET') || String(s.status || '').includes('pickup'));
-                return `${rs.courier || ''} • ${rs.awb || rs.trackingNumber} • Status: ${rs.status === 'pickup_pending' ? 'Awaiting Pickup Agent' : rs.status?.toUpperCase()}`;
-              })()}
-            </p>
-          </div>
-        )}
 
         {/* ORDER ITEMS */}
         <div className="mb-10">
@@ -705,11 +704,13 @@ export default function OrderDetailsPage() {
               </div>
            </div>
         </div>
+        </>
+        )}
 
         {/* ACTION BUTTONS */}
         <div className="space-y-3 mb-20">
-          {/* Rate & Review button for delivered orders */}
-          {(order?.deliveryStatus || '').toLowerCase() === 'delivered' && (
+          {/* Rate & Review button for delivered orders (hidden while a return / exchange is in progress) */}
+          {!isRequestView && (order?.deliveryStatus || '').toLowerCase() === 'delivered' && (
             <button
               onClick={() => {
                 fetchReviewableItems();

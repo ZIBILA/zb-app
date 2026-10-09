@@ -9,6 +9,7 @@ import { formatDisplayOrderNumber } from "@/lib/formatOrderNumber";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 import { parseLinkedId } from "@/lib/linkedIds";
+import { COD_STORE_CREDIT_MESSAGE } from "@/lib/returnPolicy";
 
 type ReturnRequest = {
   returnRequestId: string;
@@ -16,6 +17,8 @@ type ReturnRequest = {
   logisticsPartner?: string | null;
   reverseAwb?: string | null;
   receivedAt?: string | null;
+  /** COD orders can only be refunded as Store Credit — no method choice. */
+  isCod?: boolean;
   orderId: string;
   shopifyOrderId: string;
   userId: string;
@@ -250,7 +253,7 @@ export default function ReturnsPage() {
     if (!refundModal) return;
     handleAction(refundModal.returnRequestId, "approve", { 
       actualRefund: parseFloat(refundAmount) || refundModal.estimatedRefund,
-      isStoreCredit: refundType === "store_credit",
+      isStoreCredit: refundModal.isCod ? true : refundType === "store_credit",
       customerId: refundModal.userId
     });
     setRefundModal(null);
@@ -492,10 +495,14 @@ export default function ReturnsPage() {
                   <p className="text-[10px] text-foreground/70">{refundModal.userName} • {refundModal.userEmail}</p>
                 </div>
 
-                <div className="flex gap-2">
-                  <button onClick={() => setRefundType("original_method")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "original_method" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Original Method</button>
-                  <button onClick={() => setRefundType("store_credit")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "store_credit" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Store Credit</button>
-                </div>
+                {refundModal.isCod ? (
+                  <p className="text-[10px] text-amber-500 leading-relaxed">{COD_STORE_CREDIT_MESSAGE}</p>
+                ) : (
+                  <div className="flex gap-2">
+                    <button onClick={() => setRefundType("original_method")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "original_method" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Original Method</button>
+                    <button onClick={() => setRefundType("store_credit")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "store_credit" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Store Credit</button>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-[9px] font-semibold uppercase tracking-widest text-foreground/50 mb-1.5">Refund Amount (₹)</label>

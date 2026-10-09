@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { enrichSingleItem } from "@/lib/enrichSize";
 import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
-import { resolveRefundMethod } from "@/lib/returnPolicy";
+import { resolveRefundMethod, isCodOrder } from "@/lib/returnPolicy";
 import { countByReverseStageFilter } from "@/lib/returnPolicy";
 import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
@@ -143,6 +143,7 @@ async function GET_impl(req: Request) {
           logisticsPartner: r.logisticsPartner || null,
           reverseAwb: r.reverseAwb || null,
           receivedAt: r.receivedAt || null,
+          isCod: isCodOrder(r.order),
           orderId: r.orderId,
           shopifyOrderId: r.order?.shopifyOrderName || r.order?.internalOrderNumber || (r.order?.shopifyOrderId && `#${r.order.shopifyOrderId.replace('#', '')}`) || r.orderId,
           orderCreatedAt: r.order?.createdAt,
@@ -184,6 +185,7 @@ async function GET_impl(req: Request) {
         });
         return {
           returnRequestId: sr.id,
+          isCod: isCodOrder(sr.order),
           orderId: sr.orderId,
           shopifyOrderId: sr.order?.shopifyOrderName || sr.order?.internalOrderNumber || (sr.order?.shopifyOrderId && `#${sr.order.shopifyOrderId.replace('#', '')}`) || sr.orderId,
           orderCreatedAt: sr.order?.createdAt,
