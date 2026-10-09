@@ -318,7 +318,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
               type: 'REFUND',
               description: `Approved Store Credit Refund for Order #${order.shopifyOrderId || order.id}`,
               orderId: order.id,
-              returnId: targetEntity.id
+              returnId: targetEntity.id,
+              // Spendable amount tracked per credit (checkout debits and expiry both read this).
+              remainingAmount: finalRefundAmount
             }
           });
         } else if (recordRefundPayment) {

@@ -1,5 +1,5 @@
 import { MetadataRoute } from 'next';
-import { fetchProducts, fetchCollections } from '@/lib/shopify-admin';
+import { fetchStorefrontCatalog, fetchCollections } from '@/lib/shopify-admin';
 
 export const revalidate = 3600; // ISR: regenerate every 1 hour
 
@@ -113,8 +113,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }
 
     const [rawProducts, rawCollections] = await Promise.all([
-      fetchProducts(250).catch((err) => {
-        console.warn('[sitemap] fetchProducts warning:', err);
+      fetchStorefrontCatalog().catch((err) => {
+        console.warn('[sitemap] fetchStorefrontCatalog warning:', err);
         return [];
       }),
       fetchCollections(250).catch((err) => {

@@ -1955,15 +1955,21 @@ export async function bookShiprocketReversePickup(args: {
   const preset = PROVIDER_PRESETS.shiprocket;
   const marker = `"request_id":"${args.requestId}"`;
 
-  const existing = await prisma.shipment.findFirst({
+  // Every earlier booking attempt for this request (newest first).
+  const priorRows = await prisma.shipment.findMany({
     where: {
       orderId: args.localOrderId,
       type: { in: [...REVERSE_SHIPMENT_TYPES] },
       rawDelhiveryResponse: { contains: marker },
-      status: { notIn: ['cancelled', 'canceled'] },
     },
     orderBy: { createdAt: 'desc' },
   });
+  // A booking that already failed (missed pickup, cancelled, lost, RTO…) must NOT be handed back:
+  // "re-select logistics partner" has to produce a fresh AWB.
+  const DEAD_REVERSE_STATUSES = new Set([
+    'cancelled', 'cancellation_requested', 'pickup_failed', 'undelivered', 'lost', 'rto', 'rto_delivered',
+  ]);
+  const existing = priorRows.find((r: any) => !DEAD_REVERSE_STATUSES.has(normalizeCarrierStatus(r.status))) || null;
 
   if (existing?.awb) {
     return {
@@ -2042,6 +2048,22 @@ export async function bookShiprocketReversePickup(args: {
       height: args.parcel.height,
       weight: args.parcel.weight,
     };
+
+    // Re-booking after a failed pickup: void the dead AWB at Shiprocket (best effort) so the courier
+    // doesn't keep trying, and use a distinct channel order id for the new return order.
+    for (const dead of priorRows) {
+      if (dead.awb && normalizeCarrierStatus(dead.status) === 'pickup_failed') {
+        try {
+          await logisticsApiFetch('/orders/cancel/shipment/awbs', 'POST', { awbs: [dead.awb] });
+        } catch (voidErr: any) {
+          console.warn(`[Shiprocket] Could not void failed reverse AWB ${dead.awb}:`, voidErr?.message || voidErr);
+        }
+        await prisma.shipment.update({ where: { id: dead.id }, data: { status: 'cancelled' } }).catch(() => {});
+      }
+    }
+    if (priorRows.length > 0) {
+      payload.order_id = `${args.channelOrderId}-RB${priorRows.length + 1}`;
+    }
 
     const created = await logisticsApiFetch(preset.endpoints.createReturn, 'POST', payload);
     const sid = created?.shipment_id ?? created?.payload?.shipment_id;

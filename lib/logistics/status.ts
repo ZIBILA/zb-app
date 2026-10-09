@@ -177,6 +177,11 @@ export function canAdvanceCarrierStatus(current: unknown, next: CarrierStatus): 
     return next === 'cancelled';
   }
   if (TERMINAL.has(cur)) return false;
+  // A missed pickup can happen after "Pickup Scheduled" (rank 2) even though pickup_failed ranks
+  // lower. It is only meaningful before the parcel has actually been picked up.
+  if (next === 'pickup_failed') {
+    return cur === 'confirmed' || cur === 'pickup_scheduled';
+  }
   if (next === 'cancelled' || next === 'cancellation_requested' || next === 'lost' || next === 'rto') {
     return true;
   }

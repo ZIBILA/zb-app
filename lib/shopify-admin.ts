@@ -7,6 +7,7 @@
 import prisma from './db';
 import { parseShopifyRichText } from './utils';
 import { toE164 } from './shopify-phone';
+import { isStorefrontEligible, parseOrderConfig, readPlacement, applyProductOrder } from './storefrontCatalog';
 
 export { parseShopifyRichText };
 
@@ -31,11 +32,11 @@ export function clearShopifyCache() {
   clearShopConfigCache();
 }
 
-async function shopifyFetchPage<T>(urlStr: string): Promise<{ data: T; nextPageUrl?: string }> {
+async function shopifyFetchPage<T>(urlStr: string, ttlMs: number = PAGE_CACHE_TTL): Promise<{ data: T; nextPageUrl?: string }> {
   const now = Date.now();
   const cached = pageCache.get(urlStr);
 
-  if (cached && (now - cached.timestamp < PAGE_CACHE_TTL)) {
+  if (cached && (now - cached.timestamp < ttlMs)) {
     return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
   }
 
@@ -43,11 +44,18 @@ async function shopifyFetchPage<T>(urlStr: string): Promise<{ data: T; nextPageU
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
-    const res = await fetch(urlStr, {
-      method: 'GET',
-      headers: await headers(),
-      cache: isBuild ? 'force-cache' : 'no-store',
-    });
+    let res: Response;
+    try {
+      res = await fetch(urlStr, {
+        method: 'GET',
+        headers: await headers(),
+        cache: isBuild ? 'force-cache' : 'no-store',
+      });
+    } catch (networkErr) {
+      // Network blip: serve the last good copy instead of failing the whole page.
+      if (cached) return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
+      throw networkErr;
+    }
 
     if (res.status === 429) {
       const { shouldLogThrottled } = await import('@/lib/log-throttle');
@@ -71,6 +79,9 @@ async function shopifyFetchPage<T>(urlStr: string): Promise<{ data: T; nextPageU
     if (!res.ok) {
       const text = await res.text();
       console.error(`Shopify Admin API error [${res.status}]: ${text.slice(0, 200)}`);
+      if (cached && res.status >= 500) {
+        return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
+      }
       throw new Error(`Shopify API ${res.status}`);
     }
 
@@ -129,7 +140,7 @@ export async function shopifyGraphqlFetch<T>(query: string, variables?: any): Pr
   return result.data as T;
 }
 
-async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, string>, dataKey?: string): Promise<T[]> {
+async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, string>, dataKey?: string, ttlMs?: number): Promise<T[]> {
   const url = new URL(await adminUrl(endpoint));
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
@@ -139,7 +150,7 @@ async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, stri
   let allResults: any[] = [];
 
   while (currentUrl) {
-    const pageData: { data: any; nextPageUrl?: string } = await shopifyFetchPage<any>(currentUrl);
+    const pageData: { data: any; nextPageUrl?: string } = await shopifyFetchPage<any>(currentUrl, ttlMs);
 
     if (!pageData.data) break;
 
@@ -615,6 +626,75 @@ export async function fetchCollections(limit = 250): Promise<ShopifyCollection[]
   }
 }
 
+/**
+ * Same as fetchCollections but THROWS when Shopify cannot be reached, so a transient outage can never be
+ * mistaken for "this collection does not exist" (which would 404 a live page).
+ */
+async function fetchCollectionsStrict(limit = 250): Promise<ShopifyCollection[]> {
+  const [a, b] = await Promise.allSettled([
+    shopifyFetch<{ custom_collections: ShopifyCollection[] }>('custom_collections.json', { limit: String(limit) }),
+    shopifyFetch<{ smart_collections: ShopifyCollection[] }>('smart_collections.json', { limit: String(limit) }),
+  ]);
+  if (a.status === 'rejected' && b.status === 'rejected') throw a.reason;
+  const all = [
+    ...(a.status === 'fulfilled' ? a.value?.custom_collections || [] : []),
+    ...(b.status === 'fulfilled' ? b.value?.smart_collections || [] : []),
+  ];
+  if ((a.status === 'rejected' || b.status === 'rejected') && all.length === 0) {
+    throw (a.status === 'rejected' ? a.reason : (b as PromiseRejectedResult).reason);
+  }
+  const seen = new Set<string>();
+  return all.filter((c) => {
+    if (!c || !c.handle || seen.has(c.handle)) return false;
+    seen.add(c.handle);
+    return true;
+  });
+}
+
+/** Short TTL so Shopify edits reach the live site quickly (pages also re-render every 2 min / on webhook). */
+const CATALOG_TTL_MS = 60 * 1000;
+
+/**
+ * EVERY product the live storefront may show: all pages from Shopify, active + published only.
+ * Optionally scoped to one collection. Throws on Shopify errors (callers decide how to degrade) —
+ * it never substitutes placeholder products.
+ */
+export async function fetchStorefrontCatalog(opts?: { collectionId?: string | number }): Promise<ShopifyProduct[]> {
+  const params: Record<string, string> = {
+    limit: '250',
+    status: 'active',
+    published_status: 'published',
+  };
+  if (opts?.collectionId !== undefined && opts.collectionId !== null && String(opts.collectionId) !== '') {
+    params.collection_id = String(opts.collectionId);
+  }
+  const items = await shopifyFetchAll<ShopifyProduct>('products.json', params, 'products', CATALOG_TTL_MS);
+  const seen = new Set<number>();
+  return items.filter((p) => {
+    if (!p || seen.has(p.id)) return false;
+    seen.add(p.id);
+    // Defence in depth: never trust the query filter alone.
+    return isStorefrontEligible(p);
+  });
+}
+
+/** Every product (any status) for CMS pickers — all pages, never placeholders. */
+export async function fetchCatalogForAdmin(): Promise<ShopifyProduct[]> {
+  const items = await shopifyFetchAll<ShopifyProduct>('products.json', { limit: '250' }, 'products', CATALOG_TTL_MS);
+  const seen = new Set<number>();
+  return items.filter((p) => p && !seen.has(p.id) && (seen.add(p.id), true));
+}
+
+/** Reads the CMS ordering/hiding config; a DB failure just means "no custom order", never a broken page. */
+export async function loadOrderConfig() {
+  try {
+    const shop = await prisma.shop.findFirst({ select: { collectionProductOrders: true } });
+    return parseOrderConfig(shop?.collectionProductOrders);
+  } catch {
+    return parseOrderConfig(null);
+  }
+}
+
 export async function fetchProductsByCollectionId(collectionId: string | number, limit = 250): Promise<ShopifyProduct[]> {
   const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`collections/${collectionId}/products.json`, {
     limit: String(limit),
@@ -697,6 +777,8 @@ export interface ShopifyProduct {
   status: string;
   created_at: string;
   updated_at: string;
+  /** null/absent = not published to the Online Store (never shown to customers). */
+  published_at?: string | null;
   product_type: string;
   vendor: string;
   tags: string;
@@ -2182,95 +2264,36 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
 
 
 /**
- * Fetch a collection and its products by handle.
+ * Fetch a collection and the products customers should see in it, in the CMS order.
+ *
+ *  - Returns ALL eligible products (every Shopify page; active + published). `limit` only truncates the
+ *    final, ordered list (used by the homepage / mobile app); omit it for "everything".
+ *  - Never substitutes placeholder products. Shopify/network errors THROW so ISR keeps serving the
+ *    last good page instead of replacing it with fake data or a bogus 404.
+ *  - handle "all" is the Shop All page.
  */
-export async function fetchCollectionByHandle(handle: string, limit = 24): Promise<{
+export async function fetchCollectionByHandle(handle: string, limit?: number): Promise<{
   collection: { id: number; title: string; handle: string; body_html: string; image?: { src: string } } | null;
   products: ShopifyProduct[];
 }> {
-  try {
-    let collection: any = null;
-    let products: ShopifyProduct[] = [];
+  let collection: any = null;
+  let eligible: ShopifyProduct[];
 
-    if (handle?.toLowerCase() === 'all') {
-      const productsData = await shopifyFetch<{ products: ShopifyProduct[] }>('products.json', {
-        limit: String(limit),
-      });
-      collection = {
-        id: 0,
-        title: "All Products",
-        handle: "all",
-        body_html: "All products in the store",
-        image: undefined
-      };
-      products = productsData.products || [];
-    } else {
-      const allCollections = await fetchCollections();
-      collection = allCollections.find(c => c.handle?.toLowerCase() === handle?.toLowerCase()) as any;
-      
-      if (!collection) return { collection: null, products: [] };
-
-      const productsData = await shopifyFetch<{ products: ShopifyProduct[] }>('products.json', {
-        collection_id: String(collection.id),
-        limit: String(limit),
-      });
-
-      products = productsData.products || [];
-    }
-
-    // Sort according to custom product order if available
-    try {
-      const shop = await prisma.shop.findFirst({
-        select: { collectionProductOrders: true }
-      });
-      if (shop?.collectionProductOrders) {
-        const ordersMap = JSON.parse(shop.collectionProductOrders);
-        const orderedProductIds = ordersMap[String(collection.id)] || ordersMap[collection.handle] || [];
-        if (Array.isArray(orderedProductIds) && orderedProductIds.length > 0) {
-          const idOrderMap = new Map<string, number>();
-          orderedProductIds.forEach((id, index) => {
-            idOrderMap.set(String(id), index);
-          });
-          
-          products.sort((a, b) => {
-            const aIndex = idOrderMap.has(String(a.id)) ? idOrderMap.get(String(a.id))! : 999999;
-            const bIndex = idOrderMap.has(String(b.id)) ? idOrderMap.get(String(b.id))! : 999999;
-            return aIndex - bIndex;
-          });
-        }
-      }
-    } catch (err) {
-      console.error("[Shopify Admin] Error sorting products by custom order:", err);
-    }
-
-    if (!products || products.length === 0) {
-      products = FALLBACK_PRODUCTS;
-    }
-
-    if (!collection) {
-      collection = {
-        id: 0,
-        title: handle ? handle.replace(/-/g, ' ').toUpperCase() : "COLLECTION",
-        handle: handle || "all",
-        body_html: "Zica Bella Luxury Streetwear Collection",
-        image: undefined
-      };
-    }
-
-    return { collection, products };
-  } catch (e) {
-    console.error('fetchCollectionByHandle error:', e);
-    return {
-      collection: {
-        id: 0,
-        title: handle ? handle.replace(/-/g, ' ').toUpperCase() : "COLLECTION",
-        handle: handle || "all",
-        body_html: "Zica Bella Luxury Streetwear Collection",
-        image: undefined
-      },
-      products: FALLBACK_PRODUCTS
-    };
+  if (handle?.toLowerCase() === 'all') {
+    collection = { id: 0, title: 'All Products', handle: 'all', body_html: 'All products in the store', image: undefined };
+    eligible = await fetchStorefrontCatalog();
+  } else {
+    const allCollections = await fetchCollectionsStrict();
+    collection = allCollections.find((c) => c.handle?.toLowerCase() === handle?.toLowerCase()) as any;
+    if (!collection) return { collection: null, products: [] };
+    eligible = await fetchStorefrontCatalog({ collectionId: collection.id });
   }
+
+  const cfg = await loadOrderConfig();
+  const placement = readPlacement(cfg, { id: collection.id, handle: collection.handle });
+  const { visible } = applyProductOrder(eligible, placement);
+  const products = typeof limit === 'number' && limit > 0 ? visible.slice(0, limit) : visible;
+  return { collection, products };
 }
 
 /**

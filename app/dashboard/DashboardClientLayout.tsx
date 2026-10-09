@@ -216,7 +216,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Web Store Customers", href: "/web-store/customers", icon: Users, module: 'STOREFRONT' },
     { name: "Abandoned Carts", href: "/web-store/abandoned-carts", icon: ShoppingCart, module: 'STOREFRONT' },
     { name: "Web Storefront", href: "/web-store/storefront", icon: Monitor, module: 'STOREFRONT' },
-    { name: "Homepage Products", href: "/web-store/homepage", icon: LayoutGrid, module: 'STOREFRONT' },
+    { name: "Products & Order", href: "/web-store/merchandising", icon: LayoutGrid, module: 'STOREFRONT' },
     { name: "All Products", href: "/web-store/products", icon: Sparkles, module: 'STOREFRONT' },
     { name: "Homepage Banners", href: "/web-store/banners", icon: Monitor, module: 'STOREFRONT' },
     { name: "Gallery CMS", href: "/web-store/gallery", icon: Sparkles, module: 'STOREFRONT' },

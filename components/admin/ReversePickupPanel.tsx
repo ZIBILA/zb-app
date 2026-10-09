@@ -54,6 +54,8 @@ export default function ReversePickupPanel({
   const [breadth, setBreadth] = useState("20");
   const [height, setHeight] = useState("5");
   const [choice, setChoice] = useState<string>("");
+  /** Couriers that already refused to issue an AWB for this pickup (courier id → Shiprocket's reason). */
+  const [failed, setFailed] = useState<Record<number, string>>({});
 
   const base = `/api/admin/${kind === "return" ? "returns" : "exchanges"}/${requestId}/pickup`;
 
@@ -65,6 +67,7 @@ export default function ReversePickupPanel({
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Failed to load couriers");
       setOptions(json);
+      setFailed({});
       if (json.activeProvider === "shiprocket" && json.couriers?.length) {
         setChoice(`sr:${json.recommendedCourierId || json.couriers[0].courier_company_id}`);
       } else {
@@ -97,7 +100,15 @@ export default function ReversePickupPanel({
       setOpen(false);
       onBooked(`Pickup booked via ${json.courier} — AWB ${json.awb}`);
     } catch (e: any) {
-      onError(e?.message || "Failed to book pickup");
+      const message = e?.message || "Failed to book pickup";
+      const failedId = Number(choice.replace("sr:", ""));
+      const courierName = options?.couriers.find((c) => c.courier_company_id === failedId)?.courier_name || "That courier";
+      const nextFailed = { ...failed, [failedId]: message };
+      setFailed(nextFailed);
+      // Move the selection to the next courier that has not refused yet.
+      const next = options?.couriers.find((c) => !nextFailed[c.courier_company_id]);
+      if (next) setChoice(`sr:${next.courier_company_id}`);
+      onError(`${courierName} refused: ${message}${next ? ` — try ${next.courier_name}.` : ""}`);
     } finally {
       setBooking(false);
     }
@@ -190,7 +201,12 @@ export default function ReversePickupPanel({
                         checked={choice === `sr:${c.courier_company_id}`}
                         onChange={() => setChoice(`sr:${c.courier_company_id}`)}
                       />
-                      <span className="font-semibold">{c.courier_name}</span>
+                      <span className={`font-semibold ${failed[c.courier_company_id] ? "text-foreground/40 line-through" : ""}`}>{c.courier_name}</span>
+                      {failed[c.courier_company_id] && (
+                        <span className="text-[8px] text-red-500 font-bold max-w-[160px] truncate" title={failed[c.courier_company_id]}>
+                          Refused: {failed[c.courier_company_id]}
+                        </span>
+                      )}
                       {options.recommendedCourierId === c.courier_company_id && (
                         <span className="text-[8px] uppercase tracking-widest text-emerald-500 font-bold">Recommended</span>
                       )}

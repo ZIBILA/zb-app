@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { fetchCollections, fetchProductsByCollectionId, clearShopifyCache } from "@/lib/shopify-admin";
-import { revalidatePath } from "next/cache";
+import { refreshStorefront } from "@/lib/storefrontRefresh";
+import { parseOrderConfig, serializeOrderConfig, readPlacement, writePlacement } from "@/lib/storefrontCatalog";
 
 export const dynamic = 'force-dynamic';
 
@@ -65,15 +66,10 @@ export async function GET(
       select: { collectionProductOrders: true }
     });
     
-    let customOrder: string[] = [];
-    if (shop?.collectionProductOrders) {
-      try {
-        const ordersMap = JSON.parse(shop.collectionProductOrders);
-        customOrder = ordersMap[String(collectionId)] || ordersMap[collection.handle] || [];
-      } catch (e) {
-        console.error("Error parsing collectionProductOrders:", e);
-      }
-    }
+    const customOrder = readPlacement(parseOrderConfig(shop?.collectionProductOrders), {
+      id: collectionId,
+      handle: collection.handle,
+    }).order;
 
     return NextResponse.json({
       collection,
@@ -104,30 +100,20 @@ export async function POST(
       return NextResponse.json({ error: "Shop not found" }, { status: 404 });
     }
 
-    let ordersMap: Record<string, string[]> = {};
-    if (shop.collectionProductOrders) {
-      try {
-        ordersMap = JSON.parse(shop.collectionProductOrders);
-      } catch (e) {
-        console.error("Error parsing existing collectionProductOrders:", e);
-      }
-    }
-
-    ordersMap[String(collectionId)] = productIds.map(String);
+    const collection = (await fetchCollections()).find((c) => String(c.id) === String(collectionId));
+    const placement = { id: collectionId, handle: collection?.handle };
+    const cfg = parseOrderConfig(shop.collectionProductOrders);
+    const keep = readPlacement(cfg, placement);
+    // Only the order changes here; products hidden from this collection stay hidden.
+    const next = writePlacement(cfg, placement, productIds.map(String), keep.hidden);
 
     await prisma.shop.update({
       where: { id: shop.id },
-      data: {
-        collectionProductOrders: JSON.stringify(ordersMap)
-      }
+      data: { collectionProductOrders: serializeOrderConfig(next) },
     });
 
-    // Clear caches
-    clearShopifyCache();
-
-    // Revalidate paths
-    revalidatePath("/");
-    revalidatePath(`/collections/${collectionId}`);
+    // Drop cached Shopify data and re-render the live pages (the live route is /collections/<handle>).
+    refreshStorefront();
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

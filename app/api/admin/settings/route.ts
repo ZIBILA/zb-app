@@ -201,6 +201,9 @@ export async function PATCH(req: Request) {
 
     try {
       revalidatePath('/');
+      // Shop All / collection pages read their order + visibility from these settings.
+      revalidatePath('/collections');
+      revalidatePath('/collections/[handle]', 'page');
       revalidatePath('/products/[id]', 'page');
       revalidatePath('/policies/[handle]', 'page');
       revalidateTag('homepage');

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchCollectionByHandle, fetchProducts, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
+import { fetchCollectionByHandle, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,7 +9,9 @@ export async function GET(
 ) {
   try {
     const url = new URL(req.url);
-    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+    const rawLimit = parseInt(url.searchParams.get('limit') || '', 10);
+    // No limit = every eligible product in the collection (the app used to be capped at 50).
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
 
     const { collection, products } = await fetchCollectionByHandle(params.handle, limit);
 
@@ -17,7 +19,7 @@ export async function GET(
     // so the UI doesn't show a 'blank' error section on the homepage
     if (!collection || products.length === 0) {
       console.log(`[App API] Collection ${params.handle} empty or not found. Falling back to global products.`);
-      const fallbackProducts = await fetchProducts(limit);
+      const fallbackProducts = (await fetchCollectionByHandle('all', limit)).products;
       
       return NextResponse.json({
         collection: collection ? {

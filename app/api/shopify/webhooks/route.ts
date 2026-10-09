@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import prisma from '@/lib/db';
 import { extractSizeFromVariant } from '@/lib/utils';
+import { refreshStorefront } from '@/lib/storefrontRefresh';
 
 export async function POST(req: Request) {
   try {
@@ -77,6 +78,15 @@ export async function POST(req: Request) {
         break;
       case 'inventory_levels/update':
         await handleInventoryWebhook(shop, payload);
+        break;
+      case 'products/create':
+      case 'products/update':
+      case 'products/delete':
+      case 'collections/create':
+      case 'collections/update':
+      case 'collections/delete':
+        // Catalogue changed in Shopify → drop cached copies and re-render the storefront pages.
+        await refreshStorefront();
         break;
       default:
         console.log(`Unhandled webhook topic: ${topic}`);

@@ -456,7 +456,6 @@ export default function StorefrontSettingsPage() {
         'flipbookImage', 'flipbookImageMobile', 'flipbookVideo', 'flipbookVideoMobile', 'flipbookTitle', 'flipbookTag', 'flipbookDesc',
         'flipbookLink',
         'showRingCarousel', 'ringCarouselTitle', 'ringCarouselItems', 'footerLogo3dUrl',
-        'homepageCollection', 'homepageProducts',
         'loginBgImage', 'loginBgVideo', 'loginBgImageMobile', 'loginBgVideoMobile',
         'loginBgImageLight', 'loginBgImageDark', 'loginBgImageLightMobile', 'loginBgImageDarkMobile'
     ];
@@ -665,33 +664,16 @@ export default function StorefrontSettingsPage() {
           </SettingsRow>
         </SettingsGroup>
 
-        {/* HOMEPAGE PRODUCTS CURATION */}
+        {/* HOMEPAGE PRODUCTS now live in "Products & Order" */}
         <SettingsGroup title="Homepage Products" icon={Sparkles}>
-          <div className="px-4 py-3 bg-foreground/[0.02] rounded-md border border-foreground/[0.05] flex items-center gap-3 mt-1">
-             <Info className="w-4 h-4 text-foreground/50 shrink-0" />
-             <p className="text-[10px] font-medium text-foreground/50 uppercase tracking-widest">
-                Configure the main 12-product grid shown on your web storefront homepage.
+          <div className="px-4 py-4 bg-foreground/[0.02] rounded-md border border-foreground/[0.05] flex items-center justify-between gap-4 mt-1">
+             <p className="text-[11px] font-medium text-foreground/60">
+                Which products show on the homepage, and their order, is now managed in one place together with Shop All and collections.
              </p>
+             <a href="/web-store/merchandising" className="shrink-0 px-4 py-2.5 rounded-md bg-foreground text-background text-[10px] font-semibold uppercase tracking-widest">
+                Open Products &amp; Order
+             </a>
           </div>
-          <SettingsRow label="Collection Handle" description="Shopify collection to show (e.g. tshirts)">
-             <select 
-               value={settings.homepageCollection || ''} 
-               onChange={e => set('homepageCollection')(e.target.value)}
-               className="w-full bg-foreground/[0.02] px-3 py-2.5 rounded-md border border-foreground/[0.05] focus:border-foreground/20 text-right text-[11px] font-medium text-foreground outline-none transition-colors"
-             >
-               <option value="">Newest Products (Default)</option>
-               {allCollections.map(c => (
-                 <option key={c.id} value={c.handle}>{c.title}</option>
-               ))}
-             </select>
-          </SettingsRow>
-          <SettingsRow label="Specific Products" description="Search, drag to sort, and manage homepage products list">
-             <HomepageProductsEditor
-               value={settings.homepageProducts || ''}
-               onChange={set('homepageProducts')}
-               allProducts={allProducts}
-             />
-          </SettingsRow>
         </SettingsGroup>
 
         {/* SPOTLIGHT SECTION */}

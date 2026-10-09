@@ -30,6 +30,7 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/web-store/customers",
     "/web-store/abandoned-carts",
     "/web-store/storefront",
+    "/web-store/merchandising",
     "/web-store/homepage",
     "/web-store/products",
     "/web-store/banners",
@@ -300,6 +301,7 @@ export default withAuth(
       "/api/webstore-settings": "STOREFRONT",
       "/api/admin/abandoned-carts": "STOREFRONT",
       "/api/admin/mood-board": "STOREFRONT",
+      "/api/admin/storefront": "STOREFRONT",
       
       // Admin API mappings for middleware double-guard
       "/api/admin/users": "ADMIN_USERS",
@@ -326,6 +328,7 @@ export default withAuth(
       "/api/admin/audit-logs": "/dashboard/audit-log",
       "/api/admin/abandoned-carts": "/web-store/abandoned-carts",
       "/api/admin/mood-board": "/web-store/products",
+      "/api/admin/storefront": "/web-store/merchandising",
       "/api/admin/analytics": "/dashboard/analytics",
     };
 
@@ -383,6 +386,10 @@ export default withAuth(
             // Enforce granular page-level check with crossing prevention
             if (hasAccess && permission.pages) {
               const allowedPages = (permission.pages as string).split(',');
+              // Admins who could manage the old Homepage Products / All Products pages keep access to the merged "Products & Order" page.
+              if (allowedPages.includes('/web-store/homepage') || allowedPages.includes('/web-store/products')) {
+                allowedPages.push('/web-store/merchandising');
+              }
               const knownPagesForModule = ALL_KNOWN_MODULE_PAGES[moduleMap[route]] || [];
               if (isApi) {
                 let targetPage: string | null = null;

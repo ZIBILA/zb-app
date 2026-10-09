@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { fetchAllProducts, fetchCollectionByHandle, fetchProductById, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
+import { fetchCollectionByHandle, fetchProductById, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
+import { isStorefrontEligible } from '@/lib/storefrontCatalog';
 import { getShopSettings } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -19,7 +20,8 @@ export async function GET(req: Request) {
       const result = await fetchCollectionByHandle(collectionHandle, limit);
       products = result.products;
     } else if (fetchAll) {
-      products = await fetchAllProducts(limit);
+      // Everything eligible, in the Shop All order configured in the CMS.
+      products = (await fetchCollectionByHandle('all')).products;
     } else {
       const shop = await getShopSettings();
       const homepageProducts = shop?.homepageProducts;
@@ -30,12 +32,12 @@ export async function GET(req: Request) {
         const fetched = await Promise.all(
           ids.map((id: string) => fetchProductById(id).catch(() => null))
         );
-        products = fetched.filter((p): p is ShopifyProduct => p !== null);
+        products = fetched.filter((p): p is ShopifyProduct => p !== null && isStorefrontEligible(p));
       } else if (homepageCollection && homepageCollection.trim()) {
         const result = await fetchCollectionByHandle(homepageCollection, limit);
         products = result.products;
       } else {
-        products = await fetchAllProducts(limit);
+        products = (await fetchCollectionByHandle('all', limit)).products;
       }
     }
 
