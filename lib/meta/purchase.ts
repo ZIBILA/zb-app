@@ -24,7 +24,8 @@ import { isEventTimeSendable } from '@/lib/snap-capi';
 import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder } from '@/lib/meta/order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
-import { isPlaceholderEmail } from '@/lib/tracking/placeholder-identity';
+import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
+import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 
 const PLATFORM = 'meta';
 const EVENT = 'Purchase';
@@ -97,22 +98,12 @@ function parseAddress(raw: unknown): Record<string, any> {
  */
 export const metaPurchaseValue = sharedValue;
 
-/**
- * Orders created by the webhook recovery path when no order existed: items are an
- * unknown placeholder and the amount is only what Razorpay captured (for COD, just
- * the upfront). Not a reportable sale until staff fill in the real items.
- */
-function isUnresolvedRecoveryOrder(order: any): boolean {
-  const tags = String(order?.tags || '').toLowerCase();
-  if (!tags.includes('webhook-recovered')) return false;
-  return !(order.items || []).some((it: any) => snapCatalogIdFromOrderItem(it));
-}
-
 /** Build the CAPI Purchase from the stored order. Exported for tests. */
 export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, eventTimeMs: number): CapiEventPayload {
   const addr = parseAddress(order.shippingAddress);
   // The address typed at checkout is the freshest customer data; the Customer row is the fallback.
-  const name = String(addr.name || order.customer?.name || '').trim().split(/\s+/).filter(Boolean);
+  // Placeholder names ('Customer', 'Valued Customer' …) are skipped for the next real one.
+  const name = String(pickRealName(addr.name, order.customer?.name) || '').trim().split(/\s+/).filter(Boolean);
 
   const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
   let numItems = 0;
@@ -146,7 +137,7 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
       fbc: ctx.fbc,
       external_id: ctx.externalId || order.customerId || undefined,
       em: emailCandidates[0],
-      ph: addr.phone || order.customer?.phone || undefined,
+      ph: pickRealPhone(addr.phone, order.customer?.phone),
       fn: name[0],
       ln: name.slice(1).join(' ') || undefined,
       ct: addr.city || undefined,

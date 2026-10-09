@@ -483,7 +483,8 @@ async function main() {
 
   // Scenario: India / UAE / US customers
   for (const [label, phone, country, want] of [
-    ['India', '9876543210', 'India', '919876543210'],
+    // 9876543210 is the demo-login number (blocked as a dummy phone), so a real-looking number is used.
+    ['India', '98111 22233', 'India', '919811122233'],
     ['UAE', '050 123 4567', 'AE', '971501234567'],
     ['US', '(415) 555-2671', 'US', '14155552671'],
   ] as const) {
@@ -559,7 +560,10 @@ async function main() {
   const read = (p: string) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('app payment verify no longer calls sendSnapEvent', !/sendSnapEvent\s*\(/.test(read('app/api/app/payment/verify/route.ts')));
   check('checkout/complete has no inline sendSnapEvent', !/sendSnapEvent\s*\(/.test(read('app/api/checkout/complete/route.ts')));
-  check('confirmation page gates Snap purchase on payment status', /snapPayStatus === "paid"/.test(read('app/orders/[id]/confirmation/page.tsx')));
+  // Gate lives in lib/meta/browser-purchase.ts (decideSnapBrowserPurchase: paid / cod_upfront_paid only, fires after pending → paid).
+  check('confirmation page gates Snap purchase on payment status',
+    /decideSnapBrowserPurchase\(order/.test(read('app/orders/[id]/confirmation/page.tsx'))
+    && /PAID = new Set\(\['paid', 'cod_upfront_paid'\]\)/.test(read('lib/meta/browser-purchase.ts')));
   for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx', 'components/CompleteCollectionButton.tsx']) {
     const src = read(f);
     const adds = (src.match(/\baddToCart\(\{/g) || []).length;

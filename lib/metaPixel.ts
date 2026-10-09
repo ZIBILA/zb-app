@@ -1,5 +1,5 @@
 import { normalizePhone, normalizeState, normalizeZip, normalizeCountry } from '@/lib/tracking/identity-normalize';
-import { isPlaceholderEmail } from '@/lib/tracking/placeholder-identity';
+import { isPlaceholderEmail, isPlaceholderPhone, isPlaceholderName } from '@/lib/tracking/placeholder-identity';
 export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || '2049977412558608';
 
 /**
@@ -25,13 +25,15 @@ export function isDemoValue(field: 'phone' | 'email' | 'name', rawValue: string 
   switch (field) {
     case 'phone': {
       const digits = cleaned.replace(/\D/g, '');
-      return DEMO_PHONES_RAW.some(d => digits === d.replace(/\D/g, '') || digits.endsWith(d.replace(/\D/g, '')));
+      return isPlaceholderPhone(rawValue)
+        || DEMO_PHONES_RAW.some(d => digits === d.replace(/\D/g, '') || digits.endsWith(d.replace(/\D/g, '')));
     }
     case 'email':
       // Demo accounts + synthetic placeholders (guest@…, guest_<ts>@…, recovered_<ts>@…).
       return DEMO_EMAILS_RAW.includes(cleaned) || isPlaceholderEmail(rawValue);
     case 'name':
-      return DEMO_NAMES_RAW.includes(cleaned);
+      // Demo accounts + placeholder names ('Customer', 'Valued Customer', 'Guest' …).
+      return DEMO_NAMES_RAW.includes(cleaned) || isPlaceholderName(rawValue);
   }
 }
 

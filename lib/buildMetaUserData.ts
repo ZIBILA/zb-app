@@ -12,7 +12,7 @@
  */
 
 import { isDemoValue } from './metaPixel';
-import { isPlaceholderEmailHash } from './tracking/placeholder-identity';
+import { isPlaceholderEmailHash, isPlaceholderNameHash, isPlaceholderPhoneHash } from './tracking/placeholder-identity';
 import {
   normalizePhone as sharedNormalizePhone,
   normalizeCountry as sharedNormalizeCountry,
@@ -120,7 +120,7 @@ function isDemoHash(field: 'em' | 'ph', hash: string | undefined): boolean {
   if (!hash) return false;
   const clean = hash.trim().toLowerCase();
   return field === 'ph'
-    ? DEMO_PHONE_HASHES.includes(clean)
+    ? DEMO_PHONE_HASHES.includes(clean) || isPlaceholderPhoneHash(clean)
     : DEMO_EMAIL_HASHES.includes(clean) || isPlaceholderEmailHash(clean);
 }
 
@@ -148,8 +148,9 @@ export function buildClientUserData(signals: MetaUserSignals): MetaUserData {
   // Pre-hashed PII from cookies — validate they're real hashes, not demo
   if (isRealValue(signals.em) && isHash(signals.em) && !isDemoHash('em', signals.em)) result.em = signals.em!;
   if (isRealValue(signals.ph) && isHash(signals.ph) && !isDemoHash('ph', signals.ph)) result.ph = signals.ph!;
-  if (isRealValue(signals.fn) && isHash(signals.fn)) result.fn = signals.fn!;
-  if (isRealValue(signals.ln) && isHash(signals.ln)) result.ln = signals.ln!;
+  // Hashed placeholder names ('customer', 'guest', 'valued' …) are never sent.
+  if (isRealValue(signals.fn) && isHash(signals.fn) && !isPlaceholderNameHash(signals.fn)) result.fn = signals.fn!;
+  if (isRealValue(signals.ln) && isHash(signals.ln) && !isPlaceholderNameHash(signals.ln)) result.ln = signals.ln!;
   if (isRealValue(signals.ct) && isHash(signals.ct)) result.ct = signals.ct!;
   if (isRealValue(signals.st) && isHash(signals.st)) result.st = signals.st!;
   if (isRealValue(signals.zp) && isHash(signals.zp)) result.zp = signals.zp!;
@@ -207,17 +208,15 @@ export function buildServerUserData(signals: MetaUserSignals): MetaUserData {
     }
   }
 
+  // Names: demo / placeholder names ('Customer', 'Valued Customer', 'Guest' …),
+  // raw or hashed (zb_guest_fn / zb_guest_ln cookies), are never sent.
+  const nameOk = (v: string | undefined) =>
+    isRealValue(v) && !(isHash(v) ? isPlaceholderNameHash(v!) : isDemoValue('name', v!));
   const fnVal = signals.fn || signals.firstName;
-  if (isRealValue(fnVal)) {
-    if (!isHash(fnVal) && isDemoValue('name', fnVal!)) {
-      // skip — demo name
-    } else {
-      result.fn = fnVal!;
-    }
-  }
+  if (nameOk(fnVal)) result.fn = fnVal!;
 
   const lnVal = signals.ln || signals.lastName;
-  if (isRealValue(lnVal)) result.ln = lnVal!;
+  if (nameOk(lnVal)) result.ln = lnVal!;
 
   const ctVal = signals.ct || signals.city;
   if (isRealValue(ctVal)) result.ct = ctVal!;
