@@ -186,6 +186,56 @@ async function main() {
   }
   check('per-IP rate limit kicks in', limited > 0, limited);
 
+  // 9. Only WEBSITE orders are website Purchases; recovery placeholders are not sales.
+  graphBodies.length = 0;
+  mkOrder('ord_APP', { orderType: 'MOBILE_APP' });
+  mkOrder('ord_IOS', { orderType: 'APP' });
+  mkOrder('ord_EXC', { orderType: 'EXCHANGE' });
+  mkOrder('ord_REG', { orderType: 'REGULAR' });
+  mkOrder('ord_REC', { tags: 'WebStoreOrder, webhook-recovered, RazorpayRecovery', items: [{ quantity: 1, price: 99, variantId: null, sku: 'WEBHOOK-RECOVERED-PLACEHOLDER' }] });
+  const skips = await Promise.all(['ord_APP', 'ord_IOS', 'ord_EXC', 'ord_REG', 'ord_REC'].map(id => emitMetaPurchase(id, browserCtx, { paymentConfirmed: true })));
+  check('native app / exchange / Shopify-synced / unresolved recovery orders → no website Purchase',
+    graphBodies.length === 0 && skips.every(r => r.status === 'skipped'), skips);
+
+  // 10. Ledger table not migrated yet → still sends (once per call), never silently drops.
+  graphBodies.length = 0;
+  const { createMetaPurchaseDelivery } = await import('../lib/meta/purchase');
+  const { sendCapiEvent } = await import('../lib/metaCapi');
+  const missing = () => { const e: any = new Error('The table `public.ad_conversion_deliveries` does not exist in the current database.'); e.code = 'P2021'; throw e; };
+  const noLedgerDb = new Proxy({} as any, {
+    get: (_t, model: string) => model === 'adConversionDelivery'
+      ? { findUnique: async () => missing(), create: async () => missing(), update: async () => missing(), updateMany: async () => missing(), findMany: async () => missing() }
+      : (store as any).__fallback ?? (model === 'order' ? { findUnique: async ({ where }: any) => ({ ...store.orders.get(where.id) }) } : {}),
+  });
+  mkOrder('ord_NOLEDGER');
+  const noLedger = createMetaPurchaseDelivery({ db: noLedgerDb, send: sendCapiEvent });
+  const nl = await noLedger.emitMetaPurchase('ord_NOLEDGER', browserCtx, { paymentConfirmed: true });
+  check('missing ledger table → Purchase still sent directly', nl.status === 'sent' && graphBodies.length === 1 && graphBodies[0].data[0].event_id === 'ord_NOLEDGER', nl);
+
+  // 11. Worldwide normalization matrix: every supported country (lib/countries).
+  const { COUNTRIES } = await import('../lib/countries');
+  const { normalizeCountry, normalizePhone } = await import('../lib/tracking/identity-normalize');
+  const examples = (await import('libphonenumber-js/mobile/examples')).default as Record<string, string>;
+  const { getExampleNumber } = await import('libphonenumber-js/min');
+  const badCountry = COUNTRIES.filter(c => normalizeCountry(c.name) !== c.code.toLowerCase() || normalizeCountry(c.code) !== c.code.toLowerCase());
+  check(`country name/code → ISO alpha-2 for all ${COUNTRIES.length} supported countries`, badCountry.length === 0, badCountry.map(c => c.name));
+  const phoneRows: string[] = [];
+  const badPhone: any[] = [];
+  let phoneTested = 0;
+  for (const c of COUNTRIES) {
+    const ex = getExampleNumber(c.code as any, examples as any);
+    if (!ex) continue;
+    phoneTested++;
+    const e164 = ex.number.replace(/^\+/, '');
+    const national = ex.formatNational();
+    const fromNational = normalizePhone(national, c.code);
+    const fromPlus = normalizePhone(ex.formatInternational(), '');
+    if (fromNational !== e164 || fromPlus !== e164) badPhone.push({ country: c.code, national, expected: e164, fromNational, fromPlus });
+    if (['IN', 'AE', 'SG', 'GB', 'US', 'CA', 'AU', 'DE', 'SA', 'QA'].includes(c.code)) phoneRows.push(`${c.code}: "${national}" → ${fromNational}`);
+  }
+  check(`phone: national format + customer country → E.164 for ${phoneTested} countries`, badPhone.length === 0, badPhone.slice(0, 10));
+  console.log('      sample:', phoneRows.join(' | '));
+
   console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
   process.exit(failures ? 1 : 0);
 }

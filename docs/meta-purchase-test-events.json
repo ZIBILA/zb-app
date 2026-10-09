@@ -1,0 +1,824 @@
+{
+ "purchase_01_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510511,
+     "event_source_url": "https://zicabella.com/orders/c0000000a/confirmation",
+     "event_id": "c0000000a",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "order_id": "c0000000a",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_02_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510512,
+     "event_source_url": "https://zicabella.com/orders/c0000000o/confirmation",
+     "event_id": "c0000000o",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "order_id": "c0000000o",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_03_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510512,
+     "event_source_url": "https://zicabella.com/orders/c0000000w/confirmation",
+     "event_id": "c0000000w",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3297,
+      "currency": "INR",
+      "order_id": "c0000000w",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_04_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510517,
+     "event_source_url": "https://zicabella.com/orders/c00000014/confirmation",
+     "event_id": "c00000014",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "order_id": "c00000014",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_05_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510517,
+     "event_source_url": "https://zicabella.com/orders/c0000001m/confirmation",
+     "event_id": "c0000001m",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "order_id": "c0000001m",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_06_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510518,
+     "event_source_url": "https://zicabella.com/orders/c0000001v/confirmation",
+     "event_id": "c0000001v",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "order_id": "c0000001v",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_07_INR": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510518,
+     "event_source_url": "https://zicabella.com/orders/c00000024/confirmation",
+     "event_id": "c00000024",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9e46aba4f60b9e264b77d0ae2ea0c30c975d6fd337f46f2a1df6077df65685f5"
+      ],
+      "ph": [
+       "6bb1ceb281f8610e022da4f8e245f4bf88aac1102289c072bedf159f0b27a24b"
+      ],
+      "fn": [
+       "f053af9aad9d37435d6537cba10231a9fe0fa3b802978ff2ad0c1d29e1614ddc"
+      ],
+      "ln": [
+       "862b6768f8cf13575173fd67ae9994d8cb83d3f5c8df383fe6dd206413c170c4"
+      ],
+      "country": [
+       "582967534d0f909d196b97f9e6921342777aea87b46fa52df165389db1fb8ccf"
+      ],
+      "st": [
+       "611af639d0f5ad5fcdd1e2bb62611671cfeb5fc8442a8b7bdd3f26947336df41"
+      ],
+      "ct": [
+       "ce12e19a28f61d264967bcf66c5f2c917395aaf5214aa4310d90bbe42551841f"
+      ],
+      "zp": [
+       "15c93df17e8a3108d0a102ddc66cec591ab5a11101c4035383c42002b3b35ca8"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 3797,
+      "currency": "INR",
+      "order_id": "c00000024",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 1499
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 799
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_08_USD": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510518,
+     "event_source_url": "https://zicabella.com/orders/c0000002m/confirmation",
+     "event_id": "c0000002m",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "953babc40f0f41d2961fc323cef72189631ccf4737f2ce8b2147b6aa3026933f"
+      ],
+      "ph": [
+       "758fbf68945f21c416814c539ab578876c8d98fb69e6da692def92cd52417fe0"
+      ],
+      "fn": [
+       "f4aa0655cdb8d4fcf6f719c7a786de10556783c70bfb8ef1d78923482fe6ebbc"
+      ],
+      "ln": [
+       "2be4e33aa3e21f6ff7ad144f8fd58228a1cce3b50340b4805ff0c63480eec488"
+      ],
+      "country": [
+       "79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"
+      ],
+      "st": [
+       "6959097001d10501ac7d54c0bdb8db61420f658f2922cc26e46d536119a31126"
+      ],
+      "ct": [
+       "1a6bd4d9d79dc0a79b53795c70d3349fa9e38968a3fbefbfe8783efb1d2b6aac"
+      ],
+      "zp": [
+       "e73ac16e69f060ee98b0fda5f66f48c4648ee26950e9bab3a097389853fd859e"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 113.91,
+      "currency": "USD",
+      "order_id": "c0000002m",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 44.97
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 23.97
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_09_AED": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510518,
+     "event_source_url": "https://zicabella.com/orders/c0000002y/confirmation",
+     "event_id": "c0000002y",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "9ead8dbb32ed84707831a7b248b850fa5c720ccaf04f7eefb69e5004bef1df6b"
+      ],
+      "ph": [
+       "b7a8f5085aa733eb29857a02945bc84a5227e693708d469ec9fb21d34e9e44f5"
+      ],
+      "fn": [
+       "94419b99b12c11133a4dfeccc3e17885974beb48f7827c48239aabfbcad238d8"
+      ],
+      "ln": [
+       "1ef393f2c0772064cae9403f23e7f8fc6d49bb2939f463f23c4e637231e84da4"
+      ],
+      "country": [
+       "f9a00f43e97e3966bb846e76b6795e11512c3bbfa787e6b70e0310c7b9346b98"
+      ],
+      "st": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "ct": [
+       "22ff277b10da3a6fbabf7b4a7385855f24fe3bb04a4688bbf35d092a0740344c"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 417.67,
+      "currency": "AED",
+      "order_id": "c0000002y",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 164.89
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 87.89
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_10_SGD": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510519,
+     "event_source_url": "https://zicabella.com/orders/c0000003a/confirmation",
+     "event_id": "c0000003a",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "32a343b0b84af32b0524d787fa2357218ce0c936b66639ebdb65079657cc52ea"
+      ],
+      "ph": [
+       "bc8e80d59770e82185569bfb7141412548ef13634f59d6e7848635ac36bb693a"
+      ],
+      "fn": [
+       "1ed2b38c11c70aa02adedf9fe807482472daef00689af3eeb6141346ec3f3c70"
+      ],
+      "ln": [
+       "43b09c6ffb51cabd6ad3d2e3e0051a7e7424abd615474fc785ccc7940517918b"
+      ],
+      "country": [
+       "88195283220112932b02b8aa03dc289106f478e998cadaeeea2e181f8aa1a01d"
+      ],
+      "st": [
+       "51e2a46721d104d9148d85b617833e7745fdbd6795cb0b502a5b6ea31d33378e"
+      ],
+      "ct": [
+       "51e2a46721d104d9148d85b617833e7745fdbd6795cb0b502a5b6ea31d33378e"
+      ],
+      "zp": [
+       "0b23a95f0c1dab163991c4bb1877574fa1c29609d322ea286c2d033b2aedca0c"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 147.14,
+      "currency": "SGD",
+      "order_id": "c0000003a",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 58.09
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 30.96
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ },
+ "purchase_11_GBP": {
+  "pageView": {
+   "graph": []
+  },
+  "atc": {
+   "graph": []
+  },
+  "purchase": {
+   "graph": [
+    {
+     "event_name": "Purchase",
+     "event_time": 1791510519,
+     "event_source_url": "https://zicabella.com/orders/c0000003m/confirmation",
+     "event_id": "c0000003m",
+     "action_source": "website",
+     "user_data": {
+      "client_user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "client_ip_address": "81.2.69.142",
+      "fbp": "fb.1.1700000000000.111222333",
+      "fbc": "fb.1.1700000000000.IwAR1click",
+      "em": [
+       "00755bfa8aad583cdf080e0a5c219cf8706133571d4945a976d81f947e2fec8e"
+      ],
+      "ph": [
+       "033134b911b137918338415ee3d20a064b24773d36a3b02e8b99fdd3fcd6b4cd"
+      ],
+      "fn": [
+       "7dfef7aed2105b7eceb4d34e1ad84fdad4693bd5de041e1b47079efeb6001a83"
+      ],
+      "ln": [
+       "6627835f988e2c5e50533d491163072d3f4f41f5c8b04630150debb3722ca2dd"
+      ],
+      "country": [
+       "0b407281768f0e833afef47ed464b6571d01ca4d53c12ce5c51d1462f4ad6677"
+      ],
+      "st": [
+       "1b7b82ca1453897c4632add7bddcc539ab9ce2bce8544db897715668c51729f0"
+      ],
+      "ct": [
+       "6089854c94ca5454b76be6752c562901a985f64c9a946f62976aeab593b83161"
+      ],
+      "zp": [
+       "949af780a19e6f6d4b99d7044743348dbbb7ab2245fe146863573b23d02c5890"
+      ],
+      "external_id": [
+       "6c2e6e12b82e2cba18d300e1286003e2a40ab5271eb1a83a04b05851b09f9f3f"
+      ]
+     },
+     "custom_data": {
+      "value": 89.24,
+      "currency": "GBP",
+      "order_id": "c0000003m",
+      "content_type": "product",
+      "content_ids": [
+       "51813148262681",
+       "51813148328217"
+      ],
+      "contents": [
+       {
+        "id": "51813148262681",
+        "quantity": 2,
+        "item_price": 35.23
+       },
+       {
+        "id": "51813148328217",
+        "quantity": 1,
+        "item_price": 18.78
+       }
+      ],
+      "num_items": 3
+     }
+    }
+   ]
+  }
+ }
+}
