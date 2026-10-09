@@ -116,6 +116,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Shop not found" }, { status: 404 });
     }
 
+    // ── International (global store) checkout currency ──
+    // Non-INR checkouts are displayed AND charged by Razorpay at
+    // INR price × multiplier × exchangeRate (lib/global-pricing). Shopify variant
+    // prices are INR, so the server re-prices each unit with the SAME formula; the
+    // stored total, its currency and the captured amount then describe the same
+    // money. Previously the INR base total was stored under the foreign currency and
+    // compared with the (local) captured amount, marking every international order
+    // "partially_paid". INR checkouts are unchanged (toCheckoutCurrency stays null).
+    const requestCurrency = String(body.currency || 'INR').trim().toUpperCase();
+    let toCheckoutCurrency: ((inr: number) => number) | null = null;
+    if (requestCurrency !== 'INR') {
+      try {
+        const { isGlobalStoreEnabled, getCountryConfig, formatPriceWithConfig } = await import('@/lib/global-pricing');
+        const enabled = await isGlobalStoreEnabled();
+        const cfg = await getCountryConfig(String(body.displayCountry || '').trim().toUpperCase());
+        if (enabled && cfg && !cfg.isBase && String(cfg.currencyCode).toUpperCase() === requestCurrency) {
+          toCheckoutCurrency = (inr: number) => formatPriceWithConfig(inr, cfg, true).amount;
+        } else {
+          console.warn(`[Checkout] Currency ${requestCurrency} has no active global-store config for ${body.displayCountry}; prices compared as-is`);
+        }
+      } catch (fxErr: any) {
+        console.warn('[Checkout] Global pricing config unavailable; prices compared as-is:', fxErr?.message);
+      }
+    }
+
     // ── P0-11: Server-side price recomputation ─────────────────────────
     // Never trust client-supplied subtotal/total. Recompute from authoritative variant prices.
     let serverSubtotal = 0;
@@ -165,7 +190,10 @@ export async function POST(req: Request) {
             const rawId = String(item.variantId).split('/').pop() || '';
             const authoritative = variantPriceMap.get(rawId);
             if (authoritative !== undefined) {
-              serverSubtotal += authoritative * (item.quantity || 1);
+              // INR checkout: the Shopify INR price. International: the same unit price
+              // the storefront showed and Razorpay charged (see toCheckoutCurrency).
+              const unitPrice = toCheckoutCurrency ? toCheckoutCurrency(authoritative) : authoritative;
+              serverSubtotal += unitPrice * (item.quantity || 1);
             } else {
               // Variant not found in Shopify — fall back to client price with a warning
               console.warn(`[Checkout] Variant ${rawId} not found in Shopify; using client price ₹${item.price}`);
