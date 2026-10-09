@@ -227,11 +227,16 @@ async function main() {
   check('missing ledger table → no direct send, failed + alert, cron unhealthy',
     graphBodies.length === 0 && nl.every(r => r.status === 'failed') && alerts.includes('ledger_table_missing') && !nlCron.healthy && nlCron.alerts.includes('ledger_table_missing'),
     { nl, alerts, nlCron });
-  // Table migrated: the real ledger's recovery scan finds the paid order with no delivery.
+  // Table migrated. Orders before the ledger's first Meta row are NOT auto-recovered
+  // (the pre-ledger code may already have sent them: no double count) …
   const withLedger = createMetaPurchaseDelivery({ db: fakeDb, send: sendCapiEvent, alert: () => {} });
-  const [cronA, cronB] = await Promise.all([withLedger.retryFailedMetaPurchases(25), withLedger.retryFailedMetaPurchases(25)]);
+  await withLedger.retryFailedMetaPurchases(25);
+  check('pre-cutover order (before first Meta ledger row) is not auto-recovered', graphBodies.filter(b => b.data[0].event_id === 'ord_NOLEDGER').length === 0);
+  // … the operator backfills the outage window explicitly (?recoverSince=…): sent exactly once.
+  const since = new Date(capturedAt.getTime() - 60_000);
+  const [cronA, cronB] = await Promise.all([withLedger.retryFailedMetaPurchases(25, { recoverSince: since }), withLedger.retryFailedMetaPurchases(25, { recoverSince: since })]);
   const recSent = graphBodies.filter(b => b.data[0].event_id === 'ord_NOLEDGER');
-  check('after migration: recovery sends exactly once (2 concurrent crons)', recSent.length === 1, { cronA, cronB, n: recSent.length });
+  check('manual backfill after migration sends exactly once (2 concurrent crons)', recSent.length === 1, { cronA, cronB, n: recSent.length });
   check('recovered Purchase keeps original event_time (paymentCapturedAt, not now)',
     recSent[0]?.data[0].event_time === Math.floor(capturedAt.getTime() / 1000), recSent[0]?.data[0].event_time);
 
@@ -284,16 +289,37 @@ async function main() {
   mkOrder('ord_EXH');
   failNextGraph = 99;
   await emitMetaPurchase('ord_EXH', undefined, { paymentConfirmed: true });
-  let exh: any;
-  for (let i = 0; i < 6; i++) exh = await retryFailedMetaPurchases(25);
+  const exhRuns: any[] = [];
+  for (let i = 0; i < 6; i++) exhRuns.push(await retryFailedMetaPurchases(25));
   failNextGraph = 0;
   const rowExh = store.ledger.get('meta|Purchase|ord_EXH');
-  check('repeated failures stop at MAX_ATTEMPTS (5) and cron alerts attempts_exhausted',
-    rowExh.attempts === 5 && rowExh.status === 'failed' && !exh.healthy && exh.alerts.includes('attempts_exhausted') && graphBodies.length === 0, { attempts: rowExh.attempts, exh });
-  rowExh.status = 'skipped'; // clear for later checks
+  check('repeated failures stop at MAX_ATTEMPTS (5); cron alerts once and closes the row',
+    rowExh.attempts === 5 && rowExh.status === 'skipped' && /^exhausted after 5 attempts/.test(rowExh.lastError) && exhRuns.filter(r => r.alerts.includes('attempts_exhausted')).length === 1 && graphBodies.length === 0,
+    { attempts: rowExh.attempts, status: rowExh.status, runs: exhRuns.map(r => r.alerts) });
+  const afterExh = await retryFailedMetaPurchases(25);
+  check('next cron run is healthy again (no alert storm)', afterExh.healthy, afterExh);
 
-  // 16. Recovery scan scope: only paid WEBSITE orders inside the window, older than 20 min.
+  // 15a. A crashed send (row stuck "sending", lease expired) for a refunded order is closed too.
+  mkOrder('ord_CRASH');
+  await emitMetaPurchase('ord_CRASH', undefined, { paymentConfirmed: true });
+  Object.assign(store.ledger.get('meta|Purchase|ord_CRASH'), { status: 'sending', leaseUntil: new Date(Date.now() - 1000) });
+  store.orders.get('ord_CRASH').paymentStatus = 'refunded';
+  await retryFailedMetaPurchases(25);
+  check('expired "sending" row of a refunded order → closed as skipped', store.ledger.get('meta|Purchase|ord_CRASH')?.status === 'skipped', store.ledger.get('meta|Purchase|ord_CRASH'));
+
+  // 15b. A failed row whose order can no longer be reported (refunded) is closed, not retried forever.
+  mkOrder('ord_REFUND');
+  failNextGraph = 1;
+  await emitMetaPurchase('ord_REFUND', undefined, { paymentConfirmed: true });
+  store.orders.get('ord_REFUND').paymentStatus = 'refunded';
+  const rf = await retryFailedMetaPurchases(25);
+  check('failed row of a refunded order → closed as skipped (cannot starve the retry queue)',
+    store.ledger.get('meta|Purchase|ord_REFUND')?.status === 'skipped' && rf.tally.retry_closed === 1, { rf, row: store.ledger.get('meta|Purchase|ord_REFUND') });
+
+  // 16. Recovery scan scope: only paid WEBSITE orders after the ledger cutover, inside
+  //     the window, older than 20 min. (Simulate: the ledger has been in use for 2 days.)
   graphBodies.length = 0;
+  for (const r of store.ledger.values()) r.createdAt = new Date(Date.now() - 2 * 24 * 3600e3);
   const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
   mkOrder('ord_R_APP', { orderType: 'MOBILE_APP', createdAt: hourAgo, paymentCapturedAt: hourAgo });
   mkOrder('ord_R_PEND', { paymentStatus: 'payment_pending', createdAt: hourAgo });
@@ -315,6 +341,8 @@ async function main() {
   const paidOrder = { ...pendingOrder, paymentStatus: 'paid' };
   const d2 = bp.decideMetaBrowserPurchase(paidOrder, { alreadySent: bp.hasMetaBrowserPurchaseBeenSent('ord_BP', memStore) });
   check('pending → paid (poll / refresh) → "fire"', d2.action === 'fire', d2);
+  const notLoaded = await bp.dispatchMetaBrowserPurchaseOnce('ord_BP', async () => false, { store: memStore });
+  check('Pixel never loaded → no marker (a later visit retries)', notLoaded === false && mem.size === 0);
   const throwing = await bp.dispatchMetaBrowserPurchaseOnce('ord_BP', () => { throw new Error('fbq blocked'); }, { store: memStore });
   check('dispatch that throws → no marker (can retry)', throwing === false && mem.size === 0);
   // Two tabs racing, serialized by a lock (as navigator.locks does).
@@ -343,12 +371,15 @@ async function main() {
   const cronReq = (auth?: string) => new NextRequest('https://zicabella.com/api/cron/meta-conversions', { headers: auth ? { authorization: auth } : {} }) as any;
   const r401 = await cronRoute.GET(cronReq());
   const r200 = await cronRoute.GET(cronReq('Bearer test-cron-secret'));
-  check('cron: 401 without secret, 200 when healthy', r401.status === 401 && r200.status === 200, [r401.status, r200.status]);
-  const exhRow = store.ledger.get('meta|Purchase|ord_EXH'); exhRow.status = 'failed'; // exhausted row present again
-  const r503 = await cronRoute.GET(cronReq('Bearer test-cron-secret'));
-  const b503 = await r503.json();
-  check('cron: 503 + alert list when deliveries exhausted', r503.status === 503 && b503.result.alerts.includes('attempts_exhausted'), b503);
-  exhRow.status = 'skipped';
+  const b200 = await r200.json();
+  check('cron: 401 without secret, 200 + ok:true when healthy', r401.status === 401 && r200.status === 200 && b200.ok === true, [r401.status, r200.status, b200]);
+  const exhRow = store.ledger.get('meta|Purchase|ord_EXH'); exhRow.status = 'failed'; // a newly exhausted row
+  const rAlert = await cronRoute.GET(cronReq('Bearer test-cron-secret'));
+  const bAlert = await rAlert.json();
+  check('cron: alert → 200 with ok:false (workflow fails on it; curl does not re-run the job)',
+    rAlert.status === 200 && bAlert.ok === false && bAlert.result.alerts.includes('attempts_exhausted'), bAlert);
+  const rBad = await cronRoute.GET(new NextRequest('https://zicabella.com/api/cron/meta-conversions?recoverSince=nonsense', { headers: { authorization: 'Bearer test-cron-secret' } }) as any);
+  check('cron: invalid recoverSince rejected', rBad.status === 400, rBad.status);
 
   // 11. Worldwide normalization matrix: every supported country (lib/countries).
   const { COUNTRIES } = await import('../lib/countries');

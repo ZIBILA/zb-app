@@ -27,11 +27,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {
-    const result = await retryFailedMetaPurchases(25);
-    // 503 when something needs a human (Meta config missing, ledger table missing /
-    // erroring, deliveries that exhausted their attempts): the scheduled workflow
-    // runs curl --fail-with-body, so the run fails and GitHub notifies maintainers.
-    return NextResponse.json({ ok: result.healthy, result }, { status: result.healthy ? 200 : 503 });
+    // Optional manual backfill after a ledger outage: ?recoverSince=<ISO time>
+    // (still limited to Meta's 7-day window; same CRON_SECRET auth).
+    const sinceRaw = req.nextUrl.searchParams.get('recoverSince');
+    const recoverSince = sinceRaw ? new Date(sinceRaw) : undefined;
+    if (recoverSince && !Number.isFinite(recoverSince.getTime())) {
+      return NextResponse.json({ ok: false, error: 'invalid recoverSince' }, { status: 400 });
+    }
+    const result = await retryFailedMetaPurchases(25, { recoverSince });
+    // Always 200 for a completed run (so curl does not re-run the job and burn retry
+    // attempts); `ok:false` + `alerts` when something needs a human. The workflow
+    // fails the run on ok:false, and GitHub notifies maintainers.
+    return NextResponse.json({ ok: result.healthy, result });
   } catch (err: any) {
     console.error('[Cron meta-conversions]', err?.message);
     return NextResponse.json({ ok: false }, { status: 500 });

@@ -22,5 +22,11 @@ jobs:
     steps:
       - name: Call retry endpoint
         run: |
-          curl --retry 3 --retry-delay 10 --retry-all-errors --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/meta-conversions" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          # Retries cover transport errors / 5xx only. A completed run answers 200, so
+          # the job never re-runs the worker (which would burn delivery attempts).
+          body=$(curl --retry 3 --retry-delay 10 --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/meta-conversions" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || { echo "$body"; exit 1; }
+          echo "$body"
+          # ok:false = an alert (Meta config missing, ledger table missing/erroring,
+          # deliveries that exhausted their attempts) → fail the run so GitHub notifies.
+          echo "$body" | jq -e '.ok == true' > /dev/null

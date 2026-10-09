@@ -25,12 +25,28 @@ Branch: `fix/meta-tracking-audit` only. Nothing is merged to `main` or deployed,
 
 The audit is in `docs/meta-native-app-events.md`. Neither app has a Meta SDK, so Meta receives no app signal. The checked-in iOS `Info.plist` has no `NSUserTrackingUsageDescription`, and the Android manifest has no `AD_ID` permission. Nothing in either app was changed.
 
+## Independent second review (fixed in the follow-up commit)
+
+An independent reviewer (who had not written the code) found these in f122b85. All are fixed and re-verified:
+
+| Severity | Finding | Fix |
+|---|---|---|
+| P1 | Right after deploy, the recovery scan would re-send Purchases that the pre-ledger code on `main` had already sent (Meta dedups for only 48 h, so this double-counts). | Recovery only covers orders placed after the first Meta ledger row ever written. To backfill a ledger outage, use the manual `?recoverSince=<ISO>` option (CRON_SECRET). **Do not use it for time before the deploy, or those Purchases will be double-counted.** |
+| P1 | One exhausted row made every cron run return 503. `curl --retry-all-errors` then re-ran the job 4×, burning other rows' retries. | Exhausted rows are closed as `skipped` (lastError kept) and alerted once. A completed run always returns 200 with `ok:false` on alerts. The workflow no longer retries completed runs and fails the job through `jq`. |
+| P2 | Failed rows for refunded or deleted orders could block the retry queue. | Such rows are closed on retry; this also covers crashed `sending` rows. |
+| P2 | Recovery scanned only the newest 200 orders. | It now does an id-only scan of the whole window, in chunks. |
+| P2 | A guest who left while payment was pending kept the identity cookies. | The reset now also runs on `pagehide` and unmount. |
+| P2 | The Pixel marker could be set even if the Pixel never loaded. | The page waits up to 3 s for `fbq`; if it never loads, no marker is set. |
+
+To resend a closed row manually: `UPDATE ad_conversion_deliveries SET status='failed', attempts=0 WHERE platform='meta' AND "eventName"='Purchase' AND "orderId"='<id>';`
+
 ## Remaining blockers (need the business, not code)
 
 1. **Consent.** There is no consent mechanism for the Pixel. UK/EEA visitors need opt-in before non-essential tracking (UK GDPR/PECR). US state privacy laws (e.g. California) expect GPC opt-outs to be honoured. Which regions and which UI is a legal and product decision, so I did not change live tracking unilaterally.
 2. **Meta Test Events replay** needs your token, run locally:
    `META_CAPI_ACCESS_TOKEN=… META_TEST_EVENT_CODE=… npx tsx scripts/meta-regression/send-test-events.ts docs/meta-purchase-test-events.json`
 3. **Production database:** confirm the migration is applied (`scripts/db/verify-snap-tables.sql`).
-4. The **cron workflow** activates only after merge (scheduled workflows run from the default branch). `CRON_SECRET` must exist.
-5. **International:** check whether the global store is enabled and for which countries. Approve the international checkout pricing change (c1d8459). The international COD fee is charged in local units.
-6. **Native Meta App Events:** needs an App ID, client token, SDK and store releases (separate project).
+4. **Do not point a preview or staging deploy of this branch at the production DB.** Its first ledger row would move the recovery cutover earlier.
+5. The **cron workflow** activates only after merge (scheduled workflows run from the default branch). `CRON_SECRET` must exist.
+6. **International:** check whether the global store is enabled and for which countries. Approve the international checkout pricing change (c1d8459). The international COD fee is charged in local units.
+7. **Native Meta App Events:** needs an App ID, client token, SDK and store releases (separate project).

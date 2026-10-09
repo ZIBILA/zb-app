@@ -28,6 +28,7 @@ const matchWhere = (row: any, w: any): boolean => {
   if (w.eventName && row.eventName !== w.eventName) return false;
   if (w.attempts?.lt !== undefined && !(row.attempts < w.attempts.lt)) return false;
   if (w.attempts?.gte !== undefined && !(row.attempts >= w.attempts.gte)) return false;
+  if (typeof w.orderId === 'string' && row.orderId !== w.orderId) return false;
   if (w.orderId?.in && !w.orderId.in.includes(row.orderId)) return false;
   if (w.createdAt?.lt && !(new Date(row.createdAt) < new Date(w.createdAt.lt))) return false;
   if (w.createdAt?.gt && !(new Date(row.createdAt) > new Date(w.createdAt.gt))) return false;
@@ -69,15 +70,17 @@ const models: Record<string, any> = {
     update: async ({ where, data }: any) => { const o = findOrder(where); store.calls.push(`order.update:${o?.id}:${data.paymentStatus ?? ''}`); Object.assign(o, data); return { ...o }; },
     updateMany: async ({ where, data }: any) => { const o = findOrder(where); if (o) Object.assign(o, data); store.calls.push(`order.updateMany:${o?.id}:${data.paymentStatus ?? ''}`); return { count: o ? 1 : 0 }; },
     // Missed-purchase recovery scan (lib/meta/purchase.ts): orderType / paymentStatus.in / createdAt range.
-    findMany: async ({ where = {}, take }: any) => {
+    findMany: async ({ where = {}, take, orderBy }: any) => {
       await tick();
       const t = (d: any) => new Date(d).getTime();
+      const dir = orderBy?.createdAt === 'asc' ? 1 : -1;
       return [...store.orders.values()].filter(o =>
+        (!where.id?.in || where.id.in.includes(o.id)) &&
         (where.orderType === undefined || o.orderType === where.orderType) &&
         (!where.paymentStatus?.in || where.paymentStatus.in.includes(o.paymentStatus)) &&
         (!where.createdAt?.gt || t(o.createdAt) > t(where.createdAt.gt)) &&
         (!where.createdAt?.lt || t(o.createdAt) < t(where.createdAt.lt)),
-      ).sort((a, b) => t(b.createdAt) - t(a.createdAt)).slice(0, take ?? Infinity).map(o => ({ ...o }));
+      ).sort((a, b) => dir * (t(a.createdAt) - t(b.createdAt))).slice(0, take ?? Infinity).map(o => ({ ...o }));
     },
   },
   adConversionDelivery: {
@@ -99,7 +102,18 @@ const models: Record<string, any> = {
       }
       return { count };
     },
-    findMany: async ({ where, take }: any) => [...store.ledger.values()].filter(r => matchWhere(r, where)).slice(0, take),
+    findMany: async ({ where, take, orderBy }: any) => {
+      const rows = [...store.ledger.values()].filter(r => matchWhere(r, where));
+      const k = orderBy && Object.keys(orderBy)[0];
+      if (k) rows.sort((a, b) => (orderBy[k] === 'desc' ? -1 : 1) * (new Date(a[k]).getTime() - new Date(b[k]).getTime()));
+      return rows.slice(0, take);
+    },
+    findFirst: async ({ where, orderBy }: any) => {
+      const rows = [...store.ledger.values()].filter(r => matchWhere(r, where));
+      const k = orderBy && Object.keys(orderBy)[0];
+      if (k) rows.sort((a, b) => (orderBy[k] === 'desc' ? -1 : 1) * (new Date(a[k]).getTime() - new Date(b[k]).getTime()));
+      return rows[0] ? { ...rows[0] } : null;
+    },
     count: async ({ where }: any) => [...store.ledger.values()].filter(r => matchWhere(r, where)).length,
   },
 };

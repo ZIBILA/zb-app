@@ -28,6 +28,7 @@ import {
   buildMetaBrowserPurchaseArgs,
   dispatchMetaBrowserPurchaseOnce,
   hasMetaBrowserPurchaseBeenSent,
+  waitForFbq,
   META_PENDING_POLL_INTERVAL_MS,
   META_PENDING_POLL_MAX,
 } from "@/lib/meta/browser-purchase";
@@ -216,12 +217,33 @@ export default function OrderConfirmationPage() {
     if (!args) { finishGuestReset(); return; }
     let storedCategory: string | undefined;
     try { storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined; } catch {}
-    dispatchMetaBrowserPurchaseOnce(order.id, () => {
+    dispatchMetaBrowserPurchaseOnce(order.id, async () => {
+      // Wait (≤ 3 s, like withFbq) for the Pixel to load. If it never does (blocked by
+      // an extension, failed to load) the order is NOT marked as sent, so a later
+      // visit can retry. The server CAPI Purchase is sent regardless.
+      if (!(await waitForFbq())) return false;
       trackPurchase(args.orderId, args.value, args.currency, args.contentIds, args.userData, storedCategory, args.contents);
       return true;
     }).finally(finishGuestReset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order]);
+
+  // A guest reset postponed for a pending Meta Purchase must still happen if the
+  // shopper leaves first (tab closed, navigated away), so a shared device never
+  // keeps the previous shopper's identity cookies.
+  useEffect(() => {
+    const flush = () => {
+      if (guestResetDeferredRef.current) {
+        guestResetDeferredRef.current = false;
+        resetGuestIdentity();
+      }
+    };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, []);
 
   // Payment still awaiting capture (e.g. Razorpay webhook not processed yet):
   // re-check the stored order for a few minutes so the Purchase can fire once paid.

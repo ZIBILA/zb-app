@@ -223,7 +223,7 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     const lastError = `meta_config_missing: ${reason}`.slice(0, 500);
     try {
       let row = await prisma.adConversionDelivery.findUnique({ where: key(orderId) });
-      if (row && (row.status === 'sent' || row.status === 'skipped' || row.status === 'sending')) {
+      if (row && row.status !== 'pending' && row.status !== 'failed') {
         return { status: 'skipped', reason: `already ${row.status}` };
       }
       const eventTime: Date = row?.eventTime ? new Date(row.eventTime) : conversionTime;
@@ -340,44 +340,92 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
    * no ledger row at all (ledger was down, or every live path crashed), or a row
    * still "pending" (capture unconfirmed at checkout AND the captured webhook was
    * missed). emitMetaPurchase re-verifies the stored order before sending.
+   *
+   * Cutover: orders placed before the FIRST Meta ledger row ever written were
+   * handled by the previous (pre-ledger) code, which sent CAPI Purchase directly
+   * and left no row. They are never "recovered" — that would double-count sales
+   * older than Meta's 48 h dedup window. `opts.since` (manual run, CRON_SECRET)
+   * overrides the cutover, still clamped to the 7-day window.
    */
-  async function recoverMissedMetaPurchases(limit = 25, scan = 200): Promise<string[]> {
+  async function recoverMissedMetaPurchases(limit = 25, opts: { since?: Date } = {}): Promise<string[]> {
     const now = Date.now();
-    const orders = await prisma.order.findMany({
+    let lower = now - META_WINDOW_MS;
+    if (opts.since && Number.isFinite(opts.since.getTime())) {
+      lower = Math.max(lower, opts.since.getTime());
+    } else {
+      const first = await prisma.adConversionDelivery.findFirst({
+        where: { platform: PLATFORM, eventName: EVENT },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      });
+      if (!first?.createdAt) return []; // ledger never used for Meta yet → nothing this code could have missed
+      lower = Math.max(lower, new Date(first.createdAt).getTime());
+    }
+    const upper = now - RECOVERY_MIN_AGE_MS;
+    if (lower >= upper) return [];
+
+    // Light id scan over the whole window (oldest first: closest to Meta's limit).
+    const candidates: string[] = (await prisma.order.findMany({
       where: {
         orderType: 'WEB_STORE',
         paymentStatus: { in: Array.from(META_PURCHASE_PAYMENT_STATUSES) },
-        createdAt: { gt: new Date(now - META_WINDOW_MS), lt: new Date(now - RECOVERY_MIN_AGE_MS) },
+        createdAt: { gt: new Date(lower), lt: new Date(upper) },
       },
-      orderBy: { createdAt: 'desc' },
-      take: scan,
-      select: { id: true, tags: true, totalPrice: true, orderType: true, items: true },
-    });
-    // Orders that can never be reported (unknown recovery items, no value) are left
-    // out here so they cannot crowd genuine misses out of the per-run limit.
-    const ids: string[] = orders
-      .filter((o: any) => isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && metaPurchaseValue(o) !== null)
-      .map((o: any) => o.id);
-    if (!ids.length) return [];
-    const rows = await prisma.adConversionDelivery.findMany({
-      where: { platform: PLATFORM, eventName: EVENT, orderId: { in: ids } },
-      select: { orderId: true, status: true },
-    });
-    const handled = new Set(rows.filter((r: any) => r.status !== 'pending').map((r: any) => r.orderId));
-    return ids.filter(id => !handled.has(id)).slice(0, limit);
+      orderBy: { createdAt: 'asc' },
+      take: 5000,
+      select: { id: true },
+    })).map((o: any) => o.id);
+    if (!candidates.length) return [];
+
+    const handled = new Set<string>();
+    for (let i = 0; i < candidates.length; i += 1000) {
+      const rows = await prisma.adConversionDelivery.findMany({
+        where: { platform: PLATFORM, eventName: EVENT, orderId: { in: candidates.slice(i, i + 1000) } },
+        select: { orderId: true, status: true },
+      });
+      for (const r of rows) if (r.status !== 'pending') handled.add(r.orderId);
+    }
+    const missing = candidates.filter(id => !handled.has(id));
+
+    // Load full orders only for the misses, in small batches, skipping ones that can
+    // never be reported (unknown recovery items, no value) so they cannot crowd out
+    // genuine misses.
+    const out: string[] = [];
+    for (let i = 0; i < missing.length && out.length < limit; i += 100) {
+      const batch = await prisma.order.findMany({
+        where: { id: { in: missing.slice(i, i + 100) } },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, tags: true, totalPrice: true, orderType: true, items: true },
+      });
+      for (const o of batch) {
+        if (out.length >= limit) break;
+        if (isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && metaPurchaseValue(o) !== null) out.push(o.id);
+      }
+    }
+    return out;
   }
+
+  /** Retry outcomes that mean "this row will never be sendable": stop retrying it. */
+  const TERMINAL_RETRY_SKIP = /^(order not found|not a website order|webhook-recovered order|paymentStatus=|order value missing)/;
 
   /**
    * Retry job (cron):
    *   1. expire pending rows older than the 7-day window,
-   *   2. resend rows that failed or whose sending lease expired,
-   *   3. recover paid website orders that have no delivery at all,
-   *   4. report conditions that need a human (alerts): Meta config missing,
-   *      ledger table missing / erroring, rows that exhausted MAX_ATTEMPTS.
-   * Returns `healthy: false` when any alert condition exists so the caller can
-   * fail loudly (the cron route answers 503 → the scheduled workflow fails).
+   *   2. resend rows that failed or whose sending lease expired; rows whose order
+   *      can no longer be reported (refunded, deleted, …) are closed as skipped so
+   *      they cannot starve the retry queue,
+   *   3. recover paid website orders that have no delivery at all (see cutover),
+   *   4. close rows that exhausted MAX_ATTEMPTS (status skipped, lastError kept)
+   *      and alert ONCE for them — to resend one, reset it to status 'failed',
+   *      attempts 0,
+   *   5. report standing problems (Meta config missing, ledger table missing /
+   *      erroring) on every run.
+   * `healthy: false` when any alert was raised in this run.
    */
-  async function retryFailedMetaPurchases(limit = 25): Promise<{ healthy: boolean; tally: Record<string, number>; alerts: string[] }> {
+  async function retryFailedMetaPurchases(
+    limit = 25,
+    opts: { recoverSince?: Date } = {},
+  ): Promise<{ healthy: boolean; tally: Record<string, number>; alerts: string[] }> {
     const tally: Record<string, number> = {};
     const alerts = new Set<string>();
     const bump = (k: string) => { tally[k] = (tally[k] || 0) + 1; };
@@ -392,19 +440,43 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
         handled.add(orderId);
         const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
         bump(`retry_${out.status}`);
+        if (out.status === 'skipped' && TERMINAL_RETRY_SKIP.test(out.reason)) {
+          await prisma.adConversionDelivery.updateMany({
+            // failed rows, or "sending" rows whose lease expired (a crashed send)
+            where: {
+              platform: PLATFORM, eventName: EVENT, orderId,
+              OR: [{ status: 'failed' }, { status: 'sending', leaseUntil: { lt: new Date() } }],
+            },
+            data: { status: 'skipped', leaseUntil: null, lastError: `closed on retry: ${out.reason}`.slice(0, 500) },
+          });
+          bump('retry_closed');
+        }
       }
-      for (const orderId of await recoverMissedMetaPurchases(limit)) {
+      for (const orderId of await recoverMissedMetaPurchases(limit, { since: opts.recoverSince })) {
         if (handled.has(orderId)) continue;
         const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
         bump(`recovered_${out.status}`);
       }
-      const exhausted = await prisma.adConversionDelivery.count({
+      const exhausted = await prisma.adConversionDelivery.findMany({
         where: { platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS } },
+        select: { id: true, orderId: true, lastError: true },
+        take: 100,
       });
-      if (exhausted) {
-        tally.exhausted = exhausted;
+      if (exhausted.length) {
+        for (const r of exhausted) {
+          await prisma.adConversionDelivery.updateMany({
+            where: { id: r.id, status: 'failed' },
+            data: { status: 'skipped', lastError: `exhausted after ${MAX_ATTEMPTS} attempts: ${r.lastError || ''}`.slice(0, 500) },
+          });
+        }
+        tally.exhausted = exhausted.length;
         alerts.add('attempts_exhausted');
-        alert('attempts_exhausted', { count: exhausted, hint: 'inspect lastError on ad_conversion_deliveries (platform=meta, eventName=Purchase)' });
+        alert('attempts_exhausted', {
+          count: exhausted.length,
+          orderIds: exhausted.slice(0, 20).map((r: any) => r.orderId),
+          lastError: String(exhausted[0]?.lastError || '').slice(0, 300),
+          hint: "closed as skipped; to resend set status='failed', attempts=0 on ad_conversion_deliveries (platform=meta, eventName=Purchase)",
+        });
       }
     } catch (err: any) {
       const code: MetaPurchaseAlert = isMissingTable(err) ? 'ledger_table_missing' : 'ledger_error';

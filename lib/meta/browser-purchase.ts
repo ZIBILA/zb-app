@@ -155,21 +155,38 @@ const defaultLock: LockRunner = async (name, fn) => {
  */
 export async function dispatchMetaBrowserPurchaseOnce(
   orderId: string,
-  dispatch: () => boolean,
+  dispatch: () => boolean | Promise<boolean>,
   deps: { store?: MarkerStore; lock?: LockRunner; nowMs?: () => number } = {},
 ): Promise<boolean> {
   const store = deps.store ?? browserMarkerStore();
   const lock = deps.lock ?? defaultLock;
   const key = metaBrowserPurchaseKey(orderId);
   let fired = false;
-  await lock(key, () => {
+  await lock(key, async () => {
     if (store.get(key) !== null) return;
     let ok = false;
-    try { ok = dispatch(); } catch { ok = false; }
+    try { ok = await dispatch(); } catch { ok = false; }
     if (ok) {
       store.set(key, String(deps.nowMs ? deps.nowMs() : Date.now()));
       fired = true;
     }
   });
   return fired;
+}
+
+/**
+ * Resolve true once the Meta Pixel function (`window.fbq`) exists, false after
+ * `timeoutMs` (blocked by an extension / failed to load). Same 3 s budget as
+ * withFbq in lib/metaPixel.ts, so "false" means the Pixel call would be dropped.
+ */
+export function waitForFbq(timeoutMs = 3000, stepMs = 100): Promise<boolean> {
+  const has = () => typeof window !== 'undefined' && typeof (window as any).fbq === 'function';
+  if (has()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const t = setInterval(() => {
+      if (has()) { clearInterval(t); resolve(true); }
+      else if (Date.now() - started >= timeoutMs) { clearInterval(t); resolve(false); }
+    }, stepMs);
+  });
 }
