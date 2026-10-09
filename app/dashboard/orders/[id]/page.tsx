@@ -171,6 +171,8 @@ export default function OrderDetailPage() {
   const { data: session } = useSession();
 
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [testToolsEnabled, setTestToolsEnabled] = useState(false);
+  const [markingDelivered, setMarkingDelivered] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [logisticsSyncing, setLogisticsSyncing] = useState(false);
@@ -198,8 +200,10 @@ export default function OrderDetailPage() {
     try {
       const res = await fetch(`/api/admin/orders/${id}`);
       const data = await res.json();
-      if (data.success) setOrder(data.order);
-      else setError(data.error);
+      if (data.success) {
+        setOrder(data.order);
+        setTestToolsEnabled(!!data.testToolsEnabled);
+      } else setError(data.error);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1310,6 +1314,35 @@ export default function OrderDetailPage() {
                 </div>
                 <div className="h-[1px] bg-foreground/5 relative z-10" />
               </>
+            )}
+
+            {/* Dev/Render only — skip real delivery so return/exchange can be tested */}
+            {testToolsEnabled && (order.deliveryStatus || '').toLowerCase() !== 'delivered' && order.status !== 'cancelled' && (
+              <div className="space-y-2 relative z-10 pb-4 border-b border-dashed border-amber-500/20">
+                <p className="text-[8px] font-bold uppercase tracking-[0.25em] text-amber-500/70">Test tools (NODE_ENV=render)</p>
+                <button
+                  onClick={async () => {
+                    if (!confirm('Mark this order as delivered for testing? No real courier delivery is required.')) return;
+                    setMarkingDelivered(true);
+                    try {
+                      const res = await fetch(`/api/admin/orders/${id}/mark-delivered-test`, { method: 'POST' });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.error || 'Failed');
+                      setToast(data.message || 'Marked delivered for testing');
+                      fetchOrder(true);
+                    } catch (e: any) {
+                      setToast(e.message || 'Failed to mark delivered');
+                    } finally {
+                      setMarkingDelivered(false);
+                    }
+                  }}
+                  disabled={markingDelivered}
+                  className="w-full py-3.5 bg-amber-500/15 border border-amber-500/25 hover:bg-amber-500/25 text-amber-400 disabled:opacity-50 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+                >
+                  {markingDelivered ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
+                  Mark Delivered (Test)
+                </button>
+              </div>
             )}
 
             {/* Cancel Action Row */}

@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { fetchProductById } from '@/lib/shopify-admin';
 import { extractItemVariantAndSize } from '@/lib/utils';
 import { enrichItemsWithSize, extractSize } from '@/lib/enrichSize';
+import { isRenderDevEnv } from '@/lib/isRenderDevEnv';
 
 /**
  * Resolve the variant-specific inventory_item_id for a product_skus record.
@@ -102,7 +103,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           });
           if (syncedOrder) {
             const enrichedSyncedItems = await enrichItemsWithSize(syncedOrder.items);
-            return NextResponse.json({ success: true, order: { ...syncedOrder, items: enrichedSyncedItems } });
+            return NextResponse.json({
+              success: true,
+              order: { ...syncedOrder, items: enrichedSyncedItems },
+              testToolsEnabled: isRenderDevEnv(),
+            });
           }
         }
 
@@ -174,7 +179,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           mappedOrder.totalPrice = mobSubtotal - mobDiscount;
         }
         
-        return NextResponse.json({ success: true, order: mappedOrder });
+        return NextResponse.json({
+          success: true,
+          order: mappedOrder,
+          testToolsEnabled: isRenderDevEnv(),
+        });
       }
     }
 
@@ -281,7 +290,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       codSettled,
     };
 
-    return NextResponse.json({ success: true, order: enrichedOrder });
+    return NextResponse.json({
+      success: true,
+      order: enrichedOrder,
+      testToolsEnabled: isRenderDevEnv(),
+    });
   } catch (error: any) {
     console.error('[Admin Order Detail API] Error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
