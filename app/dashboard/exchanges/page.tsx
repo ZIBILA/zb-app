@@ -23,6 +23,8 @@ type ExchangeRequest = {
   userName: string;
   userEmail: string;
   status: string;
+  liveStage?: string | null;
+  liveStageLabel?: string | null;
   priceDifference: number;
   paymentStatus: string;
   createdAt: string;
@@ -33,34 +35,39 @@ type ExchangeRequest = {
 };
 
 type Summary = {
-  requested: number;
-  approved: number;
-  rejected: number;
+  pending: number;
+  pickup_scheduled: number;
+  in_transit: number;
+  failed: number;
   received: number;
-  completed: number;
   total: number;
 };
 
 const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string; label: string }> = {
-  pending_approval: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending Approval" },
-  approved: { color: "text-blue-500", bg: "bg-blue-500/10", border: "border-blue-500/20", label: "Approved" },
+  pending: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending" },
+  awaiting_acceptance: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending" },
+  awaiting_partner: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Accepted – Pickup Pending" },
+  pending_approval: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending" },
+  approved: { color: "text-blue-500", bg: "bg-blue-500/10", border: "border-blue-500/20", label: "Accepted – Pickup Pending" },
+  pickup_scheduled: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "Pickup Scheduled" },
+  in_transit: { color: "text-sky-500", bg: "bg-sky-500/10", border: "border-sky-500/20", label: "In Transit" },
+  awaiting_receipt: { color: "text-sky-500", bg: "bg-sky-500/10", border: "border-sky-500/20", label: "Delivered – Awaiting Check" },
+  failed: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Failed" },
+  pickup_failed: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Pickup Failed" },
   rejected: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Rejected" },
-  return_created: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "Return Created" },
   received: { color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20", label: "Received" },
   qc_passed: { color: "text-cyan-500", bg: "bg-cyan-500/10", border: "border-cyan-500/20", label: "QC Passed" },
-  new_order_created: { color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "New Order Created" },
-  shipped: { color: "text-violet-500", bg: "bg-violet-500/10", border: "border-violet-500/20", label: "Shipped" },
+  new_order_created: { color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "Replacement Created" },
   completed: { color: "text-green-500", bg: "bg-green-500/10", border: "border-green-500/20", label: "Completed" },
-  requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" }
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, label }: { status: string; label?: string | null }) {
   const normalized = (status || "").toLowerCase().replace(/[_-]/g, '_');
-  const cfg = STATUS_CONFIG[normalized] || STATUS_CONFIG.pending_approval;
+  const cfg = STATUS_CONFIG[normalized] || STATUS_CONFIG.pending;
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest ${cfg.bg} ${cfg.color} border ${cfg.border}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${cfg.color.replace('text-', 'bg-')} ${normalized === 'pending_approval' || normalized === 'requested' ? 'animate-pulse' : ''}`} />
-      {cfg.label}
+      <span className={`w-1.5 h-1.5 rounded-full ${cfg.color.replace('text-', 'bg-')} ${normalized === 'pending' || normalized === 'awaiting_acceptance' ? 'animate-pulse' : ''}`} />
+      {label || cfg.label}
     </span>
   );
 }
@@ -68,7 +75,14 @@ function StatusBadge({ status }: { status: string }) {
 export default function ExchangesPage() {
   const router = useRouter();
   const [exchanges, setExchanges] = useState<ExchangeRequest[]>([]);
-  const [summary, setSummary] = useState<Summary>({ requested: 0, approved: 0, rejected: 0, received: 0, completed: 0, total: 0 });
+  const [summary, setSummary] = useState<Summary>({
+    pending: 0,
+    pickup_scheduled: 0,
+    in_transit: 0,
+    failed: 0,
+    received: 0,
+    total: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -130,12 +144,14 @@ export default function ExchangesPage() {
         setExchanges(data.exchanges || []);
         
         const sc = data.statusCounts || {};
-        const pending = sc.pending_approval || 0;
-        const approved = (sc.approved || 0) + (sc.return_created || 0);
-        const rejected = sc.rejected || 0;
-        const received = (sc.received || 0) + (sc.qc_passed || 0);
-        const completed = (sc.new_order_created || 0) + (sc.shipped || 0) + (sc.completed || 0);
-        setSummary({ requested: pending, approved, rejected, received, completed, total: data.total || 0 });
+        setSummary({
+          pending: sc.pending || sc.pending_approval || 0,
+          pickup_scheduled: sc.pickup_scheduled || 0,
+          in_transit: sc.in_transit || 0,
+          failed: sc.failed || 0,
+          received: sc.received || 0,
+          total: data.total || 0,
+        });
       }
     } catch (err) {
       console.error(err);
@@ -257,11 +273,11 @@ export default function ExchangesPage() {
   });
 
   const summaryCards = [
-    { label: "Pending", statusKey: "pending_approval", count: summary.requested, icon: Clock, color: "text-amber-500", bg: "bg-amber-500/10" },
-    { label: "In Progress", statusKey: "approved", count: summary.approved, icon: ArrowLeftRight, color: "text-blue-500", bg: "bg-blue-500/10" },
-    { label: "Received", statusKey: "received", count: summary.received, icon: Package, color: "text-teal-500", bg: "bg-teal-500/10" },
-    { label: "Completed", statusKey: "completed", count: summary.completed, icon: CheckCircle2, color: "text-emerald-500", bg: "bg-emerald-500/10" },
-    { label: "Rejected", statusKey: "rejected", count: summary.rejected, icon: XCircle, color: "text-rose-500", bg: "bg-rose-500/10" },
+    { label: "Pending", statusKey: "pending", count: summary.pending, icon: Clock, color: "text-amber-500", bg: "bg-amber-500/10" },
+    { label: "Pickup Scheduled", statusKey: "pickup_scheduled", count: summary.pickup_scheduled, icon: Package, color: "text-indigo-500", bg: "bg-indigo-500/10" },
+    { label: "In Transit", statusKey: "in_transit", count: summary.in_transit, icon: ArrowLeftRight, color: "text-sky-500", bg: "bg-sky-500/10" },
+    { label: "Failed", statusKey: "failed", count: summary.failed, icon: XCircle, color: "text-rose-500", bg: "bg-rose-500/10" },
+    { label: "Received", statusKey: "received", count: summary.received, icon: CheckCircle2, color: "text-teal-500", bg: "bg-teal-500/10" },
   ];
 
   return (
@@ -309,7 +325,7 @@ export default function ExchangesPage() {
 
       <div className="flex flex-col md:flex-row gap-3">
         <div className="flex items-center bg-background border border-foreground/[0.05] rounded-md p-1 overflow-x-auto">
-          {["all", "pending_approval", "approved", "received", "new_order_created", "completed", "rejected"].map((s) => (
+          {["all", "pending", "pickup_scheduled", "in_transit", "failed", "received", "new_order_created", "rejected"].map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1.5 rounded-[4px] text-[8px] font-medium uppercase tracking-[0.15em] transition-colors whitespace-nowrap ${statusFilter === s ? "bg-foreground text-background" : "text-foreground/50 hover:bg-foreground/[0.03]"}`}>
               {s === "all" ? "All" : STATUS_CONFIG[s]?.label || s}
             </button>
@@ -323,6 +339,19 @@ export default function ExchangesPage() {
             className="w-full bg-background border border-foreground/[0.05] rounded-md pl-10 pr-4 py-2 text-[11px] outline-none focus:border-foreground/20 transition-colors"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={async (e) => {
+              if (e.key !== 'Enter') return;
+              const q = search.trim();
+              if (!/^(R_|E_|G_E_)/i.test(q)) return;
+              try {
+                const res = await fetch(`/api/admin/linked-id?q=${encodeURIComponent(q)}`);
+                const data = await res.json();
+                if (data?.found && data.href) {
+                  e.preventDefault();
+                  router.push(data.href);
+                }
+              } catch { /* list search still works */ }
+            }}
           />
         </div>
       </div>
@@ -447,7 +476,7 @@ export default function ExchangesPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={req.status} />
+                      <StatusBadge status={req.liveStage || req.status} label={req.liveStageLabel} />
                     </td>
                     <td className="px-4 py-3 text-center hidden sm:table-cell">
                       <div className="text-[10px] font-medium text-foreground/70">{formatExactDateTime(req.createdAt)}</div>

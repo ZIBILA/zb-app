@@ -98,9 +98,37 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       }
     }
 
+    // Auto-create G_E_ replacement order once QC passes (ops still books outbound AWB).
+    let replacement: any = null;
+    if (result.status === 'qc_passed') {
+      try {
+        const { createExchangeReplacementOrder } = await import(
+          '@/lib/services/exchangeReplacementOrder'
+        );
+        replacement = await createExchangeReplacementOrder(id);
+        if (!replacement.success) {
+          console.error('[Exchange Receive] Auto replacement create failed:', replacement.error);
+        } else {
+          console.log(
+            `[Exchange Receive] Auto-created replacement ${replacement.replacementDisplayId}`
+          );
+        }
+      } catch (createErr: any) {
+        console.error('[Exchange Receive] Auto replacement create error:', createErr?.message || createErr);
+      }
+    }
+
     return NextResponse.json({
       success: true,
-      exchangeRequest: result
+      exchangeRequest: replacement?.success ? replacement.exchangeRequest : result,
+      replacement: replacement?.success
+        ? {
+            replacementDisplayId: replacement.replacementDisplayId,
+            localOrderId: replacement.localOrderId,
+            shopifyOrderId: replacement.shopifyOrderId,
+          }
+        : null,
+      replacementError: replacement && !replacement.success ? replacement.error : null,
     });
   } catch (error: any) {
     console.error("Receive Exchange Error:", error);

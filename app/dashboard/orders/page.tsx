@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ShoppingCart,
   Loader2,
@@ -130,6 +131,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function OrdersPage() {
+  const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -363,9 +365,22 @@ export default function OrdersPage() {
           <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/10 group-focus-within:text-foreground/40 transition-colors" />
           <input
             type="text"
-            placeholder="Search by ID, customer, or phone..."
+            placeholder="Search by ID, R_/E_/G_E_, customer, or phone..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={async (e) => {
+              if (e.key !== 'Enter') return;
+              const q = search.trim();
+              if (!/^(R_|E_|G_E_)/i.test(q)) return;
+              try {
+                const res = await fetch(`/api/admin/linked-id?q=${encodeURIComponent(q)}`);
+                const data = await res.json();
+                if (data?.found && data.href) {
+                  e.preventDefault();
+                  router.push(data.href);
+                }
+              } catch { /* fall through to list search */ }
+            }}
             className="w-full bg-foreground/[0.03] border border-foreground/5 rounded-2xl pl-14 pr-6 py-4 text-[13px] text-foreground placeholder:text-foreground/10 outline-none focus:border-foreground/10 transition-all"
           />
         </div>

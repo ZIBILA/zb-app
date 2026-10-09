@@ -614,18 +614,48 @@ export default function ExchangeDetailPage() {
               <div className="flex justify-between items-center">
                 <span className="text-[10px] text-foreground/50">Pickup Status</span>
                 <span className="text-[10px] font-bold uppercase tracking-widest text-foreground">
-                  {REVERSE_STAGE_LABEL[deriveReverseStage({ requestStatus: currentStatus, receivedAt: data.receivedAt, hasAwb: !!data.reverseAwb })]}
+                  {data.liveStageLabel ||
+                    REVERSE_STAGE_LABEL[
+                      deriveReverseStage({
+                        requestStatus: currentStatus,
+                        receivedAt: data.receivedAt,
+                        hasAwb: !!data.reverseAwb,
+                        carrierStatus: data.carrierStatus,
+                      })
+                    ]}
+                </span>
+              </div>
+              {data.carrierStatusLabel && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Carrier Movement</span>
+                  <span className="text-[10px] font-semibold text-foreground">{data.carrierStatusLabel}</span>
+                </div>
+              )}
+              {data.currentLocation && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Location</span>
+                  <span className="text-[10px] font-semibold text-foreground">{data.currentLocation}</span>
+                </div>
+              )}
+              {data.estimatedDelivery && !data.receivedAt && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-foreground/50">Expected</span>
+                  <span className="text-[10px] font-semibold text-foreground font-mono">
+                    {formatExactDateTime(data.estimatedDelivery, true)}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] text-foreground/50">Pickup Done</span>
+                <span className="text-[10px] font-semibold text-foreground">
+                  {data.pickupDone ? "Yes" : "No"}
                 </span>
               </div>
               {data.reverseAwb && (
                 <div className="flex justify-between items-center">
                   <span className="text-[10px] text-foreground/50">Track</span>
                   <a
-                    href={
-                      String(data.logisticsPartner || "").toLowerCase().includes("delhivery")
-                        ? `https://shiprocket.co/tracking/${data.reverseAwb}`
-                        : `https://shiprocket.co/tracking/${data.reverseAwb}`
-                    }
+                    href={data.trackingUrl || `https://shiprocket.co/tracking/${data.reverseAwb}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] font-semibold text-blue-500 hover:underline flex items-center gap-1 font-mono"
@@ -643,12 +673,12 @@ export default function ExchangeDetailPage() {
                 onBooked={(m) => { showToast(m); fetchDetail(); }}
                 onError={(m) => showToast(`Error: ${m}`)}
               />
-              {data.receivedAt && (
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-foreground/50">Received at warehouse</span>
-                  <span className="text-[10px] font-semibold text-foreground font-mono">{formatExactDateTime(data.receivedAt, true)}</span>
-                </div>
-              )}
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] text-foreground/50">Received by us</span>
+                <span className="text-[10px] font-semibold text-foreground font-mono">
+                  {data.receivedAt ? formatExactDateTime(data.receivedAt, true) : "Not yet"}
+                </span>
+              </div>
               {data.replacementDisplayId && (
                 <div className="flex justify-between items-center pt-2 border-t border-foreground/[0.05]">
                   <span className="text-[10px] text-foreground/50">Replacement Order</span>

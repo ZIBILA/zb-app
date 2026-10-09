@@ -103,3 +103,85 @@ export function deriveReverseStage(input: {
   if (input.hasAwb) return 'pickup_scheduled';
   return 'awaiting_partner';
 }
+
+/** Admin list filter keys for live reverse logistics (Returns / Exchanges). */
+export type ReverseStageFilter =
+  | 'all'
+  | 'pending'
+  | 'pickup_scheduled'
+  | 'in_transit'
+  | 'failed'
+  | 'received'
+  | 'refunded'
+  | 'rejected'
+  | 'cancelled'
+  | 'completed';
+
+export const REVERSE_STAGE_FILTER_OPTIONS: ReadonlyArray<{ value: ReverseStageFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'pickup_scheduled', label: 'Pickup Scheduled' },
+  { value: 'in_transit', label: 'In Transit' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'received', label: 'Received' },
+];
+
+/** Stages that belong to each admin list filter chip. */
+export const REVERSE_STAGE_FILTER_MAP: Record<
+  Exclude<ReverseStageFilter, 'all' | 'refunded' | 'rejected' | 'cancelled' | 'completed'>,
+  ReverseStage[]
+> = {
+  pending: ['awaiting_acceptance', 'awaiting_partner'],
+  pickup_scheduled: ['pickup_scheduled'],
+  in_transit: ['in_transit', 'awaiting_receipt'],
+  failed: ['pickup_failed'],
+  received: ['received'],
+};
+
+export function matchesReverseStageFilter(
+  stage: ReverseStage,
+  filter: string | null | undefined
+): boolean {
+  const f = String(filter || 'all').toLowerCase() as ReverseStageFilter;
+  if (!f || f === 'all') return true;
+  const mapped = REVERSE_STAGE_FILTER_MAP[f as keyof typeof REVERSE_STAGE_FILTER_MAP];
+  if (mapped) return mapped.includes(stage);
+  // Legacy DB-status filters still used for terminal outcomes.
+  if (f === 'rejected') return stage === 'rejected';
+  if (f === 'cancelled') return stage === 'cancelled';
+  if (f === 'received') return stage === 'received';
+  return true;
+}
+
+export function countByReverseStageFilter(
+  stages: ReverseStage[]
+): Record<'pending' | 'pickup_scheduled' | 'in_transit' | 'failed' | 'received', number> {
+  const out = {
+    pending: 0,
+    pickup_scheduled: 0,
+    in_transit: 0,
+    failed: 0,
+    received: 0,
+  };
+  for (const stage of stages) {
+    if (REVERSE_STAGE_FILTER_MAP.pending.includes(stage)) out.pending += 1;
+    else if (REVERSE_STAGE_FILTER_MAP.pickup_scheduled.includes(stage)) out.pickup_scheduled += 1;
+    else if (REVERSE_STAGE_FILTER_MAP.in_transit.includes(stage)) out.in_transit += 1;
+    else if (REVERSE_STAGE_FILTER_MAP.failed.includes(stage)) out.failed += 1;
+    else if (REVERSE_STAGE_FILTER_MAP.received.includes(stage)) out.received += 1;
+  }
+  return out;
+}
+
+/** Find the reverse shipment row for a return/exchange AWB. */
+export function findReverseShipment<
+  T extends { awb?: string | null; trackingNumber?: string | null; status?: string | null }
+>(shipments: T[] | null | undefined, reverseAwb: string | null | undefined): T | null {
+  const awb = String(reverseAwb || '').trim();
+  if (!awb || !shipments?.length) return null;
+  return (
+    shipments.find(
+      (s) => String(s.awb || '').trim() === awb || String(s.trackingNumber || '').trim() === awb
+    ) || null
+  );
+}

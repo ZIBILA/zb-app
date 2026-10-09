@@ -3,19 +3,41 @@ import prisma from "@/lib/db";
 import { enrichSingleItem } from "@/lib/enrichSize";
 import { extractItemVariantAndSize } from "@/lib/utils";
 import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
+import { countByReverseStageFilter } from "@/lib/returnPolicy";
+import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
 
 export const dynamic = "force-dynamic";
+
+const LIVE_STAGE_FILTERS = new Set([
+  'pending',
+  'pickup_scheduled',
+  'in_transit',
+  'failed',
+  'received',
+]);
+
+const SHIPMENT_SELECT = {
+  awb: true,
+  trackingNumber: true,
+  status: true,
+  currentLocation: true,
+  estimatedDelivery: true,
+  courier: true,
+  trackingUrl: true,
+} as const;
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const status = searchParams.get('status');
+    const status = searchParams.get('status') || searchParams.get('stage');
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
+    const isLiveFilter = LIVE_STAGE_FILTERS.has(String(status || '').toLowerCase());
 
     // Linked-id search (R_ZB…, E_ZB…, G_E_ZB…) is resolved server-side so it also finds older requests.
     const parsedQ = parseLinkedId(searchParams.get('search'));
-    const statusWhere: any = status && status !== 'all' ? { status } : {};
+    const statusWhere: any =
+      status && status !== 'all' && !isLiveFilter ? { status } : {};
     const where: any = parsedQ
       ? {
           ...statusWhere,
@@ -26,7 +48,11 @@ export async function GET(req: Request) {
           ],
         }
       : statusWhere;
-    const standaloneWhere = parsedQ ? { id: '__none__' } as any : (status && status !== 'all' ? { exchangeRequestId: null, status: status.toUpperCase() } : { exchangeRequestId: null });
+    const standaloneWhere = parsedQ
+      ? ({ id: '__none__' } as any)
+      : status && status !== 'all' && !isLiveFilter
+        ? { exchangeRequestId: null, status: status.toUpperCase() }
+        : { exchangeRequestId: null };
 
     // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
     const rowCap = Math.min(Math.max(limit + offset, limit), 100);
@@ -39,7 +65,7 @@ export async function GET(req: Request) {
             include: { originalProduct: true, newProduct: true }
           },
           order: {
-            include: { customer: true }
+            include: { customer: true, shipments: { select: SHIPMENT_SELECT } }
           }
         },
         orderBy: { createdAt: "desc" },
@@ -56,7 +82,7 @@ export async function GET(req: Request) {
           originalProduct: true,
           newProduct: true,
           order: {
-            include: { customer: true }
+            include: { customer: true, shipments: { select: SHIPMENT_SELECT } }
           }
         },
         orderBy: { createdAt: "desc" },
@@ -115,6 +141,12 @@ export async function GET(req: Request) {
     const formattedExchanges = await Promise.all(
       exchanges.map(async (e: any) => {
         const enrichedItems = await Promise.all((e.exchanges || []).map(enrichExchangeItem));
+        const live = liveReverseFields({
+          requestStatus: e.status,
+          receivedAt: e.receivedAt,
+          reverseAwb: e.reverseAwb,
+          shipments: e.order?.shipments,
+        });
         return {
           exchangeRequestId: e.id,
           displayId: e.displayId || null,
@@ -135,7 +167,8 @@ export async function GET(req: Request) {
           reason: e.reason,
           returnRequestId: e.returnRequestId,
           newShopifyOrderId: e.newShopifyOrderId,
-          items: enrichedItems
+          items: enrichedItems,
+          ...live,
         };
       })
     );
@@ -165,6 +198,12 @@ export async function GET(req: Request) {
           newSize: se.newSize,
         });
 
+        const live = liveReverseFields({
+          requestStatus: se.status?.toLowerCase(),
+          receivedAt: null,
+          reverseAwb: null,
+          shipments: se.order?.shipments,
+        });
         return {
           exchangeRequestId: se.id,
           orderId: se.orderId,
@@ -181,7 +220,8 @@ export async function GET(req: Request) {
           returnRequestId: null,
           newShopifyOrderId: se.newOrderId,
           isStandalone: true,
-          items: [enrichedItem]
+          items: [enrichedItem],
+          ...live,
         };
       })
     );
@@ -190,25 +230,31 @@ export async function GET(req: Request) {
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-    const statusCounts: Record<string, number> = {};
+    const statusCounts: Record<string, number> = {
+      ...countByReverseStageFilter(combined.map((e: any) => e.liveStage)),
+    };
     
-    // Aggregate ExchangeRequest status counts
     statusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
-
-    // Aggregate standalone Exchange status counts
     standaloneStatusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
 
-    const paginated = combined.slice(offset, offset + limit);
+    const stageFiltered =
+      isLiveFilter ||
+      status === 'rejected' ||
+      status === 'completed' ||
+      status === 'new_order_created'
+        ? filterByLiveStage(combined, status)
+        : combined;
+    const paginated = stageFiltered.slice(offset, offset + limit);
 
     return NextResponse.json({
       exchanges: paginated,
-      total: combined.length,
+      total: stageFiltered.length,
       statusCounts
     });
   } catch (error: any) {

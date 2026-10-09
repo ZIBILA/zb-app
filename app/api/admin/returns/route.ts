@@ -3,19 +3,32 @@ import prisma from "@/lib/db";
 import { enrichSingleItem } from "@/lib/enrichSize";
 import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
 import { resolveRefundMethod } from "@/lib/returnPolicy";
+import { countByReverseStageFilter } from "@/lib/returnPolicy";
+import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
 
 export const dynamic = "force-dynamic";
+
+const LIVE_STAGE_FILTERS = new Set([
+  'pending',
+  'pickup_scheduled',
+  'in_transit',
+  'failed',
+  'received',
+]);
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const status = searchParams.get('status');
+    const status = searchParams.get('status') || searchParams.get('stage');
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
+    const isLiveFilter = LIVE_STAGE_FILTERS.has(String(status || '').toLowerCase());
 
     // Linked-id search (R_ZB…, E_ZB…, G_E_ZB…) is resolved server-side so it also finds older requests.
     const parsedQ = parseLinkedId(searchParams.get('search'));
-    const statusWhere: any = status && status !== 'all' ? { status } : {};
+    // Live stage filters are applied after deriveReverseStage — don't restrict DB status.
+    const statusWhere: any =
+      status && status !== 'all' && !isLiveFilter ? { status } : {};
     const where: any = parsedQ
       ? {
           ...statusWhere,
@@ -25,7 +38,11 @@ export async function GET(req: Request) {
           ],
         }
       : statusWhere;
-    const standaloneWhere = parsedQ ? { id: '__none__' } as any : (status && status !== 'all' ? { returnRequestId: null, status: status.toUpperCase() } : { returnRequestId: null });
+    const standaloneWhere = parsedQ
+      ? ({ id: '__none__' } as any)
+      : status && status !== 'all' && !isLiveFilter
+        ? { returnRequestId: null, status: status.toUpperCase() }
+        : { returnRequestId: null };
 
     // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
     const rowCap = Math.min(Math.max(limit + offset, limit), 100);
@@ -38,7 +55,20 @@ export async function GET(req: Request) {
             include: { product: true }
           },
           order: {
-            include: { customer: true }
+            include: {
+              customer: true,
+              shipments: {
+                select: {
+                  awb: true,
+                  trackingNumber: true,
+                  status: true,
+                  currentLocation: true,
+                  estimatedDelivery: true,
+                  courier: true,
+                  trackingUrl: true,
+                },
+              },
+            }
           }
         },
         orderBy: { createdAt: "desc" },
@@ -55,7 +85,20 @@ export async function GET(req: Request) {
           product: true,
           customer: true,
           order: {
-            include: { customer: true }
+            include: {
+              customer: true,
+              shipments: {
+                select: {
+                  awb: true,
+                  trackingNumber: true,
+                  status: true,
+                  currentLocation: true,
+                  estimatedDelivery: true,
+                  courier: true,
+                  trackingUrl: true,
+                },
+              },
+            }
           }
         },
         orderBy: { requestedAt: "desc" },
@@ -83,6 +126,12 @@ export async function GET(req: Request) {
           })
         );
 
+        const live = liveReverseFields({
+          requestStatus: r.status,
+          receivedAt: r.receivedAt,
+          reverseAwb: r.reverseAwb,
+          shipments: r.order?.shipments,
+        });
         return {
           returnRequestId: r.id,
           displayId: r.displayId || null,
@@ -99,7 +148,8 @@ export async function GET(req: Request) {
           estimatedRefund: r.estimatedRefund,
           actualRefund: r.actualRefund,
           createdAt: r.createdAt,
-          items: enrichedItems
+          items: enrichedItems,
+          ...live,
         };
       })
     );
@@ -121,6 +171,12 @@ export async function GET(req: Request) {
         };
         const enrichedItem = await enrichSingleItem(rawItem);
 
+        const live = liveReverseFields({
+          requestStatus: sr.status?.toLowerCase(),
+          receivedAt: null,
+          reverseAwb: null,
+          shipments: sr.order?.shipments,
+        });
         return {
           returnRequestId: sr.id,
           orderId: sr.orderId,
@@ -134,7 +190,8 @@ export async function GET(req: Request) {
           actualRefund: sr.refundAmount || null,
           createdAt: sr.requestedAt || sr.updatedAt,
           isStandalone: true,
-          items: [enrichedItem]
+          items: [enrichedItem],
+          ...live,
         };
       })
     );
@@ -143,25 +200,28 @@ export async function GET(req: Request) {
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-    const statusCounts: Record<string, number> = {};
+    const statusCounts: Record<string, number> = {
+      ...countByReverseStageFilter(combined.map((r: any) => r.liveStage)),
+    };
     
-    // Aggregate ReturnRequest status counts
+    // Keep legacy DB status counts for refunded/rejected chips
     statusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
-
-    // Aggregate standalone Return status counts
     standaloneStatusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
 
-    const paginated = combined.slice(offset, offset + limit);
+    const stageFiltered = isLiveFilter || status === 'rejected' || status === 'refunded'
+      ? filterByLiveStage(combined, status)
+      : combined;
+    const paginated = stageFiltered.slice(offset, offset + limit);
 
     return NextResponse.json({
       returns: paginated,
-      total: combined.length,
+      total: stageFiltered.length,
       statusCounts
     });
   } catch (error: any) {

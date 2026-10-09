@@ -90,6 +90,9 @@ export default function RequestSummaryCard({ summary, children }: Props) {
         <Row label="AWB" value={pickup.awb} />
         <Row label="Carrier status" value={pickup.carrierStatusLabel} />
         <Row label="Last location" value={pickup.location} />
+        {!summary.received && pickup.expectedDate ? (
+          <Row label="Expected" value={formatDateTime(pickup.expectedDate)} />
+        ) : null}
         {pickup.trackingUrl ? (
           <TouchableOpacity onPress={() => openUrl(pickup.trackingUrl)} style={{ marginTop: 6 }}>
             <Typography size={11} weight="800" color={colors.iosBlue}>Track pickup</Typography>

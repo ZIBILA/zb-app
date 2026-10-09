@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { createRefund } from '@/lib/shopify-admin';
 import { enrichSingleItem, enrichItemsWithSize } from '@/lib/enrichSize';
 import { isCodOrder } from '@/lib/returnPolicy';
+import { liveReverseFields } from '@/lib/services/reverseShipmentExtras';
 
 export const dynamic = 'force-dynamic';
 
@@ -244,7 +245,23 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         returns: {
           include: { product: true }
         },
-        order: { include: { items: true, customer: true } },
+        order: {
+          include: {
+            items: true,
+            customer: true,
+            shipments: {
+              select: {
+                awb: true,
+                trackingNumber: true,
+                status: true,
+                currentLocation: true,
+                estimatedDelivery: true,
+                courier: true,
+                trackingUrl: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -324,13 +341,21 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       ? await enrichItemsWithSize(returnRequest.order.items)
       : [];
 
+    const live = liveReverseFields({
+      requestStatus: returnRequest.status,
+      receivedAt: returnRequest.receivedAt,
+      reverseAwb: returnRequest.reverseAwb,
+      shipments: returnRequest.order?.shipments,
+    });
+
     return NextResponse.json({
       return: {
         ...returnRequest,
         returns: enrichedReturns,
         order: returnRequest.order
           ? { ...returnRequest.order, items: enrichedOrderItems }
-          : null
+          : null,
+        ...live,
       }
     }, { status: 200 });
   } catch (error: any) {

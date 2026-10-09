@@ -580,6 +580,19 @@ export default function ProfilePage() {
                           </span>
                         </div>
 
+                        {req.summary?.pickup && (
+                          <div className="mb-2 space-y-1 text-[8px] text-foreground/50">
+                            {req.summary.pickup.awb && (
+                              <p>AWB: <span className="font-mono text-foreground/70">{req.summary.pickup.awb}</span></p>
+                            )}
+                            {req.summary.pickup.location && <p>Location: {req.summary.pickup.location}</p>}
+                            {!req.summary.received && req.summary.pickup.expectedDate && (
+                              <p>Expected: {new Date(req.summary.pickup.expectedDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</p>
+                            )}
+                            <p>Received: {req.summary.received ? 'Yes' : 'Not yet'}</p>
+                          </div>
+                        )}
+
                         {/* Items */}
                         <div className="space-y-2 mt-2 pt-2 border-t border-foreground/5">
                           {req.order?.items?.map((item: any, i: number) => (
@@ -652,6 +665,19 @@ export default function ProfilePage() {
                             {req.summary?.stageLabel || req.status?.replace(/_/g, ' ')}
                           </span>
                         </div>
+
+                        {req.summary?.pickup && (
+                          <div className="mb-2 space-y-1 text-[8px] text-foreground/50">
+                            {req.summary.pickup.awb && (
+                              <p>AWB: <span className="font-mono text-foreground/70">{req.summary.pickup.awb}</span></p>
+                            )}
+                            {req.summary.pickup.location && <p>Location: {req.summary.pickup.location}</p>}
+                            {!req.summary.received && req.summary.pickup.expectedDate && (
+                              <p>Expected: {new Date(req.summary.pickup.expectedDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</p>
+                            )}
+                            <p>Received: {req.summary.received ? 'Yes' : 'Not yet'}</p>
+                          </div>
+                        )}
 
                         {/* Items */}
                         <div className="space-y-2 mt-2 pt-2 border-t border-foreground/5">

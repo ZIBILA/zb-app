@@ -122,6 +122,14 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         ? await enrichItemsWithSize(exchangeRequest.order.items)
         : [];
 
+      const { liveReverseFields } = await import('@/lib/services/reverseShipmentExtras');
+      const live = liveReverseFields({
+        requestStatus: exchangeRequest.status,
+        receivedAt: exchangeRequest.receivedAt,
+        reverseAwb: exchangeRequest.reverseAwb,
+        shipments: exchangeRequest.order?.shipments,
+      });
+
       return NextResponse.json({
         exchangeRequest: {
           ...exchangeRequest,
@@ -130,6 +138,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             ? { ...exchangeRequest.order, items: enrichedOrderItems }
             : null,
           linkedReturn,
+          ...live,
         }
       }, { status: 200 });
   } catch (error: any) {
