@@ -1,0 +1,41 @@
+name: DB ensure ad ledger tables
+
+# Manual, one-time: applies the reviewed additive migrations (ad_conversion_deliveries,
+# newsletter_subscribers, StoreCredit.idempotencyKey) on production through the app's
+# own DB connection. Idempotent (IF NOT EXISTS). mode=check is read-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'apply (create if missing) or check (read-only)'
+        required: true
+        default: 'check'
+        type: choice
+        options: [check, apply]
+
+concurrency:
+  group: db-ensure-ad-ledger
+  cancel-in-progress: false
+
+jobs:
+  ensure:
+    name: Ensure ad ledger tables
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call endpoint
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          METHOD=GET; [ "$MODE" = "apply" ] && METHOD=POST
+          code=$(curl -sS -m 90 -o /tmp/resp.txt -w '%{http_code}' -X "$METHOD" "https://app.zicabella.com/api/cron/db-ensure-ad-ledger" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || code="${code:-000}"
+          reply=$(sed -e 's/<[^>]*>/ /g' /tmp/resp.txt 2>/dev/null | tr -s ' \n\r\t' ' ' | head -c 600)
+          echo "HTTP $code: $reply"
+          if [ "$code" = "200" ]; then
+            echo "::notice title=DB ensure ($MODE)::HTTP $code — $reply"
+          else
+            echo "::error title=DB ensure ($MODE)::HTTP $code — $reply"
+            exit 1
+          fi
