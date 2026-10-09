@@ -239,14 +239,6 @@ export default function OrderDetailsPage() {
 
   const hasActiveReturn = useMemo(() => !!activeReturnReq, [activeReturnReq]);
   const hasActiveExchange = useMemo(() => !!activeExchangeReq, [activeExchangeReq]);
-  // Clean, minimal layout while a return / exchange is in progress (no shipment, items, address or billing cards).
-  const isRequestView = useMemo(() => {
-    const hasReturn = order?.returnRequests?.some(
-      (r: any) => r.status !== 'cancelled' && r.summary && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))
-    );
-    const hasExchange = order?.exchangeRequests?.some((e: any) => e.status !== 'cancelled' && e.summary);
-    return !!(hasReturn || hasExchange);
-  }, [order]);
   const hasPendingRequest = useMemo(() => {
     return order?.returnRequests?.some((r: any) => r.status === 'pending_approval' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))) ||
            order?.exchangeRequests?.some((e: any) => e.status === 'pending_approval') || false;
@@ -512,11 +504,7 @@ export default function OrderDetailsPage() {
             </div>
           ))}
 
-        {/* While a return / exchange is in progress the page stays minimal: status, timeline, request card, actions.
-            Shipment, items, address, order info and billing sections only show for normal orders. */}
-        {!isRequestView && (
-        <>
-        {/* SHIPMENT DETAILS CARD — hide voided/cancelled courier rows so they don't contradict order status */}
+        {/* External Track only — no courier name, tracking number, or status (partners vary by shipment). */}
         {(() => {
           const activeShipment = (order.shipments || []).find((sh: any) => {
             const st = String(sh?.status || '').toLowerCase();
@@ -529,49 +517,22 @@ export default function OrderDetailsPage() {
             s?.awb ||
             (!isCancelled ? order.delhivery_awb : null) ||
             null;
-          const courier = s?.courier || order.courier || (order.delhivery_awb ? 'Delhivery' : 'Standard Express');
           const status = s?.status || order.deliveryStatus || order.fulfillmentStatus || 'Shipped';
           const trackUrl =
             s?.trackingUrl ||
             order.trackingUrl ||
             (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
 
-          if (!awb || String(status || '').toLowerCase().includes('cancel')) return null;
+          if (!trackUrl || !awb || String(status || '').toLowerCase().includes('cancel')) return null;
 
           return (
-            <div className="mb-8 p-5 rounded-3xl glass-panel overflow-hidden relative group">
-              <div className="absolute inset-x-0 bottom-0 h-1 bg-gradient-to-r from-foreground/0 via-foreground/10 to-foreground/0 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <div className="flex items-start justify-between mb-6">
-                  <div className="space-y-1">
-                      <p className="text-[7px] font-black uppercase tracking-[0.3em] text-foreground/40">Live Shipment</p>
-                      <h3 className="text-[12px] font-heading tracking-widest text-foreground/80 uppercase">
-                          {courier}
-                      </h3>
-                  </div>
-                  <div className="p-2 bg-foreground/10 rounded-xl">
-                     <Truck className="w-4 h-4 text-foreground/60" />
-                  </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-8 mb-4">
-                  <div>
-                     <p className="text-[6.5px] font-black uppercase tracking-widest text-foreground/15 mb-1.5 font-mono">Tracking No.</p>
-                     <p className="text-[10px] font-mono text-foreground/60 font-medium uppercase">{awb}</p>
-                  </div>
-                  <div>
-                     <p className="text-[6.5px] font-black uppercase tracking-widest text-foreground/15 mb-1.5 font-mono">Status</p>
-                     <p className="text-[10px] text-foreground/60 font-medium uppercase">{status}</p>
-                  </div>
-              </div>
-
-              {trackUrl && (
-                <button 
-                    onClick={() => window.open(trackUrl, '_blank')}
-                    className="w-full py-3 rounded-2xl glass-button text-[8px] font-black uppercase tracking-[0.2em] flex items-center justify-center gap-2"
-                >
-                    External Track <ExternalLink className="w-3 h-3 opacity-30" />
-                </button>
-              )}
+            <div className="mb-8">
+              <button
+                onClick={() => window.open(trackUrl, '_blank')}
+                className="w-full py-4 rounded-2xl glass-button text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+              >
+                External Track <ExternalLink className="w-3.5 h-3.5 opacity-40" />
+              </button>
             </div>
           );
         })()}
@@ -647,23 +608,6 @@ export default function OrderDetailsPage() {
            </div>
         </div>
 
-        {/* ORDER INFO */}
-        <div className="mb-10">
-           <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
-              Order Info
-           </h4>
-           <div className="p-5 rounded-3xl glass-panel divide-y divide-foreground/5 space-y-3">
-              <div className="flex justify-between items-center text-[10px] font-medium pt-0">
-                 <span className="text-foreground/40">Payment Method</span>
-                 <span className="text-foreground font-bold uppercase tracking-wider">{order.paymentMethod || 'Razorpay'}</span>
-              </div>
-              <div className="flex justify-between items-center text-[10px] font-medium pt-3">
-                 <span className="text-foreground/45">Order Source</span>
-                 <span className="text-foreground font-bold uppercase tracking-wider">{order.orderType === 'WEB_STORE' ? 'Web Store' : 'Mobile App'}</span>
-              </div>
-           </div>
-        </div>
-
         {/* BILLING SUMMARY */}
         <div className="mb-10">
            <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
@@ -704,13 +648,11 @@ export default function OrderDetailsPage() {
               </div>
            </div>
         </div>
-        </>
-        )}
 
         {/* ACTION BUTTONS */}
         <div className="space-y-3 mb-20">
-          {/* Rate & Review button for delivered orders (hidden while a return / exchange is in progress) */}
-          {!isRequestView && (order?.deliveryStatus || '').toLowerCase() === 'delivered' && (
+          {/* Rate & Review button for delivered orders */}
+          {(order?.deliveryStatus || '').toLowerCase() === 'delivered' && (
             <button
               onClick={() => {
                 fetchReviewableItems();
