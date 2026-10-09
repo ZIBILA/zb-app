@@ -9,7 +9,6 @@ import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/i
 import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
-import { emitMetaPurchase, metaContextFromRequest } from '@/lib/meta/purchase-server';
 import crypto from 'crypto';
 
 /**
@@ -26,7 +25,7 @@ function normalizePhone(p: string | undefined): string | undefined {
 // ── Browser-facing endpoint guards ──
 // Only events the storefront's own hooks send (hooks/useMetaEvents.ts, MetaPixelRouteTracker).
 const ALLOWED_EVENTS = new Set([
-  'PageView', 'ViewContent', 'AddToCart', 'RemoveFromCart', 'AddToWishlist',
+  'PageView', 'ViewContent', 'AddToCart', 'AddToWishlist',
   'InitiateCheckout', 'AddPaymentInfo', 'Purchase', 'CompleteRegistration',
   // 'Subscribe' is intentionally absent: the store has no paid subscription; the free
   // newsletter is a Lead (Meta flags Subscribe without a real price/currency).
@@ -195,23 +194,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(limited.resetAfter) } });
     }
 
-    // ── Purchase: never sent from browser-submitted data ──
-    // Delegated to the authoritative ledger delivery, which reads value, items and
-    // payment status from the stored order (event_id = order id) and sends at most
-    // once across checkout/complete, the Razorpay webhook and this route. This
-    // request's own UA / IP / _fbp / _fbc only fill gaps in the stored context.
+    // ── Purchase: never triggered from the browser ──
+    // This endpoint is unauthenticated and the order id (= event id) is visible in
+    // the confirmation URL, so a browser request must not be able to start, speed
+    // up or influence delivery for ANY order (its own or another customer's).
+    // The CAPI Purchase is sent only by trusted server paths that hold verified
+    // payment evidence — checkout/complete (signature + capture), the Razorpay
+    // webhook (HMAC) and the retry/recovery cron (CRON_SECRET) — via the delivery
+    // ledger in lib/meta/purchase.ts, from the stored order. Click context
+    // (_fbp/_fbc/UA/IP) is captured by those same server paths from the shopper's
+    // own checkout requests. Nothing here touches the database.
     if (eventName === 'Purchase') {
-      const ud = (userData || {}) as Record<string, any>;
-      const result = await emitMetaPurchase(
-        eventId,
-        metaContextFromRequest(req, { fbp: ud.fbp, fbc: ud.fbc, externalId: ud.external_id }),
-        { paymentConfirmed: true }, // stored paymentStatus is re-checked inside
-      );
       const cd = sanitizeCustomData(customData);
       // Shape kept for browsers still running the previous bundle (they read reportedValue).
       return NextResponse.json({
         success: true,
-        delivery: result.status,
+        delivery: 'server_side',
         reportedValue: cd?.value,
         currency: cd?.currency,
         contents: cd?.contents,

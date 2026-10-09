@@ -84,14 +84,14 @@ export function MetaPixelRouteTracker() {
     // 4. Note: Client IP resolution relies on server CAPI proxy headers (x-forwarded-for) 
     // to avoid redundant client-side network calls and CSP violations.
 
-    // Deduplicate PageView when session hydration re-runs the effect on the same route
-    const now = Date.now();
-    const recentSamePath =
-      lastPageViewRef.current?.path === pathname &&
-      now - lastPageViewRef.current.at < 2500;
-    const shouldFirePageView = !recentSamePath;
+    // One PageView per route change. This effect also re-runs when the session
+    // hydrates (loading → authenticated / unauthenticated) or the session object
+    // changes; those re-runs only refresh identity and must never send another
+    // PageView, however long hydration takes (the previous 2.5 s window let a slow
+    // hydration double-count).
+    const shouldFirePageView = lastPageViewRef.current?.path !== pathname;
     if (shouldFirePageView) {
-      lastPageViewRef.current = { path: pathname, at: now };
+      lastPageViewRef.current = { path: pathname, at: Date.now() };
     }
 
     // ─── STEP 2: Fire PageView IMMEDIATELY with sync-available data ───

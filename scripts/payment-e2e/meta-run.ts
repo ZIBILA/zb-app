@@ -2,7 +2,7 @@
  * End-to-end Meta Purchase scenarios through the REAL route handlers
  * (same harness as scripts/payment-e2e/run.ts):
  *   web:  /api/checkout/razorpay (pre-create) → /api/checkout/complete → Razorpay webhook
- *         → /api/meta/event (browser relay)
+ *         → /api/meta/event (browser relay — must NOT send; Purchase is server-only)
  *   app:  /api/app/payment/create-order → /api/app/payment/verify → /api/app/orders/create
  *         → Razorpay webhook
  * Database = in-memory Prisma. Razorpay, Shopify, Meta, Snap, OpenAI faked at the HTTP layer.
@@ -167,7 +167,7 @@ async function main() {
     await hook('payment.captured', 'pay_MW1', rzp, 'captured'); // duplicate webhooks
     await hook('order.paid', 'pay_MW1', rzp, 'captured');
     await hook('payment.captured', 'pay_MW1', rzp, 'captured');
-    verifyMeta('MW1 (4 sending paths, 1 send)', o.id, { value: 3797, currency: 'INR', ids: [V.DENIM, V.TEE], units: 3, country: 'in', ph: '919811122233', em: 'riya@example.com' });
+    verifyMeta('MW1 (checkout + 3 webhooks send once; browser relay sends nothing)', o.id, { value: 3797, currency: 'INR', ids: [V.DENIM, V.TEE], units: 3, country: 'in', ph: '919811122233', em: 'riya@example.com' });
     eq('MW1: Snap WEB Purchase unchanged (one)', snapWebFor(o.id).length, 1);
   }
 
@@ -198,6 +198,8 @@ async function main() {
     await settle(150);
     const o = ordersByRzp(rzp)[0];
     eq('MW4: 202 pending_capture, no Meta yet', [r.status, metaFor(o.id).length], [202, 0]);
+    await relay(o.id, 3797); await settle();
+    eq('MW4: browser relay while pending → nothing sent', metaFor(o.id).length, 0);
     await hook('payment.authorized', 'pay_MW4', rzp, 'authorized');
     eq('MW4: payment.authorized → still no Meta', metaFor(o.id).length, 0);
     pay('pay_MW4', rzp, 'captured', 3797);
@@ -250,7 +252,7 @@ async function main() {
     const { retryFailedMetaPurchases } = await import('../../lib/meta/purchase-server');
     const t1 = await retryFailedMetaPurchases(25);
     const t2 = await retryFailedMetaPurchases(25);
-    eq('MW8: retry sends once, then nothing', [metaFor(o.id).length, row?.status, t2.retry_sent ?? 0], [1, 'sent', 0]);
+    eq('MW8: retry sends once, then nothing', [metaFor(o.id).length, row?.status, t2.tally.retry_sent ?? 0, t1.healthy && t2.healthy], [1, 'sent', 0, true]);
     report.push(`  retry tally: ${JSON.stringify(t1)}`);
   }
 

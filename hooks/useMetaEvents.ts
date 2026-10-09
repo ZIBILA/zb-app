@@ -230,23 +230,6 @@ export function useMetaEvents() {
     });
   };
 
-  const trackRemoveFromCart = (contentId: string, contentName: string, value?: number, currency = 'INR', contentCategory?: string) => {
-    const base = getBasePayload('RemoveFromCart');
-    const contents = value !== undefined ? [{ id: contentId, quantity: 1, item_price: value }] : [{ id: contentId, quantity: 1 }];
-    const customData = cleanCustomData({
-      content_ids: [contentId],
-      content_name: contentName,
-      currency,
-      value,
-      content_category: contentCategory,
-      content_type: 'product',
-      contents
-    });
-    // fbq does not natively support RemoveFromCart as standard, send as custom or fbq track
-    trackEvent('RemoveFromCart' as any, customData, base.eventId);
-    sendToCapiRoute({ ...base, customData });
-  };
-
   const trackAddToWishlist = (contentId: string, contentName: string, contentCategory?: string, value?: number, currency = 'INR') => {
     const base = getBasePayload('AddToWishlist');
     const customData = cleanCustomData({
@@ -439,18 +422,6 @@ export function useMetaEvents() {
       };
     });
 
-    // Server CAPI receives the real value and mapped contents — adjustment happens server-side
-    const capiCustomData = cleanCustomData({
-      value,
-      currency,
-      content_ids: contentIds,
-      order_id: orderId,
-      content_category: contentCategory,
-      content_type: 'product',
-      contents: mappedContents,
-      num_items: mappedContents.reduce((sum, item) => sum + item.quantity, 0)
-    });
-
     // Pixel fires immediately with the CONFIRMED ORDER's value/currency/contents —
     // never a value cached by an earlier checkout step. eventID = order id, the same
     // event_id the authoritative server Purchase uses, so Meta dedups the pair.
@@ -465,13 +436,9 @@ export function useMetaEvents() {
       num_items: mappedContents.reduce((sum, item) => sum + item.quantity, 0)
     });
     trackEvent('Purchase', fbqCustomData, base.eventId);
-    // The server sends the CAPI Purchase from the stored order (once, via the delivery
-    // ledger); this request only contributes the browser's UA / IP / _fbp / _fbc.
-    sendToCapiRoute({
-      ...base,
-      customData: capiCustomData,
-      userData: { client_user_agent: navigator.userAgent, ...userData },
-    });
+    // No browser→CAPI request for Purchase: the server sends the CAPI Purchase from
+    // the stored order (once, via the delivery ledger) from the payment-verified
+    // paths, with the click context captured during checkout.
     
     // GA4 equivalent: purchase (uses full original value)
     trackGAEvent('purchase', {
@@ -601,7 +568,6 @@ export function useMetaEvents() {
   return {
     trackViewContent,
     trackAddToCart,
-    trackRemoveFromCart,
     trackAddToWishlist,
     trackAddPaymentInfo,
     trackInitiateCheckout,

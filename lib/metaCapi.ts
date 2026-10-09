@@ -99,22 +99,33 @@ const normalizeDob = (d: string) => d.trim().replace(/\D/g, "");
 
 let metaConfigWarned = false;
 
+/**
+ * Why server-side Meta events cannot be sent right now (missing / malformed
+ * META_CAPI_ACCESS_TOKEN or pixel id), or null when the configuration is usable.
+ * A configuration problem is an operational failure, not a reason to drop a
+ * conversion: the Purchase ledger checks this BEFORE claiming a delivery so the
+ * conversion stays retryable (lib/meta/purchase.ts).
+ */
+export function metaCapiConfigError(): string | null {
+  return validateTokenFormat(ACCESS_TOKEN) || validatePixelIdFormat(PIXEL_ID) || null;
+}
+
 export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ success: boolean; data?: any; error?: any; fbtrace_id?: string; skipped?: boolean }> {
   // Pre-request validation — missing local Meta env is common in dev; skip quietly
   const tokenErr = validateTokenFormat(ACCESS_TOKEN);
   if (tokenErr) {
-    if (!metaConfigWarned && process.env.META_DEBUG === '1') {
+    if (!metaConfigWarned && (process.env.META_DEBUG === '1' || process.env.NODE_ENV === 'production')) {
       metaConfigWarned = true;
-      console.warn('[Meta CAPI] Skipping events: META_CAPI_ACCESS_TOKEN not configured');
+      console.error('[Meta CAPI][ALERT] events not sent: META_CAPI_ACCESS_TOKEN missing or malformed');
     }
     return { success: false, skipped: true, error: tokenErr };
   }
 
   const pixelErr = validatePixelIdFormat(PIXEL_ID);
   if (pixelErr) {
-    if (!metaConfigWarned && process.env.META_DEBUG === '1') {
+    if (!metaConfigWarned && (process.env.META_DEBUG === '1' || process.env.NODE_ENV === 'production')) {
       metaConfigWarned = true;
-      console.warn('[Meta CAPI] Skipping events: META_PIXEL_ID not configured');
+      console.error('[Meta CAPI][ALERT] events not sent: META_PIXEL_ID missing or malformed');
     }
     return { success: false, skipped: true, error: pixelErr };
   }
@@ -257,7 +268,18 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     });
 
     if (!logEntry.success) {
-      console.error('[Meta CAPI Error]', resJson);
+      // Structured, PII-free rejection log: which event, which id, Meta's reason + trace id.
+      const e = (resJson as any)?.error || {};
+      console.error('[Meta CAPI Rejected]', JSON.stringify({
+        event: payload.eventName,
+        event_id: payload.eventId,
+        code: e.code,
+        subcode: e.error_subcode,
+        type: e.type,
+        message: typeof e.message === 'string' ? e.message.slice(0, 300) : undefined,
+        user_msg: typeof e.error_user_msg === 'string' ? e.error_user_msg.slice(0, 300) : undefined,
+        fbtrace_id: logEntry.fbtrace_id || e.fbtrace_id,
+      }));
       return {
         success: false,
         error: resJson,
@@ -271,7 +293,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
       fbtrace_id: logEntry.fbtrace_id,
     };
   } catch (err: any) {
-    console.error('[Meta CAPI Catch Error]', err);
+    console.error('[Meta CAPI Network Error]', JSON.stringify({ event: payload.eventName, event_id: payload.eventId, message: err?.message || 'Fetch failed' }));
     return { success: false, error: err.message || 'Fetch failed' };
   }
 }

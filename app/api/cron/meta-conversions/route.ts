@@ -5,7 +5,8 @@ import { retryFailedMetaPurchases } from '@/lib/meta/purchase-server';
 export const dynamic = 'force-dynamic';
 
 /**
- * Meta CAPI Purchase retry worker. Idempotent (ledger-claimed), safe on any schedule.
+ * Meta CAPI Purchase retry + missed-purchase recovery worker. Idempotent
+ * (ledger-claimed), safe on any schedule.
  * Scheduled by .github/workflows/meta-conversions.yml (every 15 min).
  *
  * Auth: `Authorization: Bearer <CRON_SECRET>` is REQUIRED; fails closed when
@@ -27,7 +28,10 @@ export async function GET(req: NextRequest) {
   }
   try {
     const result = await retryFailedMetaPurchases(25);
-    return NextResponse.json({ ok: true, result });
+    // 503 when something needs a human (Meta config missing, ledger table missing /
+    // erroring, deliveries that exhausted their attempts): the scheduled workflow
+    // runs curl --fail-with-body, so the run fails and GitHub notifies maintainers.
+    return NextResponse.json({ ok: result.healthy, result }, { status: result.healthy ? 200 : 503 });
   } catch (err: any) {
     console.error('[Cron meta-conversions]', err?.message);
     return NextResponse.json({ ok: false }, { status: 500 });

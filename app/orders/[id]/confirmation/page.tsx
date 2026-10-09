@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
@@ -23,8 +23,14 @@ import Link from "next/link";
 import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
-import { isPlaceholderEmail } from "@/lib/tracking/placeholder-identity";
-import { metaPurchaseValue, metaPurchaseCurrency, isWebsiteOrder } from "@/lib/meta/order-value";
+import {
+  decideMetaBrowserPurchase,
+  buildMetaBrowserPurchaseArgs,
+  dispatchMetaBrowserPurchaseOnce,
+  hasMetaBrowserPurchaseBeenSent,
+  META_PENDING_POLL_INTERVAL_MS,
+  META_PENDING_POLL_MAX,
+} from "@/lib/meta/browser-purchase";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -43,6 +49,7 @@ export default function OrderConfirmationPage() {
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
   const { trackOrderCreated: trackOpenAiOrderCreated } = useOpenAiEvents();
+  const guestResetDeferredRef = useRef(false);
 
   useEffect(() => {
     if (order) {
@@ -116,46 +123,9 @@ export default function OrderConfirmationPage() {
           storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
         }
 
-        // Meta: browser Pixel only for a confirmed payment (paid / cod_upfront_paid),
-        // matching the server rule in lib/meta/purchase.ts. The CAPI Purchase is sent
-        // once by the server from the stored order. Content ids are proven variant ids
-        // only (= feed.xml g:id), the same set the server event uses.
-        const metaPayStatus = String(order.paymentStatus || "").toLowerCase();
-        if (metaPayStatus === "paid" || metaPayStatus === "cod_upfront_paid") {
-          const metaContents = (order.items || [])
-            .map((item: any) => ({
-              id: snapCatalogIdFromOrderItem(item) || "",
-              quantity: Number(item.quantity) || 1,
-              item_price: parseFloat(item.price || "0") || undefined,
-              title: item.title,
-            }))
-            .filter((c: any) => c.id);
-          let metaUserData: any = userData;
-          try {
-            const addr = order.shippingAddress
-              ? (typeof order.shippingAddress === 'string' ? JSON.parse(order.shippingAddress) : order.shippingAddress)
-              : null;
-            const cust = order.customer || {};
-            // Checkout address first (freshest); synthetic placeholder emails never sent.
-            const email = [addr?.email, cust.email].find((e: any) => typeof e === 'string' && e.trim() && !isPlaceholderEmail(e));
-            metaUserData = userData ? {
-              ...userData,
-              country: addr?.countryCode || addr?.country_code || userData.country,
-              em: email || undefined,
-              ph: addr?.phone || cust.phone || undefined,
-            } : undefined;
-          } catch {}
-          // Same value/currency definition as the server CAPI Purchase (lib/meta/order-value):
-          // confirmed net total after coupon and redeemed store credit, in the order's currency.
-          const metaValue = metaPurchaseValue(order);
-          if (metaValue !== null && isWebsiteOrder(order)) {
-            trackPurchase(
-              order.id, metaValue, metaPurchaseCurrency(order),
-              metaContents.map((c: any) => c.id),
-              metaUserData, storedCategory, metaContents
-            );
-          }
-        }
+        // Meta: the browser Pixel Purchase is decided separately (effect below) so a
+        // pending payment never consumes its once-only marker.
+
         // Snap: browser pixel only, and only for a confirmed payment. The CAPI
         // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
         // are proven variant ids only (OrderItem.variantId / "variant:<id>").
@@ -191,8 +161,15 @@ export default function OrderConfirmationPage() {
 
         // FIX 1b: After a guest purchase, reset identity so the next guest
         // on this device gets a fresh external_id and no stale PII cookies.
+        // While the Meta Purchase is still to fire (now, or once payment capture is
+        // confirmed), the reset is deferred until after it, so the Pixel event keeps
+        // the shopper's own external_id.
         if (!session?.user) {
-          resetGuestIdentity();
+          if (decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) }).action !== 'done') {
+            guestResetDeferredRef.current = true;
+          } else {
+            resetGuestIdentity();
+          }
         }
       }
 
@@ -220,6 +197,62 @@ export default function OrderConfirmationPage() {
       }
     }
   }, [order, purchasedPixel]);
+
+  // Meta browser Pixel Purchase: fires once per order, only for a confirmed payment.
+  // The once-only marker is written AFTER the Pixel call (lib/meta/browser-purchase),
+  // so a visit while the payment is pending never suppresses the later paid event.
+  useEffect(() => {
+    if (!order?.id) return;
+    const decision = decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) });
+    const finishGuestReset = () => {
+      if (guestResetDeferredRef.current && !session?.user) {
+        guestResetDeferredRef.current = false;
+        resetGuestIdentity();
+      }
+    };
+    if (decision.action === 'wait') return;
+    if (decision.action === 'done') { finishGuestReset(); return; }
+    const args = buildMetaBrowserPurchaseArgs(order);
+    if (!args) { finishGuestReset(); return; }
+    let storedCategory: string | undefined;
+    try { storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined; } catch {}
+    dispatchMetaBrowserPurchaseOnce(order.id, () => {
+      trackPurchase(args.orderId, args.value, args.currency, args.contentIds, args.userData, storedCategory, args.contents);
+      return true;
+    }).finally(finishGuestReset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
+
+  // Payment still awaiting capture (e.g. Razorpay webhook not processed yet):
+  // re-check the stored order for a few minutes so the Purchase can fire once paid.
+  useEffect(() => {
+    if (!id || !order?.id) return;
+    if (decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) }).action !== 'wait') return;
+    let polls = 0;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (++polls > META_PENDING_POLL_MAX) {
+        clearInterval(timer);
+        if (guestResetDeferredRef.current && !session?.user) {
+          guestResetDeferredRef.current = false;
+          resetGuestIdentity();
+        }
+        return;
+      }
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await fetch(`/api/orders/${id}?bypass_auth=true`, { cache: 'no-store' });
+        if (!res.ok || cancelled) return;
+        const data = await res.json().catch(() => null);
+        const next = data?.order || data;
+        if (next?.id && String(next.paymentStatus || '') !== String(order.paymentStatus || '')) setOrder(next);
+      } catch {
+        /* transient — next tick retries */
+      }
+    }, META_PENDING_POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, order?.id, order?.paymentStatus]);
 
   useEffect(() => {
     const fetchOrder = async () => {

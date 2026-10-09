@@ -5,8 +5,8 @@
  *    from the stored order. Nothing a browser submits is trusted for them.
  *  - Delivery is idempotent across processes via the shared AdConversionDelivery
  *    ledger (lib/snap/ledger.ts): one row per (meta, Purchase, orderId), claimed
- *    with a lease, so checkout-complete, the Razorpay webhook and the browser→CAPI
- *    route can all call this and only ONE of them sends.
+ *    with a lease, so checkout-complete, the Razorpay webhook and the retry cron
+ *    can all call this and only ONE of them sends. The browser never triggers it.
  *  - event_id = order.id, identical to the browser Pixel's eventID → Meta dedup.
  *  - Purchase is sent only for paymentStatus paid / cod_upfront_paid (prepaid
  *    captured, or COD with the upfront amount captured). Authorized-only,
@@ -19,7 +19,8 @@
  * No database import: deps are injected (lib/meta/purchase-server.ts binds them).
  */
 import type { CapiEventPayload } from '@/lib/metaCapi';
-import { createDeliveryLedger, isMissingTable, type DeliveryResult } from '@/lib/snap/ledger';
+import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult } from '@/lib/snap/ledger';
+import { isEventTimeSendable } from '@/lib/snap-capi';
 import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder } from '@/lib/meta/order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
@@ -168,10 +169,43 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
 export interface MetaPurchaseDeps {
   db: any;
   send: (payload: CapiEventPayload) => Promise<{ success: boolean; error?: any; skipped?: boolean }>;
+  /** Why CAPI cannot send right now (token / pixel id missing or malformed), else null. */
+  configError?: () => string | null;
+  /** Operational alert sink. Defaults to a structured console.error line. */
+  alert?: (code: MetaPurchaseAlert, detail: Record<string, unknown>) => void;
 }
 
-export function createMetaPurchaseDelivery({ db: prisma, send }: MetaPurchaseDeps) {
+export type MetaPurchaseAlert =
+  | 'meta_config_missing'
+  | 'ledger_table_missing'
+  | 'ledger_error'
+  | 'attempts_exhausted'
+  | 'expired_unsent';
+
+const defaultAlert = (code: MetaPurchaseAlert, detail: Record<string, unknown>) => {
+  console.error(`[Meta Purchase][ALERT] ${code}`, JSON.stringify(detail));
+};
+
+/** A paid order is eligible for missed-purchase recovery after this grace period. */
+const RECOVERY_MIN_AGE_MS = 20 * 60_000;
+/** Meta accepts server events up to 7 days old; nothing older is ever re-dated. */
+const META_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function createMetaPurchaseDelivery({ db: prisma, send, configError, alert = defaultAlert }: MetaPurchaseDeps) {
   const ledger = createDeliveryLedger(prisma, '[Meta Purchase]');
+  const key = (orderId: string) => ({ platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } });
+
+  /**
+   * A sender "skip" (e.g. configuration rejected at send time) is never a reason to
+   * drop a paid conversion: the ledger must record it as FAILED (retryable), not as
+   * a permanent skip. Only the ledger itself decides "skipped" (already sent, or
+   * older than Meta's 7-day window).
+   */
+  const sendRetryable: MetaPurchaseDeps['send'] = async (payload) => {
+    const res = await send(payload);
+    if (res.success || !res.skipped) return res;
+    return { success: false, error: `sender_skipped: ${typeof res.error === 'string' ? res.error : JSON.stringify(res.error ?? '')}` };
+  };
 
   /** Store the shopper's Meta context against an order BEFORE payment. Never throws. */
   async function recordMetaPurchaseContext(orderId: string, ctx: MetaClickContext): Promise<void> {
@@ -179,8 +213,61 @@ export function createMetaPurchaseDelivery({ db: prisma, send }: MetaPurchaseDep
   }
 
   /**
+   * Meta CAPI is not configured: keep the conversion as a FAILED, retryable ledger
+   * row WITHOUT consuming a send attempt, pinned to the original conversion time
+   * (paymentCapturedAt / createdAt — never "now"). Rows that pass Meta's 7-day
+   * window while the configuration is broken are marked skipped and alerted.
+   */
+  async function deferForConfig(order: any, ctx: MetaClickContext, reason: string, conversionTime: Date): Promise<DeliveryResult> {
+    const orderId = order.id;
+    const lastError = `meta_config_missing: ${reason}`.slice(0, 500);
+    try {
+      let row = await prisma.adConversionDelivery.findUnique({ where: key(orderId) });
+      if (row && (row.status === 'sent' || row.status === 'skipped' || row.status === 'sending')) {
+        return { status: 'skipped', reason: `already ${row.status}` };
+      }
+      const eventTime: Date = row?.eventTime ? new Date(row.eventTime) : conversionTime;
+      const expired = !isEventTimeSendable(eventTime.getTime());
+      const status = expired ? 'skipped' : 'failed';
+      const error = expired ? `${lastError} (event passed Meta 7-day window unsent)`.slice(0, 500) : lastError;
+      if (!row) {
+        try {
+          row = await prisma.adConversionDelivery.create({
+            data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, status, eventTime, lastError: error, context: ctx as any },
+          });
+        } catch (e: any) {
+          if (e?.code !== 'P2002') throw e;
+          return { status: 'failed', reason: lastError }; // another path created it concurrently
+        }
+      } else {
+        await prisma.adConversionDelivery.updateMany({
+          where: { id: row.id, status: { in: ['pending', 'failed'] } },
+          data: { status, eventTime, lastError: error },
+        });
+      }
+      if (expired) {
+        alert('expired_unsent', { orderId, reason: lastError });
+        return { status: 'skipped', reason: 'event too old' };
+      }
+      alert('meta_config_missing', { orderId, reason });
+      return { status: 'failed', reason: lastError };
+    } catch (err: any) {
+      const code: MetaPurchaseAlert = isMissingTable(err) ? 'ledger_table_missing' : 'ledger_error';
+      alert(code, { orderId, error: err?.message });
+      return { status: 'failed', reason: code };
+    }
+  }
+
+  /**
    * Send the Meta Purchase for an order exactly once. Safe to call from several
    * paths concurrently and repeatedly; never throws.
+   *
+   * Delivery ALWAYS goes through the AdConversionDelivery ledger (single
+   * conditional-UPDATE claim), so concurrent checkout / webhook / cron calls can
+   * never both send. If the ledger is unavailable nothing is sent: the failure is
+   * alerted, and once the ledger is back the cron's missed-purchase scan
+   * (recoverMissedMetaPurchases) sends every paid website order that has no
+   * delivery yet, with its original conversion time.
    *
    * @param opts.paymentConfirmed true only when the caller knows the payment was
    *   captured (or the order is 100% store credit). Without it nothing is sent;
@@ -222,51 +309,110 @@ export function createMetaPurchaseDelivery({ db: prisma, send }: MetaPurchaseDep
     }
     if (metaPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
 
-    // Safety net: if the AdConversionDelivery table has not been migrated yet, send
-    // directly (previous behaviour; Meta still dedups on event_id = order id) instead
-    // of silently dropping every Purchase.
-    try {
-      await prisma.adConversionDelivery.findUnique({
-        where: { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } },
-        select: { id: true },
-      });
-    } catch (err: any) {
-      if (isMissingTable(err)) {
-        console.warn('[Meta Purchase] ad_conversion_deliveries table missing — sending without the ledger. Apply migration 20261009010000_snap_delivery_and_newsletter.');
-        const when = order.paymentCapturedAt || order.createdAt || new Date();
-        const res = await send(buildMetaPurchaseFromOrder(order, clean(ctx), new Date(when).getTime()));
-        return res.success ? { status: 'sent' } : { status: 'failed', reason: JSON.stringify(res.error ?? 'unknown').slice(0, 300) };
-      }
-      return { status: 'failed', reason: err?.message || 'ledger lookup failed' };
-    }
+    // Original conversion time: when the payment was captured (or the order was
+    // placed). Stored on the ledger row the first time and reused on every retry.
+    const conversionTime = new Date(order.paymentCapturedAt || order.createdAt || Date.now());
 
-    return ledger.deliver({
+    const cfgErr = configError?.() || null;
+    if (cfgErr) return deferForConfig(order, clean(ctx), cfgErr, conversionTime);
+
+    const result = await ledger.deliver({
       platform: PLATFORM,
       eventName: EVENT,
       orderId,
       ctx: clean(ctx),
-      defaultEventTime: order.paymentCapturedAt || order.createdAt || new Date(),
+      defaultEventTime: conversionTime,
       build: (context, eventTimeMs) => buildMetaPurchaseFromOrder(order, context as MetaClickContext, eventTimeMs),
-      send,
+      send: sendRetryable,
     });
+    if (result.status === 'failed') {
+      if (/ad_conversion_deliveries|P2021|does not exist/i.test(result.reason)) {
+        alert('ledger_table_missing', { orderId, reason: 'apply migration 20261009010000_snap_delivery_and_newsletter' });
+      } else {
+        console.warn('[Meta Purchase] delivery failed (will retry)', JSON.stringify({ orderId, reason: result.reason }));
+      }
+    }
+    return result;
   }
 
   /**
-   * Retry job (cron): expire pending rows older than the 7-day window, then
-   * resend rows that failed or whose sending lease expired. Rows only reach
-   * failed / sending after a payment-confirmed attempt, and emitMetaPurchase
-   * re-checks the stored payment status before sending.
+   * Paid website orders inside Meta's 7-day window that no path has delivered:
+   * no ledger row at all (ledger was down, or every live path crashed), or a row
+   * still "pending" (capture unconfirmed at checkout AND the captured webhook was
+   * missed). emitMetaPurchase re-verifies the stored order before sending.
    */
-  async function retryFailedMetaPurchases(limit = 25): Promise<Record<string, number>> {
-    const tally: Record<string, number> = {};
-    const expired = await ledger.expireStalePending(PLATFORM, EVENT);
-    if (expired) tally.expired = expired;
-    for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
-      const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
-      tally[`retry_${out.status}`] = (tally[`retry_${out.status}`] || 0) + 1;
-    }
-    return tally;
+  async function recoverMissedMetaPurchases(limit = 25, scan = 200): Promise<string[]> {
+    const now = Date.now();
+    const orders = await prisma.order.findMany({
+      where: {
+        orderType: 'WEB_STORE',
+        paymentStatus: { in: Array.from(META_PURCHASE_PAYMENT_STATUSES) },
+        createdAt: { gt: new Date(now - META_WINDOW_MS), lt: new Date(now - RECOVERY_MIN_AGE_MS) },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: scan,
+      select: { id: true, tags: true, totalPrice: true, orderType: true, items: true },
+    });
+    // Orders that can never be reported (unknown recovery items, no value) are left
+    // out here so they cannot crowd genuine misses out of the per-run limit.
+    const ids: string[] = orders
+      .filter((o: any) => isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && metaPurchaseValue(o) !== null)
+      .map((o: any) => o.id);
+    if (!ids.length) return [];
+    const rows = await prisma.adConversionDelivery.findMany({
+      where: { platform: PLATFORM, eventName: EVENT, orderId: { in: ids } },
+      select: { orderId: true, status: true },
+    });
+    const handled = new Set(rows.filter((r: any) => r.status !== 'pending').map((r: any) => r.orderId));
+    return ids.filter(id => !handled.has(id)).slice(0, limit);
   }
 
-  return { recordMetaPurchaseContext, emitMetaPurchase, retryFailedMetaPurchases };
+  /**
+   * Retry job (cron):
+   *   1. expire pending rows older than the 7-day window,
+   *   2. resend rows that failed or whose sending lease expired,
+   *   3. recover paid website orders that have no delivery at all,
+   *   4. report conditions that need a human (alerts): Meta config missing,
+   *      ledger table missing / erroring, rows that exhausted MAX_ATTEMPTS.
+   * Returns `healthy: false` when any alert condition exists so the caller can
+   * fail loudly (the cron route answers 503 → the scheduled workflow fails).
+   */
+  async function retryFailedMetaPurchases(limit = 25): Promise<{ healthy: boolean; tally: Record<string, number>; alerts: string[] }> {
+    const tally: Record<string, number> = {};
+    const alerts = new Set<string>();
+    const bump = (k: string) => { tally[k] = (tally[k] || 0) + 1; };
+    const cfgErr = configError?.() || null;
+    if (cfgErr) { alerts.add('meta_config_missing'); alert('meta_config_missing', { reason: cfgErr }); }
+
+    try {
+      const expired = await ledger.expireStalePending(PLATFORM, EVENT);
+      if (expired) tally.expired = expired;
+      const handled = new Set<string>();
+      for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
+        handled.add(orderId);
+        const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
+        bump(`retry_${out.status}`);
+      }
+      for (const orderId of await recoverMissedMetaPurchases(limit)) {
+        if (handled.has(orderId)) continue;
+        const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
+        bump(`recovered_${out.status}`);
+      }
+      const exhausted = await prisma.adConversionDelivery.count({
+        where: { platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS } },
+      });
+      if (exhausted) {
+        tally.exhausted = exhausted;
+        alerts.add('attempts_exhausted');
+        alert('attempts_exhausted', { count: exhausted, hint: 'inspect lastError on ad_conversion_deliveries (platform=meta, eventName=Purchase)' });
+      }
+    } catch (err: any) {
+      const code: MetaPurchaseAlert = isMissingTable(err) ? 'ledger_table_missing' : 'ledger_error';
+      alerts.add(code);
+      alert(code, { error: err?.message });
+    }
+    return { healthy: alerts.size === 0, tally, alerts: Array.from(alerts) };
+  }
+
+  return { recordMetaPurchaseContext, emitMetaPurchase, retryFailedMetaPurchases, recoverMissedMetaPurchases };
 }
