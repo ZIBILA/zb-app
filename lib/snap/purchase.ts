@@ -19,6 +19,8 @@
  *  - app/api/webhooks/razorpay/route.ts  (payment.captured safety net)
  *  - app/api/checkout/razorpay/route.ts  (records click context before payment)
  */
+import { pickRealEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
+import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import type { SnapCapiEventPayload } from '@/lib/snap-capi';
 import { createDeliveryLedger, type DeliveryResult } from '@/lib/snap/ledger';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
@@ -98,7 +100,7 @@ export function snapPurchaseValue(order: { totalPrice?: unknown }): number | nul
 /** Build the CAPI PURCHASE from the stored order. Exported for tests. */
 export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventTimeMs: number) {
   const addr = parseAddress(order.shippingAddress);
-  const name = String(order.customer?.name || addr.name || '').trim().split(/\s+/).filter(Boolean);
+  const name = String(pickRealName(order.customer?.name, addr.name) || '').trim().split(/\s+/).filter(Boolean);
 
   const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
   let numItems = 0;
@@ -123,8 +125,10 @@ export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventT
     scCookie1: ctx.scCookie1,
     externalId: ctx.externalId || order.customerId || undefined,
     userData: {
-      em: order.customer?.email || addr.email,
-      ph: order.customer?.phone || addr.phone,
+      // Placeholder emails (guest@zicabella.com, guest_<ts>@…), dummy phones and
+      // names are skipped for the next real value; never sent.
+      em: pickRealEmail(order.customer?.email, addr.email),
+      ph: pickRealPhone(order.customer?.phone, addr.phone),
       fn: name[0],
       ln: name.slice(1).join(' ') || undefined,
       ct: addr.city,
@@ -155,6 +159,9 @@ export interface SnapPurchaseDeps {
    */
   verifyCapture?: (order: { id: string; paymentMethod?: string | null; razorpayPaymentId?: string | null }) => Promise<boolean>;
 }
+
+/** Skip reasons that mean a failed delivery can never be sent: close the row. */
+const SNAP_TERMINAL_RETRY_SKIP = /^(order not found|not a native app order|native app order|webhook-recovered order|paymentStatus=|order value missing|no device context)/;
 
 export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, verifyCapture }: SnapPurchaseDeps) {
   const ledger = createDeliveryLedger(prisma, '[Snap Purchase]');
@@ -200,6 +207,9 @@ export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, ve
     if (NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) {
       return { status: 'skipped', reason: 'native app order — never sent as a WEB conversion' };
     }
+    if (isUnresolvedRecoveryOrder(order)) {
+      return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
+    }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
       return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
@@ -234,6 +244,23 @@ export function createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, ve
       // Rows only reach failed / sending after a payment-confirmed attempt.
       const out = await emitSnapPurchase(orderId, undefined, { paymentConfirmed: true });
       bump(`retry_${out.status}`);
+      // A retry that can never succeed (order refunded / deleted / not reportable)
+      // is closed, so it cannot sit at the head of the retry queue forever. Other
+      // skips (e.g. app not configured) stay retryable but move to the back of the
+      // queue (updatedAt), so they cannot starve the rest.
+      if (out.status === 'skipped' && !/^(already |claimed by another)/.test(out.reason)) {
+        const terminal = SNAP_TERMINAL_RETRY_SKIP.test(out.reason);
+        await prisma.adConversionDelivery.updateMany({
+          where: {
+            platform: PLATFORM, eventName: EVENT, orderId,
+            OR: [{ status: 'failed' }, { status: 'sending', leaseUntil: { lt: new Date() } }],
+          },
+          data: terminal
+            ? { status: 'skipped', leaseUntil: null, lastError: `closed on retry: ${out.reason}`.slice(0, 500) }
+            : { lastError: `retry skipped: ${out.reason}`.slice(0, 500) },
+        }).catch(() => null);
+        if (terminal) bump('retry_closed');
+      }
     }
 
     if (!verifyCapture) return tally;

@@ -73,7 +73,7 @@ async function main() {
   const order = (id: string, over: any = {}) => ({
     id, orderType: 'MOBILE_APP', paymentStatus: 'paid', totalPrice: 3797, currency: 'INR', customerId: 'cust_app_1',
     createdAt: new Date(Date.now() - 90e3), paymentCapturedAt: new Date(Date.now() - 60e3),
-    customer: { email: 'Aarav@Example.com', phone: '9876543210', name: 'Aarav Mehta' },
+    customer: { email: 'Aarav@Example.com', phone: '9811122233', name: 'Aarav Mehta' }, // 9876543210 = demo number (blocked)
     shippingAddress: JSON.stringify({ city: 'Noida', province: 'Uttar Pradesh', zip: '201304', country: 'India' }),
     items: [{ variantId: '51813148262681', sku: 'ZB-AERO-XS', quantity: 2, price: 1499 },
             { variantId: '51813148328217', sku: 'ZB-TEE-M', quantity: 1, price: 799 }],
@@ -111,7 +111,7 @@ async function main() {
   eq('advertiser_tracking_enabled = 1 (ATT authorized)', ev.app_data.advertiser_tracking_enabled, 1);
   eq('idfv plain', ev.user_data.idfv, '3F2504E0-4F89-11D3-9A0C-0305E82C3301');
   eq('madid = IDFA lowercase, plain', ev.user_data.madid, 'e9228286-4c4e-4789-9d95-15827dcb291b');
-  eq('ph hashed (India)', ev.user_data.ph, [h('919876543210')]);
+  eq('ph hashed (India)', ev.user_data.ph, [h('919811122233')]);
   eq('em hashed', ev.user_data.em, [h('aarav@example.com')]);
   eq('external_id hashed', ev.user_data.external_id, [h('cust_app_1')]);
   eq('event_id = order_id = order id', [ev.event_id, ev.custom_data.order_id], ['app_ios_1', 'app_ios_1']);

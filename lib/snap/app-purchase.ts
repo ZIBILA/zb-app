@@ -12,6 +12,8 @@
  *  - If the device context or Snap app config is missing, nothing is sent —
  *    there is never a fallback to the web pixel.
  */
+import { pickRealEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
+import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { createDeliveryLedger, type DeliveryResult } from '@/lib/snap/ledger';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import {
@@ -56,7 +58,7 @@ function splitContext(ctx: Record<string, any>): { device: SnapDeviceContext | n
 
 export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req: AppRequestContext, appId: string, eventTimeMs: number): SnapAppEventInput {
   const addr = parseAddress(order.shippingAddress);
-  const name = String(order.customer?.name || addr.name || '').trim().split(/\s+/).filter(Boolean);
+  const name = String(pickRealName(order.customer?.name, addr.name) || '').trim().split(/\s+/).filter(Boolean);
   const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
   let numItems = 0;
   for (const it of order.items || []) {
@@ -77,8 +79,10 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
     ipAddress: req.ipAddress,
     userAgent: req.userAgent,
     userData: {
-      em: order.customer?.email || addr.email,
-      ph: order.customer?.phone || addr.phone,
+      // Placeholder emails (guest@zicabella.com, guest_<ts>@…), dummy phones and
+      // names are skipped for the next real value; never sent.
+      em: pickRealEmail(order.customer?.email, addr.email),
+      ph: pickRealPhone(order.customer?.phone, addr.phone),
       fn: name[0],
       ln: name.slice(1).join(' ') || undefined,
       ct: addr.city,
@@ -97,6 +101,9 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
     },
   };
 }
+
+/** Skip reasons that mean a failed delivery can never be sent: close the row. */
+const SNAP_TERMINAL_RETRY_SKIP = /^(order not found|not a native app order|native app order|webhook-recovered order|paymentStatus=|order value missing|no device context)/;
 
 export function createSnapAppPurchaseDelivery({ db, send, env = process.env, verifyCapture }: SnapAppPurchaseDeps) {
   const ledger = createDeliveryLedger(db, '[Snap App Purchase]');
@@ -133,6 +140,7 @@ export function createSnapAppPurchaseDelivery({ db, send, env = process.env, ver
     if (!NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) {
       return { status: 'skipped', reason: 'not a native app order' };
     }
+    if (isUnresolvedRecoveryOrder(order)) return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     if (snapPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
@@ -168,6 +176,23 @@ export function createSnapAppPurchaseDelivery({ db, send, env = process.env, ver
     for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
       const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
       bump(`retry_${out.status}`);
+      // A retry that can never succeed (order refunded / deleted / not reportable)
+      // is closed, so it cannot sit at the head of the retry queue forever. Other
+      // skips (e.g. app not configured) stay retryable but move to the back of the
+      // queue (updatedAt), so they cannot starve the rest.
+      if (out.status === 'skipped' && !/^(already |claimed by another)/.test(out.reason)) {
+        const terminal = SNAP_TERMINAL_RETRY_SKIP.test(out.reason);
+        await db.adConversionDelivery.updateMany({
+          where: {
+            platform: PLATFORM, eventName: EVENT, orderId,
+            OR: [{ status: 'failed' }, { status: 'sending', leaseUntil: { lt: new Date() } }],
+          },
+          data: terminal
+            ? { status: 'skipped', leaseUntil: null, lastError: `closed on retry: ${out.reason}`.slice(0, 500) }
+            : { lastError: `retry skipped: ${out.reason}`.slice(0, 500) },
+        }).catch(() => null);
+        if (terminal) bump('retry_closed');
+      }
     }
     if (!verifyCapture) return tally;
     for (const orderId of await ledger.recoverablePending(PLATFORM, EVENT, limit)) {

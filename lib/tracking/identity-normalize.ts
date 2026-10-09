@@ -17,6 +17,9 @@
  * No hashing happens here — see sha256Hex (server) / sha256 (browser).
  */
 import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/min';
+import {
+  isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash,
+} from './placeholder-identity';
 import { COUNTRIES } from '@/lib/countries';
 
 /** Store's home market — used ONLY when a phone has no "+" and no known country. */
@@ -215,11 +218,17 @@ export interface RawIdentity {
 export function normalizeIdentity(src: RawIdentity): Record<keyof RawIdentity, string> {
   const pass = (v: string | null | undefined) => (v && isSha256Hash(v) ? v.trim().toLowerCase() : '');
   const countryIso = toCountryIso(src.country || '');
+  // Placeholder / dummy identities (guest@zicabella.com, "Valued Customer",
+  // 9999999999 …) are dropped, raw or already hashed: they are not a person.
+  const em = isPlaceholderEmail(src.em) || isPlaceholderEmailHash(src.em) ? '' : src.em;
+  const ph = (isPlaceholderPhone(src.ph) && !isSha256Hash(src.ph || '')) || isPlaceholderPhoneHash(src.ph) ? '' : src.ph;
+  const fn = isPlaceholderNamePart(src.fn) || isPlaceholderNameHash(src.fn) ? '' : src.fn;
+  const ln = isPlaceholderNamePart(src.ln) || isPlaceholderNameHash(src.ln) ? '' : src.ln;
   return {
-    em: pass(src.em) || normalizeEmail(src.em),
-    ph: pass(src.ph) || normalizePhone(src.ph, countryIso),
-    fn: pass(src.fn) || normalizeName(src.fn),
-    ln: pass(src.ln) || normalizeName(src.ln),
+    em: pass(em) || normalizeEmail(em),
+    ph: pass(ph) || normalizePhone(ph, countryIso),
+    fn: pass(fn) || normalizeName(fn),
+    ln: pass(ln) || normalizeName(ln),
     ct: pass(src.ct) || normalizeCity(src.ct),
     st: pass(src.st) || normalizeState(src.st, countryIso),
     zp: pass(src.zp) || normalizeZip(src.zp, countryIso),

@@ -376,8 +376,11 @@ export default function CheckoutPage() {
       }
       {
         const snap = snapCartPayload(items);
+        // Unique categories, ≤ 256 chars: /api/snap/event rejects longer content_category
+        // (a big cart repeating "Oversized T-Shirts" used to make the CAPI event fail).
+        const snapCategories = Array.from(new Set(items.map(item => item.category).filter(Boolean))).join(', ').slice(0, 256) || undefined;
         trackSnapStartCheckout(
-          subtotal, snap.numItems, 'INR', joinedCategories, snap.ids,
+          subtotal, snap.numItems, 'INR', snapCategories, snap.ids,
           userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
           snap.contents
         );

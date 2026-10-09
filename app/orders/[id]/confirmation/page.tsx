@@ -23,12 +23,17 @@ import Link from "next/link";
 import { useMetaEvents, ga4Purchase } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
+import { pickRealEmail, pickRealName, pickRealPhone } from "@/lib/tracking/placeholder-identity";
 import {
   decideMetaBrowserPurchase,
   buildMetaBrowserPurchaseArgs,
   dispatchMetaBrowserPurchaseOnce,
   hasMetaBrowserPurchaseBeenSent,
   waitForFbq,
+  decideSnapBrowserPurchase,
+  dispatchSnapBrowserPurchaseOnce,
+  hasSnapBrowserPurchaseBeenSent,
+  waitForSnaptr,
   META_PENDING_POLL_INTERVAL_MS,
   META_PENDING_POLL_MAX,
 } from "@/lib/meta/browser-purchase";
@@ -90,7 +95,6 @@ export default function OrderConfirmationPage() {
         const contentIds = order.items?.map(toSnapId) || [];
 
         let userData: any = undefined;
-        let snapCountry: string | undefined = undefined;
         try {
           const addr = order.shippingAddress
             ? (typeof order.shippingAddress === 'string'
@@ -99,12 +103,12 @@ export default function OrderConfirmationPage() {
             : null;
 
           const cust = order.customer || {};
-          const nameToUse = cust.name || addr?.name || "";
+          // Placeholder names / emails / dummy phones are skipped for the next real value.
+          const nameToUse = pickRealName(cust.name, addr?.name) || "";
           const nameParts = nameToUse.trim().split(/\s+/);
           const fn = nameParts[0] || undefined;
           const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
 
-          snapCountry = addr?.countryCode || addr?.country_code || undefined;
           userData = {
             country: addr?.country || undefined,
             st: addr?.state || undefined,
@@ -112,8 +116,8 @@ export default function OrderConfirmationPage() {
             zp: addr?.zip || undefined,
             fn,
             ln,
-            em: cust.email || undefined,
-            ph: cust.phone || addr?.phone || undefined,
+            em: pickRealEmail(cust.email, addr?.email),
+            ph: pickRealPhone(cust.phone, addr?.phone),
           };
         } catch (e) {
           console.error("Error parsing shippingAddress in confirmation page", e);
@@ -136,25 +140,8 @@ export default function OrderConfirmationPage() {
             title: item.title
           })) || []);
 
-        // Snap: browser pixel only, and only for a confirmed payment. The CAPI
-        // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
-        // are proven variant ids only (OrderItem.variantId / "variant:<id>").
-        const snapPayStatus = String(order.paymentStatus || "").toLowerCase();
-        if (snapPayStatus === "paid" || snapPayStatus === "cod_upfront_paid") {
-          const snapContents = (order.items || [])
-            .map((item: any) => ({
-              id: snapCatalogIdFromOrderItem(item) || "",
-              quantity: Number(item.quantity) || 1,
-              item_price: parseFloat(item.price || "0") || undefined,
-            }));
-          trackSnapPurchase(
-            order.id, val, orderCurrency,
-            snapContents.map((c: any) => c.id).filter(Boolean),
-            userData ? { ...userData, country: snapCountry || userData.country } : undefined,
-            storedCategory,
-            snapContents
-          );
-        }
+        // Snap: the browser Pixel PURCHASE is decided separately (effect below), like
+        // Meta, so a visit while the payment is pending never loses it.
 
         // OpenAI Ads — order_created with minor-unit amounts
         const openAiContents = order.items?.map((item: any) => ({
@@ -255,11 +242,59 @@ export default function OrderConfirmationPage() {
     };
   }, []);
 
+  // Snap browser Pixel PURCHASE: fires once per order, only for a confirmed payment
+  // (also after pending → paid). The CAPI PURCHASE is sent once by the server
+  // (lib/snap/purchase.ts); client_dedup_id = order id dedups the pair.
+  useEffect(() => {
+    if (!order?.id) return;
+    if (decideSnapBrowserPurchase(order, { alreadySent: hasSnapBrowserPurchaseBeenSent(order.id) }).action !== 'fire') return;
+    const val = parseFloat(order.totalPrice || "0");
+    const orderCurrency = (order.currency || "INR").toUpperCase();
+    let addr: any = null;
+    try {
+      addr = order.shippingAddress
+        ? (typeof order.shippingAddress === 'string' ? JSON.parse(order.shippingAddress) : order.shippingAddress)
+        : null;
+    } catch { addr = null; }
+    const cust = order.customer || {};
+    const nameParts = (pickRealName(cust.name, addr?.name) || "").trim().split(/\s+/).filter(Boolean);
+    const userData = {
+      country: addr?.countryCode || addr?.country_code || addr?.country || undefined,
+      st: addr?.state || undefined,
+      ct: addr?.city || undefined,
+      zp: addr?.zip || undefined,
+      fn: nameParts[0] || undefined,
+      ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+      em: pickRealEmail(cust.email, addr?.email),
+      ph: pickRealPhone(cust.phone, addr?.phone),
+    };
+    const snapContents = (order.items || []).map((item: any) => ({
+      id: snapCatalogIdFromOrderItem(item) || "",
+      quantity: Number(item.quantity) || 1,
+      item_price: parseFloat(item.price || "0") || undefined,
+    }));
+    let storedCategory: string | undefined;
+    try { storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined; } catch {}
+    dispatchSnapBrowserPurchaseOnce(order.id, async () => {
+      // Snap pixel never loaded (blocked / failed): not marked, a later visit can retry.
+      if (!(await waitForSnaptr())) return false;
+      trackSnapPurchase(
+        order.id, val, orderCurrency,
+        snapContents.map((c: any) => c.id).filter(Boolean),
+        userData, storedCategory, snapContents
+      );
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
+
   // Payment still awaiting capture (e.g. Razorpay webhook not processed yet):
   // re-check the stored order for a few minutes so the Purchase can fire once paid.
   useEffect(() => {
     if (!id || !order?.id) return;
-    if (decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) }).action !== 'wait') return;
+    const metaWaits = decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) }).action === 'wait';
+    const snapWaits = decideSnapBrowserPurchase(order, { alreadySent: hasSnapBrowserPurchaseBeenSent(order.id) }).action === 'wait';
+    if (!metaWaits && !snapWaits) return;
     let polls = 0;
     let cancelled = false;
     const timer = setInterval(async () => {

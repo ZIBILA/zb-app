@@ -17,7 +17,7 @@ import { WebsiteJsonLd } from "@/components/seo/WebsiteJsonLd";
 import { Analytics } from "@/components/seo/Analytics";
 import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
-import { PLACEHOLDER_EMAIL_HASHES } from "@/lib/tracking/placeholder-identity";
+import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES } from "@/lib/tracking/placeholder-identity";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -144,7 +144,9 @@ export default function RootLayout({
 }>) {
   const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || "2049977412558608";
   // Demo-account and synthetic placeholder hashes never used as Advanced Matching.
-  const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES];
+  const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES, ...PLACEHOLDER_PHONE_HASHES];
+  // Name placeholders are checked against fn / ln only (sha256('na') is also Namibia's country code).
+  const metaBlockedNameHashes = [...PLACEHOLDER_NAME_HASHES];
   const snapPixelId = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || "7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd";
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
@@ -252,10 +254,12 @@ export default function RootLayout({
                   if (zbC['zb_fb_login_id']) zbAM.fb_login_id = zbC['zb_fb_login_id'];
                   if (zbExt && zbC['zb_pii_owner'] === zbExt) {
                     var zbBlocked = ${JSON.stringify(metaBlockedIdentityHashes)};
+                    var zbNameBlocked = ${JSON.stringify(metaBlockedNameHashes)};
                     var zbMap = { em: 'zb_guest_email', ph: 'zb_guest_phone', fn: 'zb_guest_fn', ln: 'zb_guest_ln', ct: 'zb_guest_ct', st: 'zb_guest_st', zp: 'zb_guest_zp', country: 'zb_guest_country', db: 'zb_guest_dob' };
                     for (var zbK in zbMap) {
                       var zbV = (zbC[zbMap[zbK]] || '').toLowerCase();
-                      if (/^[a-f0-9]{64}$/.test(zbV) && zbBlocked.indexOf(zbV) === -1) zbAM[zbK] = zbV;
+                      var zbIsName = zbK === 'fn' || zbK === 'ln';
+                      if (/^[a-f0-9]{64}$/.test(zbV) && zbBlocked.indexOf(zbV) === -1 && !(zbIsName && zbNameBlocked.indexOf(zbV) !== -1)) zbAM[zbK] = zbV;
                     }
                   }
                 } catch (e) {}

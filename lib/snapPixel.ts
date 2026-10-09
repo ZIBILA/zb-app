@@ -1,3 +1,5 @@
+import { isPlaceholderEmailHash, isPlaceholderPhoneHash } from '@/lib/tracking/placeholder-identity';
+import { DEMO_PHONE_HASHES } from '@/lib/buildMetaUserData';
 import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
 
 export const SNAP_PIXEL_ID = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd';
@@ -123,12 +125,12 @@ export function buildPixelIdentity(raw?: RawIdentity): Record<string, string> {
   // Email
   if (n.em && !isSha256Hash(n.em)) out.user_email = n.em;
   else if (n.em) out.user_hashed_email = n.em;
-  else if (cookies.em && isSha256Hash(cookies.em)) out.user_hashed_email = cookies.em.toLowerCase();
+  else if (cookies.em && isSha256Hash(cookies.em) && !isPlaceholderEmailHash(cookies.em)) out.user_hashed_email = cookies.em.toLowerCase();
 
   // Phone (digits incl. country code, no "+")
   if (n.ph && !isSha256Hash(n.ph)) out.user_phone_number = n.ph;
   else if (n.ph) out.user_hashed_phone_number = n.ph;
-  else if (cookies.ph && isSha256Hash(cookies.ph)) out.user_hashed_phone_number = cookies.ph.toLowerCase();
+  else if (cookies.ph && isSha256Hash(cookies.ph) && !DEMO_PHONE_HASHES.includes(cookies.ph.toLowerCase()) && !isPlaceholderPhoneHash(cookies.ph)) out.user_hashed_phone_number = cookies.ph.toLowerCase();
 
   // Raw-only fields
   const rawOnly: Array<[keyof RawIdentity, string]> = [

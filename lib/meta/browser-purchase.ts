@@ -18,7 +18,7 @@
  */
 import { metaPurchaseValue, metaPurchaseCurrency, isWebsiteOrder } from './order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
-import { isPlaceholderEmail } from '@/lib/tracking/placeholder-identity';
+import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 
 export const META_BROWSER_PURCHASE_KEY_PREFIX = 'zb_meta_pixel_purchase_sent_';
 export const metaBrowserPurchaseKey = (orderId: string) => `${META_BROWSER_PURCHASE_KEY_PREFIX}${orderId}`;
@@ -38,13 +38,14 @@ export type MetaBrowserPurchaseDecision =
   | { action: 'wait'; reason: string }
   | { action: 'done'; reason: string };
 
-export function decideMetaBrowserPurchase(
+/** Generic decision shared by the Meta and Snap browser Purchase (eligibility differs). */
+export function decideBrowserPurchase(
   order: any,
-  opts: { alreadySent: boolean; nowMs?: number },
+  opts: { alreadySent: boolean; nowMs?: number; isEligible: (order: any) => boolean },
 ): MetaBrowserPurchaseDecision {
   if (!order?.id) return { action: 'done', reason: 'no order' };
   if (opts.alreadySent) return { action: 'done', reason: 'already sent' };
-  if (!isWebsiteOrder(order)) return { action: 'done', reason: 'not a website order' };
+  if (!opts.isEligible(order)) return { action: 'done', reason: 'not eligible for this platform' };
   const created = order.createdAt ? new Date(order.createdAt).getTime() : NaN;
   if (Number.isFinite(created) && (opts.nowMs ?? Date.now()) - created >= META_BROWSER_PURCHASE_MAX_AGE_MS) {
     return { action: 'done', reason: 'stale order' };
@@ -55,6 +56,28 @@ export function decideMetaBrowserPurchase(
   }
   if (META_AWAITING_PAYMENT_STATUSES.has(status)) return { action: 'wait', reason: `paymentStatus=${status}` };
   return { action: 'done', reason: `paymentStatus=${status || 'empty'}` };
+}
+
+export function decideMetaBrowserPurchase(
+  order: any,
+  opts: { alreadySent: boolean; nowMs?: number },
+): MetaBrowserPurchaseDecision {
+  return decideBrowserPurchase(order, { ...opts, isEligible: isWebsiteOrder });
+}
+
+/** Snap web pixel: every order except native-app ones (same rule as lib/snap/purchase.ts). */
+const SNAP_NATIVE_APP_TYPES = new Set(['MOBILE', 'MOBILE_APP', 'APP']);
+export const SNAP_BROWSER_PURCHASE_KEY_PREFIX = 'zb_snap_pixel_purchase_sent_';
+export const snapBrowserPurchaseKey = (orderId: string) => `${SNAP_BROWSER_PURCHASE_KEY_PREFIX}${orderId}`;
+
+export function decideSnapBrowserPurchase(
+  order: any,
+  opts: { alreadySent: boolean; nowMs?: number },
+): MetaBrowserPurchaseDecision {
+  return decideBrowserPurchase(order, {
+    ...opts,
+    isEligible: (o) => !SNAP_NATIVE_APP_TYPES.has(String(o?.orderType || '').trim().toUpperCase()),
+  });
 }
 
 export interface MetaBrowserPurchaseArgs {
@@ -87,7 +110,8 @@ export function buildMetaBrowserPurchaseArgs(order: any): MetaBrowserPurchaseArg
 
   const addr = parseAddress(order.shippingAddress);
   const cust = order.customer || {};
-  const nameParts = String(cust.name || addr?.name || '').trim().split(/\s+/).filter(Boolean);
+  // Same order as the server event: checkout address first; placeholders skipped.
+  const nameParts = String(pickRealName(addr?.name, cust.name) || '').trim().split(/\s+/).filter(Boolean);
   // Checkout address first (freshest); synthetic placeholder emails are never sent.
   const email = [addr?.email, cust.email].find((e: any) => typeof e === 'string' && e.trim() && !isPlaceholderEmail(e));
   const userData = addr || cust.email || cust.phone || nameParts.length
@@ -99,7 +123,7 @@ export function buildMetaBrowserPurchaseArgs(order: any): MetaBrowserPurchaseArg
         fn: nameParts[0] || undefined,
         ln: nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined,
         em: email || undefined,
-        ph: addr?.phone || cust.phone || undefined,
+        ph: pickRealPhone(addr?.phone, cust.phone),
       }
     : undefined;
 
@@ -138,6 +162,8 @@ export function browserMarkerStore(): MarkerStore {
 
 export const hasMetaBrowserPurchaseBeenSent = (orderId: string, store: MarkerStore = browserMarkerStore()) =>
   store.get(metaBrowserPurchaseKey(orderId)) !== null;
+export const hasSnapBrowserPurchaseBeenSent = (orderId: string, store: MarkerStore = browserMarkerStore()) =>
+  store.get(snapBrowserPurchaseKey(orderId)) !== null;
 
 type LockRunner = (name: string, fn: () => Promise<void> | void) => Promise<void>;
 
@@ -154,14 +180,13 @@ const defaultLock: LockRunner = async (name, fn) => {
  * `dispatch` returns true when the Pixel call was made; only then is the marker set.
  * Resolves to true if THIS call dispatched.
  */
-export async function dispatchMetaBrowserPurchaseOnce(
-  orderId: string,
+export async function dispatchBrowserPurchaseOnce(
+  key: string,
   dispatch: () => boolean | Promise<boolean>,
   deps: { store?: MarkerStore; lock?: LockRunner; nowMs?: () => number } = {},
 ): Promise<boolean> {
   const store = deps.store ?? browserMarkerStore();
   const lock = deps.lock ?? defaultLock;
-  const key = metaBrowserPurchaseKey(orderId);
   let fired = false;
   await lock(key, async () => {
     if (store.get(key) !== null) return;
@@ -175,13 +200,34 @@ export async function dispatchMetaBrowserPurchaseOnce(
   return fired;
 }
 
+export const dispatchMetaBrowserPurchaseOnce = (
+  orderId: string,
+  dispatch: () => boolean | Promise<boolean>,
+  deps: { store?: MarkerStore; lock?: LockRunner; nowMs?: () => number } = {},
+) => dispatchBrowserPurchaseOnce(metaBrowserPurchaseKey(orderId), dispatch, deps);
+
+export const dispatchSnapBrowserPurchaseOnce = (
+  orderId: string,
+  dispatch: () => boolean | Promise<boolean>,
+  deps: { store?: MarkerStore; lock?: LockRunner; nowMs?: () => number } = {},
+) => dispatchBrowserPurchaseOnce(snapBrowserPurchaseKey(orderId), dispatch, deps);
+
 /**
  * Resolve true once the Meta Pixel function (`window.fbq`) exists, false after
  * `timeoutMs` (blocked by an extension / failed to load). Same 3 s budget as
  * withFbq in lib/metaPixel.ts, so "false" means the Pixel call would be dropped.
  */
 export function waitForFbq(timeoutMs = 3000, stepMs = 100): Promise<boolean> {
-  const has = () => typeof window !== 'undefined' && typeof (window as any).fbq === 'function';
+  return waitForGlobalFn('fbq', timeoutMs, stepMs);
+}
+
+/** Same for Snapchat's `window.snaptr` (withSnaptr in lib/snapPixel.ts also gives up after ~3 s). */
+export function waitForSnaptr(timeoutMs = 3000, stepMs = 100): Promise<boolean> {
+  return waitForGlobalFn('snaptr', timeoutMs, stepMs);
+}
+
+function waitForGlobalFn(name: string, timeoutMs: number, stepMs: number): Promise<boolean> {
+  const has = () => typeof window !== 'undefined' && typeof (window as any)[name] === 'function';
   if (has()) return Promise.resolve(true);
   return new Promise((resolve) => {
     const started = Date.now();

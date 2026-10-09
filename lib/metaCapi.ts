@@ -11,7 +11,9 @@ import {
   normalizeZip as sharedNormalizeZip,
   normalizeCountry as sharedNormalizeCountry,
 } from './tracking/identity-normalize';
-import { isPlaceholderEmail, isPlaceholderEmailHash } from './tracking/placeholder-identity';
+import {
+  isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash,
+} from './tracking/placeholder-identity';
 
 const PIXEL_ID = process.env.META_PIXEL_ID || process.env.NEXT_PUBLIC_META_PIXEL_ID || '2049977412558608';
 const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN!;
@@ -165,9 +167,13 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     // Synthetic placeholders (guest@zicabella.com, guest_<ts>@…) are never a customer identity.
     const emSafe = emRaw && (isHash(emRaw) ? !isPlaceholderEmailHash(emRaw) : !isPlaceholderEmail(emRaw)) ? emRaw : undefined;
     const em = cleanAndHash(emSafe, sharedNormalizeEmail);
-    const ph = cleanAndHash(payload.userData.ph, (p) => sharedNormalizePhone(p, countryIso));
-    const fn = cleanAndHash(payload.userData.fn, sharedNormalizeName);
-    const ln = cleanAndHash(payload.userData.ln, sharedNormalizeName);
+    // Dummy phones and placeholder names ('Customer', 'Valued Customer', 'Guest' …) are never sent.
+    const phRaw = payload.userData.ph;
+    const phSafe = phRaw && (isHash(phRaw) ? isPlaceholderPhoneHash(phRaw) : isPlaceholderPhone(phRaw)) ? undefined : phRaw;
+    const nameSafe = (v: string | undefined) => (v && (isHash(v) ? isPlaceholderNameHash(v) : isPlaceholderNamePart(v)) ? undefined : v);
+    const ph = cleanAndHash(phSafe, (p) => sharedNormalizePhone(p, countryIso));
+    const fn = cleanAndHash(nameSafe(payload.userData.fn), sharedNormalizeName);
+    const ln = cleanAndHash(nameSafe(payload.userData.ln), sharedNormalizeName);
     const country = cleanAndHash(rawCountry, sharedNormalizeCountry);
     const st = cleanAndHash(payload.userData.st, (v) => sharedNormalizeState(v, countryIso));
     const ct = cleanAndHash(payload.userData.ct, sharedNormalizeCity);
