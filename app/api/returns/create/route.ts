@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
-import { allocateLinkedId } from "@/lib/linkedIds";
+import { createWithLinkedId } from "@/lib/linkedIds";
 import { resolveRefundMethod, requestEligibilityError } from "@/lib/returnPolicy";
 import { resolveRequestCustomer } from "@/lib/requestAuth";
 
@@ -48,7 +48,7 @@ export async function POST(req: Request) {
     const effectiveRefundMethod = resolveRefundMethod(order, refundMethod);
 
     let estimatedRefund = 0;
-    const itemsToReturn = [];
+    const itemsToReturn: any[] = [];
 
     for (const returnItem of returnItems) {
       const orderItem = order.items.find((item: any) => item.id === returnItem.orderItemId);
@@ -97,8 +97,7 @@ export async function POST(req: Request) {
     }
 
     // Create the ReturnRequest
-    const displayId = await allocateLinkedId(prisma as any, 'return', order);
-    const returnRequest = await prisma.returnRequest.create({
+    const returnRequest = await createWithLinkedId<any>(prisma as any, 'return', order, (displayId) => prisma.returnRequest.create({
       data: {
         displayId,
         refundType: effectiveRefundMethod === 'store_credit' ? 'store_credit' : 'original_source',
@@ -127,7 +126,7 @@ export async function POST(req: Request) {
       include: {
         returns: { include: { product: true } }
       }
-    });
+    }));
 
     // Update order status
     await prisma.order.update({

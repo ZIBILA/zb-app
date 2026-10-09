@@ -11,6 +11,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
     const exchangeRequest = await prisma.exchangeRequest.findUnique({
       where: { id: params.id },
       include: {
@@ -123,6 +124,20 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         ? await enrichItemsWithSize(exchangeRequest.order.items)
         : [];
 
+      // Outbound AWB of the G_E_ replacement order (NOT the original order's AWB).
+      let replacementForwardAwb: string | null = null;
+      if (exchangeRequest.replacementOrderId) {
+        const repl = await prisma.order.findUnique({
+          where: { id: exchangeRequest.replacementOrderId },
+          select: {
+            delhivery_awb: true,
+            shipments: { where: { type: 'outbound' }, orderBy: { createdAt: 'desc' }, take: 1, select: { awb: true, trackingNumber: true } },
+          },
+        });
+        replacementForwardAwb =
+          repl?.shipments?.[0]?.awb || repl?.shipments?.[0]?.trackingNumber || repl?.delhivery_awb || null;
+      }
+
       const { liveReverseFields } = await import('@/lib/services/reverseShipmentExtras');
       const live = liveReverseFields({
         requestStatus: exchangeRequest.status,
@@ -139,10 +154,14 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             ? { ...exchangeRequest.order, items: enrichedOrderItems }
             : null,
           linkedReturn,
+          replacementForwardAwb,
           ...live,
         }
       }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Exchange Detail API Error:', error.message);
     return NextResponse.json({ error: 'Failed to fetch exchange' }, { status: 500 });
   }

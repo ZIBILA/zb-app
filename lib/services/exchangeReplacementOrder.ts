@@ -196,7 +196,15 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       };
     }
 
-    if (exchangeRequest.status !== "qc_passed") {
+    // A claim left in "creating_order" by a crashed attempt is retaken after 10 minutes. The Shopify
+    // call is idempotent (exchange-<id> key), so retrying cannot create a second order.
+    const CLAIM_STALE_MS = 10 * 60 * 1000;
+    const staleClaim =
+      exchangeRequest.status === "creating_order" &&
+      !exchangeRequest.newShopifyOrderId &&
+      Date.now() - new Date(exchangeRequest.updatedAt).getTime() > CLAIM_STALE_MS;
+
+    if (exchangeRequest.status !== "qc_passed" && !staleClaim) {
       return {
         success: false,
         error:
@@ -212,7 +220,10 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       where: {
         id,
         newShopifyOrderId: null,
-        status: "qc_passed"
+        OR: [
+          { status: "qc_passed" },
+          { status: "creating_order", updatedAt: { lt: new Date(Date.now() - CLAIM_STALE_MS) } },
+        ],
       },
       data: {
         status: "creating_order"
@@ -387,7 +398,7 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       // Rollback claimed status
       await prisma.exchangeRequest.update({
         where: { id },
-        data: { status: exchangeRequest.status }
+        data: { status: "qc_passed" }
       });
       return {
         success: false,
@@ -399,7 +410,7 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
     if (!shopifyOrderId) {
       await prisma.exchangeRequest.update({
         where: { id },
-        data: { status: exchangeRequest.status }
+        data: { status: "qc_passed" }
       });
       return { success: false, error: "Shopify order creation returned no order ID.", status: 500 };
     }
@@ -539,6 +550,10 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
     };
   } catch (error: any) {
     console.error("Create Exchange Replacement Order Error:", error);
+    // Never leave the exchange stuck in "creating_order" after a failure: put it back so ops can retry.
+    await prisma.exchangeRequest
+      .updateMany({ where: { id, status: "creating_order", newShopifyOrderId: null }, data: { status: "qc_passed" } })
+      .catch((e: any) => console.error("[Exchange Create Order] rollback failed:", e?.message));
     return { success: false, error: error.message || 'Failed to create replacement order', status: 500 };
   }
 }

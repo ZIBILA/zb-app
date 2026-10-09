@@ -22,7 +22,6 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   try {
     const { id: orderId } = params;
     const url = new URL(req.url);
-    const qCustomerId = url.searchParams.get('customerId');
     const qPhone = url.searchParams.get('phone');
     const qEmail = url.searchParams.get('email');
 
@@ -54,15 +53,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       isAuthorized = true;
     } else if (order.customer) {
       // Check query parameters for guest tracking
-      if (qCustomerId === order.customerId) isAuthorized = true;
-      if (qEmail && order.customer.email === qEmail) isAuthorized = true;
+      // A customerId in the query string is NOT a credential. Guests prove the buyer's email / phone.
+      if (qEmail && order.customer.email && order.customer.email.toLowerCase() === qEmail.trim().toLowerCase()) isAuthorized = true;
       if (qPhone) {
         const orderPhone = order.customer.phone?.replace(/\D/g, '').slice(-10);
         const inputPhone = qPhone.replace(/\D/g, '').slice(-10);
-        if (orderPhone && inputPhone && orderPhone === inputPhone) isAuthorized = true;
+        if (orderPhone && inputPhone.length === 10 && orderPhone === inputPhone) isAuthorized = true;
       }
-    } else if (qCustomerId === order.customerId) {
-      isAuthorized = true;
     }
 
     if (!isAuthorized && !auth) {

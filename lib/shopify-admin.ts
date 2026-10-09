@@ -1740,14 +1740,16 @@ export interface RefundLineItem {
 export async function createRefund(
   orderId: string,
   refundLineItems: RefundLineItem[],
-  note?: string
+  note?: string,
+  opts?: { notify?: boolean }
 ): Promise<any> {
   const data = await shopifyPost<{ refund: any }>(
     `orders/${orderId}/refunds.json`,
     {
       refund: {
         note: note || 'Refund approved by admin',
-        notify: true,
+        // Store-credit releases pass notify:false so Shopify does not email a "money refunded" notice.
+        notify: opts?.notify !== false,
         refund_line_items: refundLineItems,
       },
     }

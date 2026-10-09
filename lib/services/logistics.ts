@@ -765,8 +765,9 @@ export async function syncOrderLogisticsStatus(orderId: string): Promise<{
   deliveryStatus: string | null;
   message: string;
 }> {
+  // Outbound parcel only — "Sync Status" on an order must never pick up a return / exchange pickup.
   const shipment = await prisma.shipment.findFirst({
-    where: { orderId },
+    where: { orderId, NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } } },
     orderBy: { createdAt: 'desc' },
   });
   if (!shipment) {

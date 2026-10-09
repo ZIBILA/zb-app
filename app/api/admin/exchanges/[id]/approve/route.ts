@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+async function POST_impl(req: Request, { params }: { params: { id: string } }) {
   try {
     const { id } = params;
     const body = await req.json();
@@ -168,4 +169,13 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     console.error("Approve Exchange Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

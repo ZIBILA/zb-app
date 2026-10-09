@@ -349,17 +349,27 @@ export async function applyShipmentStatusUpdate(
       });
   }
 
+  // Affiliate commission is reversed as soon as the order is known to be coming back.
   if (enteredRto) {
     try {
-      const { restoreOrderSkus } = await import('@/lib/services/skuService');
-      const restored = await restoreOrderSkus(order.id, 'RTO_RESTORE', 'System (RTO)');
-      if (restored > 0) {
-        console.log(`[ShipmentStatus] Restored ${restored} SKU(s) for RTO order ${order.id}`);
-      }
       const { reverseReferral } = await import('@/lib/affiliate/earnings');
       await reverseReferral(order.id, 'logistics_rto');
     } catch (err) {
-      console.error('[ShipmentStatus] SKU restore / affiliate reversal on RTO failed:', err);
+      console.error('[ShipmentStatus] affiliate reversal on RTO failed:', err);
+    }
+  }
+
+  // Stock goes back on the shelf only once the parcel has physically reached the warehouse.
+  const rtoReceivedNow = next === 'rto_delivered' && previous !== 'rto_delivered';
+  if (rtoReceivedNow) {
+    try {
+      const { restoreOrderSkus } = await import('@/lib/services/skuService');
+      const restored = await restoreOrderSkus(order.id, 'RTO_RESTORE', 'System (RTO received)');
+      if (restored > 0) {
+        console.log(`[ShipmentStatus] Restored ${restored} SKU(s) for received RTO order ${order.id}`);
+      }
+    } catch (err) {
+      console.error('[ShipmentStatus] SKU restore on RTO receipt failed:', err);
     }
   }
 

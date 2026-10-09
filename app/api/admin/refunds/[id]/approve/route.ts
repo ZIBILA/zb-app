@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { createRefund } from '@/lib/shopify-admin';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { resolveRefundMethod } from '@/lib/returnPolicy';
+import { splitRefundAcrossLines } from '@/lib/services/refundSplit';
 
 export const dynamic = 'force-dynamic';
 
@@ -279,16 +280,18 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           });
           if (done.count !== 1) throw new ClaimLostError();
 
-          await tx.return.updateMany({
-            where: { returnRequestId: refundId },
-            data: {
-              status: 'REFUNDED',
-              refundAmount: finalRefundAmount,
-              refundStatus: 'COMPLETED',
-              refundMethod: refundMethod,
-              storeCreditAmount: refundMethod === 'store_credit' ? finalRefundAmount : 0
-            }
-          });
+          for (const part of splitRefundAcrossLines(returnRequest!.returns, finalRefundAmount)) {
+            await tx.return.update({
+              where: { id: part.id },
+              data: {
+                status: 'REFUNDED',
+                refundAmount: part.amount,
+                refundStatus: 'COMPLETED',
+                refundMethod: refundMethod,
+                storeCreditAmount: refundMethod === 'store_credit' ? part.amount : 0
+              }
+            });
+          }
         } else {
           const done = await tx.return.updateMany({
             where: { id: refundId, refundStatus: 'PROCESSING' },
@@ -392,7 +395,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         }
 
         if (refundLineItems.length > 0) {
-          await createRefund(order.shopifyOrderId, refundLineItems, `Admin approved refund (${refundMethod})`);
+          await createRefund(
+            order.shopifyOrderId,
+            refundLineItems,
+            `Admin approved refund (${refundMethod})`,
+            { notify: refundMethod !== 'store_credit' }
+          );
           console.log(`✅ Shopify refund synced for Order ${order.shopifyOrderId}`);
         }
       } catch (shopifyErr: any) {

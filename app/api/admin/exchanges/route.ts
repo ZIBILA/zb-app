@@ -5,6 +5,7 @@ import { extractItemVariantAndSize } from "@/lib/utils";
 import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
 import { countByReverseStageFilter } from "@/lib/returnPolicy";
 import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ const SHIPMENT_SELECT = {
   trackingUrl: true,
 } as const;
 
-export async function GET(req: Request) {
+async function GET_impl(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status') || searchParams.get('stage');
@@ -263,7 +264,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POST_impl(req: Request) {
   try {
     const { orderId, customerId, items } = await req.json();
 
@@ -352,4 +353,22 @@ export async function POST(req: Request) {
     console.error("Create Admin Exchange Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function GET(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (GET_impl as any)(req, ctx);
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

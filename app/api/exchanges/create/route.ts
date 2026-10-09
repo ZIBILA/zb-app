@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import prisma from "@/lib/db";
 import { extractItemVariantAndSize } from "@/lib/utils";
-import { allocateLinkedId } from "@/lib/linkedIds";
+import { createWithLinkedId } from "@/lib/linkedIds";
 import { requestEligibilityError } from "@/lib/returnPolicy";
 import { resolveRequestCustomer } from "@/lib/requestAuth";
 import { resolveRazorpayCredentials } from "@/lib/razorpay-credentials";
@@ -111,7 +111,7 @@ export async function POST(req: Request) {
     }
 
     let calculatedPriceDifference = 0;
-    const itemsToExchange = [];
+    const itemsToExchange: any[] = [];
 
     for (const item of exchangeItems) {
       const orderItem = order.items.find((oi: any) => oi.id === item.orderItemId);
@@ -235,8 +235,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const displayId = await allocateLinkedId(prisma as any, 'exchange', order);
-    const exchangeRequest = await prisma.exchangeRequest.create({
+    const exchangeRequest = await createWithLinkedId<any>(prisma as any, 'exchange', order, (displayId) => prisma.exchangeRequest.create({
       data: {
         displayId,
         orderId,
@@ -269,7 +268,7 @@ export async function POST(req: Request) {
           include: { originalProduct: true, newProduct: true }
         }
       }
-    });
+    }));
 
     // Update order status
     await prisma.order.update({

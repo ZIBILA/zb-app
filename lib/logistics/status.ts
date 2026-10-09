@@ -37,7 +37,8 @@ const SHIPROCKET_STATUS_IDS: Record<string, CarrierStatus> = {
   '10': 'rto_delivered', // RTO Delivered
   '12': 'lost',
   '13': 'pickup_failed', // Pickup Error
-  '14': 'rto_delivered', // RTO Acknowledged
+  '14': 'rto', // RTO Acknowledged — acknowledged, but the parcel is NOT yet back at the warehouse
+  '16': 'cancellation_requested',
   '15': 'pickup_scheduled', // Pickup Rescheduled
   '17': 'out_for_delivery',
   '18': 'in_transit',
@@ -55,7 +56,9 @@ const SHIPROCKET_STATUS_IDS: Record<string, CarrierStatus> = {
   '40': 'rto', // RTO NDR
   '41': 'rto', // RTO OFD
   '42': 'picked_up',
+  '45': 'cancelled', // Cancelled Before Dispatched
   '46': 'rto', // RTO In Transit
+  '52': 'confirmed', // Shipment Booked
 };
 
 /**
@@ -84,7 +87,7 @@ export function normalizeCarrierStatus(raw: unknown): CarrierStatus {
 
   // RTO family first ("RTO Delivered" must not become "delivered").
   if (/\brto\b/.test(s) || s.includes('return to origin') || s.includes('returned to origin') || s.includes('return to seller')) {
-    if (/(delivered|acknowledged|received|reached back|completed)/.test(s)) return 'rto_delivered';
+    if (/(delivered|received|reached back|completed)/.test(s)) return 'rto_delivered';
     return 'rto';
   }
   if (s === 'returned' || s.includes('reached back at seller')) return 'rto';

@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 /**
  * PATCH /api/admin/exchanges/update-size
  * Updates size for original or replacement item in an Exchange.
  * Payload: { exchangeId: string, itemType: 'original' | 'new', size: string, variantTitle?: string }
  */
-export async function PATCH(req: Request) {
+async function PATCH_impl(req: Request) {
   try {
     const body = await req.json();
     const { exchangeId, itemType, size, variantTitle } = body;
@@ -67,4 +68,13 @@ export async function PATCH(req: Request) {
     console.error("Update Exchange Size Error:", error.message);
     return NextResponse.json({ error: "Failed to update size" }, { status: 500 });
   }
+}
+
+export async function PATCH(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (PATCH_impl as any)(req, ctx);
 }

@@ -119,6 +119,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
  */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
     const returnRequest = await prisma.returnRequest.findUnique({
       where: { id: params.id },
       include: {
@@ -239,6 +240,9 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       }
     }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Return Detail API Error:', error.message);
     return NextResponse.json({ error: 'Failed to fetch return' }, { status: 500 });
   }

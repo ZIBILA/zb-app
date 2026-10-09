@@ -11,7 +11,13 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(req: Request) {
   try {
-    await requireAdmin('ORDERS', 'view');
+    // Used from the Orders, Returns and Exchanges search boxes — any of those modules may resolve ids.
+    try {
+      await requireAdmin('ORDERS', 'view');
+    } catch (e) {
+      if (!(e instanceof Error) || e.message !== '403') throw e;
+      await requireAdmin('RETURNS_EXCHANGES', 'view');
+    }
     const q = new URL(req.url).searchParams.get('q');
     const parsed = parseLinkedId(q);
     if (!parsed) {

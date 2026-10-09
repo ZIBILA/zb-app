@@ -67,6 +67,31 @@ export async function allocateLinkedId(
   return `${prefix}${base}_${Date.now().toString(36).toUpperCase()}`;
 }
 
+/**
+ * Allocate a linked id AND create the row with it, retrying if a concurrent request grabbed the
+ * same id first (unique-constraint violation, Prisma P2002). Allocation alone is check-then-insert
+ * and therefore racy; this makes the pair safe.
+ */
+export async function createWithLinkedId<T>(
+  db: Db,
+  kind: Exclude<LinkedKind, 'replacement'>,
+  order: OrderRefLike,
+  create: (displayId: string) => Promise<T>
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const displayId = await allocateLinkedId(db, kind, order);
+    try {
+      return await create(displayId);
+    } catch (err: any) {
+      // The only unique columns on these rows are the linked ids, so any P2002 means "id taken".
+      if (err?.code !== 'P2002') throw err;
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 /** Replacement id derived from the exchange id: E_ZB718103 → G_E_ZB718103. */
 export function replacementIdForExchange(exchangeDisplayId: string): string {
   return `G_${exchangeDisplayId}`;

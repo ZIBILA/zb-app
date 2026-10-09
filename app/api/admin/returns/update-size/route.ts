@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 /**
  * PATCH /api/admin/returns/update-size
  * Updates size for a Return item.
  * Payload: { returnId: string, size: string, variantTitle?: string }
  */
-export async function PATCH(req: Request) {
+async function PATCH_impl(req: Request) {
   try {
     const body = await req.json();
     const { returnId, size, variantTitle } = body;
@@ -59,4 +60,13 @@ export async function PATCH(req: Request) {
     console.error("Update Return Size Error:", error.message);
     return NextResponse.json({ error: "Failed to update return size" }, { status: 500 });
   }
+}
+
+export async function PATCH(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (PATCH_impl as any)(req, ctx);
 }

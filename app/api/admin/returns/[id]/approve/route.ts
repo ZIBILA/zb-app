@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { resolveRefundMethod } from "@/lib/returnPolicy";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
+import { splitRefundAcrossLines } from '@/lib/services/refundSplit';
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+async function POST_impl(req: Request, { params }: { params: { id: string } }) {
   try {
     const { id } = params;
     const body = await req.json();
@@ -31,7 +33,14 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       );
     }
 
-    const refundAmount = actualRefund !== undefined ? actualRefund : returnRequest.estimatedRefund;
+    const refundAmount = actualRefund !== undefined ? Number(actualRefund) : returnRequest.estimatedRefund;
+    const orderTotal = Number(returnRequest.order?.totalPrice);
+    if (!Number.isFinite(refundAmount) || refundAmount < 0) {
+      return NextResponse.json({ error: "Refund amount must be a valid number." }, { status: 400 });
+    }
+    if (Number.isFinite(orderTotal) && orderTotal > 0 && refundAmount > orderTotal + 0.01) {
+      return NextResponse.json({ error: `Refund amount ₹${refundAmount} exceeds the order total ₹${orderTotal}.` }, { status: 400 });
+    }
     // COD orders → store credit only. Prepaid keeps the customer's choice (or admin override).
     const requestedMethod =
       typeof isStoreCredit === 'boolean'
@@ -53,16 +62,19 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       });
 
       // 2. Update individual return items (keep refundStatus PENDING until QC and Admin Refund Approval)
-      await tx.return.updateMany({
-        where: { returnRequestId: id },
-        data: { 
-          status: "APPROVED",
-          refundAmount,
-          storeCreditAmount: storeCreditRefund ? refundAmount : 0,
-          refundStatus: "PENDING",
-          refundMethod
-        }
-      });
+      // Each line carries ITS OWN share; the shares add up to the request total.
+      for (const part of splitRefundAcrossLines(returnRequest.returns, refundAmount)) {
+        await tx.return.update({
+          where: { id: part.id },
+          data: {
+            status: "APPROVED",
+            refundAmount: part.amount,
+            storeCreditAmount: storeCreditRefund ? part.amount : 0,
+            refundStatus: "PENDING",
+            refundMethod
+          }
+        });
+      }
 
       // 4. Update order status & auto-cancel any pending exchange requests for mutual exclusivity
       await tx.order.update({
@@ -104,4 +116,13 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     console.error("Approve Return Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

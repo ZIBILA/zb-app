@@ -5,6 +5,7 @@ import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
 import { resolveRefundMethod } from "@/lib/returnPolicy";
 import { countByReverseStageFilter } from "@/lib/returnPolicy";
 import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ const LIVE_STAGE_FILTERS = new Set([
   'received',
 ]);
 
-export async function GET(req: Request) {
+async function GET_impl(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status') || searchParams.get('stage');
@@ -29,7 +30,7 @@ export async function GET(req: Request) {
     // Live stage filters are applied after deriveReverseStage — don't restrict DB status.
     const statusWhere: any =
       status && status !== 'all' && !isLiveFilter ? { status } : {};
-    const where: any = parsedQ
+    const baseWhere: any = parsedQ
       ? {
           ...statusWhere,
           OR: [
@@ -38,6 +39,9 @@ export async function GET(req: Request) {
           ],
         }
       : statusWhere;
+    // Auto-created pickups for exchanges (reason EXCHANGE_RETURN) belong to the exchange, not the Returns list.
+    const notInternalExchange = { OR: [{ reason: null }, { NOT: { reason: { contains: 'EXCHANGE_RETURN' } } }] };
+    const where: any = { AND: [baseWhere, notInternalExchange] };
     const standaloneWhere = parsedQ
       ? ({ id: '__none__' } as any)
       : status && status !== 'all' && !isLiveFilter
@@ -77,6 +81,7 @@ export async function GET(req: Request) {
       prisma.returnRequest.count({ where }),
       prisma.returnRequest.groupBy({
         by: ['status'],
+        where: notInternalExchange,
         _count: { id: true }
       }),
       prisma.return.findMany({
@@ -230,7 +235,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POST_impl(req: Request) {
   try {
     const { orderId, customerId, items, estimatedRefund } = await req.json();
 
@@ -313,4 +318,22 @@ export async function POST(req: Request) {
     console.error("Create Admin Return Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function GET(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (GET_impl as any)(req, ctx);
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

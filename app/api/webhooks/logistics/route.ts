@@ -7,10 +7,11 @@
  * NOT protected by session auth — uses signature validation.
  */
 
+import crypto from 'crypto';
 import { NextResponse, NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { validateWebhookSignature, resolveWebhookSecret } from '@/lib/services/logistics';
-import { delhiveryRawStatus, normalizeCarrierStatus } from '@/lib/logistics/status';
+import { delhiveryRawStatus, normalizeCarrierStatus, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
 
 export const dynamic = 'force-dynamic';
 
@@ -96,6 +97,14 @@ async function logToWebhookLogs(
   }
 }
 
+/** Constant-time comparison of a presented token (optionally Bearer/Token-prefixed) with the secret. */
+function tokenMatchesSecret(presented: string, secret: string): boolean {
+  const clean = presented.replace(/^Bearer\s+/i, '').replace(/^Token\s+/i, '').trim();
+  const a = crypto.createHash('sha256').update(clean).digest();
+  const b = crypto.createHash('sha256').update(secret.trim()).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
@@ -106,41 +115,45 @@ export async function POST(req: NextRequest) {
 
     const provider = 'shiprocket';
 
-    const signature = (
-      req.headers.get('authorization') ||
-      req.headers.get('x-webhook-signature') ||
-      req.headers.get('x-shiprocket-signature') ||
-      ''
-    ).trim();
+    // Shiprocket sends the configured token verbatim in `x-api-key`. HMAC-style signatures are
+    // still accepted for other / legacy carriers.
+    const candidates = [
+      req.headers.get('x-api-key'),
+      req.headers.get('authorization'),
+      req.headers.get('x-shiprocket-token'),
+      req.headers.get('x-webhook-signature'),
+      req.headers.get('x-shiprocket-signature'),
+    ]
+      .map((v) => (v || '').trim())
+      .filter(Boolean);
 
-    // Validate webhook signature using the unified secret resolver
     const { secret, source } = await resolveWebhookSecret();
-    const mode = 'hmac';
 
     const ip =
       req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
       req.headers.get('x-real-ip') ||
       '127.0.0.1';
 
-    if (secret && signature) {
-      const isValid = validateWebhookSignature(rawBody, signature, secret, provider);
-      if (!isValid) {
-        const secretTail = secret ? secret.slice(-4) : '';
-        const sigHead = signature ? signature.slice(0, 12) : '';
-        console.warn(`[Webhook] Signature mismatch. provider=${provider}, mode=${mode}, source=${source}, secret tail=****${secretTail}, token head=${sigHead}..., rawBody length=${rawBody.length}`);
-        
-        const debugPayload = `Provider: ${provider} | Mode: ${mode} | Secret source: ${source} | Secret tail: ****${secretTail} | Received token head: ${sigHead}... | IP: ${ip} | RawBody length: ${rawBody.length}`;
-        await logToWebhookLogs('shiprocket', debugPayload, 'unauthorized_signature_mismatch');
-        return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 });
-      }
-    } else if (!signature && secret) {
-      // Secret configured but no signature sent — reject
-      const secretTail = secret ? secret.slice(-4) : '';
-      console.warn(`[Webhook] No signature provided from IP ${ip} at ${new Date().toISOString()} but webhook secret is configured. provider=${provider}, mode=${mode}, source=${source}, secret tail=****${secretTail}, rawBody length=${rawBody.length}`);
-      
-      const debugPayload = `Provider: ${provider} | Mode: ${mode} | Secret source: ${source} | Secret tail: ****${secretTail} | IP: ${ip} | RawBody length: ${rawBody.length}`;
-      await logToWebhookLogs('shiprocket', debugPayload, 'unauthorized_missing_signature');
-      return NextResponse.json({ error: 'Missing webhook signature' }, { status: 401 });
+    // Fail closed: a webhook that can change order / return state must never run unauthenticated.
+    if (!secret) {
+      console.error(`[Webhook] Logistics webhook rejected from ${ip}: no webhook secret configured (set SHIPROCKET_WEBHOOK_SECRET).`);
+      await logToWebhookLogs('shiprocket', `No webhook secret configured | IP: ${ip}`, 'rejected_no_secret');
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 503 });
+    }
+
+    if (candidates.length === 0) {
+      console.warn(`[Webhook] No credential provided from IP ${ip} at ${new Date().toISOString()}. source=${source}`);
+      await logToWebhookLogs('shiprocket', `Missing credential | IP: ${ip} | RawBody length: ${rawBody.length}`, 'unauthorized_missing_signature');
+      return NextResponse.json({ error: 'Missing webhook credential' }, { status: 401 });
+    }
+
+    const authenticated = candidates.some(
+      (c) => tokenMatchesSecret(c, secret) || validateWebhookSignature(rawBody, c, secret, provider)
+    );
+    if (!authenticated) {
+      console.warn(`[Webhook] Credential mismatch. provider=${provider}, source=${source}, IP=${ip}, rawBody length=${rawBody.length}`);
+      await logToWebhookLogs('shiprocket', `Credential mismatch | Secret source: ${source} | IP: ${ip} | RawBody length: ${rawBody.length}`, 'unauthorized_signature_mismatch');
+      return NextResponse.json({ error: 'Invalid webhook credential' }, { status: 401 });
     }
 
     // Parse the payload
@@ -177,7 +190,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Shiprocket: numeric status id when the text is missing; ISO-ish timestamp field name differs.
-    rawStatus = rawStatus || (shipmentData.current_status_id !== undefined ? String(shipmentData.current_status_id) : undefined) ||
+    // Only `shipment_status_id` is in the id space we map. `current_status_id` is a different
+    // (tracking-level) numbering and would be misread, so it is never used as a fallback.
+    rawStatus = rawStatus ||
       (shipmentData.shipment_status_id !== undefined ? String(shipmentData.shipment_status_id) : undefined);
     timestamp = timestamp || shipmentData.current_timestamp;
     const scanEvents = (shipmentData.scans || []).map((sc) => ({
@@ -226,16 +241,22 @@ export async function POST(req: NextRequest) {
 
     // FIX 2: Expanded AWB field lookup — check trackingNumber and awb on Shipment,
     // plus delhivery_awb on the related Order, to handle AWBs stored under any column.
-    const shipment = await prisma.shipment.findFirst({
-      where: {
-        OR: [
-          { trackingNumber },
-          { awb: trackingNumber },
-          { order: { delhivery_awb: trackingNumber } },
-        ],
-      },
-      include: { order: { include: { customer: true } } },
+    const includeOrder = { order: { include: { customer: true } } } as const;
+    let shipment = await prisma.shipment.findFirst({
+      where: { OR: [{ awb: trackingNumber }, { trackingNumber }] },
+      include: includeOrder,
     });
+    if (!shipment) {
+      // Legacy: AWB stored only on the order. Never resolve to a return / exchange pickup.
+      shipment = await prisma.shipment.findFirst({
+        where: {
+          order: { delhivery_awb: trackingNumber },
+          NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
+        },
+        orderBy: { createdAt: 'desc' },
+        include: includeOrder,
+      });
+    }
 
     // FIX 1: Graceful handling for unknown AWBs — return 200 instead of 404
     if (!shipment) {

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { shopifyPatch } from '@/lib/shopify-admin';
-import { allocateLinkedId } from '@/lib/linkedIds';
+import { createWithLinkedId } from '@/lib/linkedIds';
 import { resolveRefundMethod, requestEligibilityError } from '@/lib/returnPolicy';
 import { resolveRequestCustomer } from '@/lib/requestAuth';
 
@@ -143,8 +143,7 @@ export async function POST(req: Request) {
     let exchangeRequestRow: any = null;
 
     if (returnRows.length > 0) {
-      const displayId = await allocateLinkedId(prisma as any, 'return', order);
-      returnRequestRow = await prisma.returnRequest.create({
+      returnRequestRow = await createWithLinkedId(prisma as any, 'return', order, (displayId) => prisma.returnRequest.create({
         data: {
           displayId,
           refundType: isStoreCredit ? 'store_credit' : 'original_source',
@@ -156,13 +155,12 @@ export async function POST(req: Request) {
           returns: { create: returnRows.map(({ ...r }) => r) },
         },
         include: { returns: true },
-      });
+      }));
       createdReturns = returnRequestRow.returns;
     }
 
     if (exchangeRows.length > 0) {
-      const displayId = await allocateLinkedId(prisma as any, 'exchange', order);
-      exchangeRequestRow = await prisma.exchangeRequest.create({
+      exchangeRequestRow = await createWithLinkedId(prisma as any, 'exchange', order, (displayId) => prisma.exchangeRequest.create({
         data: {
           displayId,
           orderId: order.id,
@@ -174,7 +172,7 @@ export async function POST(req: Request) {
           exchanges: { create: exchangeRows },
         },
         include: { exchanges: true },
-      });
+      }));
       createdExchanges = exchangeRequestRow.exchanges;
     }
 

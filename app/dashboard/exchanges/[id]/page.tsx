@@ -698,28 +698,30 @@ export default function ExchangeDetailPage() {
               <div className="flex justify-between items-center pt-2 border-t border-foreground/[0.05]">
                 <span className="text-[10px] text-foreground/50">Replacement Forward AWB</span>
                 <div className="flex items-center gap-2">
-                  {order?.delhivery_awb ? (
+                  {data.replacementForwardAwb ? (
                     <a
-                      href={`https://shiprocket.co/tracking/${order.delhivery_awb}`}
+                      href={`https://shiprocket.co/tracking/${data.replacementForwardAwb}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-[11px] font-semibold text-emerald-500 hover:underline flex items-center gap-1 font-mono"
                     >
-                      {order.delhivery_awb} <ExternalLink className="w-3 h-3" />
+                      {data.replacementForwardAwb} <ExternalLink className="w-3 h-3" />
                     </a>
                   ) : (
-                    <span className="text-[10px] text-foreground/40">Not Generated</span>
+                    <span className="text-[10px] text-foreground/40">{data.replacementOrderId ? "Not Generated" : "Replacement not created yet"}</span>
                   )}
-                  <button
-                    onClick={() => {
-                      setEditingAwbType("forward");
-                      setInputAwb(order?.delhivery_awb || "");
-                      setShowAwbModal(true);
-                    }}
-                    className="text-[8px] text-foreground/50 hover:text-foreground font-bold uppercase tracking-widest ml-1"
-                  >
-                    Edit
-                  </button>
+                  {data.replacementOrderId && (
+                    <button
+                      onClick={() => {
+                        setEditingAwbType("forward");
+                        setInputAwb(data.replacementForwardAwb || "");
+                        setShowAwbModal(true);
+                      }}
+                      className="text-[8px] text-foreground/50 hover:text-foreground font-bold uppercase tracking-widest ml-1"
+                    >
+                      Edit
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
