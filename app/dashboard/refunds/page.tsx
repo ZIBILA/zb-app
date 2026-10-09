@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Coins,
   Search,
@@ -68,6 +68,11 @@ interface SummaryStats {
 
 export default function RefundsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialStatus = (() => {
+    const s = String(searchParams.get("status") || "all").toLowerCase();
+    return ["all", "pending", "completed", "rejected"].includes(s) ? s : "all";
+  })();
   const [refunds, setRefunds] = useState<RefundItem[]>([]);
   const [summary, setSummary] = useState<SummaryStats>({
     totalRequests: 0,
@@ -81,7 +86,7 @@ export default function RefundsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [methodFilter, setMethodFilter] = useState("all");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
@@ -133,6 +138,14 @@ export default function RefundsPage() {
   useEffect(() => {
     fetchRefunds(false);
   }, [fetchRefunds]);
+
+  // Deep-link from Returns dashboard: /dashboard/refunds?status=pending
+  useEffect(() => {
+    const s = String(searchParams.get("status") || "").toLowerCase();
+    if (["pending", "completed", "rejected", "all"].includes(s)) {
+      setStatusFilter(s);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     const handleSync = () => fetchRefunds(true);

@@ -142,19 +142,24 @@ export default function ReturnsPage() {
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (linkedSearch) params.set("search", linkedSearch);
 
-      const res = await fetch(`/api/admin/returns?${params.toString()}`);
+      // Refund Pending card reuses Refunds Management's pending count — same source of truth.
+      const [res, refundsRes] = await Promise.all([
+        fetch(`/api/admin/returns?${params.toString()}`),
+        fetch("/api/admin/refunds"),
+      ]);
       if (res.ok) {
         const data = await res.json();
         setReturns(data.returns || []);
         
         const sc = data.statusCounts || {};
+        const refundSummary = refundsRes.ok ? await refundsRes.json() : null;
         setSummary({
           pending: sc.pending || sc.pending_approval || 0,
           pickup_scheduled: sc.pickup_scheduled || 0,
           in_transit: sc.in_transit || 0,
           failed: sc.failed || 0,
           received: sc.received || 0,
-          refund_pending: sc.refund_pending || 0,
+          refund_pending: refundSummary?.summary?.pendingCount || 0,
           refunded: sc.refunded || 0,
           rejected: sc.rejected || 0,
           total: data.total || 0,
@@ -282,7 +287,16 @@ export default function ReturnsPage() {
     { label: "In Transit", statusKey: "in_transit", count: summary.in_transit, icon: TruckIcon, color: "text-sky-500", bg: "bg-sky-500/10" },
     { label: "Failed", statusKey: "failed", count: summary.failed, icon: AlertTriangle, color: "text-rose-500", bg: "bg-rose-500/10" },
     { label: "Received", statusKey: "received", count: summary.received, icon: Inbox, color: "text-teal-500", bg: "bg-teal-500/10" },
-    { label: "Refund Pending", statusKey: "refund_pending", count: summary.refund_pending, icon: CreditCard, color: "text-amber-500", bg: "bg-amber-500/10" },
+    {
+      label: "Refund Pending",
+      statusKey: "refund_pending",
+      count: summary.refund_pending,
+      icon: CreditCard,
+      color: "text-amber-500",
+      bg: "bg-amber-500/10",
+      // Same queue as Refunds Management → Pending
+      href: "/dashboard/refunds?status=pending",
+    },
   ];
 
   return (
@@ -316,8 +330,19 @@ export default function ReturnsPage() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {summaryCards.map((card) => {
           const Icon = card.icon;
+          const isActive = !("href" in card && card.href) && statusFilter === card.statusKey;
           return (
-            <motion.button key={card.label} onClick={() => setStatusFilter(card.statusKey)} className={`glass-card p-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98] group relative overflow-hidden ${statusFilter === card.statusKey ? "ring-1 ring-foreground/20" : ""}`}>
+            <motion.button
+              key={card.label}
+              onClick={() => {
+                if ("href" in card && card.href) {
+                  router.push(card.href);
+                  return;
+                }
+                setStatusFilter(card.statusKey);
+              }}
+              className={`glass-card p-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98] group relative overflow-hidden ${isActive ? "ring-1 ring-foreground/20" : ""}`}
+            >
               <div className="flex items-center justify-between mb-3">
                 <span className="text-[9px] font-bold text-foreground/40 uppercase tracking-[0.3em]">{card.label}</span>
                 <div className={`w-7 h-7 rounded-lg ${card.bg} flex items-center justify-center`}><Icon className={`w-3.5 h-3.5 ${card.color}`} /></div>
@@ -330,7 +355,7 @@ export default function ReturnsPage() {
 
       <div className="flex flex-col md:flex-row gap-3">
         <div className="flex items-center bg-background border border-foreground/[0.05] rounded-md p-1 overflow-x-auto">
-          {["all", "pending", "pickup_scheduled", "in_transit", "failed", "received", "refund_pending", "refunded", "rejected"].map((s) => (
+          {["all", "pending", "pickup_scheduled", "in_transit", "failed", "received", "refunded", "rejected"].map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1.5 rounded-[4px] text-[8px] font-medium uppercase tracking-[0.15em] transition-colors whitespace-nowrap ${statusFilter === s ? "bg-foreground text-background" : "text-foreground/50 hover:bg-foreground/[0.03]"}`}>
               {s === "all" ? "All" : STATUS_CONFIG[s]?.label || s}
             </button>

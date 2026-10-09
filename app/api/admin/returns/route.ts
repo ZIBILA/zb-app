@@ -221,22 +221,9 @@ async function GET_impl(req: Request) {
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
 
-    // Received / QC done but refund or store credit not released yet (Release Refund queue).
-    statusCounts.refund_pending = combined.filter((r: any) => {
-      const s = String(r.status || '').toLowerCase();
-      if (s === 'refunded' || s === 'rejected' || s === 'cancelled') return false;
-      return (
-        s === 'refund_pending' ||
-        s === 'received' ||
-        s === 'qc_passed' ||
-        r.liveStage === 'received'
-      );
-    }).length;
-
-    const stageFiltered =
-      isLiveFilter || status === 'rejected' || status === 'refunded' || status === 'refund_pending'
-        ? filterByLiveStage(combined, status)
-        : combined;
+    const stageFiltered = isLiveFilter || status === 'rejected' || status === 'refunded'
+      ? filterByLiveStage(combined, status)
+      : combined;
     const paginated = stageFiltered.slice(offset, offset + limit);
 
     return NextResponse.json({

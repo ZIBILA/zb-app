@@ -65,19 +65,6 @@ export function filterByLiveStage<T extends { liveStage?: ReverseStage; status?:
   if (!f || f === 'all') return rows;
   // Terminal DB outcomes that aren't reverse stages
   if (f === 'refunded') return rows.filter((r) => String(r.status || '').toLowerCase() === 'refunded');
-  // Received at warehouse, refund / store credit not released yet.
-  if (f === 'refund_pending') {
-    return rows.filter((r) => {
-      const s = String(r.status || '').toLowerCase();
-      if (s === 'refunded' || s === 'rejected' || s === 'cancelled') return false;
-      return (
-        s === 'refund_pending' ||
-        s === 'received' ||
-        s === 'qc_passed' ||
-        r.liveStage === 'received'
-      );
-    });
-  }
   if (f === 'rejected') {
     return rows.filter(
       (r) =>
