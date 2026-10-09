@@ -11,7 +11,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { debitStoreCredits } from "@/lib/storeCreditsHelper";
 import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
-import { sendCapiEvent } from "@/lib/metaCapi";
+import { emitMetaPurchase, metaContextFromRequest } from "@/lib/meta/purchase-server";
 import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-server';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
@@ -838,79 +838,20 @@ export async function POST(req: Request) {
       }
     }
 
-    // ─── Authoritative server-side Meta CAPI Purchase (Item #30) ───
-    // Fires promptly and accurately when the order is confirmed, preserving campaign
-    // attribution (_fbp, _fbc) and permitted customer matching data.
-    // Uses eventId = localOrder.id to match the browser pixel's Purchase event for deduplication.
+    // ─── Authoritative server-side Meta CAPI Purchase ───
+    // lib/meta/purchase.ts rebuilds the event from the stored order (value, currency,
+    // variant ids, quantities, payment status) and sends it exactly once via the
+    // AdConversionDelivery ledger, shared with the Razorpay webhook and /api/meta/event.
+    // This request comes from the shopper's browser, so it carries the real UA, IP,
+    // _fbp/_fbc and zb_external_id. event_id = localOrder.id (= browser Pixel eventID).
     const resolvedOrderCurrency = (body.currency || 'INR').toUpperCase();
-    try {
-      const cookieHeader = req.headers.get('cookie') || '';
-      const parseCookie = (name: string): string | undefined => {
-        const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-        return match ? decodeURIComponent(match[1]) : undefined;
-      };
-
-      const fbp = body.fbp || parseCookie('_fbp');
-      const fbc = body.fbc || parseCookie('_fbc');
-      const externalId = body.externalId || parseCookie('zb_external_id') || localCustomer.id;
-      const clientIp = req.headers.get('do-connecting-ip')
-        || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-        || req.headers.get('x-real-ip')
-        || parseCookie('zb_client_ip')
-        || undefined;
-
-      const toMetaItemId = (item: any): string => {
-        const raw = item.variantId || item.sku || item.productId || '';
-        const s = String(raw);
-        const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-        const m = stripped.match(/(\d+)\s*$/);
-        return m ? m[1] : stripped;
-      };
-      const metaContentIds = items.map(toMetaItemId);
-      const metaContents = items.map((item: any, idx: number) => ({
-        id: metaContentIds[idx],
-        quantity: item.quantity || 1,
-        item_price: parseFloat(item.price || '0'),
-        title: item.title,
-      }));
-
-      sendCapiEvent({
-        eventName: 'Purchase',
-        eventId: localOrder.id,
-        eventTime: Math.floor(Date.now() / 1000),
-        eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${localOrder.id}/confirmation`,
-        userAgent: req.headers.get('user-agent') || '',
-        actionSource: 'website',
-        userData: {
-          client_ip_address: clientIp,
-          client_user_agent: req.headers.get('user-agent') || undefined,
-          fbp: fbp || undefined,
-          fbc: fbc || undefined,
-          external_id: externalId || undefined,
-          em: address.email || undefined,
-          ph: address.phone || undefined,
-          fn: address.name?.trim().split(/\s+/)[0] || undefined,
-          ln: address.name?.trim().split(/\s+/).slice(1).join(' ') || undefined,
-          ct: address.city || undefined,
-          st: address.state || undefined,
-          zp: address.zip || undefined,
-          country: address.country || undefined,
-        },
-        customData: {
-          value: Number(orderTotalPrice || total || 0),
-          currency: resolvedOrderCurrency,
-          order_id: localOrder.id,
-          content_type: 'product',
-          content_ids: metaContentIds,
-          contents: metaContents,
-          num_items: items.reduce((sum: number, it: any) => sum + (it.quantity || 1), 0),
-        },
-      }).catch((capiErr: any) => {
-        console.error('[Checkout Complete] Meta CAPI Purchase fire error:', capiErr?.message || capiErr);
-      });
-    } catch (metaErr: any) {
-      console.warn('[Checkout Complete] Meta CAPI Purchase dispatch failed:', metaErr.message);
-    }
+    emitMetaPurchase(
+      localOrder.id,
+      metaContextFromRequest(req, { fbp: body.fbp, fbc: body.fbc, externalId: body.externalId }),
+      { paymentConfirmed: isFullStoreCredit || captureConfirmed },
+    )
+      .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Meta Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
+      .catch(() => {});
 
     // ─── Authoritative server-side Snap CAPI Purchase ───
     // lib/snap/purchase.ts rebuilds the event from the stored order (value,

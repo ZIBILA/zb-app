@@ -1,0 +1,26 @@
+name: Meta Conversions Retry
+
+# Retries Meta CAPI Purchase deliveries that failed or whose sending lease expired.
+# Same pattern as snap-conversions.yml: GitHub Actions pings the endpoint with CRON_SECRET.
+# Scheduled workflows run only from the default branch, so this activates on merge.
+
+on:
+  schedule:
+    - cron: '11,26,41,56 * * * *'   # every 15 min, offset from the other schedulers
+  workflow_dispatch:
+
+concurrency:
+  group: meta-conversions-retry
+  cancel-in-progress: false
+
+jobs:
+  ping-meta-conversions:
+    name: Ping Meta conversions retry
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Call retry endpoint
+        run: |
+          curl --retry 3 --retry-delay 10 --retry-all-errors --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/meta-conversions" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

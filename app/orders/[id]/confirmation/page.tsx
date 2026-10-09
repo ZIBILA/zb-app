@@ -23,6 +23,7 @@ import Link from "next/link";
 import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
+import { isPlaceholderEmail } from "@/lib/tracking/placeholder-identity";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -121,7 +122,41 @@ export default function OrderConfirmationPage() {
           title: item.title
         })) || [];
 
-        trackPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents);
+        // Meta: browser Pixel only for a confirmed payment (paid / cod_upfront_paid),
+        // matching the server rule in lib/meta/purchase.ts. The CAPI Purchase is sent
+        // once by the server from the stored order. Content ids are proven variant ids
+        // only (= feed.xml g:id), the same set the server event uses.
+        const metaPayStatus = String(order.paymentStatus || "").toLowerCase();
+        if (metaPayStatus === "paid" || metaPayStatus === "cod_upfront_paid") {
+          const metaContents = (order.items || [])
+            .map((item: any) => ({
+              id: snapCatalogIdFromOrderItem(item) || "",
+              quantity: Number(item.quantity) || 1,
+              item_price: parseFloat(item.price || "0") || undefined,
+              title: item.title,
+            }))
+            .filter((c: any) => c.id);
+          let metaUserData: any = userData;
+          try {
+            const addr = order.shippingAddress
+              ? (typeof order.shippingAddress === 'string' ? JSON.parse(order.shippingAddress) : order.shippingAddress)
+              : null;
+            const cust = order.customer || {};
+            // Checkout address first (freshest); synthetic placeholder emails never sent.
+            const email = [addr?.email, cust.email].find((e: any) => typeof e === 'string' && e.trim() && !isPlaceholderEmail(e));
+            metaUserData = userData ? {
+              ...userData,
+              country: addr?.countryCode || addr?.country_code || userData.country,
+              em: email || undefined,
+              ph: addr?.phone || cust.phone || undefined,
+            } : undefined;
+          } catch {}
+          trackPurchase(
+            order.id, val, orderCurrency,
+            metaContents.map((c: any) => c.id),
+            metaUserData, storedCategory, metaContents
+          );
+        }
         // Snap: browser pixel only, and only for a confirmed payment. The CAPI
         // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
         // are proven variant ids only (OrderItem.variantId / "variant:<id>").

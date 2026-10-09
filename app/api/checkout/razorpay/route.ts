@@ -9,6 +9,7 @@ import { toMinorUnits } from "@/lib/global-pricing";
 import { assignFailedOrderNumber } from "@/lib/orderNumber";
 import { recordSnapPurchaseContext, snapContextFromRequest } from "@/lib/snap/purchase-server";
 import { normalizeVariantId } from "@/lib/snap/catalog-id";
+import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/purchase-server";
 
 export const dynamic = 'force-dynamic';
 
@@ -472,6 +473,8 @@ export async function POST(req: Request) {
     // Snap click context so a webhook-completed order can still be attributed.
     if (localOrderId) {
       recordSnapPurchaseContext(localOrderId, snapContextFromRequest(req)).catch(() => {});
+      // Same for Meta: real browser UA / IP / _fbp / _fbc / external_id for a webhook-sent Purchase.
+      recordMetaPurchaseContext(localOrderId, metaContextFromRequest(req)).catch(() => {});
     }
 
     return NextResponse.json({
