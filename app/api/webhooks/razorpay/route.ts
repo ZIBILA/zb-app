@@ -250,17 +250,19 @@ export async function POST(req: Request) {
 
         // Meta CAPI Purchase safety net for orders whose browser never reached
         // checkout/complete. Only payment.captured / order.paid reach this point.
-        // Idempotent with checkout/complete and /api/meta/event via the delivery
+        // Idempotent with checkout/complete and the retry cron via the delivery
         // ledger (one send per order, even though both captured and order.paid
         // arrive). It re-checks paymentStatus (paid / cod_upfront_paid) and uses
         // the browser context recorded at Razorpay pre-create; no request-derived
         // signals here, because this request comes from Razorpay, not the shopper.
-        try {
-          const { emitMetaPurchase } = await import('@/lib/meta/purchase-server');
-          await emitMetaPurchase(order.id, undefined, { paymentConfirmed: true });
-        } catch (metaErr: any) {
-          console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr?.message);
-        }
+        // Not awaited (as on main): the Graph call must not delay the webhook response.
+        // A send interrupted mid-flight is safe — the ledger row's lease expires and the
+        // retry cron resends it; a row never created is found by the recovery scan.
+        void import('@/lib/meta/purchase-server')
+          .then(({ emitMetaPurchase }) => emitMetaPurchase(order.id, undefined, { paymentConfirmed: true }))
+          .catch((metaErr: any) => {
+            console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr?.message);
+          });
 
         // Snap CAPI Purchase safety net for orders whose browser/app never reached
         // checkout/complete. Idempotent with that path via the delivery ledger;

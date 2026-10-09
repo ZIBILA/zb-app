@@ -107,7 +107,8 @@ export function buildMetaBrowserPurchaseArgs(order: any): MetaBrowserPurchaseArg
     orderId: order.id,
     value,
     currency: metaPurchaseCurrency(order),
-    contentIds: contents.map((c: any) => c.id),
+    // De-duplicated, exactly like the server CAPI event's content_ids.
+    contentIds: Array.from(new Set<string>(contents.map((c: any) => c.id))),
     contents,
     userData,
   };

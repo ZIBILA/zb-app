@@ -155,6 +155,72 @@ function shouldFireEvent(key: string): boolean {
   return true;
 }
 
+
+/**
+ * GA4 ecommerce events, kept exactly as on main (same payloads, same inputs from the
+ * same call sites). They used to be fired only from inside the Meta hooks; they are
+ * standalone so Meta changes (variant ids, payment-step AddPaymentInfo, confirmed-
+ * payment Purchase, Pixel-loaded check) never change what GA4 receives.
+ */
+type GaContent = { id: string; quantity?: number; item_price?: number; title?: string; category?: string };
+const gaMapContents = (value: number, raw: GaContent[]) => raw.map((item: any) => {
+  const priceVal = item.item_price !== undefined ? item.item_price : (value / (raw.length || 1));
+  return { id: item.id, quantity: item.quantity || 1, price: priceVal, item_price: priceVal, title: item.title || undefined, category: item.category || undefined };
+});
+
+export function ga4AddToWishlist(contentId: string, contentName: string, contentCategory?: string) {
+  trackGAEvent('add_to_wishlist', {
+    items: [{ item_id: contentId, item_name: contentName, item_category: contentCategory, quantity: 1 }]
+  });
+}
+
+export function ga4AddPaymentInfo(value?: number, currency = 'INR', contentIds?: string[], contents?: GaContent[]) {
+  const finalContents = contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []);
+  trackGAEvent('add_payment_info', {
+    value,
+    currency,
+    items: finalContents.map((item: any) => ({
+      item_id: item.id,
+      quantity: item.quantity,
+      price: item.item_price !== undefined ? item.item_price : (value ? value / (finalContents.length || 1) : undefined)
+    }))
+  });
+}
+
+export function ga4BeginCheckout(value: number, currency = 'INR', contentCategory?: string, contentIds?: string[], contents?: GaContent[]) {
+  const mapped = gaMapContents(value, contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []));
+  trackGAEvent('begin_checkout', {
+    value,
+    currency,
+    items: mapped.map(item => ({
+      item_id: item.id,
+      item_name: item.title || 'Product',
+      price: item.item_price || item.price,
+      quantity: item.quantity,
+      item_category: item.category || contentCategory || undefined
+    }))
+  });
+}
+
+export function ga4Purchase(orderId: string, value: number, currency = 'INR', contentIds: string[], contentCategory?: string, contents?: GaContent[]) {
+  const mapped = gaMapContents(value, contents || contentIds.map(id => ({ id, quantity: 1, item_price: value / (contentIds.length || 1) })));
+  trackGAEvent('purchase', {
+    transaction_id: orderId,
+    value,
+    currency,
+    items: mapped.map(item => ({
+      item_id: item.id,
+      item_name: item.title || 'Product',
+      price: item.item_price || item.price,
+      quantity: item.quantity,
+      item_category: item.category || contentCategory || undefined
+    }))
+  });
+}
+
+/** `ga: false` = the caller fires the main-identical GA4 event itself (see ga4* above). */
+export type MetaGaOptions = { ga?: boolean };
+
 export function useMetaEvents() {
   const trackViewContent = (
     contentId: string,
@@ -199,7 +265,7 @@ export function useMetaEvents() {
     });
   };
 
-  const trackAddToCart = (contentId: string, contentName: string, value: number, currency = 'INR', contentCategory?: string) => {
+  const trackAddToCart = (contentId: string, contentName: string, value: number, currency = 'INR', contentCategory?: string, opts: MetaGaOptions = {}) => {
     const cacheKey = `AddToCart-${contentId}`;
     if (!shouldFireEvent(cacheKey)) return;
 
@@ -217,7 +283,7 @@ export function useMetaEvents() {
     sendToCapiRoute({ ...base, customData });
     
     // GA4 equivalent: add_to_cart
-    trackGAEvent('add_to_cart', {
+    if (opts.ga !== false) trackGAEvent('add_to_cart', {
       currency,
       value,
       items: [{
@@ -230,7 +296,7 @@ export function useMetaEvents() {
     });
   };
 
-  const trackAddToWishlist = (contentId: string, contentName: string, contentCategory?: string, value?: number, currency = 'INR') => {
+  const trackAddToWishlist = (contentId: string, contentName: string, contentCategory?: string, value?: number, currency = 'INR', opts: MetaGaOptions = {}) => {
     const base = getBasePayload('AddToWishlist');
     const customData = cleanCustomData({
       content_ids: [contentId],
@@ -245,14 +311,7 @@ export function useMetaEvents() {
     sendToCapiRoute({ ...base, customData });
     
     // GA4 equivalent: add_to_wishlist
-    trackGAEvent('add_to_wishlist', {
-      items: [{
-        item_id: contentId,
-        item_name: contentName,
-        item_category: contentCategory,
-        quantity: 1
-      }]
-    });
+    if (opts.ga !== false) ga4AddToWishlist(contentId, contentName, contentCategory);
   };
 
   const trackAddPaymentInfo = (
@@ -272,7 +331,8 @@ export function useMetaEvents() {
     value?: number,
     currency = 'INR',
     contentIds?: string[],
-    contents?: { id: string; quantity: number; item_price?: number }[]
+    contents?: { id: string; quantity: number; item_price?: number }[],
+    opts: MetaGaOptions = {}
   ) => {
     const base = getBasePayload('AddPaymentInfo');
     if (userData) {
@@ -294,15 +354,7 @@ export function useMetaEvents() {
     });
 
     // GA4 equivalent: add_payment_info
-    trackGAEvent('add_payment_info', {
-      value,
-      currency,
-      items: finalContents.map((item: any) => ({
-        item_id: item.id,
-        quantity: item.quantity,
-        price: item.item_price !== undefined ? item.item_price : (value ? value / (finalContents.length || 1) : undefined)
-      }))
-    });
+    if (opts.ga !== false) ga4AddPaymentInfo(value, currency, contentIds, finalContents);
   };
 
   const trackInitiateCheckout = (
@@ -312,7 +364,8 @@ export function useMetaEvents() {
     contentCategory?: string,
     contentIds?: string[],
     userData?: any,
-    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[]
+    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[],
+    opts: MetaGaOptions = {}
   ) => {
     const cacheKey = `InitiateCheckout-${value}-${numItems}`;
     if (!shouldFireEvent(cacheKey)) return;
@@ -366,17 +419,7 @@ export function useMetaEvents() {
     });
     
     // GA4 equivalent: begin_checkout (uses full original value)
-    trackGAEvent('begin_checkout', {
-      value,
-      currency,
-      items: mappedContents.map(item => ({
-        item_id: item.id,
-        item_name: item.title || 'Product',
-        price: item.item_price || item.price,
-        quantity: item.quantity,
-        item_category: item.category || contentCategory || undefined
-      }))
-    });
+    if (opts.ga !== false) ga4BeginCheckout(value, currency, contentCategory, contentIds, rawContents);
   };
 
   const trackPurchase = (
@@ -398,7 +441,8 @@ export function useMetaEvents() {
       fb_login_id?: string;
     },
     contentCategory?: string,
-    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[]
+    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[],
+    opts: MetaGaOptions = {}
   ) => {
     const cacheKey = `Purchase-${orderId}`;
     if (!shouldFireEvent(cacheKey)) return;
@@ -441,18 +485,7 @@ export function useMetaEvents() {
     // paths, with the click context captured during checkout.
     
     // GA4 equivalent: purchase (uses full original value)
-    trackGAEvent('purchase', {
-      transaction_id: orderId,
-      value,
-      currency,
-      items: mappedContents.map(item => ({
-        item_id: item.id,
-        item_name: item.title || 'Product',
-        price: item.item_price || item.price,
-        quantity: item.quantity,
-        item_category: item.category || contentCategory || undefined
-      }))
-    });
+    if (opts.ga !== false) ga4Purchase(orderId, value, currency, contentIds, contentCategory, contents);
   };
 
   /**

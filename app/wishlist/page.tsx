@@ -46,7 +46,7 @@ export default function WishlistPage() {
         // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
         snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
         // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
-        trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+        trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
         toast.success(`${product.title} added to bag`);
         return;
       }
@@ -71,7 +71,7 @@ export default function WishlistPage() {
       // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
       snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
       // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
-      trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+      trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
 
       toast.success(`${product.title} added to bag`);
     } else {

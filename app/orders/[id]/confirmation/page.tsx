@@ -20,7 +20,7 @@ import {
   Sparkles
 } from "lucide-react";
 import Link from "next/link";
-import { useMetaEvents } from "@/hooks/useMetaEvents";
+import { useMetaEvents, ga4Purchase } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
 import {
@@ -126,6 +126,15 @@ export default function OrderConfirmationPage() {
 
         // Meta: the browser Pixel Purchase is decided separately (effect below) so a
         // pending payment never consumes its once-only marker.
+        // GA4 purchase stays exactly as on main: fired here, on the first visit to a
+        // fresh order, with the same value / currency / items, independent of Meta.
+        ga4Purchase(order.id, val, orderCurrency, contentIds, storedCategory,
+          order.items?.map((item: any) => ({
+            id: toSnapId(item),
+            quantity: item.quantity || 1,
+            item_price: parseFloat(item.price || "0"),
+            title: item.title
+          })) || []);
 
         // Snap: browser pixel only, and only for a confirmed payment. The CAPI
         // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
@@ -222,7 +231,8 @@ export default function OrderConfirmationPage() {
       // an extension, failed to load) the order is NOT marked as sent, so a later
       // visit can retry. The server CAPI Purchase is sent regardless.
       if (!(await waitForFbq())) return false;
-      trackPurchase(args.orderId, args.value, args.currency, args.contentIds, args.userData, storedCategory, args.contents);
+      // { ga: false }: GA4 purchase is fired by the legacy block above, as on main.
+      trackPurchase(args.orderId, args.value, args.currency, args.contentIds, args.userData, storedCategory, args.contents, { ga: false });
       return true;
     }).finally(finishGuestReset);
     // eslint-disable-next-line react-hooks/exhaustive-deps

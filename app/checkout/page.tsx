@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/lib/cart-context";
-import { useMetaEvents, metaCartPayload } from "@/hooks/useMetaEvents";
+import { useMetaEvents, metaCartPayload, ga4AddPaymentInfo, ga4BeginCheckout } from "@/hooks/useMetaEvents";
 import { useSnapEvents, snapCartPayload } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -362,8 +362,17 @@ export default function CheckoutPage() {
         trackInitiateCheckout(
           subtotal, meta.numItems, 'INR', joinedCategories, meta.ids,
           userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
-          meta.contents
+          meta.contents,
+          { ga: false }
         );
+        // GA4 begin_checkout exactly as on main (product ids, cart lines).
+        ga4BeginCheckout(subtotal, 'INR', joinedCategories, contentIds, items.map(item => ({
+          id: item.productId,
+          quantity: item.quantity,
+          item_price: parseFloat(item.price),
+          title: item.title,
+          category: item.category
+        })));
       }
       {
         const snap = snapCartPayload(items);
@@ -1261,7 +1270,13 @@ export default function CheckoutPage() {
 
     // Meta AddPaymentInfo is NOT fired here: submitting an address is not payment
     // information. It fires at the payment step (fireMetaAddPaymentInfo in handlePlaceOrder).
+    // GA4 add_payment_info stays exactly as on main (this moment, product ids).
     if (!paymentInfoFired) {
+      ga4AddPaymentInfo(subtotal, 'INR', items.map(item => item.productId), items.map(item => ({
+        id: item.productId,
+        quantity: item.quantity,
+        item_price: parseFloat(item.price)
+      })));
       trackSnapAddBilling(
         subtotal,
         'INR',
@@ -1578,7 +1593,8 @@ export default function CheckoutPage() {
       subtotal,
       'INR', // subtotal is the INR base amount (cart prices are INR)
       meta.ids,
-      meta.contents
+      meta.contents,
+      { ga: false } // GA4 add_payment_info fires at address submit, as on main
     );
   };
 
@@ -2019,7 +2035,13 @@ export default function CheckoutPage() {
                       const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
 
                       // Meta AddPaymentInfo fires at the payment step (handlePlaceOrder), once.
+                      // GA4 add_payment_info stays exactly as on main (this moment, product ids).
                       if (!paymentInfoFired) {
+                        ga4AddPaymentInfo(subtotal, 'INR', items.map(item => item.productId), items.map(item => ({
+                          id: item.productId,
+                          quantity: item.quantity,
+                          item_price: parseFloat(item.price)
+                        })));
                         trackSnapAddBilling(
                           subtotal,
                           'INR', // subtotal is the INR base amount (cart prices are INR)
