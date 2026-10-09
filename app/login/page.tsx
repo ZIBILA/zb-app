@@ -450,7 +450,7 @@ export default function LoginPage() {
           ln: snapNameParts.length > 1 ? snapNameParts.slice(1).join(" ") : undefined,
         };
         if (isNewUser) {
-          trackCompleteRegistration();
+          trackCompleteRegistration(snapLoginIdentity);
           trackSnapSignUp(snapLoginIdentity);
           trackOaiRegistrationCompleted();
         } else {

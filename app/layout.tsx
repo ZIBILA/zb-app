@@ -16,6 +16,8 @@ import { OrganizationJsonLd } from "@/components/seo/OrganizationJsonLd";
 import { WebsiteJsonLd } from "@/components/seo/WebsiteJsonLd";
 import { Analytics } from "@/components/seo/Analytics";
 import "@/lib/auth/env-check";
+import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
+import { PLACEHOLDER_EMAIL_HASHES } from "@/lib/tracking/placeholder-identity";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -141,6 +143,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || "2049977412558608";
+  // Demo-account and synthetic placeholder hashes never used as Advanced Matching.
+  const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES];
   const snapPixelId = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || "7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd";
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
@@ -232,7 +236,31 @@ export default function RootLayout({
                 s.parentNode.insertBefore(t,s)}(window, document,'script',
                 'https://connect.facebook.net/en_US/fbevents.js');
                 fbq('set', 'autoConfig', false, '${pixelId}');
-                fbq('init', '${pixelId}');
+                // Manual Advanced Matching on the FIRST init: identity this browser already
+                // holds (hashed zb_guest_* cookies, only when bound to this visitor via
+                // zb_pii_owner) is available to PageView and the first ViewContent too.
+                // Later initPixel() calls still add new identity (login / checkout).
+                var zbAM = {};
+                try {
+                  var zbC = {};
+                  document.cookie.split(';').forEach(function (p) {
+                    var i = p.indexOf('=');
+                    if (i > 0) { var k = p.slice(0, i).trim(); try { zbC[k] = decodeURIComponent(p.slice(i + 1)); } catch (e) { zbC[k] = p.slice(i + 1); } }
+                  });
+                  var zbExt = zbC['zb_external_id'];
+                  if (zbExt) zbAM.external_id = zbExt;
+                  if (zbC['zb_fb_login_id']) zbAM.fb_login_id = zbC['zb_fb_login_id'];
+                  if (zbExt && zbC['zb_pii_owner'] === zbExt) {
+                    var zbBlocked = ${JSON.stringify(metaBlockedIdentityHashes)};
+                    var zbMap = { em: 'zb_guest_email', ph: 'zb_guest_phone', fn: 'zb_guest_fn', ln: 'zb_guest_ln', ct: 'zb_guest_ct', st: 'zb_guest_st', zp: 'zb_guest_zp', country: 'zb_guest_country', db: 'zb_guest_dob' };
+                    for (var zbK in zbMap) {
+                      var zbV = (zbC[zbMap[zbK]] || '').toLowerCase();
+                      if (/^[a-f0-9]{64}$/.test(zbV) && zbBlocked.indexOf(zbV) === -1) zbAM[zbK] = zbV;
+                    }
+                  }
+                } catch (e) {}
+                window.__zbMetaAM = zbAM;
+                fbq('init', '${pixelId}', zbAM);
               }
             `,
           }}

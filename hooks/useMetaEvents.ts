@@ -1,6 +1,40 @@
 import { trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize';
+
+/**
+ * Cart → Meta catalog payload. Catalog item id = feed.xml <g:id> = Shopify VARIANT id
+ * (g:item_group_id is the product id and is never used with content_type "product").
+ * Lines without a provable variant id are left out rather than sent with a wrong id.
+ * numItems = total units (sum of quantities), not cart lines.
+ */
+export function metaCartPayload(
+  items: Array<{ variantId?: string; quantity?: number; price?: string | number; title?: string; category?: string }>
+): {
+  ids: string[];
+  contents: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[];
+  numItems: number;
+} {
+  const contents = items
+    .map(it => {
+      const price = typeof it.price === 'number' ? it.price : parseFloat(String(it.price ?? ''));
+      return {
+        id: normalizeVariantId(it.variantId) || '',
+        quantity: Math.max(1, Number(it.quantity) || 1),
+        item_price: Number.isFinite(price) ? price : undefined,
+        title: it.title || undefined,
+        category: it.category || undefined,
+      };
+    })
+    .filter(c => c.id);
+  return {
+    ids: contents.map(c => c.id),
+    contents,
+    numItems: contents.reduce((s, c) => s + c.quantity, 0),
+  };
+}
 
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -55,12 +89,12 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
       piiOwner: getClientCookie('zb_pii_owner') || undefined,
     });
 
-    // Make sure an explicitly-passed userData.em on a Subscribe call survives the guest-PII-strip.
-    // The strip should only apply to identity pulled from cookies/session, not to a value
-    // the caller just explicitly handed in for this specific event.
+    // Make sure an explicitly-passed userData.em survives the guest-PII-strip for events
+    // where the shopper just typed it for THIS event (newsletter Lead/Subscribe,
+    // registration). The strip should only apply to identity pulled from cookies/session.
     // Don't loosen the strip for any other event type.
     if (!isLoggedIn && !isCheckoutEvent) {
-      if (payload.eventName === 'Subscribe' && payload.userData?.em) {
+      if (EXPLICIT_IDENTITY_EVENTS.has(payload.eventName) && payload.userData?.em) {
         mergedUserData.em = payload.userData.em;
       } else {
         delete mergedUserData.em;
@@ -84,6 +118,9 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   }
   return null;
 }
+
+/** Events whose caller-supplied identity (typed/verified for that event) is kept for guests. */
+const EXPLICIT_IDENTITY_EVENTS = new Set(['Subscribe', 'Lead', 'CompleteRegistration']);
 
 function getBasePayload(eventName: string) {
   return {
@@ -117,6 +154,72 @@ function shouldFireEvent(key: string): boolean {
   firedEventsCache.set(key, now);
   return true;
 }
+
+
+/**
+ * GA4 ecommerce events, kept exactly as on main (same payloads, same inputs from the
+ * same call sites). They used to be fired only from inside the Meta hooks; they are
+ * standalone so Meta changes (variant ids, payment-step AddPaymentInfo, confirmed-
+ * payment Purchase, Pixel-loaded check) never change what GA4 receives.
+ */
+type GaContent = { id: string; quantity?: number; item_price?: number; title?: string; category?: string };
+const gaMapContents = (value: number, raw: GaContent[]) => raw.map((item: any) => {
+  const priceVal = item.item_price !== undefined ? item.item_price : (value / (raw.length || 1));
+  return { id: item.id, quantity: item.quantity || 1, price: priceVal, item_price: priceVal, title: item.title || undefined, category: item.category || undefined };
+});
+
+export function ga4AddToWishlist(contentId: string, contentName: string, contentCategory?: string) {
+  trackGAEvent('add_to_wishlist', {
+    items: [{ item_id: contentId, item_name: contentName, item_category: contentCategory, quantity: 1 }]
+  });
+}
+
+export function ga4AddPaymentInfo(value?: number, currency = 'INR', contentIds?: string[], contents?: GaContent[]) {
+  const finalContents = contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []);
+  trackGAEvent('add_payment_info', {
+    value,
+    currency,
+    items: finalContents.map((item: any) => ({
+      item_id: item.id,
+      quantity: item.quantity,
+      price: item.item_price !== undefined ? item.item_price : (value ? value / (finalContents.length || 1) : undefined)
+    }))
+  });
+}
+
+export function ga4BeginCheckout(value: number, currency = 'INR', contentCategory?: string, contentIds?: string[], contents?: GaContent[]) {
+  const mapped = gaMapContents(value, contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []));
+  trackGAEvent('begin_checkout', {
+    value,
+    currency,
+    items: mapped.map(item => ({
+      item_id: item.id,
+      item_name: item.title || 'Product',
+      price: item.item_price || item.price,
+      quantity: item.quantity,
+      item_category: item.category || contentCategory || undefined
+    }))
+  });
+}
+
+export function ga4Purchase(orderId: string, value: number, currency = 'INR', contentIds: string[], contentCategory?: string, contents?: GaContent[]) {
+  const mapped = gaMapContents(value, contents || contentIds.map(id => ({ id, quantity: 1, item_price: value / (contentIds.length || 1) })));
+  trackGAEvent('purchase', {
+    transaction_id: orderId,
+    value,
+    currency,
+    items: mapped.map(item => ({
+      item_id: item.id,
+      item_name: item.title || 'Product',
+      price: item.item_price || item.price,
+      quantity: item.quantity,
+      item_category: item.category || contentCategory || undefined
+    }))
+  });
+}
+
+/** `ga: false` = the caller fires the main-identical GA4 event itself (see ga4* above). */
+export type MetaGaOptions = { ga?: boolean };
 
 export function useMetaEvents() {
   const trackViewContent = (
@@ -162,7 +265,7 @@ export function useMetaEvents() {
     });
   };
 
-  const trackAddToCart = (contentId: string, contentName: string, value: number, currency = 'INR', contentCategory?: string) => {
+  const trackAddToCart = (contentId: string, contentName: string, value: number, currency = 'INR', contentCategory?: string, opts: MetaGaOptions = {}) => {
     const cacheKey = `AddToCart-${contentId}`;
     if (!shouldFireEvent(cacheKey)) return;
 
@@ -180,7 +283,7 @@ export function useMetaEvents() {
     sendToCapiRoute({ ...base, customData });
     
     // GA4 equivalent: add_to_cart
-    trackGAEvent('add_to_cart', {
+    if (opts.ga !== false) trackGAEvent('add_to_cart', {
       currency,
       value,
       items: [{
@@ -193,24 +296,7 @@ export function useMetaEvents() {
     });
   };
 
-  const trackRemoveFromCart = (contentId: string, contentName: string, value?: number, currency = 'INR', contentCategory?: string) => {
-    const base = getBasePayload('RemoveFromCart');
-    const contents = value !== undefined ? [{ id: contentId, quantity: 1, item_price: value }] : [{ id: contentId, quantity: 1 }];
-    const customData = cleanCustomData({
-      content_ids: [contentId],
-      content_name: contentName,
-      currency,
-      value,
-      content_category: contentCategory,
-      content_type: 'product',
-      contents
-    });
-    // fbq does not natively support RemoveFromCart as standard, send as custom or fbq track
-    trackEvent('RemoveFromCart' as any, customData, base.eventId);
-    sendToCapiRoute({ ...base, customData });
-  };
-
-  const trackAddToWishlist = (contentId: string, contentName: string, contentCategory?: string, value?: number, currency = 'INR') => {
+  const trackAddToWishlist = (contentId: string, contentName: string, contentCategory?: string, value?: number, currency = 'INR', opts: MetaGaOptions = {}) => {
     const base = getBasePayload('AddToWishlist');
     const customData = cleanCustomData({
       content_ids: [contentId],
@@ -225,14 +311,7 @@ export function useMetaEvents() {
     sendToCapiRoute({ ...base, customData });
     
     // GA4 equivalent: add_to_wishlist
-    trackGAEvent('add_to_wishlist', {
-      items: [{
-        item_id: contentId,
-        item_name: contentName,
-        item_category: contentCategory,
-        quantity: 1
-      }]
-    });
+    if (opts.ga !== false) ga4AddToWishlist(contentId, contentName, contentCategory);
   };
 
   const trackAddPaymentInfo = (
@@ -252,7 +331,8 @@ export function useMetaEvents() {
     value?: number,
     currency = 'INR',
     contentIds?: string[],
-    contents?: { id: string; quantity: number; item_price?: number }[]
+    contents?: { id: string; quantity: number; item_price?: number }[],
+    opts: MetaGaOptions = {}
   ) => {
     const base = getBasePayload('AddPaymentInfo');
     if (userData) {
@@ -274,15 +354,7 @@ export function useMetaEvents() {
     });
 
     // GA4 equivalent: add_payment_info
-    trackGAEvent('add_payment_info', {
-      value,
-      currency,
-      items: finalContents.map((item: any) => ({
-        item_id: item.id,
-        quantity: item.quantity,
-        price: item.item_price !== undefined ? item.item_price : (value ? value / (finalContents.length || 1) : undefined)
-      }))
-    });
+    if (opts.ga !== false) ga4AddPaymentInfo(value, currency, contentIds, finalContents);
   };
 
   const trackInitiateCheckout = (
@@ -292,7 +364,8 @@ export function useMetaEvents() {
     contentCategory?: string,
     contentIds?: string[],
     userData?: any,
-    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[]
+    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[],
+    opts: MetaGaOptions = {}
   ) => {
     const cacheKey = `InitiateCheckout-${value}-${numItems}`;
     if (!shouldFireEvent(cacheKey)) return;
@@ -327,122 +400,26 @@ export function useMetaEvents() {
       contents: mappedContents
     });
 
-    let fired = false;
-    const firePixel = (reportedVal?: number, repCurrency?: string, adjustedContents?: any[]) => {
-      if (fired) return;
-      fired = true;
-      
-      // Cache adjusted value and contents in sessionStorage for fallback on subsequent events
-      if (reportedVal !== undefined) {
-        try {
-          sessionStorage.setItem('zb_meta_rv_v2', JSON.stringify({
-            v: reportedVal,
-            c: repCurrency || currency,
-            contents: adjustedContents
-          }));
-          if (value > 0) {
-            sessionStorage.setItem('zb_meta_ratio_v2', (reportedVal / value).toString());
-          }
-        } catch {}
-      }
-
-      // Determine final contents with scaled prices
-      let finalFbqContents = adjustedContents;
-      if (!finalFbqContents) {
-        try {
-          const cachedRatioStr = sessionStorage.getItem('zb_meta_ratio_v2');
-          if (cachedRatioStr) {
-            const ratio = parseFloat(cachedRatioStr);
-            finalFbqContents = mappedContents.map(item => ({
-              ...item,
-              price: Math.round(item.price * ratio * 100) / 100,
-              item_price: Math.round(item.item_price * ratio * 100) / 100
-            }));
-          }
-        } catch {}
-      }
-      if (!finalFbqContents) {
-        finalFbqContents = mappedContents;
-      }
-
-      const fbqCustomData = cleanCustomData({
-        value: reportedVal,
-        currency: repCurrency || currency,
-        num_items: numItems,
-        content_category: contentCategory,
-        content_ids: contentIds,
-        content_type: 'product',
-        contents: finalFbqContents
-      });
-      trackEvent('InitiateCheckout', fbqCustomData, base.eventId);
-    };
-
-    const attemptCapi = () => sendToCapiRoute({
+    // Pixel fires immediately with the known value (no wait on the CAPI round-trip:
+    // the server no longer transforms the value). Same eventID → Meta dedups the pair.
+    const fbqCustomData = cleanCustomData({
+      value,
+      currency,
+      num_items: numItems,
+      content_category: contentCategory,
+      content_ids: contentIds,
+      content_type: 'product',
+      contents: mappedContents
+    });
+    trackEvent('InitiateCheckout', fbqCustomData, base.eventId);
+    sendToCapiRoute({
       ...base,
       customData: capiCustomData,
       userData: { client_user_agent: navigator.userAgent, ...userData }
     });
-    const timeout = (ms: number) => new Promise<null>(r => setTimeout(() => r(null), ms));
-
-    // Retry flow with sessionStorage fallback — pixel always fires
-    (async () => {
-      // First attempt: 2500ms timeout
-      let res = await Promise.race([attemptCapi(), timeout(2500)]);
-      if (res && res.reportedValue !== undefined) {
-        firePixel(res.reportedValue, res.currency, res.contents);
-        return;
-      }
-
-      // Retry: 1500ms timeout
-      res = await Promise.race([attemptCapi(), timeout(1500)]);
-      if (res && res.reportedValue !== undefined) {
-        firePixel(res.reportedValue, res.currency, res.contents);
-        return;
-      }
-
-      // Both failed — try sessionStorage fallback or ratio scaling
-      try {
-        const cached = sessionStorage.getItem('zb_meta_rv_v2');
-        const cachedRatioStr = sessionStorage.getItem('zb_meta_ratio_v2');
-        if (cached) {
-          const { v, c, contents: cachedContents } = JSON.parse(cached);
-          if (v !== undefined) {
-            console.warn('[Meta Pixel] InitiateCheckout fired using cached adjusted value — CAPI round-trip failed twice');
-            firePixel(v, c, cachedContents);
-            return;
-          }
-        }
-        if (cachedRatioStr) {
-          const ratio = parseFloat(cachedRatioStr);
-          const scaledValue = Math.round(value * ratio * 100) / 100;
-          const scaledContents = mappedContents.map(item => ({
-            ...item,
-            price: Math.round(item.price * ratio * 100) / 100,
-            item_price: Math.round(item.item_price * ratio * 100) / 100
-          }));
-          console.warn('[Meta Pixel] InitiateCheckout fired using scaled cached ratio — CAPI round-trip failed twice');
-          firePixel(scaledValue, currency, scaledContents);
-          return;
-        }
-      } catch {}
-
-      // Absolute last resort — fire without value and log
-      console.error('[Meta Pixel] InitiateCheckout fired without value — CAPI round-trip failed twice, no sessionStorage fallback');
-      firePixel();
-    })();
     
     // GA4 equivalent: begin_checkout (uses full original value)
-    trackGAEvent('begin_checkout', {
-      value,
-      currency,
-      items: mappedContents.map(item => ({
-        item_id: item.id,
-        item_name: item.title || 'Product',
-        price: item.item_price || item.price,
-        quantity: item.quantity,
-        item_category: item.category || contentCategory || undefined
-      }))
-    });
+    if (opts.ga !== false) ga4BeginCheckout(value, currency, contentCategory, contentIds, rawContents);
   };
 
   const trackPurchase = (
@@ -464,7 +441,8 @@ export function useMetaEvents() {
       fb_login_id?: string;
     },
     contentCategory?: string,
-    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[]
+    contents?: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[],
+    opts: MetaGaOptions = {}
   ) => {
     const cacheKey = `Purchase-${orderId}`;
     if (!shouldFireEvent(cacheKey)) return;
@@ -488,8 +466,10 @@ export function useMetaEvents() {
       };
     });
 
-    // Server CAPI receives the real value and mapped contents — adjustment happens server-side
-    const capiCustomData = cleanCustomData({
+    // Pixel fires immediately with the CONFIRMED ORDER's value/currency/contents —
+    // never a value cached by an earlier checkout step. eventID = order id, the same
+    // event_id the authoritative server Purchase uses, so Meta dedups the pair.
+    const fbqCustomData = cleanCustomData({
       value,
       currency,
       content_ids: contentIds,
@@ -499,135 +479,39 @@ export function useMetaEvents() {
       contents: mappedContents,
       num_items: mappedContents.reduce((sum, item) => sum + item.quantity, 0)
     });
-
-    let fired = false;
-    const firePixel = (reportedVal?: number, repCurrency?: string, adjustedContents?: any[]) => {
-      if (fired) return;
-      fired = true;
-      
-      // Cache adjusted value and contents in sessionStorage for fallback on subsequent events
-      if (reportedVal !== undefined) {
-        try {
-          sessionStorage.setItem('zb_meta_rv_v2', JSON.stringify({
-            v: reportedVal,
-            c: repCurrency || currency,
-            contents: adjustedContents
-          }));
-          if (value > 0) {
-            sessionStorage.setItem('zb_meta_ratio_v2', (reportedVal / value).toString());
-          }
-        } catch {}
-      }
-
-      // Determine final contents with scaled prices
-      let finalFbqContents = adjustedContents;
-      if (!finalFbqContents) {
-        try {
-          const cachedRatioStr = sessionStorage.getItem('zb_meta_ratio_v2');
-          if (cachedRatioStr) {
-            const ratio = parseFloat(cachedRatioStr);
-            finalFbqContents = mappedContents.map(item => ({
-              ...item,
-              price: Math.round(item.price * ratio * 100) / 100,
-              item_price: Math.round(item.item_price * ratio * 100) / 100
-            }));
-          }
-        } catch {}
-      }
-      if (!finalFbqContents) {
-        finalFbqContents = mappedContents;
-      }
-
-      const fbqCustomData = cleanCustomData({
-        value: reportedVal,
-        currency: repCurrency || currency,
-        content_ids: contentIds,
-        order_id: orderId,
-        content_category: contentCategory,
-        content_type: 'product',
-        contents: finalFbqContents,
-        num_items: finalFbqContents.reduce((sum, item) => sum + item.quantity, 0)
-      });
-      trackEvent('Purchase', fbqCustomData, base.eventId);
-    };
-
-    const attemptCapi = () => sendToCapiRoute({
-      ...base,
-      customData: capiCustomData,
-      userData: { client_user_agent: navigator.userAgent, ...userData },
-    });
-    const timeout = (ms: number) => new Promise<null>(r => setTimeout(() => r(null), ms));
-
-    // Retry flow with sessionStorage fallback — pixel always fires
-    (async () => {
-      // First attempt: 2500ms timeout
-      let res = await Promise.race([attemptCapi(), timeout(2500)]);
-      if (res && res.reportedValue !== undefined) {
-        firePixel(res.reportedValue, res.currency, res.contents);
-        return;
-      }
-
-      // Retry: 1500ms timeout
-      res = await Promise.race([attemptCapi(), timeout(1500)]);
-      if (res && res.reportedValue !== undefined) {
-        firePixel(res.reportedValue, res.currency, res.contents);
-        return;
-      }
-
-      // Both failed — try sessionStorage fallback or ratio scaling
-      try {
-        const cached = sessionStorage.getItem('zb_meta_rv_v2');
-        const cachedRatioStr = sessionStorage.getItem('zb_meta_ratio_v2');
-        if (cached) {
-          const { v, c, contents: cachedContents } = JSON.parse(cached);
-          if (v !== undefined) {
-            console.warn('[Meta Pixel] Purchase fired using cached adjusted value — CAPI round-trip failed twice');
-            firePixel(v, c, cachedContents);
-            return;
-          }
-        }
-        if (cachedRatioStr) {
-          const ratio = parseFloat(cachedRatioStr);
-          const scaledValue = Math.round(value * ratio * 100) / 100;
-          const scaledContents = mappedContents.map(item => ({
-            ...item,
-            price: Math.round(item.price * ratio * 100) / 100,
-            item_price: Math.round(item.item_price * ratio * 100) / 100
-          }));
-          console.warn('[Meta Pixel] Purchase fired using scaled cached ratio — CAPI round-trip failed twice');
-          firePixel(scaledValue, currency, scaledContents);
-          return;
-        }
-      } catch {}
-
-      // Absolute last resort — fire without value and log
-      console.error('[Meta Pixel] Purchase fired without value — CAPI round-trip failed twice, no sessionStorage fallback');
-      firePixel();
-    })();
+    trackEvent('Purchase', fbqCustomData, base.eventId);
+    // No browser→CAPI request for Purchase: the server sends the CAPI Purchase from
+    // the stored order (once, via the delivery ledger) from the payment-verified
+    // paths, with the click context captured during checkout.
     
     // GA4 equivalent: purchase (uses full original value)
-    trackGAEvent('purchase', {
-      transaction_id: orderId,
-      value,
-      currency,
-      items: mappedContents.map(item => ({
-        item_id: item.id,
-        item_name: item.title || 'Product',
-        price: item.item_price || item.price,
-        quantity: item.quantity,
-        item_category: item.category || contentCategory || undefined
-      }))
-    });
+    if (opts.ga !== false) ga4Purchase(orderId, value, currency, contentIds, contentCategory, contents);
   };
 
-  const trackCompleteRegistration = () => {
+  /**
+   * @param identity first-party data just verified at sign-up: the OTP phone (with its
+   *   dial code) and the name typed. Nothing is invented; absent fields are omitted.
+   */
+  const trackCompleteRegistration = (identity?: { ph?: string; fn?: string; ln?: string; country?: string }) => {
     const base = getBasePayload('CompleteRegistration');
     const customData = {
       status: 'completed',
       content_name: 'registration'
     };
+    // Phone as "+<digits>" so the server parses it by its own calling code.
+    const phDigits = identity?.ph ? normalizePhone(identity.ph, identity.country) : '';
+    const fn = normalizeName(identity?.fn);
+    const ln = normalizeName(identity?.ln);
+    const userData = cleanCustomData({
+      ph: phDigits ? `+${phDigits}` : undefined,
+      fn: fn || undefined,
+      ln: ln || undefined,
+    });
+    if (Object.keys(userData).length > 0) {
+      initPixel({ ...(phDigits ? { ph: phDigits } : {}), ...(fn ? { fn } : {}), ...(ln ? { ln } : {}) });
+    }
     trackEvent('CompleteRegistration', customData, base.eventId);
-    sendToCapiRoute({ ...base, customData });
+    sendToCapiRoute({ ...base, customData, userData: Object.keys(userData).length ? userData : undefined });
     
     // GA4 equivalent: sign_up
     trackGAEvent('sign_up');
@@ -684,29 +568,21 @@ export function useMetaEvents() {
     trackGAEvent('start_trial');
   };
 
-  const trackSubscribe = async (email?: string, contentName = 'Newsletter Signup') => {
-    const base = getBasePayload('Subscribe');
-    
-    let hashedEmail: string | undefined = undefined;
-    if (email) {
-      hashedEmail = await sha256(email);
-    }
-
-    const customData = cleanCustomData({
-      content_name: contentName,
-      content_type: 'lead'
-    });
-
+  /**
+   * Free newsletter sign-up → Meta Lead (non-monetary; no invented value). Call only
+   * after the backend confirmed the subscription was saved.
+   */
+  const trackNewsletterLead = async (email?: string) => {
+    const base = getBasePayload('Lead');
+    const hashedEmail = email ? await sha256(email) : undefined;
+    const customData = cleanCustomData({ content_name: 'Newsletter Signup' });
     const userData = hashedEmail ? { em: hashedEmail } : undefined;
-
     if (userData) {
       initPixel(userData);
     }
-
-    trackEvent('Subscribe', customData, base.eventId);
+    trackEvent('Lead', customData, base.eventId);
     sendToCapiRoute({ ...base, customData, userData });
-    
-    // GA4 equivalent: subscribe
+    // GA4 unchanged: same 'subscribe' event as before
     trackGAEvent('subscribe');
   };
 
@@ -725,7 +601,6 @@ export function useMetaEvents() {
   return {
     trackViewContent,
     trackAddToCart,
-    trackRemoveFromCart,
     trackAddToWishlist,
     trackAddPaymentInfo,
     trackInitiateCheckout,
@@ -736,7 +611,7 @@ export function useMetaEvents() {
     trackFindLocation,
     trackSchedule,
     trackStartTrial,
-    trackSubscribe,
+    trackNewsletterLead,
     trackLead,
   };
 }

@@ -12,6 +12,11 @@
  */
 
 import { isDemoValue } from './metaPixel';
+import { isPlaceholderEmailHash } from './tracking/placeholder-identity';
+import {
+  normalizePhone as sharedNormalizePhone,
+  normalizeCountry as sharedNormalizeCountry,
+} from './tracking/identity-normalize';
 
 // ── Types ──
 
@@ -58,23 +63,22 @@ export function normalizeEmail(e: string): string {
   return e.trim().toLowerCase();
 }
 
-export function normalizePhone(p: string): string {
-  const digits = p.replace(/\D/g, '');
-  let base = digits;
-  if (digits.length === 12 && digits.startsWith('91')) base = digits.slice(2);
-  else if (digits.length === 11 && digits.startsWith('0')) base = digits.slice(1);
-  return `91${base}`;
+/**
+ * Worldwide: delegates to lib/tracking/identity-normalize (one implementation
+ * for every Meta path). The customer's country decides the calling code; India
+ * is only the last-resort default for a bare number with no country.
+ */
+export function normalizePhone(p: string, countryIso?: string | null): string {
+  return sharedNormalizePhone(p, countryIso);
 }
 
 export function normalizeGeneric(s: string): string {
   return s.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/** ISO alpha-2 lowercase ("United Kingdom" → "gb"), "" when unknown. */
 export function normalizeCountry(c: string): string {
-  const clean = c.trim().toLowerCase();
-  if (clean === 'india' || clean === 'ind' || clean === 'in') return 'in';
-  if (clean === 'united states' || clean === 'usa' || clean === 'us' || clean === 'united states of america') return 'us';
-  return clean.replace(/[^a-z]/g, '').slice(0, 2);
+  return sharedNormalizeCountry(c);
 }
 
 export function normalizeDob(d: string): string {
@@ -117,7 +121,7 @@ function isDemoHash(field: 'em' | 'ph', hash: string | undefined): boolean {
   const clean = hash.trim().toLowerCase();
   return field === 'ph'
     ? DEMO_PHONE_HASHES.includes(clean)
-    : DEMO_EMAIL_HASHES.includes(clean);
+    : DEMO_EMAIL_HASHES.includes(clean) || isPlaceholderEmailHash(clean);
 }
 
 /**

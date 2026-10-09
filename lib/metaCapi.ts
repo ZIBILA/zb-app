@@ -1,6 +1,17 @@
 import crypto from 'crypto';
 import { graphUrl, validateTokenFormat, validatePixelIdFormat } from './metaErrors';
 import { fetchMetaApi } from './metaApiLogger';
+import {
+  toCountryIso,
+  normalizeEmail as sharedNormalizeEmail,
+  normalizePhone as sharedNormalizePhone,
+  normalizeName as sharedNormalizeName,
+  normalizeCity as sharedNormalizeCity,
+  normalizeState as sharedNormalizeState,
+  normalizeZip as sharedNormalizeZip,
+  normalizeCountry as sharedNormalizeCountry,
+} from './tracking/identity-normalize';
+import { isPlaceholderEmail, isPlaceholderEmailHash } from './tracking/placeholder-identity';
 
 const PIXEL_ID = process.env.META_PIXEL_ID || process.env.NEXT_PUBLIC_META_PIXEL_ID || '2049977412558608';
 const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN!;
@@ -80,43 +91,41 @@ function cleanAndHash(val: string | undefined, normalizer: (v: string) => string
   return crypto.createHash('sha256').update(normalized).digest('hex');
 }
 
-const normalizePhone = (p: string) => {
-  const digits = p.replace(/\D/g, "");
-  let base = digits;
-  if (digits.length === 12 && digits.startsWith("91")) base = digits.slice(2);
-  else if (digits.length === 11 && digits.startsWith("0")) base = digits.slice(1);
-  return `91${base}`;
-};
-
-const normalizeCountry = (c: string) => {
-  const clean = c.trim().toLowerCase();
-  if (clean === 'india' || clean === 'ind' || clean === 'in') return 'in';
-  if (clean === 'united states' || clean === 'usa' || clean === 'us' || clean === 'united states of america') return 'us';
-  return clean.replace(/[^a-z]/g, '').slice(0, 2);
-};
-
+// Worldwide normalization — one implementation shared with the browser cookie path
+// (lib/tracking/identity-normalize). Country-dependent fields use the event's own
+// country, never an assumed India prefix (except a bare number with no country).
 const normalizeGeneric = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-const normalizeEmail = (e: string) => e.trim().toLowerCase();
 const normalizeDob = (d: string) => d.trim().replace(/\D/g, "");
 
 let metaConfigWarned = false;
+
+/**
+ * Why server-side Meta events cannot be sent right now (missing / malformed
+ * META_CAPI_ACCESS_TOKEN or pixel id), or null when the configuration is usable.
+ * A configuration problem is an operational failure, not a reason to drop a
+ * conversion: the Purchase ledger checks this BEFORE claiming a delivery so the
+ * conversion stays retryable (lib/meta/purchase.ts).
+ */
+export function metaCapiConfigError(): string | null {
+  return validateTokenFormat(ACCESS_TOKEN) || validatePixelIdFormat(PIXEL_ID) || null;
+}
 
 export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ success: boolean; data?: any; error?: any; fbtrace_id?: string; skipped?: boolean }> {
   // Pre-request validation — missing local Meta env is common in dev; skip quietly
   const tokenErr = validateTokenFormat(ACCESS_TOKEN);
   if (tokenErr) {
-    if (!metaConfigWarned && process.env.META_DEBUG === '1') {
+    if (!metaConfigWarned && (process.env.META_DEBUG === '1' || process.env.NODE_ENV === 'production')) {
       metaConfigWarned = true;
-      console.warn('[Meta CAPI] Skipping events: META_CAPI_ACCESS_TOKEN not configured');
+      console.error('[Meta CAPI][ALERT] events not sent: META_CAPI_ACCESS_TOKEN missing or malformed');
     }
     return { success: false, skipped: true, error: tokenErr };
   }
 
   const pixelErr = validatePixelIdFormat(PIXEL_ID);
   if (pixelErr) {
-    if (!metaConfigWarned && process.env.META_DEBUG === '1') {
+    if (!metaConfigWarned && (process.env.META_DEBUG === '1' || process.env.NODE_ENV === 'production')) {
       metaConfigWarned = true;
-      console.warn('[Meta CAPI] Skipping events: META_PIXEL_ID not configured');
+      console.error('[Meta CAPI][ALERT] events not sent: META_PIXEL_ID missing or malformed');
     }
     return { success: false, skipped: true, error: pixelErr };
   }
@@ -149,15 +158,20 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     if (payload.userData.fbp) userData.fbp = payload.userData.fbp;
     if (payload.userData.fbc) userData.fbc = payload.userData.fbc;
     
-    // Hash PII fields
-    const em = cleanAndHash(payload.userData.em, normalizeEmail);
-    const ph = cleanAndHash(payload.userData.ph, normalizePhone);
-    const fn = cleanAndHash(payload.userData.fn, normalizeGeneric);
-    const ln = cleanAndHash(payload.userData.ln, normalizeGeneric);
-    const country = cleanAndHash(payload.userData.country, normalizeCountry);
-    const st = cleanAndHash(payload.userData.st, normalizeGeneric);
-    const ct = cleanAndHash(payload.userData.ct, normalizeGeneric);
-    const zp = cleanAndHash(payload.userData.zp, normalizeGeneric);
+    // Hash PII fields. Country is resolved first: phone, state and zip depend on it.
+    const rawCountry = payload.userData.country;
+    const countryIso = rawCountry && !isHash(rawCountry) ? toCountryIso(rawCountry) : '';
+    const emRaw = payload.userData.em;
+    // Synthetic placeholders (guest@zicabella.com, guest_<ts>@…) are never a customer identity.
+    const emSafe = emRaw && (isHash(emRaw) ? !isPlaceholderEmailHash(emRaw) : !isPlaceholderEmail(emRaw)) ? emRaw : undefined;
+    const em = cleanAndHash(emSafe, sharedNormalizeEmail);
+    const ph = cleanAndHash(payload.userData.ph, (p) => sharedNormalizePhone(p, countryIso));
+    const fn = cleanAndHash(payload.userData.fn, sharedNormalizeName);
+    const ln = cleanAndHash(payload.userData.ln, sharedNormalizeName);
+    const country = cleanAndHash(rawCountry, sharedNormalizeCountry);
+    const st = cleanAndHash(payload.userData.st, (v) => sharedNormalizeState(v, countryIso));
+    const ct = cleanAndHash(payload.userData.ct, sharedNormalizeCity);
+    const zp = cleanAndHash(payload.userData.zp, (v) => sharedNormalizeZip(v, countryIso));
     const ge = cleanAndHash(payload.userData.ge, normalizeGeneric);
     const db = cleanAndHash(payload.userData.db, normalizeDob);
 
@@ -254,7 +268,18 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     });
 
     if (!logEntry.success) {
-      console.error('[Meta CAPI Error]', resJson);
+      // Structured, PII-free rejection log: which event, which id, Meta's reason + trace id.
+      const e = (resJson as any)?.error || {};
+      console.error('[Meta CAPI Rejected]', JSON.stringify({
+        event: payload.eventName,
+        event_id: payload.eventId,
+        code: e.code,
+        subcode: e.error_subcode,
+        type: e.type,
+        message: typeof e.message === 'string' ? e.message.slice(0, 300) : undefined,
+        user_msg: typeof e.error_user_msg === 'string' ? e.error_user_msg.slice(0, 300) : undefined,
+        fbtrace_id: logEntry.fbtrace_id || e.fbtrace_id,
+      }));
       return {
         success: false,
         error: resJson,
@@ -268,7 +293,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
       fbtrace_id: logEntry.fbtrace_id,
     };
   } catch (err: any) {
-    console.error('[Meta CAPI Catch Error]', err);
+    console.error('[Meta CAPI Network Error]', JSON.stringify({ event: payload.eventName, event_id: payload.eventId, message: err?.message || 'Fetch failed' }));
     return { success: false, error: err.message || 'Fetch failed' };
   }
 }

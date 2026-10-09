@@ -72,6 +72,9 @@ export function getMetaApiLogStats(): {
  * Wrapper: execute a Meta Graph API fetch, log it, and return the result.
  * This is the primary way to make logged Meta API requests.
  */
+/** Upper bound for one Meta Graph API request. */
+const META_API_TIMEOUT_MS = 10_000;
+
 export async function fetchMetaApi(
   url: string,
   options?: {
@@ -106,9 +109,18 @@ export async function fetchMetaApi(
       fetchOptions.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
     }
 
-    response = await fetch(url, fetchOptions);
-    httpStatus = response.status;
-    data = await response.json().catch(() => ({}));
+    // Bounded wait: a hung Graph API call must not hold a request (or a ledger lease)
+    // open indefinitely. A timeout surfaces as a network error → the Purchase ledger
+    // marks the row failed and the retry cron resends it with the same event_id.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), META_API_TIMEOUT_MS);
+    try {
+      response = await fetch(url, { ...fetchOptions, signal: controller.signal });
+      httpStatus = response.status;
+      data = await response.json().catch(() => ({}));
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (err: any) {
     const elapsed = Date.now() - startMs;
     const entry: MetaApiLogEntry = {

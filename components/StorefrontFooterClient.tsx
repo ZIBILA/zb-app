@@ -60,7 +60,7 @@ interface StorefrontFooterClientProps {
 
 export default function StorefrontFooterClient({ shop, policies, socialLinks }: StorefrontFooterClientProps) {
   const { countryCode, setCountry, activeCountries, globalStoreEnabled } = useCountry();
-  const { trackSubscribe } = useMetaEvents();
+  const { trackNewsletterLead } = useMetaEvents();
   const { trackSubscribe: trackSnapSubscribe } = useSnapEvents();
   const { trackLeadCreated: trackOaiLeadCreated } = useOpenAiEvents();
   // Mobile accordion states
@@ -159,9 +159,8 @@ export default function StorefrontFooterClient({ shop, policies, socialLinks }: 
         return;
       }
       if (data.created) {
-        // Subscribe is a non-monetary newsletter signup — pass estimated lead value
-        // for Meta's value-based optimization. Currency is INR.
-        trackSubscribe(value, 'Newsletter Signup');
+        // Meta: a free newsletter sign-up is a Lead (no monetary value), not a paid Subscribe.
+        trackNewsletterLead(value);
         trackSnapSubscribe(value);
         trackOaiLeadCreated(value);
       }

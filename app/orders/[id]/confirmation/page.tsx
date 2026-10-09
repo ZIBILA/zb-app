@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
@@ -20,9 +20,18 @@ import {
   Sparkles
 } from "lucide-react";
 import Link from "next/link";
-import { useMetaEvents } from "@/hooks/useMetaEvents";
+import { useMetaEvents, ga4Purchase } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
+import {
+  decideMetaBrowserPurchase,
+  buildMetaBrowserPurchaseArgs,
+  dispatchMetaBrowserPurchaseOnce,
+  hasMetaBrowserPurchaseBeenSent,
+  waitForFbq,
+  META_PENDING_POLL_INTERVAL_MS,
+  META_PENDING_POLL_MAX,
+} from "@/lib/meta/browser-purchase";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -41,6 +50,7 @@ export default function OrderConfirmationPage() {
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
   const { trackOrderCreated: trackOpenAiOrderCreated } = useOpenAiEvents();
+  const guestResetDeferredRef = useRef(false);
 
   useEffect(() => {
     if (order) {
@@ -114,14 +124,18 @@ export default function OrderConfirmationPage() {
           storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
         }
 
-        const contents = order.items?.map((item: any) => ({
-          id: toSnapId(item),
-          quantity: item.quantity || 1,
-          item_price: parseFloat(item.price || "0"),
-          title: item.title
-        })) || [];
+        // Meta: the browser Pixel Purchase is decided separately (effect below) so a
+        // pending payment never consumes its once-only marker.
+        // GA4 purchase stays exactly as on main: fired here, on the first visit to a
+        // fresh order, with the same value / currency / items, independent of Meta.
+        ga4Purchase(order.id, val, orderCurrency, contentIds, storedCategory,
+          order.items?.map((item: any) => ({
+            id: toSnapId(item),
+            quantity: item.quantity || 1,
+            item_price: parseFloat(item.price || "0"),
+            title: item.title
+          })) || []);
 
-        trackPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents);
         // Snap: browser pixel only, and only for a confirmed payment. The CAPI
         // PURCHASE is sent once by the server (lib/snap/purchase.ts). Content ids
         // are proven variant ids only (OrderItem.variantId / "variant:<id>").
@@ -157,8 +171,15 @@ export default function OrderConfirmationPage() {
 
         // FIX 1b: After a guest purchase, reset identity so the next guest
         // on this device gets a fresh external_id and no stale PII cookies.
+        // While the Meta Purchase is still to fire (now, or once payment capture is
+        // confirmed), the reset is deferred until after it, so the Pixel event keeps
+        // the shopper's own external_id.
         if (!session?.user) {
-          resetGuestIdentity();
+          if (decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) }).action !== 'done') {
+            guestResetDeferredRef.current = true;
+          } else {
+            resetGuestIdentity();
+          }
         }
       }
 
@@ -186,6 +207,84 @@ export default function OrderConfirmationPage() {
       }
     }
   }, [order, purchasedPixel]);
+
+  // Meta browser Pixel Purchase: fires once per order, only for a confirmed payment.
+  // The once-only marker is written AFTER the Pixel call (lib/meta/browser-purchase),
+  // so a visit while the payment is pending never suppresses the later paid event.
+  useEffect(() => {
+    if (!order?.id) return;
+    const decision = decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) });
+    const finishGuestReset = () => {
+      if (guestResetDeferredRef.current && !session?.user) {
+        guestResetDeferredRef.current = false;
+        resetGuestIdentity();
+      }
+    };
+    if (decision.action === 'wait') return;
+    if (decision.action === 'done') { finishGuestReset(); return; }
+    const args = buildMetaBrowserPurchaseArgs(order);
+    if (!args) { finishGuestReset(); return; }
+    let storedCategory: string | undefined;
+    try { storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined; } catch {}
+    dispatchMetaBrowserPurchaseOnce(order.id, async () => {
+      // Wait (≤ 3 s, like withFbq) for the Pixel to load. If it never does (blocked by
+      // an extension, failed to load) the order is NOT marked as sent, so a later
+      // visit can retry. The server CAPI Purchase is sent regardless.
+      if (!(await waitForFbq())) return false;
+      // { ga: false }: GA4 purchase is fired by the legacy block above, as on main.
+      trackPurchase(args.orderId, args.value, args.currency, args.contentIds, args.userData, storedCategory, args.contents, { ga: false });
+      return true;
+    }).finally(finishGuestReset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
+
+  // A guest reset postponed for a pending Meta Purchase must still happen if the
+  // shopper leaves first (tab closed, navigated away), so a shared device never
+  // keeps the previous shopper's identity cookies.
+  useEffect(() => {
+    const flush = () => {
+      if (guestResetDeferredRef.current) {
+        guestResetDeferredRef.current = false;
+        resetGuestIdentity();
+      }
+    };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, []);
+
+  // Payment still awaiting capture (e.g. Razorpay webhook not processed yet):
+  // re-check the stored order for a few minutes so the Purchase can fire once paid.
+  useEffect(() => {
+    if (!id || !order?.id) return;
+    if (decideMetaBrowserPurchase(order, { alreadySent: hasMetaBrowserPurchaseBeenSent(order.id) }).action !== 'wait') return;
+    let polls = 0;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (++polls > META_PENDING_POLL_MAX) {
+        clearInterval(timer);
+        if (guestResetDeferredRef.current && !session?.user) {
+          guestResetDeferredRef.current = false;
+          resetGuestIdentity();
+        }
+        return;
+      }
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await fetch(`/api/orders/${id}?bypass_auth=true`, { cache: 'no-store' });
+        if (!res.ok || cancelled) return;
+        const data = await res.json().catch(() => null);
+        const next = data?.order || data;
+        if (next?.id && String(next.paymentStatus || '') !== String(order.paymentStatus || '')) setOrder(next);
+      } catch {
+        /* transient — next tick retries */
+      }
+    }, META_PENDING_POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, order?.id, order?.paymentStatus]);
 
   useEffect(() => {
     const fetchOrder = async () => {
