@@ -505,6 +505,77 @@ export async function POST(req: Request) {
     }
 
     const resolvedCustomerId = customer.id;
+    const pmUpper = String(payment_method || 'razorpay').toUpperCase();
+    const isCod = pmUpper === 'COD' || pmUpper.includes('COD');
+    const claimedPaid = ['paid', 'captured', 'success', 'cod_upfront_paid', 'partially_paid'].includes(
+      String(financial_status || '').toLowerCase()
+    );
+
+    // Never trust client financial_status — require live Razorpay capture before confirming.
+    let verifiedPaymentStatus = 'pending';
+    let verifiedCodUpfrontPaid = 0;
+    let verifiedPaymentId: string | null = null;
+    let verifiedRazorpayOrderId: string | null = razorpay_order_id || null;
+
+    if (claimedPaid) {
+      if (!payment_id || !razorpay_order_id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'payment_id and razorpay_order_id are required to mark an order as paid',
+          },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+      const paymentAlreadyUsed = await prisma.order.findFirst({
+        where: {
+          OR: [{ razorpayPaymentId: payment_id }, { codUpfrontPaymentId: payment_id }],
+          NOT: { razorpayOrderId: razorpay_order_id },
+        },
+        select: { id: true },
+      });
+      if (paymentAlreadyUsed) {
+        return NextResponse.json(
+          { success: false, error: 'This payment is already linked to another order' },
+          { status: 409, headers: corsHeaders }
+        );
+      }
+      try {
+        const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
+        const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+        const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+        const creds = await resolveRazorpayCredentials();
+        const expectedMin = isCod
+          ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
+          : 0;
+        const captured = await assertCapturedCharge({
+          paymentId: payment_id,
+          credentials: creds,
+          expectedMinRupees: expectedMin,
+          orderId: razorpay_order_id,
+        });
+        verifiedCodUpfrontPaid = isCod ? paymentAmountRupees(captured) : 0;
+        verifiedPaymentStatus = isCod ? 'cod_upfront_paid' : 'paid';
+        verifiedPaymentId = payment_id;
+        verifiedRazorpayOrderId = razorpay_order_id;
+      } catch (verifyErr: any) {
+        console.error('[App API] Legacy orders POST capture check failed:', verifyErr?.message || verifyErr);
+        return NextResponse.json(
+          { success: false, error: 'Payment not captured on Razorpay — cannot mark order paid' },
+          { status: 402, headers: corsHeaders }
+        );
+      }
+    }
+
+    const isPaidLike =
+      verifiedPaymentStatus === 'paid' || verifiedPaymentStatus === 'cod_upfront_paid';
+    const localStatus = isPaidLike
+      ? isCod
+        ? 'open'
+        : 'approved'
+      : isCod
+        ? 'awaiting_approval'
+        : 'payment_pending';
 
     // 1. Handle Store Credits if applied
     let creditReduction = 0;
@@ -521,7 +592,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. Create order in Shopify
+    // 2. Create order in Shopify only after payment is verified (or as unpaid pending)
     // Use shopifyId if available, otherwise fallback to email/phone
     const shopifyOrderPayload: any = {
       line_items: lineItems.map((li: any) => ({
@@ -529,9 +600,9 @@ export async function POST(req: Request) {
         quantity: li.quantity || 1,
         title: li.title,
       })).filter((li: any) => li.variant_id),
-      financial_status: financial_status === 'paid' ? 'paid' : 'pending',
-      tags: `AppOrder, ${payment_method.toUpperCase() === 'COD' ? 'COD' : 'Prepaid, Razorpay'}${creditReduction > 0 ? `, Credit: ${creditReduction}` : ''}`,
-      note: `Ordered via Zica Bella App. Method: ${payment_method.toUpperCase()}. ${creditReduction > 0 ? `Used ${creditReduction} credits.` : ''}`,
+      financial_status: verifiedPaymentStatus === 'paid' ? 'paid' : isPaidLike ? 'partially_paid' : 'pending',
+      tags: `AppOrder, ${isCod ? 'COD' : 'Prepaid, Razorpay'}${creditReduction > 0 ? `, Credit: ${creditReduction}` : ''}`,
+      note: `Ordered via Zica Bella App. Method: ${pmUpper}. ${creditReduction > 0 ? `Used ${creditReduction} credits.` : ''}`,
       shipping_address,
       use_customer_default_address: !shipping_address,
     };
@@ -547,14 +618,14 @@ export async function POST(req: Request) {
     }
 
     // Add transactions for prepaid orders so Shopify records the correct gateway
-    if (financial_status === 'paid' && payment_method.toUpperCase() !== 'COD') {
+    if (verifiedPaymentStatus === 'paid' && !isCod && verifiedPaymentId) {
       shopifyOrderPayload.transactions = [{
         kind: "sale",
         status: "success",
         amount: parseFloat(String(total_price || 0)).toFixed(2),
         currency: currency || "INR",
         gateway: "razorpay",
-        authorization: payment_id || null
+        authorization: verifiedPaymentId
       }];
     }
 
@@ -582,15 +653,18 @@ export async function POST(req: Request) {
         subtotalPrice: subtotal_price || (shopifyOrder ? parseFloat(shopifyOrder.subtotal_price) : 0),
         currency: currency || (shopifyOrder ? shopifyOrder.currency : 'INR'),
         orderType: 'MOBILE_APP',
-        status: financial_status === 'paid' ? 'approved' : 'OPEN',
-        paymentStatus: financial_status,
+        status: localStatus,
+        paymentStatus: verifiedPaymentStatus,
         fulfillmentStatus: 'unfulfilled',
         shippingAddress: typeof ((shopifyOrder ? shopifyOrder.shipping_address : null) || shipping_address) === 'string' 
           ? ((shopifyOrder ? shopifyOrder.shipping_address : null) || shipping_address)
           : JSON.stringify((shopifyOrder ? shopifyOrder.shipping_address : null) || shipping_address),
-        razorpayOrderId: razorpay_order_id || undefined,
-        razorpayPaymentId: payment_id || undefined,
-        paymentMethod: payment_method,
+        razorpayOrderId: verifiedRazorpayOrderId || undefined,
+        razorpayPaymentId: verifiedPaymentId || undefined,
+        paymentMethod: isCod ? 'cod' : payment_method,
+        codUpfrontPaid: isCod ? verifiedCodUpfrontPaid : 0,
+        codUpfrontPaymentId: isCod ? verifiedPaymentId : null,
+        paymentCapturedAt: isPaidLike ? new Date() : null,
         tags: shopifyOrder ? shopifyOrder.tags : shopifyOrderPayload.tags,
         items: {
           create: await Promise.all((shopifyOrder ? shopifyOrder.line_items : lineItems).map(async (li: any, idx: number) => {
@@ -633,16 +707,16 @@ export async function POST(req: Request) {
       include: { items: true }
     });
 
-    // 4. Record initial payment if captured
-    if (financial_status === 'paid' && payment_id) {
+    // 4. Record initial payment only after verified capture
+    if (isPaidLike && verifiedPaymentId) {
        await prisma.payment.create({
          data: {
            orderId: localOrder.id,
            customerId: resolvedCustomerId,
-           amount: localOrder.totalPrice,
+           amount: isCod ? verifiedCodUpfrontPaid : localOrder.totalPrice,
            type: 'INITIAL',
            status: 'success',
-           gateway: payment_method,
+           gateway: isCod ? 'razorpay' : payment_method,
          }
        });
     }

@@ -243,9 +243,76 @@ async function runDbAudit() {
   }
 }
 
+async function runSourceGates() {
+  console.log('\n== Source gates: customer confirm paths require capture ==');
+  const fs = await import('node:fs');
+  const files = {
+    complete: fs.readFileSync(path.join(root, 'app/api/checkout/complete/route.ts'), 'utf8'),
+    appCreate: fs.readFileSync(path.join(root, 'app/api/app/orders/create/route.ts'), 'utf8'),
+    legacyOrders: fs.readFileSync(path.join(root, 'app/api/app/orders/route.ts'), 'utf8'),
+    verifyPayment: fs.readFileSync(path.join(root, 'app/api/razorpay/verify-payment/route.ts'), 'utf8'),
+    appVerify: fs.readFileSync(path.join(root, 'app/api/app/payment/verify/route.ts'), 'utf8'),
+    precreate: fs.readFileSync(path.join(root, 'app/api/checkout/razorpay/route.ts'), 'utf8'),
+  };
+
+  ok('checkout/complete calls assertCapturedCharge', files.complete.includes('assertCapturedCharge'));
+  ok(
+    'checkout/complete rejects COD without locked capture amount',
+    files.complete.includes("COD upfront payment not captured") &&
+      files.complete.includes('lockedCodUpfrontPaid <= 0')
+  );
+  ok(
+    'checkout/complete mock only when ALLOW_MOCK_PAYMENTS',
+    files.complete.includes("ALLOW_MOCK_PAYMENTS === 'true'") &&
+      files.complete.includes("NODE_ENV !== 'production'")
+  );
+  ok('app/orders/create calls assertCapturedCharge', files.appCreate.includes('assertCapturedCharge'));
+  ok(
+    'app/orders/create requires razorpayOrderId when claiming paid',
+    files.appCreate.includes('razorpayOrderId is required to mark an order as paid')
+  );
+  ok(
+    'legacy app/orders POST calls assertCapturedCharge',
+    files.legacyOrders.includes('assertCapturedCharge')
+  );
+  ok(
+    'legacy app/orders POST rejects unpaid paid-claims',
+    files.legacyOrders.includes('Payment not captured on Razorpay — cannot mark order paid')
+  );
+  ok(
+    'legacy app/orders does not trust raw financial_status for status',
+    !files.legacyOrders.includes("status: financial_status === 'paid' ? 'approved' : 'OPEN'")
+  );
+  ok('verify-payment rejects mock outside ALLOW_MOCK_PAYMENTS', files.verifyPayment.includes('Mock payments are disabled'));
+  ok('app/payment/verify calls assertCapturedCharge', files.appVerify.includes('assertCapturedCharge'));
+  ok(
+    'razorpay pre-create stores codUpfrontPaid: 0',
+    (files.precreate.match(/codUpfrontPaid:\s*0/g) || []).length >= 2
+  );
+
+  // Failure-mode matrix on pure helpers
+  console.log('\n== Failure matrix (success vs reject) ==');
+  const { rzp } = await loadHelpers();
+  const { isCapturedPaymentEntity } = rzp;
+  const good = {
+    id: 'pay_GoodCapture99',
+    status: 'captured',
+    captured: true,
+    amount: 9900,
+    amount_refunded: 0,
+    order_id: 'order_COD99',
+  };
+  ok('SUCCESS: captured ₹99 bound to order', isCapturedPaymentEntity(good, { minRupees: 99, orderId: 'order_COD99' }));
+  ok('FAIL: failed payment status', !isCapturedPaymentEntity({ ...good, status: 'failed', captured: false }, { minRupees: 99, orderId: 'order_COD99' }));
+  ok('FAIL: pending payment status', !isCapturedPaymentEntity({ ...good, status: 'created', captured: false }, { minRupees: 99, orderId: 'order_COD99' }));
+  ok('FAIL: underpaid ₹50 < ₹99', !isCapturedPaymentEntity({ ...good, amount: 5000 }, { minRupees: 99, orderId: 'order_COD99' }));
+  ok('FAIL: fully refunded capture', !isCapturedPaymentEntity({ ...good, amount_refunded: 9900 }, { minRupees: 99, orderId: 'order_COD99' }));
+}
+
 async function main() {
   console.log('COD upfront payment gate verification');
   await runUnitTests();
+  await runSourceGates();
   await runDbAudit();
   console.log(`\nAll checks passed (${passed} assertions).\n`);
 }
