@@ -25,7 +25,7 @@ export async function POST(req: Request) {
       where: { id: orderId },
       include: {
         items: true,
-        returnRequests: true,
+        returnRequests: { include: { returns: true } },
         exchangeRequests: true
       }
     });
@@ -73,7 +73,24 @@ export async function POST(req: Request) {
         }
 
         const orderedQty = Math.max(1, Math.floor(Number(orderItem.quantity) || 1));
-        const quantity = Math.min(orderedQty, Math.max(1, Math.floor(Number(returnItem.quantity) || 1)));
+        // Subtract qty already claimed on prior non-cancelled returns for this line.
+        const alreadyReturned = (order.returnRequests || [])
+          .filter((rr: any) => !['cancelled', 'rejected'].includes(String(rr.status || '').toLowerCase()))
+          .flatMap((rr: any) => rr.returns || [])
+          .filter(
+            (ret: any) =>
+              (ret.sku && orderItem.sku && ret.sku === orderItem.sku) ||
+              (ret.title && orderItem.title && ret.title === orderItem.title)
+          )
+          .reduce((sum: number, ret: any) => sum + (Number(ret.quantity) || 0), 0);
+        const remainingQty = Math.max(0, orderedQty - alreadyReturned);
+        if (remainingQty <= 0) {
+          return {
+            error: `"${orderItem.title || 'Item'}" has already been fully returned or exchanged.`,
+            row: null,
+          };
+        }
+        const quantity = Math.min(remainingQty, Math.max(1, Math.floor(Number(returnItem.quantity) || 1)));
         const itemRefund = orderItem.price * quantity;
         return {
           error: null,

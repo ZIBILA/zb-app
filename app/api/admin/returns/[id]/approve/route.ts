@@ -41,12 +41,11 @@ async function POST_impl(req: Request, { params }: { params: { id: string } }) {
     if (Number.isFinite(orderTotal) && orderTotal > 0 && refundAmount > orderTotal + 0.01) {
       return NextResponse.json({ error: `Refund amount ₹${refundAmount} exceeds the order total ₹${orderTotal}.` }, { status: 400 });
     }
-    // COD orders → store credit only. Prepaid keeps the customer's choice (or admin override).
-    const requestedMethod =
-      typeof isStoreCredit === 'boolean'
-        ? (isStoreCredit ? 'store_credit' : 'original_method')
-        : returnRequest.returns[0]?.refundMethod || 'original_method';
-    const refundMethod = resolveRefundMethod(returnRequest.order, requestedMethod);
+    // COD → store credit only. Prepaid always uses the customer's saved choice (no admin override).
+    const refundMethod = resolveRefundMethod(
+      returnRequest.order,
+      returnRequest.returns[0]?.refundMethod || returnRequest.refundType || 'original_method'
+    );
     const storeCreditRefund = refundMethod === 'store_credit';
 
     const result = await prisma.$transaction(async (tx: any) => {

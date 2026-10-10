@@ -1470,15 +1470,16 @@ export default function CheckoutPage() {
       calculatedDiscount = Math.min(currentDiscountValue, subtotalAmount);
     }
 
-    // Calculate cashback if enabled
+    // Cashback = % of amount paid after instant discount (released after delivery).
     let cashbackAmount = 0;
     const isCashbackEnabled = !!coupon.cashbackEnabled;
     if (isCashbackEnabled) {
+      const paidBase = Math.max(0, subtotalAmount - calculatedDiscount);
       const cbVal = Number(coupon.cashbackValue || 0);
       if (coupon.cashbackType === "percentage") {
-        cashbackAmount = Math.round((subtotalAmount * cbVal) / 100);
+        cashbackAmount = Math.round((paidBase * cbVal) / 100);
       } else {
-        cashbackAmount = Math.min(cbVal, subtotalAmount);
+        cashbackAmount = Math.min(cbVal, paidBase);
       }
     }
 
@@ -2203,7 +2204,7 @@ export default function CheckoutPage() {
                     Store Coins Balance
                   </h4>
                   <p className="text-[8.5px] text-amber-500 font-medium mt-0.5">
-                    {availableStoreCredit.toLocaleString('en-IN')} Coins (₹{availableStoreCredit.toLocaleString('en-IN')})
+                    {Math.ceil(availableStoreCredit).toLocaleString('en-IN')} Coins
                   </p>
                 </div>
               </div>
@@ -3171,7 +3172,7 @@ export default function CheckoutPage() {
               <div>
                 <h3 className="text-base font-bold text-foreground">Redeem Store Coins</h3>
                 <p className="text-xs text-amber-500 font-semibold mt-1">
-                  Available: {availableStoreCredit.toLocaleString('en-IN')} Coins (₹{availableStoreCredit.toLocaleString('en-IN')})
+                  Available: {Math.ceil(availableStoreCredit).toLocaleString('en-IN')} Coins
                 </p>
                 <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
                   Store Coins can only be redeemed through the Zica Bella mobile app. Open or download the app to use your coins towards this order!

@@ -329,6 +329,16 @@ export async function applyShipmentStatusUpdate(
 
   await prisma.order.update({ where: { id: order.id }, data: orderData });
 
+  // Coupon store-coin cashback is earned only after successful delivery.
+  if (deliveredNow) {
+    try {
+      const { releasePendingCouponCashback } = await import('@/lib/storeCreditsHelper');
+      await releasePendingCouponCashback(order.id);
+    } catch (err) {
+      console.error('[ShipmentStatus] coupon cashback release failed:', err);
+    }
+  }
+
   const wsWhere: Array<Record<string, string>> = [];
   if (order.internalOrderNumber) wsWhere.push({ orderNumber: order.internalOrderNumber });
   if (order.razorpayOrderId) wsWhere.push({ razorpayOrderId: order.razorpayOrderId });

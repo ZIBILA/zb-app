@@ -61,8 +61,10 @@ export default function OrderDetailsScreen() {
   const steps = useMemo(() => {
     if (!order) return [];
     const status = String(order.status || '').toLowerCase();
-    const hasActiveReturn = order.returnRequests?.some((r: any) => r.status !== 'cancelled') || false;
-    const hasActiveExchange = order.exchangeRequests?.some((e: any) => e.status !== 'cancelled') || false;
+    const isTerminalReq = (st: string) =>
+      ['cancelled', 'rejected', 'refunded', 'completed', 'new_order_created'].includes(String(st || '').toLowerCase());
+    const hasActiveReturn = order.returnRequests?.some((r: any) => !isTerminalReq(r.status) && !String(r.reason || '').includes('EXCHANGE_RETURN')) || false;
+    const hasActiveExchange = order.exchangeRequests?.some((e: any) => !isTerminalReq(e.status)) || false;
     const isReturn = status.includes('return') || status.includes('exchange') || status === 'returned' || status === 'exchanged' || hasActiveReturn || hasActiveExchange;
     
     if (isReturn) {
@@ -320,8 +322,10 @@ export default function OrderDetailsScreen() {
     navigation.navigate('ExchangeSelectProduct', { order });
   };
 
-  const hasActiveReturn = order.returnRequests?.some((r: any) => r.status !== 'cancelled') || false;
-  const hasActiveExchange = order.exchangeRequests?.some((e: any) => e.status !== 'cancelled') || false;
+  const isTerminalReq = (st: string) =>
+    ['cancelled', 'rejected', 'refunded', 'completed', 'new_order_created'].includes(String(st || '').toLowerCase());
+  const hasActiveReturn = order.returnRequests?.some((r: any) => !isTerminalReq(r.status) && !String(r.reason || '').includes('EXCHANGE_RETURN')) || false;
+  const hasActiveExchange = order.exchangeRequests?.some((e: any) => !isTerminalReq(e.status)) || false;
   // Customer-visible return / exchange requests (internal exchange pickups and cancelled ones are hidden).
   const visibleRequests = [
     ...(order.returnRequests || []).filter((r: any) => !r.isInternal && r.status !== 'cancelled' && r.summary),

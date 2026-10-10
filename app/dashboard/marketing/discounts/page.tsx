@@ -893,7 +893,7 @@ export default function UnifiedDiscountsPage() {
                             />
                             <div className="flex flex-col">
                               <span className="text-[12px] font-bold text-foreground">Double Cashback Rewards</span>
-                              <span className="text-[9px] text-foreground/40 font-medium">Issue store credits cashback upon successful order checkout (webstore).</span>
+                              <span className="text-[9px] text-foreground/40 font-medium">Issue store credits cashback after successful delivery (webstore). Calculated on amount paid after instant discount.</span>
                             </div>
                           </label>
                         </div>
@@ -1002,7 +1002,7 @@ export default function UnifiedDiscountsPage() {
                             />
                             <div className="flex flex-col">
                               <span className="text-[12px] font-bold text-foreground">App Store Credit Cashback</span>
-                              <span className="text-[9px] text-foreground/40 font-medium">Issue store credits cashback upon successful order checkout (mobile app).</span>
+                              <span className="text-[9px] text-foreground/40 font-medium">Issue store credits cashback after successful delivery (mobile app). Calculated on amount paid after instant discount.</span>
                             </div>
                           </label>
                         </div>

@@ -26,17 +26,21 @@ export type OrderCancelFields = {
 
 /**
  * Customer-facing "order cancelled" — NOT the same as a voided courier shipment.
- * Shipment cancel alone must not paint the whole order as Cancelled in History.
+ * Shipment / fulfillment cancel alone must not paint the whole order as Cancelled
+ * (especially after delivery when returns/exchanges are in flight).
  */
 export function isOrderCancelledForCustomer(order: {
   status?: string | null;
   fulfillmentStatus?: string | null;
   cancelledBy?: string | null;
+  deliveryStatus?: string | null;
 }): boolean {
   if (order.cancelledBy) return true;
   const status = String(order.status || '').toLowerCase();
-  const fulfillment = String(order.fulfillmentStatus || '').toLowerCase();
-  return status.includes('cancel') || fulfillment.includes('cancel');
+  // Only treat explicit order-level cancel — not fulfillmentStatus "cancelled"
+  // from a voided AWB, which left many delivered orders looking cancelled.
+  if (status === 'cancelled' || status === 'canceled') return true;
+  return false;
 }
 
 export function getCustomerCancelLabel(order: {

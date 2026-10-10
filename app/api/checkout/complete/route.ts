@@ -1031,35 +1031,39 @@ export async function POST(req: Request) {
     }
 
     if (finalCouponCode && Number(cashbackAmount) > 0) {
-      const cbAmt = parseFloat(String(cashbackAmount));
+      // Recompute server-side from coupon + paid product amount (never trust client alone).
       const cashbackCustomerId = localCustomer.id;
       const cashbackOrderId = localOrder.id;
       const cashbackCoupon = finalCouponCode.toUpperCase();
+      const clientCb = parseFloat(String(cashbackAmount)) || 0;
       deferredTasks.push({
-        name: 'coupon-cashback',
+        name: 'coupon-cashback-pending',
         run: async () => {
           try {
-            const expiresAt = new Date();
-            expiresAt.setDate(expiresAt.getDate() + 90);
-            await prisma.$transaction([
-              prisma.customer.update({
-                where: { id: cashbackCustomerId },
-                data: { storeCredits: { increment: cbAmt } },
-              }),
-              prisma.storeCredit.create({
-                data: {
-                  customerId: cashbackCustomerId,
-                  amount: cbAmt,
-                  type: "COUPON_REBATE",
-                  description: `Cashback for applying coupon code ${cashbackCoupon}`,
-                  orderId: cashbackOrderId,
-                  expiresAt,
-                  remainingAmount: cbAmt,
-                },
-              }),
-            ]);
+            const coupon = await prisma.webStoreCoupon.findFirst({
+              where: { code: { equals: cashbackCoupon, mode: 'insensitive' } },
+            });
+            let cbAmt = clientCb;
+            if (coupon?.cashbackEnabled) {
+              const sub = Number(localOrder.subtotalPrice || localOrder.totalPrice || 0);
+              const disc = Number(localOrder.discountAmount || 0);
+              const paidBase = Math.max(0, sub - disc);
+              const cbVal = Number(coupon.cashbackValue || 0);
+              cbAmt =
+                coupon.cashbackType === 'percentage'
+                  ? Math.round((paidBase * cbVal) / 100)
+                  : Math.min(cbVal, paidBase);
+            }
+            if (cbAmt <= 0) return;
+            const { recordPendingCouponCashback } = await import('@/lib/storeCreditsHelper');
+            await recordPendingCouponCashback({
+              customerId: cashbackCustomerId,
+              amount: cbAmt,
+              orderId: cashbackOrderId,
+              couponCode: cashbackCoupon,
+            });
           } catch (storeCreditErr: any) {
-            console.error("[Checkout Store Credit] Failed to issue cashback:", storeCreditErr.message);
+            console.error("[Checkout Store Credit] Failed to record pending cashback:", storeCreditErr.message);
           }
         },
       });

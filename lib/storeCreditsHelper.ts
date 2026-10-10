@@ -201,6 +201,7 @@ export async function issueStoreCredits({
   orderId,
   returnId,
   expiresAt,
+  type = 'exchange_adjustment',
 }: {
   customerId: string;
   amount: number;
@@ -208,6 +209,7 @@ export async function issueStoreCredits({
   orderId?: string;
   returnId?: string;
   expiresAt?: Date | null;
+  type?: string;
 }) {
   if (amount <= 0) return;
 
@@ -216,7 +218,7 @@ export async function issueStoreCredits({
       data: {
         customerId,
         amount,
-        type: 'exchange_adjustment',
+        type,
         description,
         orderId: orderId || null,
         returnId: returnId || null,
@@ -239,5 +241,139 @@ export async function issueStoreCredits({
 
   console.log(`[Store Credits Helper] Issued ₹${amount} store credit to customer ${customerId}`);
   return result;
+}
+
+/**
+ * Record coupon cashback as pending — credited only after delivery.
+ * Does not increment the customer's spendable balance yet.
+ */
+export async function recordPendingCouponCashback({
+  customerId,
+  amount,
+  orderId,
+  couponCode,
+}: {
+  customerId: string;
+  amount: number;
+  orderId: string;
+  couponCode: string;
+}) {
+  if (amount <= 0) return null;
+
+  const existing = await prisma.storeCredit.findFirst({
+    where: {
+      orderId,
+      type: { in: ['PENDING_COUPON_REBATE', 'COUPON_REBATE'] },
+      amount: { gt: 0 },
+    },
+  });
+  if (existing) return existing;
+
+  return prisma.storeCredit.create({
+    data: {
+      customerId,
+      amount,
+      type: 'PENDING_COUPON_REBATE',
+      description: `Pending cashback for coupon ${couponCode} (releases on delivery)`,
+      orderId,
+      remainingAmount: amount,
+      expiresAt: null,
+    },
+  });
+}
+
+/** Release pending coupon cashback into spendable Store Coins once the order is delivered. */
+export async function releasePendingCouponCashback(orderId: string) {
+  const pending = await prisma.storeCredit.findFirst({
+    where: { orderId, type: 'PENDING_COUPON_REBATE', amount: { gt: 0 } },
+  });
+  if (!pending) return null;
+
+  const alreadyReleased = await prisma.storeCredit.findFirst({
+    where: { orderId, type: 'COUPON_REBATE', amount: { gt: 0 } },
+  });
+  if (alreadyReleased) {
+    await prisma.storeCredit.update({
+      where: { id: pending.id },
+      data: { remainingAmount: 0, description: `${pending.description} (superseded)` },
+    });
+    return alreadyReleased;
+  }
+
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 90);
+
+  return prisma.$transaction(async (tx: any) => {
+    await tx.storeCredit.update({
+      where: { id: pending.id },
+      data: {
+        type: 'COUPON_REBATE',
+        description: pending.description.replace('Pending cashback', 'Cashback'),
+        remainingAmount: pending.amount,
+        expiresAt,
+      },
+    });
+    await tx.customer.update({
+      where: { id: pending.customerId },
+      data: { storeCredits: { increment: pending.amount } },
+    });
+    return pending;
+  });
+}
+
+/**
+ * Claw back coupon cashback when items are returned.
+ * Prefer pending (pre-delivery) void; otherwise debit released COUPON_REBATE proportionally.
+ */
+export async function reverseCouponCashbackForReturn({
+  orderId,
+  customerId,
+  refundAmount,
+  orderPaidAmount,
+}: {
+  orderId: string;
+  customerId: string;
+  refundAmount: number;
+  orderPaidAmount: number;
+}) {
+  if (refundAmount <= 0) return;
+
+  const pending = await prisma.storeCredit.findFirst({
+    where: { orderId, type: 'PENDING_COUPON_REBATE', remainingAmount: { gt: 0 } },
+  });
+  if (pending) {
+    const ratio =
+      orderPaidAmount > 0 ? Math.min(1, refundAmount / orderPaidAmount) : 1;
+    const clawback = Math.round(pending.amount * ratio * 100) / 100;
+    if (clawback <= 0) return;
+    await prisma.storeCredit.update({
+      where: { id: pending.id },
+      data: {
+        remainingAmount: Math.max(0, pending.remainingAmount - clawback),
+        amount: Math.max(0, pending.amount - clawback),
+        description: `${pending.description} · reversed ₹${clawback} on return`,
+      },
+    });
+    return;
+  }
+
+  const released = await prisma.storeCredit.findFirst({
+    where: { orderId, type: 'COUPON_REBATE', amount: { gt: 0 } },
+  });
+  if (!released) return;
+
+  const ratio = orderPaidAmount > 0 ? Math.min(1, refundAmount / orderPaidAmount) : 1;
+  const clawback = Math.min(
+    released.remainingAmount > 0 ? released.remainingAmount : released.amount,
+    Math.round(released.amount * ratio * 100) / 100
+  );
+  if (clawback <= 0) return;
+
+  try {
+    // debitStoreCredits writes the ledger DEBIT + decrements balance (FIFO).
+    await debitStoreCredits(customerId, clawback, orderId);
+  } catch (err: any) {
+    console.error(`[Store Credits] Cashback reversal failed for order ${orderId}:`, err?.message);
+  }
 }
 

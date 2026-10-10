@@ -86,8 +86,6 @@ export default function RequestSummaryCard({ summary, children }: Props) {
       <View style={[styles.section, { borderTopColor: border }]}>
         <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 0.8, marginBottom: 6 }}>PICKUP</Typography>
         <Row label="Status" value={pickup.stageLabel} />
-        <Row label="Courier" value={pickup.courier} />
-        <Row label="AWB" value={pickup.awb} />
         <Row label="Carrier status" value={pickup.carrierStatusLabel} />
         <Row label="Last location" value={pickup.location} />
         {!summary.received && pickup.expectedDate ? (
@@ -95,7 +93,7 @@ export default function RequestSummaryCard({ summary, children }: Props) {
         ) : null}
         {pickup.trackingUrl ? (
           <TouchableOpacity onPress={() => openUrl(pickup.trackingUrl)} style={{ marginTop: 6 }}>
-            <Typography size={11} weight="800" color={colors.iosBlue}>Track pickup</Typography>
+            <Typography size={11} weight="800" color={colors.iosBlue}>External Track</Typography>
           </TouchableOpacity>
         ) : null}
         {history.length > 0 ? (
@@ -127,13 +125,11 @@ export default function RequestSummaryCard({ summary, children }: Props) {
           <Typography size={10} weight="800" color={colors.textExtraLight} style={{ letterSpacing: 0.8, marginBottom: 6 }}>REPLACEMENT ORDER</Typography>
           <Row label="Order" value={replacement.displayId} />
           <Row label="Status" value={replacement.status} />
-          <Row label="Courier" value={replacement.courier} />
-          <Row label="AWB" value={replacement.awb} />
           <Row label="Payment" value={replacement.paymentLabel} />
           {replacement.trackingUrl ? (
             <TouchableOpacity onPress={() => openUrl(replacement.trackingUrl)} style={{ marginTop: 6, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
               <Ionicons name="navigate-outline" size={12} color={colors.iosBlue} />
-              <Typography size={11} weight="800" color={colors.iosBlue}>Track replacement</Typography>
+              <Typography size={11} weight="800" color={colors.iosBlue}>External Track</Typography>
             </TouchableOpacity>
           ) : null}
         </View>

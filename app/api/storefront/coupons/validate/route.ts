@@ -124,15 +124,16 @@ export async function POST(req: Request) {
       discount = Math.min(currentDiscountValue, subtotal);
     }
 
-    // Calculate cashback if enabled
+    // Cashback is % of amount paid after instant discount (e.g. ₹10k − 10% = ₹9k → ₹900 coins).
     let cashbackAmount = 0;
     const isCashbackEnabled = !!coupon.cashbackEnabled;
     if (isCashbackEnabled) {
+      const paidBase = Math.max(0, subtotal - discount);
       const cbVal = Number(coupon.cashbackValue || 0);
       if (coupon.cashbackType === "percentage") {
-        cashbackAmount = Math.round((subtotal * cbVal) / 100);
+        cashbackAmount = Math.round((paidBase * cbVal) / 100);
       } else {
-        cashbackAmount = Math.min(cbVal, subtotal);
+        cashbackAmount = Math.min(cbVal, paidBase);
       }
     }
 

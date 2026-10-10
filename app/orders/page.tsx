@@ -96,8 +96,12 @@ export default function OrdersPage() {
     const s = (order?.status || '').toLowerCase();
     const isDelivered = ds === 'delivered' || s === 'delivered';
 
-    const activeReturn = order.returnRequests?.find((r: any) => r.status !== 'cancelled');
-    const activeExchange = order.exchangeRequests?.find((e: any) => e.status !== 'cancelled');
+    const isTerminal = (st: string) =>
+      ['cancelled', 'rejected', 'refunded', 'completed', 'new_order_created'].includes(String(st || '').toLowerCase());
+    const activeReturn = order.returnRequests?.find(
+      (r: any) => !isTerminal(r.status) && !String(r.reason || '').includes('EXCHANGE_RETURN')
+    );
+    const activeExchange = order.exchangeRequests?.find((e: any) => !isTerminal(e.status));
     const hasActiveRequest = !!(activeReturn || activeExchange);
 
     if (!isDelivered) {
@@ -106,8 +110,8 @@ export default function OrdersPage() {
 
     const timelineArr = Array.isArray(order?.statusTimeline) ? order.statusTimeline : [];
     const deliveredEntry = timelineArr.find((t: any) => t.step === 'delivered');
-    const deliveredAt = deliveredEntry?.completedAt || order?.updatedAt || order?.createdAt;
-    const diffDays = Math.ceil(Math.abs(Date.now() - new Date(deliveredAt).getTime()) / (1000 * 60 * 60 * 24));
+    const deliveredAt = order?.deliveredAt || deliveredEntry?.completedAt || order?.updatedAt || order?.createdAt;
+    const diffDays = Math.floor((Date.now() - new Date(deliveredAt).getTime()) / (1000 * 60 * 60 * 24));
 
     const isWithin15Days = diffDays <= 15;
     const isEligible = isWithin15Days && !hasActiveRequest;
@@ -210,11 +214,12 @@ export default function OrdersPage() {
         ) : (
           <div className="space-y-4 max-w-4xl mx-auto">
             {orders.map((order, idx) => {
-              // Order cancel only — ignore shipment/delivery void (that was painting Active orders as CANCELLED)
+              // Order cancel only — ignore shipment/fulfillment void (was painting delivered RMAs as CANCELLED)
+              const statusLower = String(order.status || '').toLowerCase();
               const isCancelled =
                 Boolean(order.cancelledBy) ||
-                String(order.status || '').toLowerCase().includes('cancel') ||
-                String(order.fulfillmentStatus || '').toLowerCase().includes('cancel');
+                statusLower === 'cancelled' ||
+                statusLower === 'canceled';
               const statusKey = isCancelled
                 ? 'cancelled'
                 : (order.deliveryStatus || order.status || 'pending');

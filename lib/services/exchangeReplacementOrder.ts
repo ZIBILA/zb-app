@@ -453,9 +453,11 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
         }
       });
 
-      // 2. Issue Store Credit for negative difference if applicable
+      // 2. Negative difference: Store Credit (default / COD / customer choice) or original payment refund.
       let storeCreditRecord = null;
-      if (isNegativeDiff && negativeDiffAmount > 0) {
+      const preferOriginalRefund =
+        String(exchangeRequest.settlementPreference || "").toUpperCase() === "REFUND_ORIGINAL_METHOD";
+      if (isNegativeDiff && negativeDiffAmount > 0 && !preferOriginalRefund) {
         storeCreditRecord = await tx.storeCredit.create({
           data: {
             customerId: exchangeRequest.customerId,
@@ -504,6 +506,56 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
         storeCreditIssued: negativeDiffAmount
       };
     });
+
+    // 5a. Prepaid negative-diff: refund to original payment when customer chose that method.
+    if (
+      isNegativeDiff &&
+      negativeDiffAmount > 0 &&
+      String(exchangeRequest.settlementPreference || "").toUpperCase() === "REFUND_ORIGINAL_METHOD"
+    ) {
+      try {
+        const paymentId = exchangeRequest.order?.razorpayPaymentId;
+        if (paymentId && !String(paymentId).startsWith("pay_mock_")) {
+          const { resolveRazorpayCredentials } = await import("@/lib/razorpay-credentials");
+          const Razorpay = (await import("razorpay")).default;
+          const creds = await resolveRazorpayCredentials();
+          const razorpay: any = new Razorpay({ key_id: creds.key_id, key_secret: creds.key_secret });
+          await razorpay.payments.refund(paymentId, {
+            amount: Math.round(negativeDiffAmount * 100),
+            notes: {
+              exchangeRequestId: id,
+              reason: "Exchange price difference refund to original payment",
+            },
+          });
+          await prisma.exchangeRequest.update({
+            where: { id },
+            data: { paymentStatus: "refunded_original" },
+          });
+        } else {
+          // No Razorpay payment (or mock) — fall back to store credit so the customer still gets value.
+          const { issueStoreCredits } = await import("@/lib/storeCreditsHelper");
+          await issueStoreCredits({
+            customerId: exchangeRequest.customerId,
+            amount: negativeDiffAmount,
+            description: `Exchange adjustment (fallback store credit) on order #${exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId}`,
+            orderId: result.localOrderId,
+            type: "exchange_adjustment",
+            expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          });
+        }
+      } catch (refundErr: any) {
+        console.error("[Exchange Create Order] Original payment refund failed, issuing store credit:", refundErr?.message);
+        const { issueStoreCredits } = await import("@/lib/storeCreditsHelper");
+        await issueStoreCredits({
+          customerId: exchangeRequest.customerId,
+          amount: negativeDiffAmount,
+          description: `Exchange adjustment (store credit after refund failure) on order #${exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId}`,
+          orderId: result.localOrderId,
+          type: "exchange_adjustment",
+          expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        });
+      }
+    }
 
     // 5. Create Forward Delhivery Shipment for the replacement order
     // Replacement dispatch is booked from the order page via Shiprocket (ops chooses courier + parcel).

@@ -3,7 +3,7 @@ import crypto from "crypto";
 import prisma from "@/lib/db";
 import { extractItemVariantAndSize } from "@/lib/utils";
 import { createWithLinkedId } from "@/lib/linkedIds";
-import { requestEligibilityError } from "@/lib/returnPolicy";
+import { requestEligibilityError, isCodOrder, resolveRefundMethod } from "@/lib/returnPolicy";
 import { resolveRequestCustomer } from "@/lib/requestAuth";
 import { resolveRazorpayCredentials } from "@/lib/razorpay-credentials";
 import { assertCapturedCharge } from "@/lib/razorpay-payment";
@@ -208,14 +208,28 @@ export async function POST(req: Request) {
       });
     }
 
-    // Extract settlement preference (PREPAID_NOW vs COD_ON_DELIVERY)
-    const rawPref = body.settlementPreference || paymentDetails?.settlementPreference || paymentDetails?.paymentMethod;
-    const settlementPreference = (rawPref === 'COD_ON_DELIVERY' || rawPref === 'cod') ? 'COD_ON_DELIVERY' : 'PREPAID_NOW';
+    // Settlement: positive diff → PREPAID_NOW / COD_ON_DELIVERY;
+    // negative diff → REFUND_ORIGINAL_METHOD / REFUND_STORE_CREDIT (COD forced to store credit).
+    const rawPref = String(
+      body.settlementPreference || paymentDetails?.settlementPreference || paymentDetails?.paymentMethod || ""
+    );
+    const finalPriceDifference = Math.round(calculatedPriceDifference * 100) / 100;
+
+    let settlementPreference = "PREPAID_NOW";
+    if (finalPriceDifference < 0) {
+      const requestedRefund =
+        rawPref === "REFUND_STORE_CREDIT" || rawPref === "store_credit" ? "store_credit" : "original_method";
+      const refundMethod = resolveRefundMethod(order, requestedRefund);
+      settlementPreference =
+        refundMethod === "store_credit" ? "REFUND_STORE_CREDIT" : "REFUND_ORIGINAL_METHOD";
+      if (isCodOrder(order)) settlementPreference = "REFUND_STORE_CREDIT";
+    } else if (finalPriceDifference > 0) {
+      settlementPreference =
+        rawPref === "COD_ON_DELIVERY" || rawPref === "cod" ? "COD_ON_DELIVERY" : "PREPAID_NOW";
+    }
 
     // The price difference is ALWAYS the server-calculated value. Any amount sent by the client
     // (paymentDetails.priceDifference) is ignored.
-    const finalPriceDifference = Math.round(calculatedPriceDifference * 100) / 100;
-
     let paymentStatus = "not_required";
     let verifiedPaymentId: string | null = null;
     if (finalPriceDifference > 0) {
@@ -233,6 +247,9 @@ export async function POST(req: Request) {
       } else {
         paymentStatus = "cod_pending";
       }
+    } else if (finalPriceDifference < 0) {
+      paymentStatus =
+        settlementPreference === "REFUND_ORIGINAL_METHOD" ? "refund_original_pending" : "refund_credit_pending";
     }
 
     const exchangeRequest = await createWithLinkedId<any>(prisma as any, 'exchange', order, (displayId) => prisma.exchangeRequest.create({

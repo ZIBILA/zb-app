@@ -481,12 +481,11 @@ export default function ProfilePage() {
               { label: "WISHLIST", value: mounted ? bookmarks.length : 0, icon: Heart },
               { 
                 label: "STORE COINS", 
-                value: storeCredits > 0 ? storeCredits.toLocaleString("en-IN") : "0", 
+                value: storeCredits > 0 ? Math.ceil(storeCredits).toLocaleString("en-IN") : "0", 
                 icon: Coins,
-                subtext: storeCredits > 0 ? `(₹${storeCredits.toLocaleString("en-IN")})` : undefined,
                 onClick: () => setShowCoinsModal(true)
               },
-            ].map(({ label, value, icon: Icon, subtext, onClick }, index) => (
+            ].map(({ label, value, icon: Icon, onClick }, index) => (
               <div
                 key={label}
                 onClick={onClick}
@@ -499,7 +498,6 @@ export default function ProfilePage() {
                 <Icon className="w-5 h-5 text-foreground mb-1.5" strokeWidth={1.25} />
                 <p className="text-[8px] font-bold text-foreground/40 tracking-wider mb-2">{label}</p>
                 <p className="text-[14px] font-black text-foreground leading-none">{value}</p>
-                {subtext && <p className="text-[8.5px] text-amber-500 font-medium mt-1">{subtext}</p>}
               </div>
             ))}
           </div>
@@ -1306,7 +1304,7 @@ export default function ProfilePage() {
               <div>
                 <h3 className="text-base font-bold text-foreground">Store Coins Wallet</h3>
                 <p className="text-xs text-amber-500 font-semibold mt-1">
-                  Balance: {storeCredits.toLocaleString("en-IN")} Coins (₹{storeCredits.toLocaleString("en-IN")})
+                  Balance: {Math.ceil(storeCredits).toLocaleString("en-IN")} Coins
                 </p>
                 <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
                   Store Coins are redeemable exclusively on the Zica Bella mobile app (1 Coin = ₹1). Open or download the app to redeem your coins towards any order!

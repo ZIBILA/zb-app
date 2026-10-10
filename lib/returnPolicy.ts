@@ -65,9 +65,33 @@ type EligibilityOrder = {
   exchangeRequests?: Array<{ status?: string | null }> | null;
 };
 
+/** Request statuses that no longer block a new return/exchange on remaining items. */
+export const TERMINAL_REQUEST_STATUSES = new Set([
+  'cancelled',
+  'rejected',
+  'refunded',
+  'completed',
+  'new_order_created',
+]);
+
+export function isActiveReturnRequest(r: {
+  status?: string | null;
+  reason?: string | null;
+}): boolean {
+  const s = String(r.status || '').toLowerCase();
+  if (TERMINAL_REQUEST_STATUSES.has(s)) return false;
+  if (String(r.reason || '').includes('EXCHANGE_RETURN')) return false;
+  return true;
+}
+
+export function isActiveExchangeRequest(e: { status?: string | null }): boolean {
+  return !TERMINAL_REQUEST_STATUSES.has(String(e.status || '').toLowerCase());
+}
+
 /**
  * Single source of truth for "can this order get a new return / exchange request?":
- * delivered, inside the window, and no other active request.
+ * delivered, inside the window, and no other in-flight request.
+ * Completed / refunded / rejected requests do not block remaining eligible items.
  * Returns an error message, or null when the order is eligible.
  */
 export function requestEligibilityError(
@@ -85,20 +109,17 @@ export function requestEligibilityError(
 
   const deliveredTimestamp = order.deliveredAt || order.createdAt;
   if (deliveredTimestamp) {
-    const diffDays = Math.ceil(
-      Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)
+    // Inclusive calendar-day window from delivery (day 0 = delivery day).
+    const diffDays = Math.floor(
+      (Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)
     );
     if (diffDays > RETURN_WINDOW_DAYS) {
       return `The ${RETURN_WINDOW_DAYS}-day return/exchange window for this order has expired.`;
     }
   }
 
-  const activeReturn = order.returnRequests?.find(
-    (r) => String(r.status || '').toLowerCase() !== 'cancelled' && !String(r.reason || '').includes('EXCHANGE_RETURN')
-  );
-  const activeExchange = order.exchangeRequests?.find(
-    (e) => String(e.status || '').toLowerCase() !== 'cancelled'
-  );
+  const activeReturn = order.returnRequests?.find(isActiveReturnRequest);
+  const activeExchange = order.exchangeRequests?.find(isActiveExchangeRequest);
   if (activeReturn || activeExchange) {
     return 'An active return or exchange request already exists for this order.';
   }
@@ -143,7 +164,10 @@ export function deriveReverseStage(input: {
   const s = String(input.requestStatus || '').toLowerCase();
   if (s === 'rejected') return 'rejected';
   if (s === 'cancelled') return 'cancelled';
-  if (input.receivedAt || ['received', 'qc_passed', 'refunded', 'new_order_created', 'completed', 'refund_pending'].includes(s)) {
+  if (
+    input.receivedAt ||
+    ['received', 'qc_passed', 'refunded', 'new_order_created', 'completed', 'refund_pending'].includes(s)
+  ) {
     return 'received';
   }
   if (['pending_approval', 'submitted', 'pending'].includes(s)) return 'awaiting_acceptance';

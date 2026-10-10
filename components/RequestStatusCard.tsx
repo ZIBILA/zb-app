@@ -67,14 +67,10 @@ export default function RequestStatusCard({ summary, children, action }: Props) 
         {hasPickup && (
           <>
             <div className="flex justify-between gap-3">
-              <span className="text-foreground/50">Courier</span>
-              <span className="font-bold text-foreground">{pickup.courier || "—"}</span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="text-foreground/50">AWB</span>
+              <span className="text-foreground/50">Tracking</span>
               {pickup.trackingUrl ? (
-                <a href={pickup.trackingUrl} target="_blank" rel="noreferrer" className="font-mono font-bold text-foreground underline flex items-center gap-1">
-                  {pickup.awb} <ExternalLink className="w-3 h-3" />
+                <a href={pickup.trackingUrl} target="_blank" rel="noreferrer" className="font-bold text-foreground underline flex items-center gap-1">
+                  External Track <ExternalLink className="w-3 h-3" />
                 </a>
               ) : (
                 <span className="font-mono font-bold text-foreground">{pickup.awb}</span>

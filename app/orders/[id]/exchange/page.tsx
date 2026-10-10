@@ -130,7 +130,23 @@ export default function ExchangeRequestPage() {
     return diff;
   }, 0);
 
-  const [settlementPreference, setSettlementPreference] = useState<"PREPAID_NOW" | "COD_ON_DELIVERY">("PREPAID_NOW");
+  const [settlementPreference, setSettlementPreference] = useState<
+    "PREPAID_NOW" | "COD_ON_DELIVERY" | "REFUND_ORIGINAL_METHOD" | "REFUND_STORE_CREDIT"
+  >("PREPAID_NOW");
+  const orderIsCod = Boolean(
+    String(order?.paymentMethod || "").toLowerCase().includes("cod") ||
+      String(order?.tags || "").toLowerCase().includes("cod")
+  );
+
+  useEffect(() => {
+    if (priceDifference < 0) {
+      setSettlementPreference(orderIsCod ? "REFUND_STORE_CREDIT" : "REFUND_ORIGINAL_METHOD");
+    } else if (priceDifference > 0) {
+      setSettlementPreference((prev) =>
+        prev === "REFUND_ORIGINAL_METHOD" || prev === "REFUND_STORE_CREDIT" ? "PREPAID_NOW" : prev
+      );
+    }
+  }, [priceDifference, orderIsCod]);
 
   const submitExchangeRequest = async (
     razorpayResponse: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string } | null = null,
@@ -476,6 +492,41 @@ export default function ExchangeRequestPage() {
                   Pay on Delivery (COD)
                 </button>
               </div>
+            </div>
+          )}
+          {priceDifference < 0 && (
+            <div className="mb-3 space-y-1.5">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/50">Refund Method for Difference</p>
+              {orderIsCod ? (
+                <p className="text-[10px] text-amber-500 leading-relaxed">
+                  COD exchanges issue the difference as Store Credit only.
+                </p>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettlementPreference("REFUND_ORIGINAL_METHOD")}
+                    className={`flex-1 py-2 rounded-xl text-[10px] font-bold border transition-all ${
+                      settlementPreference === "REFUND_ORIGINAL_METHOD"
+                        ? "bg-foreground text-background border-foreground"
+                        : "border-foreground/10 text-foreground/50 hover:border-foreground/20"
+                    }`}
+                  >
+                    Original Payment
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSettlementPreference("REFUND_STORE_CREDIT")}
+                    className={`flex-1 py-2 rounded-xl text-[10px] font-bold border transition-all ${
+                      settlementPreference === "REFUND_STORE_CREDIT"
+                        ? "bg-foreground text-background border-foreground"
+                        : "border-foreground/10 text-foreground/50 hover:border-foreground/20"
+                    }`}
+                  >
+                    Store Credit
+                  </button>
+                </div>
+              )}
             </div>
           )}
           <div className="flex justify-between items-center mb-3">

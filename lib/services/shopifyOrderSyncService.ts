@@ -239,6 +239,8 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       customerEmail: string;
       shippingAddress: unknown;
       codUpfrontPaid: unknown;
+      codUpfrontPaymentId: string | null;
+      razorpayPaymentId: string | null;
     } | null = null;
     try {
       webStoreOrder = await prisma.webStoreOrder.findFirst({
@@ -254,6 +256,8 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
           customerEmail: true,
           shippingAddress: true,
           codUpfrontPaid: true,
+          codUpfrontPaymentId: true,
+          razorpayPaymentId: true,
         },
       });
     } catch {

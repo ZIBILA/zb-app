@@ -207,18 +207,96 @@ async function GET_impl(req: Request) {
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
+    // Accurate live-stage counts over ALL rows (not the page cap), without double-counting
+    // legacy groupBy totals onto the same keys.
+    const [allRequestsForCounts, allStandaloneForCounts] = await Promise.all([
+      prisma.returnRequest.findMany({
+        where: notInternalExchange,
+        select: {
+          status: true,
+          receivedAt: true,
+          reverseAwb: true,
+          order: {
+            select: {
+              shipments: {
+                select: { awb: true, trackingNumber: true, status: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.return.findMany({
+        where: { returnRequestId: null },
+        select: {
+          status: true,
+          order: {
+            select: {
+              shipments: {
+                select: { awb: true, trackingNumber: true, status: true },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const isTerminalStatus = (status: string | null | undefined) =>
+      ['refunded', 'completed', 'new_order_created', 'rejected', 'cancelled'].includes(
+        String(status || '').toLowerCase()
+      );
+
+    // Working-queue counts exclude terminal outcomes (refunded/rejected have their own chips).
+    const allStages = [
+      ...allRequestsForCounts
+        .filter((r: { status: string | null }) => !isTerminalStatus(r.status))
+        .map(
+          (r: {
+            status: string | null;
+            receivedAt: Date | null;
+            reverseAwb: string | null;
+            order: { shipments: Array<{ awb: string | null; trackingNumber: string | null; status: string | null }> } | null;
+          }) =>
+            liveReverseFields({
+              requestStatus: r.status,
+              receivedAt: r.receivedAt,
+              reverseAwb: r.reverseAwb,
+              shipments: r.order?.shipments,
+            }).liveStage
+        ),
+      ...allStandaloneForCounts
+        .filter((sr: { status: string | null }) => !isTerminalStatus(sr.status))
+        .map(
+          (sr: {
+            status: string | null;
+            order: { shipments: Array<{ awb: string | null; trackingNumber: string | null; status: string | null }> } | null;
+          }) =>
+            liveReverseFields({
+              requestStatus: sr.status?.toLowerCase(),
+              receivedAt: null,
+              reverseAwb: null,
+              shipments: sr.order?.shipments,
+            }).liveStage
+        ),
+    ];
+
     const statusCounts: Record<string, number> = {
-      ...countByReverseStageFilter(combined.map((r: any) => r.liveStage)),
+      ...countByReverseStageFilter(allStages),
+      refunded: 0,
+      rejected: 0,
     };
 
-    // Keep legacy DB status counts for refunded/rejected chips
+    // Terminal chips use raw DB statuses only (never merged into live-stage buckets).
     statusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
-      statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+      if (s === 'refunded' || s === 'rejected') {
+        statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+      }
     });
     standaloneStatusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
-      statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+      if (s === 'refunded' || s === 'rejected') {
+        statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+      }
     });
 
     const stageFiltered = isLiveFilter || status === 'rejected' || status === 'refunded'

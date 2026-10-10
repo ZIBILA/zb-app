@@ -193,13 +193,19 @@ export async function GET(req: Request) {
           }),
         }));
 
-        const activeReturn = userReturnRequests.find((r: any) => r.status !== 'cancelled');
-        const activeExchange = userExchangeRequests.find((e: any) => e.status !== 'cancelled');
+        const isTerminal = (st: string) =>
+          ['cancelled', 'rejected', 'refunded', 'completed', 'new_order_created'].includes(String(st || '').toLowerCase());
+        const activeReturn = userReturnRequests.find(
+          (r: any) => !isTerminal(r.status) && !String(r.reason || '').includes('EXCHANGE_RETURN')
+        );
+        const activeExchange = userExchangeRequests.find((e: any) => !isTerminal(e.status));
         const hasActiveRequest = !!(activeReturn || activeExchange);
 
         const isDelivered = String(order.deliveryStatus || order.status || '').toLowerCase() === 'delivered';
         const deliveredTimestamp = order.deliveredAt || order.createdAt;
-        const diffDays = isDelivered ? Math.ceil(Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)) : 999;
+        const diffDays = isDelivered
+          ? Math.floor((Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24))
+          : 999;
         const isWithin15Days = isDelivered && diffDays <= 15;
         const isEligible = isWithin15Days && !hasActiveRequest;
         const remainingDays = Math.max(0, 15 - diffDays);

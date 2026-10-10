@@ -86,8 +86,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       ? (returnRequest!.returns[0]?.refundMethod || 'original_method')
       : (standaloneReturn!.refundMethod || 'original_method');
 
-    // COD orders → Store Credit only (policy). Prepaid: admin override > customer's choice.
-    const refundMethod = resolveRefundMethod(order, overrideRefundMethod || initialMethod);
+    // COD → store credit only. Prepaid uses the customer's saved choice (no admin override).
+    const refundMethod = resolveRefundMethod(order, initialMethod);
 
     // The customer's money / credit is released only after we physically hold the parcel.
     const receivedOk = isRequestGroup
@@ -361,6 +361,23 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
     if (refundMethod === 'store_credit') {
       console.log(`[AdminRefundApprove] Store Credit of ₹${finalRefundAmount} issued to Customer ${customerId}`);
+    }
+
+    // Reverse proportional coupon cashback / Store Coins earned on this order.
+    try {
+      const { reverseCouponCashbackForReturn } = await import('@/lib/storeCreditsHelper');
+      const paidProductAmount = Math.max(
+        0,
+        Number(order.subtotalPrice || order.totalPrice || 0) - Number(order.discountAmount || 0)
+      );
+      await reverseCouponCashbackForReturn({
+        orderId: order.id,
+        customerId,
+        refundAmount: finalRefundAmount,
+        orderPaidAmount: paidProductAmount || Number(order.totalPrice || 0),
+      });
+    } catch (cashbackErr: any) {
+      console.error('[AdminRefundApprove] Coupon cashback reversal warning:', cashbackErr?.message);
     }
 
     // 6. Restock SKUs if applicable (best effort — the release itself is already committed)

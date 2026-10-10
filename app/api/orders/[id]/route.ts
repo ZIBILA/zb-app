@@ -468,8 +468,13 @@ function statusTimeline(order: any) {
   const delivery = String(order.deliveryStatus || "").toLowerCase();
   const updatedAt = new Date(order.updatedAt).toISOString();
 
-  const hasActiveReturn = order.returnRequests?.some((r: any) => r.status !== "cancelled") || false;
-  const hasActiveExchange = order.exchangeRequests?.some((e: any) => e.status !== "cancelled") || false;
+  const isTerminalReq = (st: string) =>
+    ["cancelled", "rejected", "refunded", "completed", "new_order_created"].includes(String(st || "").toLowerCase());
+  const hasActiveReturn =
+    order.returnRequests?.some(
+      (r: any) => !isTerminalReq(r.status) && !String(r.reason || "").includes("EXCHANGE_RETURN")
+    ) || false;
+  const hasActiveExchange = order.exchangeRequests?.some((e: any) => !isTerminalReq(e.status)) || false;
   const isReturnInitiated =
     status.includes("return") ||
     status.includes("exchange") ||

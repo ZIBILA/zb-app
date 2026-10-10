@@ -76,5 +76,16 @@ export function filterByLiveStage<T extends { liveStage?: ReverseStage; status?:
       ['completed', 'new_order_created', 'refunded'].includes(String(r.status || '').toLowerCase())
     );
   }
+  // Working-queue filters should not include terminal outcomes (those have their own chips).
+  if (f === 'received') {
+    return rows.filter(
+      (r) =>
+        r.liveStage &&
+        matchesReverseStageFilter(r.liveStage, f) &&
+        !['refunded', 'completed', 'new_order_created', 'rejected', 'cancelled'].includes(
+          String(r.status || '').toLowerCase()
+        )
+    );
+  }
   return rows.filter((r) => r.liveStage && matchesReverseStageFilter(r.liveStage, f));
 }
