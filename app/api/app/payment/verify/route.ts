@@ -4,11 +4,12 @@ import Razorpay from 'razorpay';
 
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
 import prisma from '@/lib/db';
-import { sendSnapEvent } from '@/lib/snap-capi';
 import { sendOpenAiEvent, toMinorUnits as oaiToMinorUnits } from '@/lib/openai-capi';
 import { assignUniversalOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
 
 import { getCorsHeaders, handleCorsOptions } from '@/lib/cors';
+import { emitSnapAppPurchase, appRequestContext } from '@/lib/snap/app-purchase-server';
+import { confirmRazorpayCapture } from '@/lib/razorpay-payment';
 
 export async function OPTIONS(req: Request) {
   return handleCorsOptions(req);
@@ -17,7 +18,10 @@ export async function OPTIONS(req: Request) {
 export async function POST(req: Request) {
   const corsHeaders = getCorsHeaders(req);
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = await req.json();
+    const verifyBody = await req.json();
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = verifyBody;
+    // Snap MOBILE_APP Purchase is sent only when Razorpay reports the money CAPTURED.
+    let paymentCaptured = false;
     
     if (!razorpay_order_id || !razorpay_payment_id) {
       console.error('[Verify] Missing fields:', { razorpay_order_id, razorpay_payment_id, has_signature: !!razorpay_signature });
@@ -82,48 +86,33 @@ export async function POST(req: Request) {
         );
       }
 
-      if (payment.status !== 'captured' || payment.captured !== true) {
+      if (!['captured', 'authorized'].includes(payment.status)) {
         return NextResponse.json(
-          { success: false, error: `Payment is not captured yet (${payment.status}).` },
+          { success: false, error: `Payment is not complete yet (${payment.status}).` },
           { status: 400, headers: corsHeaders }
         );
       }
     }
 
-    // Always confirm live capture + amount (signature path included)
-    const creds = await resolveRazorpayCredentials();
-    const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
-    const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-
-    let verifiedCaptureAmount = 0;
+    // A valid signature (or HEADLESS lookup) proves authorization only. The order
+    // becomes paid / cod_upfront_paid ONLY when Razorpay confirms the payment
+    // CAPTURED; otherwise it stays pending and the payment.captured / order.paid
+    // webhook completes it.
     try {
-      // Peek order first so COD fee expectation is correct
-      const peekOrder = await prisma.order.findUnique({
-        where: { razorpayOrderId: razorpay_order_id },
-        select: { paymentMethod: true, tags: true, totalPrice: true },
-      });
-      const peekIsCod =
-        String(peekOrder?.paymentMethod || '').toLowerCase().includes('cod') ||
-        String(peekOrder?.tags || '').toLowerCase().includes('cod');
-      const expectedMin = peekIsCod
-        ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
-        : 0;
-      const captured = await assertCapturedCharge({
-        paymentId: razorpay_payment_id,
-        credentials: { key_id: creds.key_id.trim(), key_secret: secret },
-        expectedMinRupees: expectedMin,
-        orderId: razorpay_order_id,
-      });
-      verifiedCaptureAmount = paymentAmountRupees(captured);
+      const captureCreds = await resolveRazorpayCredentials();
+      const capture = await confirmRazorpayCapture(razorpay_payment_id, {
+        key_id: captureCreds.key_id.trim(),
+        key_secret: secret,
+      }, { expectedOrderId: razorpay_order_id });
+      paymentCaptured = capture.captured;
+      if (!capture.captured) {
+        console.warn(`[Verify] Payment ${razorpay_payment_id} not captured yet (${capture.reason}) — order left pending for the webhook`);
+      }
     } catch (capErr: any) {
-      console.error('[Verify] Capture check failed:', capErr?.message || capErr);
-      return NextResponse.json(
-        { success: false, error: 'Payment has not been captured on Razorpay.' },
-        { status: 402, headers: corsHeaders }
-      );
+      console.warn('[Verify] Capture check failed — order left pending for the webhook:', capErr?.message);
     }
 
-    console.log(`[Verify] ✅ Payment verified: ${razorpay_payment_id} for order ${razorpay_order_id}`);
+    console.log(`[Verify] ✅ Payment verified: ${razorpay_payment_id} for order ${razorpay_order_id} (captured=${paymentCaptured})`);
 
     let localOrderId: string | null = null;
     let localOrderNumber: string | null = null;
@@ -149,7 +138,7 @@ export async function POST(req: Request) {
 
         // Promote ZBPP/ZBPF → real ZB when payment is confirmed
         let promotedNumber = order.internalOrderNumber;
-        if (isFailedPrefixNumber(promotedNumber)) {
+        if (paymentCaptured && isFailedPrefixNumber(promotedNumber)) {
           const oldNumber = promotedNumber!;
           let minted = '';
           try {
@@ -188,7 +177,7 @@ export async function POST(req: Request) {
         }
         localOrderNumber = promotedNumber;
 
-        if (!alreadyPaid) {
+        if (!alreadyPaid && paymentCaptured) {
           // ─── Sync with Shopify ───
           let shopifyOrderId = order.shopifyOrderId;
           let tags = order.tags || 'mobile-app';
@@ -202,12 +191,6 @@ export async function POST(req: Request) {
               status: isCod ? 'open' : 'approved',
               tags: `${tags}, ${isCod ? 'cod_upfront_paid' : 'Prepaid, Razorpay'}`,
               internalOrderNumber: promotedNumber || order.internalOrderNumber,
-              ...(isCod
-                ? {
-                    codUpfrontPaid: verifiedCaptureAmount || (order as any).codUpfrontPaid || 0,
-                    codUpfrontPaymentId: razorpay_payment_id,
-                  }
-                : {}),
             }
           });
 
@@ -289,52 +272,15 @@ export async function POST(req: Request) {
           }
           console.log(`[Verify] Local order ${order.id} marked as ${targetPaymentStatus}`);
 
-          // ─── FIX 3: Authoritative server-side Snap CAPI Purchase ───
-          // Fires when Razorpay payment is verified for mobile-app prepaid orders.
-          // Uses eventId = order.id to match browser pixel's Purchase event for Snap dedup.
-          try {
-            const address = typeof order.shippingAddress === 'string'
-              ? JSON.parse(order.shippingAddress)
-              : order.shippingAddress;
-            const custName = order.customer?.name || address?.name || '';
-
-            const toSnapItemId = (li: any): string => {
-              const raw = li.sku || li.variantId || li.productId || '';
-              const s = String(raw);
-              const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-              const m = stripped.match(/(\d+)\s*$/);
-              return m ? m[1] : stripped;
-            };
-
-            sendSnapEvent({
-              eventName: 'PURCHASE',
-              eventId: order.id,
-              eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${order.id}/confirmation`,
-              userAgent: req.headers.get('user-agent') || '',
-              ipAddress: req.headers.get('do-connecting-ip')
-                || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-                || req.headers.get('x-real-ip') || undefined,
-              userData: {
-                em: order.customer?.email || undefined,
-                ph: order.customer?.phone || undefined,
-                fn: custName.trim().split(/\s+/)[0] || undefined,
-                ln: custName.trim().split(/\s+/).slice(1).join(' ') || undefined,
-                ct: address?.city || undefined,
-                st: address?.province || address?.state || undefined,
-                zp: address?.zip || address?.pincode || undefined,
-                country: address?.country || undefined,
-              },
-              customData: {
-                price: Number(order.totalPrice || 0),
-                currency: order.currency || 'INR',
-                item_ids: order.items?.map(toSnapItemId) || [],
-                transaction_id: order.id,
-                number_items: order.items?.length || 1,
-              },
-            }).catch(() => {}); // fire-and-forget; never block order response
-          } catch (snapErr: any) {
-            console.warn('[Verify] Snap CAPI Purchase fire failed:', snapErr.message);
-          }
+          // ─── Snap MOBILE_APP Purchase (never the website pixel) ───
+          // lib/snap/app-purchase.ts rebuilds it from the stored order + the device
+          // context the app sent at payment start, and sends once (ledger). Only a
+          // CAPTURED payment counts; otherwise the payment.captured webhook sends it.
+          emitSnapAppPurchase(order.id, {
+            paymentConfirmed: paymentCaptured,
+            device: verifyBody?.snapDevice,
+            req: appRequestContext(req, order.customerId),
+          }).catch(() => {});
 
           // ─── Authoritative server-side OpenAI Ads order_created ───
           // Mobile app — no browser pixel to dedup against, so action_source = 'mobile_app'.
@@ -404,6 +350,8 @@ export async function POST(req: Request) {
         payment_id: razorpay_payment_id,
         orderId: localOrderId,
         orderNumber: localOrderNumber,
+        // 'pending_capture' → order kept pending; the Razorpay webhook confirms it.
+        paymentState: paymentCaptured ? 'captured' : 'pending_capture',
       },
       { headers: corsHeaders }
     );

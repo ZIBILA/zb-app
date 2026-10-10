@@ -7,10 +7,13 @@ import {
   META_GRAPH_API_VERSION,
 } from '@/lib/metaErrors';
 import { fetchMetaApi } from '@/lib/metaApiLogger';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  // Admin only: operational Meta diagnostics are never public.
+  try { await requireAdmin(); } catch (authErr) { return handleAuthError(authErr); }
   const PIXEL_ID = process.env.META_PIXEL_ID;
   const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN;
 

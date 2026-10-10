@@ -4,12 +4,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/lib/cart-context";
-import { useMetaEvents } from "@/hooks/useMetaEvents";
-import { useSnapEvents } from "@/hooks/useSnapEvents";
+import { useMetaEvents, metaCartPayload, ga4AddPaymentInfo, ga4BeginCheckout } from "@/hooks/useMetaEvents";
+import { useSnapEvents, snapCartPayload } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zbTrackPaymentInitiated } from "@/lib/analytics-tracker";
 import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
+import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -318,6 +319,8 @@ export default function CheckoutPage() {
   } | null>(null);
 
   const paymentLockRef = useRef<boolean>(false);
+  // Meta AddPaymentInfo fires once per checkout, at the payment step.
+  const metaPaymentInfoFiredRef = useRef<boolean>(false);
   const paymentSucceededRef = useRef(false);
 
   const isDark = resolvedTheme === "dark";
@@ -334,14 +337,8 @@ export default function CheckoutPage() {
     if (items.length > 0 && !initiatedPixel && canFire) {
       setInitiatedPixel(true);
       const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ') || undefined;
+      // Product ids — used by OpenAI Ads below (unchanged). Meta uses variant ids (metaCartPayload).
       const contentIds = items.map(item => item.productId);
-      const contents = items.map(item => ({
-        id: item.productId,
-        quantity: item.quantity,
-        item_price: parseFloat(item.price),
-        title: item.title,
-        category: item.category
-      }));
 
       // Parse the pre-filled/saved address state into userData
       let userData: any = undefined;
@@ -361,8 +358,35 @@ export default function CheckoutPage() {
         };
       }
 
-      trackInitiateCheckout(subtotal, items.length, 'INR', joinedCategories, contentIds, userData, contents);
-      trackSnapStartCheckout(subtotal, items.length, 'INR', joinedCategories, contentIds, userData);
+      {
+        // Meta: feed.xml g:id = variant id; num_items = total units.
+        const meta = metaCartPayload(items);
+        trackInitiateCheckout(
+          subtotal, meta.numItems, 'INR', joinedCategories, meta.ids,
+          userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
+          meta.contents,
+          { ga: false }
+        );
+        // GA4 begin_checkout exactly as on main (product ids, cart lines).
+        ga4BeginCheckout(subtotal, 'INR', joinedCategories, contentIds, items.map(item => ({
+          id: item.productId,
+          quantity: item.quantity,
+          item_price: parseFloat(item.price),
+          title: item.title,
+          category: item.category
+        })));
+      }
+      {
+        const snap = snapCartPayload(items);
+        // Unique categories, ≤ 256 chars: /api/snap/event rejects longer content_category
+        // (a big cart repeating "Oversized T-Shirts" used to make the CAPI event fail).
+        const snapCategories = Array.from(new Set(items.map(item => item.category).filter(Boolean))).join(', ').slice(0, 256) || undefined;
+        trackSnapStartCheckout(
+          subtotal, snap.numItems, 'INR', snapCategories, snap.ids,
+          userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
+          snap.contents
+        );
+      }
       trackOaiCheckoutStarted(subtotal, items.length, 'INR', joinedCategories, contentIds, userData);
       zbTrackBeginCheckout(subtotal, { num_items: items.length, currency: 'INR' });
 
@@ -1251,35 +1275,20 @@ export default function CheckoutPage() {
     const fn = nameParts[0] || undefined;
     const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
 
-    const contentIds = items.map(item => item.productId);
-    const contents = items.map(item => ({
-      id: item.productId,
-      quantity: item.quantity,
-      item_price: parseFloat(item.price)
-    }));
-
+    // Meta AddPaymentInfo is NOT fired here: submitting an address is not payment
+    // information. It fires at the payment step (fireMetaAddPaymentInfo in handlePlaceOrder).
+    // GA4 add_payment_info stays exactly as on main (this moment, product ids).
     if (!paymentInfoFired) {
-      trackAddPaymentInfo(
-        {
-          country: updatedAddress.country,
-          st: updatedAddress.state,
-          ct: updatedAddress.city,
-          zp: updatedAddress.zip,
-          fn,
-          ln,
-          em: updatedAddress.email || undefined,
-          ph: formattedPhone || undefined,
-        },
-        subtotal,
-        'INR',
-        contentIds,
-        contents
-      );
+      ga4AddPaymentInfo(subtotal, 'INR', items.map(item => item.productId), items.map(item => ({
+        id: item.productId,
+        quantity: item.quantity,
+        item_price: parseFloat(item.price)
+      })));
       trackSnapAddBilling(
         subtotal,
         'INR',
         {
-          country: updatedAddress.country,
+          country: updatedAddress.countryCode || updatedAddress.country,
           st: updatedAddress.state,
           ct: updatedAddress.city,
           zp: updatedAddress.zip,
@@ -1288,7 +1297,9 @@ export default function CheckoutPage() {
           em: updatedAddress.email || undefined,
           ph: formattedPhone || undefined,
         },
-        contentIds
+        snapCartPayload(items).ids,
+        snapCartPayload(items).numItems,
+        snapCartPayload(items).contents
       );
       zbTrackPaymentInitiated(subtotal, { payment_method: paymentMethod, currency: 'INR' });
       setPaymentInfoFired(true);
@@ -1566,6 +1577,30 @@ export default function CheckoutPage() {
     }
   }, [paymentMethod, subtotal]);
 
+  const fireMetaAddPaymentInfo = () => {
+    if (metaPaymentInfoFiredRef.current) return;
+    metaPaymentInfoFiredRef.current = true;
+    const nameParts = (address.name || "").trim().split(/\s+/);
+    const meta = metaCartPayload(items);
+    trackAddPaymentInfo(
+      {
+        country: address.countryCode || address.country || undefined,
+        st: address.state || undefined,
+        ct: address.city || undefined,
+        zp: address.zip || undefined,
+        fn: nameParts[0] || undefined,
+        ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+        em: address.email || undefined,
+        ph: address.phone || undefined,
+      },
+      subtotal,
+      'INR', // subtotal is the INR base amount (cart prices are INR)
+      meta.ids,
+      meta.contents,
+      { ga: false } // GA4 add_payment_info fires at address submit, as on main
+    );
+  };
+
   const handlePlaceOrder = async () => {
     // Synchronous double-submit lock check
     if (paymentLockRef.current) {
@@ -1755,6 +1790,9 @@ export default function CheckoutPage() {
       });
       if (optionError) throw new Error(optionError);
 
+      // Meta AddPaymentInfo: the shopper is now actually paying (Razorpay opens next).
+      fireMetaAddPaymentInfo();
+
       // Track Payment Initiated event
       trackStorefrontEvent('Payment Initiated', {
         customerId: (session?.user as any)?.id || null,
@@ -1864,12 +1902,18 @@ export default function CheckoutPage() {
         // Fallback (no pre-created local id): await complete before navigate (old path)
         setLoading(true);
         try {
-          const verifyRes = await fetch("/api/checkout/complete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(completeBody),
-          });
-          const verifyData = await verifyRes.json();
+          // Re-sends while the payment is only authorized (paymentState "pending_capture").
+          const completion = await postCheckoutComplete(completeBody);
+
+          if (completion.pendingCapture) {
+            // Authorized, not captured: no success screen, cart kept, lock kept (no double pay).
+            setIsConfirmingPayment(false);
+            setError(CAPTURE_PENDING_MESSAGE);
+            setLoading(false);
+            return;
+          }
+          const verifyRes = completion.res!;
+          const verifyData = completion.data;
           if (verifyRes.ok && verifyData.orderId) {
             if (typeof window !== "undefined") {
               sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
@@ -2078,35 +2122,19 @@ export default function CheckoutPage() {
                       const fn = nameParts[0] || undefined;
                       const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
 
-                      const contentIds = items.map(item => item.productId);
-                      const contents = items.map(item => ({
-                        id: item.productId,
-                        quantity: item.quantity,
-                        item_price: parseFloat(item.price)
-                      }));
-
+                      // Meta AddPaymentInfo fires at the payment step (handlePlaceOrder), once.
+                      // GA4 add_payment_info stays exactly as on main (this moment, product ids).
                       if (!paymentInfoFired) {
-                        trackAddPaymentInfo(
-                          {
-                            country: address.country,
-                            st: address.state,
-                            ct: address.city,
-                            zp: address.zip,
-                            fn,
-                            ln,
-                            em: address.email || undefined,
-                            ph: address.phone || undefined,
-                          },
-                          subtotal,
-                          countryConfig?.currencyCode || 'INR',
-                          contentIds,
-                          contents
-                        );
+                        ga4AddPaymentInfo(subtotal, 'INR', items.map(item => item.productId), items.map(item => ({
+                          id: item.productId,
+                          quantity: item.quantity,
+                          item_price: parseFloat(item.price)
+                        })));
                         trackSnapAddBilling(
                           subtotal,
-                          countryConfig?.currencyCode || 'INR',
+                          'INR', // subtotal is the INR base amount (cart prices are INR)
                           {
-                            country: address.country,
+                            country: address.countryCode || address.country,
                             st: address.state,
                             ct: address.city,
                             zp: address.zip,
@@ -2115,7 +2143,9 @@ export default function CheckoutPage() {
                             em: address.email || undefined,
                             ph: address.phone || undefined,
                           },
-                          contentIds
+                          snapCartPayload(items).ids,
+                          snapCartPayload(items).numItems,
+                          snapCartPayload(items).contents
                         );
                         setPaymentInfoFired(true);
                       }

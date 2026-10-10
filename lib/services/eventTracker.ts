@@ -8,6 +8,15 @@ function sha256(text: string): string {
   return crypto.createHash('sha256').update(text.trim().toLowerCase()).digest('hex');
 }
 
+/**
+ * Storefront ecommerce events (lib/track-client.ts) that the website Meta Pixel + CAPI
+ * already report as ViewContent / AddToCart / InitiateCheckout / Purchase / AddToWishlist.
+ */
+const WEBSITE_PIXEL_TRACKED_EVENTS = new Set([
+  'Product Viewed', 'Category Viewed', 'Search Performed', 'Add To Wishlist', 'Add To Cart',
+  'Remove From Cart', 'Checkout Started', 'Payment Initiated', 'Purchase Completed', 'COD Order Placed',
+]);
+
 export const eventTracker = {
   /**
    * Central track function.
@@ -21,6 +30,13 @@ export const eventTracker = {
     productId?: string | null;
     eventSource?: string;
     metadata?: any;
+    /**
+     * Website ('web') ecommerce events are NOT forwarded to Meta by default: the
+     * storefront's own Pixel + CAPI already sends them with their own event IDs, so a
+     * second business_messaging copy would double-count. Set true only for deliberate
+     * demos (the admin Meta App Review trigger).
+     */
+    forwardWebEvent?: boolean;
   }) {
     const {
       eventName,
@@ -30,6 +46,7 @@ export const eventTracker = {
       productId,
       eventSource = 'system',
       metadata = {},
+      forwardWebEvent = false,
     } = params;
 
     // Normalize phone number
@@ -75,9 +92,28 @@ export const eventTracker = {
     }
 
     // 2. Forward to Meta Conversions API if enabled
-    if (isMetaEventsEnabled) {
+    // Website ecommerce actions are tracked by the storefront Pixel/CAPI; never forward
+    // them again from here (different event IDs → Meta cannot dedup them).
+    const skipWebsiteEvent = eventSource === 'web' && WEBSITE_PIXEL_TRACKED_EVENTS.has(eventName) && !forwardWebEvent;
+
+    if (isMetaEventsEnabled && skipWebsiteEvent) {
+      await db.whatsAppEvent.update({
+        where: { id: eventRecord.id },
+        data: { status: 'processed' }
+      });
+    } else if (isMetaEventsEnabled) {
       try {
-        const datasetId = dbSettings['whatsapp_dataset_id'] || process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID;
+        // Only the dedicated WhatsApp/business-messaging dataset. Never fall back to the
+        // WEBSITE pixel: that would duplicate website conversions in the website dataset.
+        const datasetId = (dbSettings['whatsapp_dataset_id'] || '').trim();
+        const websitePixelIds = new Set(
+          [process.env.META_PIXEL_ID, process.env.NEXT_PUBLIC_META_PIXEL_ID, process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID, '2049977412558608']
+            .filter((v): v is string => !!v && !!v.trim())
+            .map(v => v.trim())
+        );
+        if (datasetId && websitePixelIds.has(datasetId)) {
+          throw new Error('whatsapp_dataset_id is the website Meta Pixel — refusing to forward (would duplicate website events). Set a separate WhatsApp dataset ID.');
+        }
         const accessToken = dbSettings['whatsapp_access_token'] || process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN;
         const wabaId = dbSettings['whatsapp_business_account_id'] || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
         const pageId = dbSettings['whatsapp_page_id'] || process.env.WHATSAPP_PAGE_ID;

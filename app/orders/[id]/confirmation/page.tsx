@@ -14,14 +14,30 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import Link from "next/link";
-import { useMetaEvents } from "@/hooks/useMetaEvents";
+import { useMetaEvents, ga4Purchase } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
+import { snapCatalogIdFromOrderItem } from "@/lib/snap/catalog-id";
+import { pickRealEmail, pickRealName, pickRealPhone } from "@/lib/tracking/placeholder-identity";
+import {
+  decideMetaBrowserPurchase,
+  buildMetaBrowserPurchaseArgs,
+  dispatchMetaBrowserPurchaseOnce,
+  hasMetaBrowserPurchaseBeenSent,
+  waitForFbq,
+  decideSnapBrowserPurchase,
+  dispatchSnapBrowserPurchaseOnce,
+  hasSnapBrowserPurchaseBeenSent,
+  waitForSnaptr,
+  META_PENDING_POLL_INTERVAL_MS,
+  META_PENDING_POLL_MAX,
+} from "@/lib/meta/browser-purchase";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackPurchase as zbTrackPurchase } from "@/lib/analytics-tracker";
 import { formatPriceString } from "@/lib/global-pricing-client";
 import { resetGuestIdentity } from "@/lib/metaPixel";
+import { postCheckoutComplete } from "@/lib/checkout-complete-client";
 
 type RegistrationStatus = "confirming" | "confirmed" | "failed";
 
@@ -36,11 +52,12 @@ export default function OrderConfirmationPage() {
   const [registrationError, setRegistrationError] = useState<string | null>(null);
   const [purchasedPixel, setPurchasedPixel] = useState(false);
   const completeStartedRef = useRef(false);
+  const guestResetDeferredRef = useRef(false);
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
   const { trackOrderCreated: trackOpenAiOrderCreated } = useOpenAiEvents();
 
-  // Fire purchase pixels only after registration is confirmed (not on optimistic paint)
+  // Non-Meta analytics on first confirmed visit; Meta/Snap Purchase wait for capture.
   useEffect(() => {
     if (!order || registrationStatus !== "confirmed") return;
 
@@ -83,7 +100,7 @@ export default function OrderConfirmationPage() {
           : null;
 
         const cust = order.customer || {};
-        const nameToUse = cust.name || addr?.name || "";
+        const nameToUse = pickRealName(cust.name, addr?.name) || "";
         const nameParts = nameToUse.trim().split(/\s+/);
         userData = {
           country: addr?.country || undefined,
@@ -92,8 +109,8 @@ export default function OrderConfirmationPage() {
           zp: addr?.zip || undefined,
           fn: nameParts[0] || undefined,
           ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
-          em: cust.email || undefined,
-          ph: cust.phone || addr?.phone || undefined,
+          em: pickRealEmail(cust.email, addr?.email),
+          ph: pickRealPhone(cust.phone, addr?.phone),
         };
       } catch (e) {
         console.error("Error parsing shippingAddress in confirmation page", e);
@@ -104,16 +121,19 @@ export default function OrderConfirmationPage() {
         storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
       }
 
-      const contents =
+      ga4Purchase(
+        order.id,
+        val,
+        orderCurrency,
+        contentIds,
+        storedCategory,
         order.items?.map((item: any) => ({
           id: toSnapId(item),
           quantity: item.quantity || 1,
           item_price: parseFloat(item.price || "0"),
           title: item.title,
-        })) || [];
-
-      trackPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents);
-      trackSnapPurchase(order.id, val, orderCurrency, contentIds, userData, storedCategory, contents.length);
+        })) || []
+      );
 
       const openAiContents =
         order.items?.map((item: any) => ({
@@ -129,7 +149,15 @@ export default function OrderConfirmationPage() {
       zbTrackPurchase(order.id, val, { num_items: contentIds.length, currency: orderCurrency });
 
       if (!session?.user) {
-        resetGuestIdentity();
+        if (
+          decideMetaBrowserPurchase(order, {
+            alreadySent: hasMetaBrowserPurchaseBeenSent(order.id),
+          }).action !== "done"
+        ) {
+          guestResetDeferredRef.current = true;
+        } else {
+          resetGuestIdentity();
+        }
       }
     }
 
@@ -152,6 +180,165 @@ export default function OrderConfirmationPage() {
       });
     }
   }, [order, purchasedPixel, registrationStatus, session?.user]);
+
+  // Meta browser Pixel Purchase: once per order, only after confirmed payment.
+  useEffect(() => {
+    if (!order?.id || registrationStatus !== "confirmed") return;
+    const decision = decideMetaBrowserPurchase(order, {
+      alreadySent: hasMetaBrowserPurchaseBeenSent(order.id),
+    });
+    const finishGuestReset = () => {
+      if (guestResetDeferredRef.current && !session?.user) {
+        guestResetDeferredRef.current = false;
+        resetGuestIdentity();
+      }
+    };
+    if (decision.action === "wait") return;
+    if (decision.action === "done") {
+      finishGuestReset();
+      return;
+    }
+    const args = buildMetaBrowserPurchaseArgs(order);
+    if (!args) {
+      finishGuestReset();
+      return;
+    }
+    let storedCategory: string | undefined;
+    try {
+      storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
+    } catch {}
+    dispatchMetaBrowserPurchaseOnce(order.id, async () => {
+      if (!(await waitForFbq())) return false;
+      trackPurchase(
+        args.orderId,
+        args.value,
+        args.currency,
+        args.contentIds,
+        args.userData,
+        storedCategory,
+        args.contents,
+        { ga: false }
+      );
+      return true;
+    }).finally(finishGuestReset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order, registrationStatus]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (guestResetDeferredRef.current) {
+        guestResetDeferredRef.current = false;
+        resetGuestIdentity();
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
+
+  // Snap browser Pixel PURCHASE: once per order, only after confirmed payment.
+  useEffect(() => {
+    if (!order?.id || registrationStatus !== "confirmed") return;
+    if (
+      decideSnapBrowserPurchase(order, {
+        alreadySent: hasSnapBrowserPurchaseBeenSent(order.id),
+      }).action !== "fire"
+    ) {
+      return;
+    }
+    const val = parseFloat(order.totalPrice || "0");
+    const orderCurrency = (order.currency || "INR").toUpperCase();
+    let addr: any = null;
+    try {
+      addr = order.shippingAddress
+        ? typeof order.shippingAddress === "string"
+          ? JSON.parse(order.shippingAddress)
+          : order.shippingAddress
+        : null;
+    } catch {
+      addr = null;
+    }
+    const cust = order.customer || {};
+    const nameParts = (pickRealName(cust.name, addr?.name) || "").trim().split(/\s+/).filter(Boolean);
+    const userData = {
+      country: addr?.countryCode || addr?.country_code || addr?.country || undefined,
+      st: addr?.state || undefined,
+      ct: addr?.city || undefined,
+      zp: addr?.zip || undefined,
+      fn: nameParts[0] || undefined,
+      ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+      em: pickRealEmail(cust.email, addr?.email),
+      ph: pickRealPhone(cust.phone, addr?.phone),
+    };
+    const snapContents = (order.items || []).map((item: any) => ({
+      id: snapCatalogIdFromOrderItem(item) || "",
+      quantity: Number(item.quantity) || 1,
+      item_price: parseFloat(item.price || "0") || undefined,
+    }));
+    let storedCategory: string | undefined;
+    try {
+      storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
+    } catch {}
+    dispatchSnapBrowserPurchaseOnce(order.id, async () => {
+      if (!(await waitForSnaptr())) return false;
+      trackSnapPurchase(
+        order.id,
+        val,
+        orderCurrency,
+        snapContents.map((c: any) => c.id).filter(Boolean),
+        userData,
+        storedCategory,
+        snapContents
+      );
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order, registrationStatus]);
+
+  // Poll while payment capture is still pending so Purchase can fire once paid.
+  useEffect(() => {
+    if (!id || !order?.id || registrationStatus !== "confirmed") return;
+    const metaWaits =
+      decideMetaBrowserPurchase(order, {
+        alreadySent: hasMetaBrowserPurchaseBeenSent(order.id),
+      }).action === "wait";
+    const snapWaits =
+      decideSnapBrowserPurchase(order, {
+        alreadySent: hasSnapBrowserPurchaseBeenSent(order.id),
+      }).action === "wait";
+    if (!metaWaits && !snapWaits) return;
+    let polls = 0;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (++polls > META_PENDING_POLL_MAX) {
+        clearInterval(timer);
+        if (guestResetDeferredRef.current && !session?.user) {
+          guestResetDeferredRef.current = false;
+          resetGuestIdentity();
+        }
+        return;
+      }
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const res = await fetch(`/api/orders/${id}?bypass_auth=true`, { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = await res.json().catch(() => null);
+        const next = data?.order || data;
+        if (next?.id && String(next.paymentStatus || "") !== String(order.paymentStatus || "")) {
+          setOrder(next);
+        }
+      } catch {
+        /* transient — next tick retries */
+      }
+    }, META_PENDING_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, order?.id, order?.paymentStatus, registrationStatus]);
 
   useEffect(() => {
     if (!id) return;
@@ -205,12 +392,15 @@ export default function OrderConfirmationPage() {
       }
 
       try {
-        const verifyRes = await fetch("/api/checkout/complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(pending.body),
-        });
-        const verifyData = await verifyRes.json().catch(() => ({}));
+        const completion = await postCheckoutComplete(pending.body);
+        if (completion.pendingCapture) {
+          // Keep confirming UI; capture webhook will make a later visit succeed.
+          setRegistrationStatus("confirming");
+          setRegistrationError(null);
+          return;
+        }
+        const verifyRes = completion.res!;
+        const verifyData = completion.data || {};
 
         if (verifyRes.ok && (verifyData.orderId || verifyData.order)) {
           let baseOptimistic: any = null;

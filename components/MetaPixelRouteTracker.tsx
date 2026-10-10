@@ -1,4 +1,5 @@
 'use client';
+import { normalizePhone, normalizeState, normalizeZip, normalizeName, normalizeCity } from '@/lib/tracking/identity-normalize';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
@@ -12,6 +13,7 @@ import {
   withFbq,
   isDemoValue,
   clearGuestPiiCookies,
+  deleteClientCookie,
 } from '@/lib/metaPixel';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 
@@ -34,14 +36,15 @@ function uuidv4() {
   });
 }
 
+/** Meta name rule (lowercase, letters/digits, unicode kept) — same as the server. */
 function cleanStringNoSpaces(val: string | undefined): string {
-  if (!val) return "";
-  return val.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return normalizeName(val);
 }
 
 export function MetaPixelRouteTracker() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  // `status` distinguishes "still loading" from "really logged out" (data is undefined in both).
+  const { data: session, status } = useSession();
   const sessionKey =
     (session?.user as any)?.id || session?.user?.email || (session ? 'anon-session' : 'no-session');
   const lastPageViewRef = useRef<{ path: string; at: number } | null>(null);
@@ -81,14 +84,14 @@ export function MetaPixelRouteTracker() {
     // 4. Note: Client IP resolution relies on server CAPI proxy headers (x-forwarded-for) 
     // to avoid redundant client-side network calls and CSP violations.
 
-    // Deduplicate PageView when session hydration re-runs the effect on the same route
-    const now = Date.now();
-    const recentSamePath =
-      lastPageViewRef.current?.path === pathname &&
-      now - lastPageViewRef.current.at < 2500;
-    const shouldFirePageView = !recentSamePath;
+    // One PageView per route change. This effect also re-runs when the session
+    // hydrates (loading → authenticated / unauthenticated) or the session object
+    // changes; those re-runs only refresh identity and must never send another
+    // PageView, however long hydration takes (the previous 2.5 s window let a slow
+    // hydration double-count).
+    const shouldFirePageView = lastPageViewRef.current?.path !== pathname;
     if (shouldFirePageView) {
-      lastPageViewRef.current = { path: pathname, at: now };
+      lastPageViewRef.current = { path: pathname, at: Date.now() };
     }
 
     // ─── STEP 2: Fire PageView IMMEDIATELY with sync-available data ───
@@ -123,8 +126,12 @@ export function MetaPixelRouteTracker() {
         const geoData = JSON.parse(geoStr);
         if (!builtIdentity.country && geoData.countryCode) builtIdentity.country = geoData.countryCode.toLowerCase();
         if (!builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
-        if (!builtIdentity.ct && geoData.city) builtIdentity.ct = geoData.city.toLowerCase();
-        if (!builtIdentity.zp && geoData.zip) builtIdentity.zp = geoData.zip;
+        // IP-geolocated city / zip are the ISP's, not the shopper's — only a GPS or typed
+        // address may fill ct / zp (Meta already geo-matches on the client IP).
+        if (geoData.source !== 'ip') {
+          if (!builtIdentity.ct && geoData.city) builtIdentity.ct = geoData.city.toLowerCase();
+          if (!builtIdentity.zp && geoData.zip) builtIdentity.zp = geoData.zip;
+        }
       }
     } catch {}
 
@@ -171,38 +178,50 @@ export function MetaPixelRouteTracker() {
     const enrichIdentityAsync = async () => {
       const sessionUserData: Record<string, any> = {};
 
+      // Session not resolved yet: change nothing. Treating "loading" as "logged out"
+      // used to wipe a logged-in customer's identity cookies right before the first
+      // ViewContent of an ad landing. The effect re-runs once status settles.
+      if (status === 'loading') return;
+
       if (session?.user) {
         setClientCookie('zb_user_logged_in', 'true', 365);
+
+        // Stable per-person external_id: once logged in, the browser's identity
+        // becomes the customer id (the server sends the same id on its events), so
+        // the same person is one profile across devices, sessions and guest resets.
+        // The PII-owner binding moves with it so the bound cookies stay valid.
+        const customerId = (session.user as any).id ? String((session.user as any).id) : '';
+        if (customerId && extId !== customerId) {
+          const ownedBefore = getClientCookie('zb_pii_owner') === extId;
+          setClientCookie('zb_external_id', customerId, 365);
+          if (ownedBefore) setClientCookie('zb_pii_owner', customerId, 365);
+          extId = customerId;
+        }
 
         const email = session.user.email;
         if (email && !isDemoValue('email', email)) {
           const hashedEmail = await sha256(email.trim().toLowerCase());
           sessionUserData.em = hashedEmail;
           setClientCookie('zb_guest_email', hashedEmail, 365);
-        }
-
-        const phone = (session.user as any).phone || (session as any).customer?.phone;
-        if (phone && !isDemoValue('phone', phone)) {
-          const digits = phone.replace(/\D/g, "");
-          let baseNumber = digits;
-          if (digits.length === 12 && digits.startsWith("91")) baseNumber = digits.slice(2);
-          else if (digits.length === 11 && digits.startsWith("0")) baseNumber = digits.slice(1);
-          const formattedPhone = `91${baseNumber}`;
-          const hashedPhone = await sha256(formattedPhone);
-          sessionUserData.ph = hashedPhone;
-          setClientCookie('zb_guest_phone', hashedPhone, 365);
+        } else if (email) {
+          // Demo / synthetic placeholder account email (e.g. guest_<ts>@zicabella.com):
+          // remove a hash of it that older code may have stored, never send it.
+          const placeholderHash = await sha256(email.trim().toLowerCase());
+          if (getClientCookie('zb_guest_email') === placeholderHash) deleteClientCookie('zb_guest_email');
         }
 
         const name = session.user.name;
         if (name && !isDemoValue('name', name)) {
           const parts = name.trim().split(/\s+/);
-          if (parts[0]) {
-            const hashedFn = await sha256(cleanStringNoSpaces(parts[0]));
+          const fnNorm = cleanStringNoSpaces(parts[0]);
+          if (fnNorm) {
+            const hashedFn = await sha256(fnNorm);
             sessionUserData.fn = hashedFn;
             setClientCookie('zb_guest_fn', hashedFn, 365);
           }
-          if (parts.length > 1) {
-            const hashedLn = await sha256(cleanStringNoSpaces(parts.slice(1).join('')));
+          const lnNorm = parts.length > 1 ? cleanStringNoSpaces(parts.slice(1).join('')) : '';
+          if (lnNorm) {
+            const hashedLn = await sha256(lnNorm);
             sessionUserData.ln = hashedLn;
             setClientCookie('zb_guest_ln', hashedLn, 365);
           }
@@ -220,20 +239,37 @@ export function MetaPixelRouteTracker() {
           }
         }
 
+        // Phone after the profile fetch so a number saved without "+<dial code>"
+        // is read in the customer's own country. OTP-login numbers carry their
+        // dial code and parse correctly regardless; with no country known, a bare
+        // number falls back to India (same as before).
+        const phone = (session.user as any).phone || (session as any).customer?.phone;
+        if (phone && !isDemoValue('phone', phone)) {
+          const formattedPhone = normalizePhone(phone, cachedProfileData?.country);
+          if (formattedPhone) {
+            const hashedPhone = await sha256(formattedPhone);
+            sessionUserData.ph = hashedPhone;
+            setClientCookie('zb_guest_phone', hashedPhone, 365);
+          }
+        }
+
         if (cachedProfileData) {
           const { city, state, zip, country, dob } = cachedProfileData;
-          if (city) {
-            const hashedCity = await sha256(cleanStringNoSpaces(city));
+          const ctNorm = normalizeCity(city);
+          if (ctNorm) {
+            const hashedCity = await sha256(ctNorm);
             sessionUserData.ct = hashedCity;
             setClientCookie('zb_guest_ct', hashedCity, 365);
           }
-          if (state) {
-            const hashedState = await sha256(cleanStringNoSpaces(state));
+          const normState = normalizeState(state, country);
+          if (normState) {
+            const hashedState = await sha256(normState);
             sessionUserData.st = hashedState;
             setClientCookie('zb_guest_st', hashedState, 365);
           }
-          if (zip) {
-            const hashedZip = await sha256(cleanStringNoSpaces(zip));
+          const normZip = normalizeZip(zip, country);
+          if (normZip) {
+            const hashedZip = await sha256(normZip);
             sessionUserData.zp = hashedZip;
             setClientCookie('zb_guest_zp', hashedZip, 365);
           }
@@ -255,13 +291,32 @@ export function MetaPixelRouteTracker() {
           }
         }
 
+        // Bind the identity cookies just written to this browser identity, so
+        // getMetaIdentityCookies() (browser) and /api/meta/event (server) agree
+        // that they belong to the current visitor.
+        if (extId && Object.keys(sessionUserData).length > 0) {
+          setClientCookie('zb_pii_owner', extId, 365);
+        }
+
         // Reinit pixel with full enriched user data for subsequent events
         initPixel(sessionUserData);
       } else {
+        // Really logged out (status === 'unauthenticated').
+        // Clear identity cookies only on the transition from logged-in to logged-out
+        // (logout or session expiry), so a previous user's data never leaks into the
+        // next user's events on a shared device. Ordinary guest navigation keeps the
+        // guest's own checkout identity (bound to zb_external_id via zb_pii_owner).
+        const wasLoggedIn = getClientCookie('zb_user_logged_in') === 'true';
         setClientCookie('zb_user_logged_in', 'false', 365);
-        // Clear all guest PII cookies to prevent stale identity data from a
-        // previous user leaking into another user's Meta events on shared devices.
-        clearGuestPiiCookies();
+        if (wasLoggedIn) {
+          clearGuestPiiCookies();
+          // The identity was the customer id while logged in; the next visitor on
+          // this device must not inherit it — mint a fresh device id.
+          if (extId && !extId.startsWith('zb.')) {
+            extId = 'zb.' + uuidv4();
+            setClientCookie('zb_external_id', extId, 365);
+          }
+        }
         // Reinit pixel with browser-only params for subsequent events
         initPixel({});
       }
@@ -273,7 +328,7 @@ export function MetaPixelRouteTracker() {
     });
 
 
-  }, [sessionKey, pathname, session]);
+  }, [sessionKey, pathname, session, status]);
   // `session` kept so enrichment sees latest user fields when sessionKey flips (login).
   // PageView itself is deduped above so session object churn won't double-fire CAPI.
 

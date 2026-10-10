@@ -57,7 +57,7 @@ export default function RazorpayPaymentScreen() {
     status, error, successData, startPayment, reset,
     upiApps, installedWallets, isLoadingApps, fetchInstalledUPIApps, fetchInstalledWallets,
   } = useRazorpay();
-  const isProcessing = status === 'processing' || status === 'verifying' || status === 'creating_order';
+  const isProcessing = status === 'processing' || status === 'verifying' || status === 'creating_order' || status === 'waiting_capture';
 
   const [tab, setTab] = useState<PaymentMethod>('upi');
   const [upiSubTab, setUpiSubTab] = useState<'apps' | 'id'>('apps');
@@ -314,6 +314,26 @@ export default function RazorpayPaymentScreen() {
               <Typography size={12} weight="800" color={colors.background} style={{ letterSpacing: 2 }}>CONTINUE</Typography>
             </TouchableOpacity>
           )}
+        </View>
+      </View>
+    );
+  }
+
+  // ── Authorized, waiting for capture (not success yet; cart is kept) ──
+  if (status === 'waiting_capture') {
+    return (
+      <View style={[s.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+        <View style={s.overlay}>
+          {!error ? <ActivityIndicator size="large" color={colors.text} /> : <Ionicons name="time-outline" size={64} color={colors.textMuted} />}
+          <Typography size={22} weight="800" color={colors.text} style={{ marginTop: 32, letterSpacing: 2 }}>CONFIRMING PAYMENT</Typography>
+          <Typography size={11} color={colors.textMuted} style={{ marginTop: 12, textAlign: 'center', paddingHorizontal: 40 }}>
+            {error || 'Waiting for your bank to confirm the payment. Please do not close the app or pay again.'}
+          </Typography>
+          {error ? (
+            <TouchableOpacity style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]} onPress={() => nav.getParent()?.reset({ index: 0, routes: [{ name: 'Main' }] })}>
+              <Typography size={11} weight="800" color={colors.background} style={{ letterSpacing: 1 }}>BACK TO HOME</Typography>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
     );

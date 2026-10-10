@@ -38,6 +38,12 @@
       "expo-video",
       "expo-local-authentication",
       [
+        "expo-tracking-transparency",
+        {
+          "userTrackingPermission": "Zica Bella uses this to measure which ads bring you to us and to show you more relevant ads. Your choice does not change your shopping experience."
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/zb-logo-icon.png",

@@ -73,8 +73,26 @@ export async function voidExpiredCredits(customerId: string) {
  * Debits store credits from a customer's balance using a FIFO ledger approach.
  * Expiring credits are used up first.
  */
-export async function debitStoreCredits(customerId: string, amountToDebit: number, orderId?: string) {
-  if (amountToDebit <= 0) return;
+export async function debitStoreCredits(
+  customerId: string,
+  amountToDebit: number,
+  orderId?: string,
+  options: { idempotencyKey?: string } = {},
+): Promise<{ applied: boolean }> {
+  if (amountToDebit <= 0) return { applied: false };
+
+  // Idempotency: one DEBIT per redemption reference. A retried / duplicate request
+  // for the same order is a no-op (the first debit stands). The unique column also
+  // makes two concurrent requests safe: the second insert fails and its whole
+  // transaction rolls back, so the balance is decremented exactly once.
+  const idempotencyKey = options.idempotencyKey?.trim() || undefined;
+  if (idempotencyKey) {
+    const already = await prisma.storeCredit.findUnique({ where: { idempotencyKey }, select: { id: true } });
+    if (already) {
+      console.log(`[Store Credits Helper] Debit ${idempotencyKey} already applied — skipping duplicate`);
+      return { applied: false };
+    }
+  }
 
   // First run expiration cleanup
   await voidExpiredCredits(customerId);
@@ -114,7 +132,7 @@ export async function debitStoreCredits(customerId: string, amountToDebit: numbe
 
   let remainingDebit = amountToDebit;
 
-  await prisma.$transaction(async (tx: any) => {
+  const duplicate = await prisma.$transaction(async (tx: any) => {
     for (const cred of sortedCredits) {
       if (remainingDebit <= 0) break;
 
@@ -147,7 +165,8 @@ export async function debitStoreCredits(customerId: string, amountToDebit: numbe
         description: `Applied to order ${orderId || 'checkout'}`,
         orderId: orderId || null,
         expiresAt: null,
-        remainingAmount: 0
+        remainingAmount: 0,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
       }
     });
 
@@ -160,9 +179,22 @@ export async function debitStoreCredits(customerId: string, amountToDebit: numbe
         }
       }
     });
-  });
+  }).then(
+    () => false,
+    (err: any) => {
+      // Concurrent duplicate of the same redemption: the other request's debit won
+      // and this transaction was rolled back in full.
+      if (idempotencyKey && err?.code === 'P2002') return true;
+      throw err;
+    },
+  );
+  if (duplicate) {
+    console.log(`[Store Credits Helper] Concurrent duplicate debit ${idempotencyKey} rolled back`);
+    return { applied: false };
+  }
 
   console.log(`[Store Credits Helper] Successfully debited ₹${amountToDebit} from customer ${customerId}`);
+  return { applied: true };
 }
 
 /**

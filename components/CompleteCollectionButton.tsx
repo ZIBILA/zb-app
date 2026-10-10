@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ShoppingBag, Loader2, Check, Plus } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useCart } from "@/lib/cart-context";
+import { snapTrackAddToCart } from "@/hooks/useSnapEvents";
+import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { ShopifyProduct } from "@/lib/shopify-admin";
 
 interface Props {
@@ -13,6 +15,7 @@ interface Props {
 
 export default function CompleteCollectionButton({ products, collectionName }: Props) {
   const { add: addToCart } = useCart();
+  const { trackAddToCart: trackMetaAddToCart } = useMetaEvents();
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "partial">("idle");
   const [progress, setProgress] = useState(0);
 
@@ -48,6 +51,10 @@ export default function CompleteCollectionButton({ products, collectionName }: P
           image: product.image?.src || product.images?.[0]?.src || "/zb-logo-220px.png",
           category: product.product_type
         });
+        // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
+        snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+        // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
+        trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
       }
       
       // Update progress

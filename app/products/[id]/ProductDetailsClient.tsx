@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo, startTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight } from "lucide-react";
-import { useMetaEvents } from "@/hooks/useMetaEvents";
+import { useMetaEvents, ga4AddToWishlist } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { ShopifyProduct } from "@/lib/shopify-admin";
@@ -119,7 +119,7 @@ export default function ProductDetailsClient({
   const router = useRouter();
   const { formatPrice: fmtPrice } = useCountry();
   const { trackViewContent, trackAddToCart, trackAddToWishlist } = useMetaEvents();
-  const { trackViewContent: trackSnapViewContent, trackAddToCart: trackSnapAddToCart, trackAddToWishlist: trackSnapAddToWishlist } = useSnapEvents();
+  const { trackViewContent: trackSnapViewContent, trackAddToCart: trackSnapAddToCart } = useSnapEvents(); // Snap ADD_TO_WISHLIST fires inside toggleBookmark
   const { trackContentsViewed: trackOaiContentsViewed, trackItemsAdded: trackOaiItemsAdded } = useOpenAiEvents();
 
   useEffect(() => {
@@ -559,8 +559,17 @@ export default function ProductDetailsClient({
                   toggleBookmark(product, variantIdStr, selectedSize || activeVariant?.option1 || undefined);
                   setIsOpen(true);
                   if (!wasBookmarked) {
-                    trackAddToWishlist(product.id.toString(), product.title, product.product_type);
-                    trackSnapAddToWishlist(product.id.toString(), product.title, product.product_type);
+                    // feed.xml g:id = variant id: the selected size, else the default (first) variant
+                    trackAddToWishlist(
+                      variantIdStr || product.variants?.[0]?.id?.toString() || product.id.toString(),
+                      product.title,
+                      product.product_type,
+                      parseFloat((activeVariant || product.variants?.[0])?.price || "0") || undefined,
+                      'INR',
+                      { ga: false }
+                    );
+                    // GA4 add_to_wishlist exactly as on main (product id)
+                    ga4AddToWishlist(product.id.toString(), product.title, product.product_type);
                   }
                   toast.success(wasBookmarked ? "Removed from bookmarks" : "Saved to bookmarks");
                 }}
@@ -891,8 +900,17 @@ export default function ProductDetailsClient({
                     toggleBookmark(product, variantIdStr, selectedSize || activeVariant?.option1 || undefined);
                     setIsOpen(true);
                     if (!wasBookmarked) {
-                      trackAddToWishlist(product.id.toString(), product.title, product.product_type);
-                      trackSnapAddToWishlist(product.id.toString(), product.title, product.product_type);
+                      // feed.xml g:id = variant id: the selected size, else the default (first) variant
+                      trackAddToWishlist(
+                        variantIdStr || product.variants?.[0]?.id?.toString() || product.id.toString(),
+                        product.title,
+                        product.product_type,
+                        parseFloat((activeVariant || product.variants?.[0])?.price || "0") || undefined,
+                        'INR',
+                        { ga: false }
+                      );
+                      // GA4 add_to_wishlist exactly as on main (product id)
+                      ga4AddToWishlist(product.id.toString(), product.title, product.product_type);
                     }
                     toast.success(wasBookmarked ? "Removed from bookmarks" : "Saved to bookmarks");
                   }}

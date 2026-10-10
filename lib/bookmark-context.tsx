@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { ShopifyProduct } from "./shopify-admin";
 import { useSession } from "next-auth/react";
 import { trackStorefrontEvent } from "@/lib/track-client";
-import { trackSnapClientEvent } from "@/lib/snapPixel";
+import { snapTrackAddToWishlist, toSnapItemId } from "@/hooks/useSnapEvents";
 
 interface BookmarkContextType {
   bookmarks: (ShopifyProduct & { selectedVariantId?: string | null; selectedSize?: string | null })[];
@@ -189,11 +189,15 @@ export function BookmarkProvider({ children }: { children: React.ReactNode }) {
           size
         }
       });
-      trackSnapClientEvent('ADD_TO_WISHLIST', {
-        item_ids: [product.id.toString()],
-        item_category: product.product_type,
-        description: product.title,
-      });
+      // Single source of the Snap ADD_TO_WISHLIST event (pixel + CAPI, deduped).
+      // Product pages call toggleBookmark, so they must NOT fire it again.
+      snapTrackAddToWishlist(
+        toSnapItemId(variantId || product.variants?.[0]?.id),
+        product.title,
+        product.product_type,
+        parseFloat(String(product.variants?.[0]?.price ?? '')) || undefined,
+        'INR'
+      );
     }
 
     setBookmarks((prev) => {

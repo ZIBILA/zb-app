@@ -1,3 +1,5 @@
+import { normalizePhone, normalizeState, normalizeZip, normalizeCountry, normalizeIdentity, normalizeName, normalizeCity, isSha256Hash } from '@/lib/tracking/identity-normalize';
+import { isPlaceholderEmail, isPlaceholderPhone, isPlaceholderName } from '@/lib/tracking/placeholder-identity';
 export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || '2049977412558608';
 
 /**
@@ -23,12 +25,15 @@ export function isDemoValue(field: 'phone' | 'email' | 'name', rawValue: string 
   switch (field) {
     case 'phone': {
       const digits = cleaned.replace(/\D/g, '');
-      return DEMO_PHONES_RAW.some(d => digits === d.replace(/\D/g, '') || digits.endsWith(d.replace(/\D/g, '')));
+      return isPlaceholderPhone(rawValue)
+        || DEMO_PHONES_RAW.some(d => digits === d.replace(/\D/g, '') || digits.endsWith(d.replace(/\D/g, '')));
     }
     case 'email':
-      return DEMO_EMAILS_RAW.includes(cleaned);
+      // Demo accounts + synthetic placeholders (guest@…, guest_<ts>@…, recovered_<ts>@…).
+      return DEMO_EMAILS_RAW.includes(cleaned) || isPlaceholderEmail(rawValue);
     case 'name':
-      return DEMO_NAMES_RAW.includes(cleaned);
+      // Demo accounts + placeholder names ('Customer', 'Valued Customer', 'Guest' …).
+      return DEMO_NAMES_RAW.includes(cleaned) || isPlaceholderName(rawValue);
   }
 }
 
@@ -131,7 +136,15 @@ export function clearGuestPiiCookies() {
  * the external_id to a fresh UUID so the next guest on this device
  * gets a completely distinct identity.
  */
+/**
+ * Rotate the guest identity after a purchase so the NEXT shopper on a shared
+ * device gets a fresh external_id and no stale PII. Skipped when the identity is
+ * a logged-in customer id (stable per person), so repeat buyers are not turned
+ * into "new people" on every order.
+ */
 export function resetGuestIdentity() {
+  const current = getClientCookie('zb_external_id') || '';
+  if (current && !current.startsWith('zb.')) return; // customer id, not a device id
   clearGuestPiiCookies();
   // Rotate external_id so the next guest gets a fresh identity
   const newExtId = 'zb.' + (typeof crypto !== 'undefined' && crypto.randomUUID
@@ -202,13 +215,53 @@ export function getMetaIdentityCookies(): Record<string, string | undefined> {
 
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 
+
+/** Keys that fbq('init') accepts as Advanced Matching (plus external_id / fb_login_id passthrough). */
+const AM_KEYS = ['em', 'ph', 'fn', 'ln', 'ct', 'st', 'zp', 'country', 'ge', 'db'] as const;
+
+/**
+ * Normalize raw Advanced Matching values to Meta's spec (same rules as the server),
+ * drop demo / placeholder values and anything that normalizes to empty. Already-hashed
+ * values pass through unchanged.
+ */
+export function normalizeAdvancedMatching(raw: Record<string, any> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw) return out;
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+  const n = normalizeIdentity({
+    em: isDemoValue('email', str(raw.em)) ? '' : str(raw.em),
+    ph: isDemoValue('phone', str(raw.ph)) ? '' : str(raw.ph),
+    fn: isDemoValue('name', str(raw.fn)) ? '' : str(raw.fn),
+    ln: isDemoValue('name', str(raw.ln)) ? '' : str(raw.ln),
+    ct: str(raw.ct), st: str(raw.st), zp: str(raw.zp), country: str(raw.country),
+  });
+  for (const k of AM_KEYS) {
+    if (k === 'ge' || k === 'db') {
+      const v = str(raw[k]);
+      if (v) out[k] = isSha256Hash(v) ? v.toLowerCase() : v.toLowerCase().replace(/[^a-z0-9]/g, '');
+      continue;
+    }
+    if (n[k]) out[k] = n[k];
+  }
+  if (str(raw.external_id)) out.external_id = str(raw.external_id);
+  if (str(raw.fb_login_id)) out.fb_login_id = str(raw.fb_login_id);
+  return out;
+}
+
 // Module-level guard to prevent redundant fbq('init') calls with identical data.
-// The layout.tsx inline script handles the base init (no user data).
-// This function only re-inits when advanced matching data actually changes.
+// The layout.tsx inline script does the first init WITH the identity already in
+// cookies (window.__zbMetaAM). Re-init is valid Meta usage (Meta's own GTM template
+// re-inits with Advanced Matching); this only re-inits when the data changes.
 let lastInitHash: string | null = null;
 
 export const initPixel = (additionalData: Record<string, any> = {}) => {
   withFbq((fbq) => {
+    if (lastInitHash === null && typeof window !== 'undefined') {
+      const baseAM = (window as any).__zbMetaAM;
+      if (baseAM && typeof baseAM === 'object') {
+        lastInitHash = JSON.stringify(baseAM, Object.keys(baseAM).sort());
+      }
+    }
     // Build advanced matching user data for fbq('init') using the unified builder.
     // NOTE: fbc, fbp, and client_user_agent are NOT passed here — the pixel SDK reads them
     // directly from the cookies/browser. Passing them in init is unsupported or redundant.
@@ -216,7 +269,13 @@ export const initPixel = (additionalData: Record<string, any> = {}) => {
     const builtIdentity = buildClientUserData(rawIdentity);
     const { fbc, fbp, client_user_agent, ...userData } = builtIdentity;
 
-    const merged = { ...userData, ...additionalData };
+    // Raw values handed in by a call site (checkout address, confirmation order) are
+    // normalized to Meta's Advanced Matching spec before they reach fbq('init'):
+    // phone = digits with country code, 2-letter lowercase country, state / zip /
+    // city / name rules per country — the SAME rules the server CAPI event uses,
+    // so the browser and server copies of a deduplicated event carry one identity.
+    // Values that normalize to nothing (unknown, placeholder, demo) are omitted.
+    const merged: Record<string, any> = { ...userData, ...normalizeAdvancedMatching(additionalData) };
 
     // Dedup guard: skip fbq('init') if the merged userData is identical to last call.
     // This prevents the "Duplicate Pixel ID" warning from fbevents.js.
@@ -230,17 +289,22 @@ export const initPixel = (additionalData: Record<string, any> = {}) => {
   }, 'init');
 };
 
+/**
+ * Name / city for hashing — Meta's rule (lowercase, letters and digits only, unicode
+ * kept). The old ASCII-only version turned "José" into "jos" and any non-Latin name
+ * into "" (a hash of the empty string shared by thousands of users).
+ */
 function cleanStringNoSpaces(val: string | undefined): string {
-  if (!val) return "";
-  return val.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return normalizeName(val);
 }
 
+/**
+ * Country name/code → ISO alpha-2 lowercase. Worldwide-safe:
+ * "United Kingdom" → "gb" (old code produced "un"), "Germany" → "de" (was "ge").
+ * Returns "" when the country can't be resolved, so no wrong value is hashed.
+ */
 export function cleanCountry(country: string | undefined): string {
-  if (!country) return "";
-  const c = country.trim().toLowerCase();
-  if (c === 'india' || c === 'ind' || c === 'in') return 'in';
-  if (c === 'united states' || c === 'usa' || c === 'us' || c === 'united states of america') return 'us';
-  return c.replace(/[^a-z]/g, '').slice(0, 2);
+  return normalizeCountry(country);
 }
 
 export async function saveUserDataToCookies(data: {
@@ -266,40 +330,35 @@ export async function saveUserDataToCookies(data: {
     setClientCookie('zb_guest_email', hashedEmail, 365);
   }
   if (data.phone && !isDemoValue('phone', data.phone)) {
-    const digits = data.phone.replace(/\D/g, "");
-    let baseNumber = digits;
-    if (digits.length === 12 && digits.startsWith("91")) baseNumber = digits.slice(2);
-    else if (digits.length === 11 && digits.startsWith("0")) baseNumber = digits.slice(1);
-    const formattedPhone = `91${baseNumber}`; // Only digits, no plus sign for Meta
-    const hashedPhone = await sha256(formattedPhone);
-    setClientCookie('zb_guest_phone', hashedPhone, 365);
+    // Worldwide: digits incl. the CUSTOMER's country calling code (not always 91).
+    const formattedPhone = normalizePhone(data.phone, data.country);
+    if (formattedPhone) {
+      const hashedPhone = await sha256(formattedPhone);
+      setClientCookie('zb_guest_phone', hashedPhone, 365);
+    }
   }
   if (data.name && !isDemoValue('name', data.name)) {
     const parts = data.name.trim().split(/\s+/);
-    if (parts[0]) {
-      const hashedFn = await sha256(cleanStringNoSpaces(parts[0]));
-      setClientCookie('zb_guest_fn', hashedFn, 365);
-    }
-    if (parts.length > 1) {
-      const hashedLn = await sha256(cleanStringNoSpaces(parts.slice(1).join('')));
-      setClientCookie('zb_guest_ln', hashedLn, 365);
-    }
+    const fnNorm = cleanStringNoSpaces(parts[0]);
+    if (fnNorm) setClientCookie('zb_guest_fn', await sha256(fnNorm), 365);
+    const lnNorm = parts.length > 1 ? cleanStringNoSpaces(parts.slice(1).join('')) : '';
+    if (lnNorm) setClientCookie('zb_guest_ln', await sha256(lnNorm), 365);
   }
   if (data.city) {
-    const hashedCity = await sha256(cleanStringNoSpaces(data.city));
-    setClientCookie('zb_guest_ct', hashedCity, 365);
+    const ctNorm = normalizeCity(data.city);
+    if (ctNorm) setClientCookie('zb_guest_ct', await sha256(ctNorm), 365);
   }
   if (data.state) {
-    const hashedState = await sha256(cleanStringNoSpaces(data.state));
-    setClientCookie('zb_guest_st', hashedState, 365);
+    const st = normalizeState(data.state, data.country);
+    if (st) setClientCookie('zb_guest_st', await sha256(st), 365);
   }
   if (data.zip) {
-    const hashedZip = await sha256(cleanStringNoSpaces(data.zip));
-    setClientCookie('zb_guest_zp', hashedZip, 365);
+    const zp = normalizeZip(data.zip, data.country);
+    if (zp) setClientCookie('zb_guest_zp', await sha256(zp), 365);
   }
   if (data.country) {
-    const hashedCountry = await sha256(cleanCountry(data.country));
-    setClientCookie('zb_guest_country', hashedCountry, 365);
+    const c = cleanCountry(data.country);
+    if (c) setClientCookie('zb_guest_country', await sha256(c), 365);
   }
   if (data.fbLoginId) {
     setClientCookie('zb_fb_login_id', data.fbLoginId.trim(), 365); // Do NOT hash fb_login_id

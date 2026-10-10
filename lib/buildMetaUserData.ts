@@ -12,6 +12,11 @@
  */
 
 import { isDemoValue } from './metaPixel';
+import { isPlaceholderEmailHash, isPlaceholderNameHash, isPlaceholderPhoneHash, isPlaceholderZipHash } from './tracking/placeholder-identity';
+import {
+  normalizePhone as sharedNormalizePhone,
+  normalizeCountry as sharedNormalizeCountry,
+} from './tracking/identity-normalize';
 
 // ── Types ──
 
@@ -58,23 +63,22 @@ export function normalizeEmail(e: string): string {
   return e.trim().toLowerCase();
 }
 
-export function normalizePhone(p: string): string {
-  const digits = p.replace(/\D/g, '');
-  let base = digits;
-  if (digits.length === 12 && digits.startsWith('91')) base = digits.slice(2);
-  else if (digits.length === 11 && digits.startsWith('0')) base = digits.slice(1);
-  return `91${base}`;
+/**
+ * Worldwide: delegates to lib/tracking/identity-normalize (one implementation
+ * for every Meta path). The customer's country decides the calling code; India
+ * is only the last-resort default for a bare number with no country.
+ */
+export function normalizePhone(p: string, countryIso?: string | null): string {
+  return sharedNormalizePhone(p, countryIso);
 }
 
 export function normalizeGeneric(s: string): string {
   return s.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/** ISO alpha-2 lowercase ("United Kingdom" → "gb"), "" when unknown. */
 export function normalizeCountry(c: string): string {
-  const clean = c.trim().toLowerCase();
-  if (clean === 'india' || clean === 'ind' || clean === 'in') return 'in';
-  if (clean === 'united states' || clean === 'usa' || clean === 'us' || clean === 'united states of america') return 'us';
-  return clean.replace(/[^a-z]/g, '').slice(0, 2);
+  return sharedNormalizeCountry(c);
 }
 
 export function normalizeDob(d: string): string {
@@ -116,8 +120,8 @@ function isDemoHash(field: 'em' | 'ph', hash: string | undefined): boolean {
   if (!hash) return false;
   const clean = hash.trim().toLowerCase();
   return field === 'ph'
-    ? DEMO_PHONE_HASHES.includes(clean)
-    : DEMO_EMAIL_HASHES.includes(clean);
+    ? DEMO_PHONE_HASHES.includes(clean) || isPlaceholderPhoneHash(clean)
+    : DEMO_EMAIL_HASHES.includes(clean) || isPlaceholderEmailHash(clean);
 }
 
 /**
@@ -144,11 +148,12 @@ export function buildClientUserData(signals: MetaUserSignals): MetaUserData {
   // Pre-hashed PII from cookies — validate they're real hashes, not demo
   if (isRealValue(signals.em) && isHash(signals.em) && !isDemoHash('em', signals.em)) result.em = signals.em!;
   if (isRealValue(signals.ph) && isHash(signals.ph) && !isDemoHash('ph', signals.ph)) result.ph = signals.ph!;
-  if (isRealValue(signals.fn) && isHash(signals.fn)) result.fn = signals.fn!;
-  if (isRealValue(signals.ln) && isHash(signals.ln)) result.ln = signals.ln!;
+  // Hashed placeholder names ('customer', 'guest', 'valued' …) are never sent.
+  if (isRealValue(signals.fn) && isHash(signals.fn) && !isPlaceholderNameHash(signals.fn)) result.fn = signals.fn!;
+  if (isRealValue(signals.ln) && isHash(signals.ln) && !isPlaceholderNameHash(signals.ln)) result.ln = signals.ln!;
   if (isRealValue(signals.ct) && isHash(signals.ct)) result.ct = signals.ct!;
   if (isRealValue(signals.st) && isHash(signals.st)) result.st = signals.st!;
-  if (isRealValue(signals.zp) && isHash(signals.zp)) result.zp = signals.zp!;
+  if (isRealValue(signals.zp) && isHash(signals.zp) && !isPlaceholderZipHash(signals.zp)) result.zp = signals.zp!;
   if (isRealValue(signals.country) && isHash(signals.country)) result.country = signals.country!;
   if (isRealValue(signals.ge) && isHash(signals.ge)) result.ge = signals.ge!;
   if (isRealValue(signals.db) && isHash(signals.db)) result.db = signals.db!;
@@ -203,17 +208,15 @@ export function buildServerUserData(signals: MetaUserSignals): MetaUserData {
     }
   }
 
+  // Names: demo / placeholder names ('Customer', 'Valued Customer', 'Guest' …),
+  // raw or hashed (zb_guest_fn / zb_guest_ln cookies), are never sent.
+  const nameOk = (v: string | undefined) =>
+    isRealValue(v) && !(isHash(v) ? isPlaceholderNameHash(v!) : isDemoValue('name', v!));
   const fnVal = signals.fn || signals.firstName;
-  if (isRealValue(fnVal)) {
-    if (!isHash(fnVal) && isDemoValue('name', fnVal!)) {
-      // skip — demo name
-    } else {
-      result.fn = fnVal!;
-    }
-  }
+  if (nameOk(fnVal)) result.fn = fnVal!;
 
   const lnVal = signals.ln || signals.lastName;
-  if (isRealValue(lnVal)) result.ln = lnVal!;
+  if (nameOk(lnVal)) result.ln = lnVal!;
 
   const ctVal = signals.ct || signals.city;
   if (isRealValue(ctVal)) result.ct = ctVal!;

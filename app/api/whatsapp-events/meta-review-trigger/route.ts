@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { eventTracker } from '@/lib/services/eventTracker';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  // Admin only: this sends sample (non-real) events to Meta for App Review demos.
+  try { await requireAdmin(); } catch (authErr) { return handleAuthError(authErr); }
   try {
     const { eventType, customerPhone = '919876543210', customerName = 'Meta Reviewer' } = await req.json();
 
@@ -19,6 +22,7 @@ export async function POST(req: NextRequest) {
         customerPhone,
         productId: sampleProductId,
         eventSource: 'web',
+        forwardWebEvent: true, // deliberate App Review demo → WhatsApp dataset only
         metadata: {
           title: 'Zica Graphic Tee V1',
           price: '1499.00',
@@ -32,6 +36,7 @@ export async function POST(req: NextRequest) {
         customerPhone,
         productId: sampleProductId,
         eventSource: 'web',
+        forwardWebEvent: true, // deliberate App Review demo → WhatsApp dataset only
         metadata: {
           title: 'Zica Graphic Tee V1',
           price: '1499.00',
@@ -46,6 +51,7 @@ export async function POST(req: NextRequest) {
         customerPhone,
         orderId: sampleOrderId,
         eventSource: 'web',
+        forwardWebEvent: true, // deliberate App Review demo → WhatsApp dataset only
         metadata: {
           value: 1499.00,
           currency: 'INR',
@@ -60,6 +66,7 @@ export async function POST(req: NextRequest) {
         customerId: sampleCustomerId,
         customerPhone,
         eventSource: 'web',
+        forwardWebEvent: true, // deliberate App Review demo → WhatsApp dataset only
         metadata: {
           name: customerName,
           source: 'meta_app_review_demo'

@@ -1,23 +1,21 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import prisma from "@/lib/db";
+import { createCustomer, updateCustomer } from "@/lib/shopify-admin";
+import { syncOrderToShopify } from "@/lib/services/shopifyOrderSyncService";
 import { resolveRazorpayCredentials } from "@/lib/razorpay-credentials";
+import { sendOrderConfirmationEmail, sendOrderCodConfirmationEmail } from "@/lib/services/orderEmailService";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { resolveAndSyncCustomerAddress } from "@/lib/services/customerService";
 import { debitStoreCredits } from "@/lib/storeCreditsHelper";
-import { assignUniversalOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
+import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from "@/lib/orderNumber";
+import { emitMetaPurchase, metaContextFromRequest } from "@/lib/meta/purchase-server";
+import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-server';
+import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
-
-/** Detach background work from the request so Next.js cannot hold the HTTP response open. */
-function runAfterResponse(fn: () => void) {
-  if (typeof setImmediate === "function") {
-    setImmediate(fn);
-  } else {
-    setTimeout(fn, 0);
-  }
-}
 
 export async function POST(req: Request) {
   const rateLimitResult = await checkRateLimit(req, "checkout-complete", { maxRequests: 30, windowMs: 60_000 });
@@ -118,71 +116,92 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Shop not found" }, { status: 404 });
     }
 
+    // ── International (global store) checkout currency ──
+    // Non-INR checkouts are displayed AND charged by Razorpay at
+    // INR price × multiplier × exchangeRate (lib/global-pricing). Shopify variant
+    // prices are INR, so the server re-prices each unit with the SAME formula; the
+    // stored total, its currency and the captured amount then describe the same
+    // money. Previously the INR base total was stored under the foreign currency and
+    // compared with the (local) captured amount, marking every international order
+    // "partially_paid". INR checkouts are unchanged (toCheckoutCurrency stays null).
+    const requestCurrency = String(body.currency || 'INR').trim().toUpperCase();
+    let toCheckoutCurrency: ((inr: number) => number) | null = null;
+    if (requestCurrency !== 'INR') {
+      try {
+        const { isGlobalStoreEnabled, getCountryConfig, formatPriceWithConfig } = await import('@/lib/global-pricing');
+        const enabled = await isGlobalStoreEnabled();
+        const cfg = await getCountryConfig(String(body.displayCountry || '').trim().toUpperCase());
+        if (enabled && cfg && !cfg.isBase && String(cfg.currencyCode).toUpperCase() === requestCurrency) {
+          toCheckoutCurrency = (inr: number) => formatPriceWithConfig(inr, cfg, true).amount;
+        } else {
+          console.warn(`[Checkout] Currency ${requestCurrency} has no active global-store config for ${body.displayCountry}; prices compared as-is`);
+        }
+      } catch (fxErr: any) {
+        console.warn('[Checkout] Global pricing config unavailable; prices compared as-is:', fxErr?.message);
+      }
+    }
+
     // ── P0-11: Server-side price recomputation ─────────────────────────
     // Never trust client-supplied subtotal/total. Recompute from authoritative variant prices.
-    // After Razorpay returns a payment id, money is already moving — skip the Shopify Admin
-    // variant fetch (often 1–3s). Capture verification below is the money check; client totals
-    // stand unless we can verify cheaply from local Product rows for unpaid paths.
     let serverSubtotal = 0;
     let priceVerified = false;
     let authoritativeTotal = Math.max(0, Number(total || 0));
     let authoritativeSubtotal = Math.max(0, Number(subtotal || 0));
     let paymentUnderpaid = false;
     let capturedRupees: number | null = null;
-    let acceptedMockPayment = false;
-    const paymentAlreadyReturned = Boolean(razorpay?.razorpay_payment_id);
+    // true only when Razorpay confirms the payment CAPTURED (or a mock in non-prod).
+    let captureConfirmed = false;
     try {
-      if (paymentAlreadyReturned) {
-        console.log(
-          `[Checkout] Skipping Shopify variant price fetch — payment ${razorpay.razorpay_payment_id} already returned; trusting client totals + Razorpay capture`
-        );
-      } else {
-        const variantIds = items
-          .map((item: any) => {
-            if (!item.variantId) return null;
+      const variantIds = items
+        .map((item: any) => {
+          if (!item.variantId) return null;
+          const rawId = String(item.variantId).split('/').pop() || '';
+          return rawId;
+        })
+        .filter(Boolean);
+
+      if (variantIds.length > 0 && variantIds.length === items.length) {
+        // Batch fetch variant prices from Shopify Admin API
+        const { shopifyFetch, adminUrl: buildAdminUrl } = await import('@/lib/shopify-admin');
+        const variantPriceMap = new Map<string, number>();
+
+        // Fetch variants in batches (Shopify supports comma-separated IDs)
+        const batchSize = 50;
+        for (let i = 0; i < variantIds.length; i += batchSize) {
+          const batch = variantIds.slice(i, i + batchSize);
+          try {
+            const data = await shopifyFetch<{ variants: Array<{ id: number; price: string }> }>(
+              `variants.json`,
+              { ids: batch.join(','), fields: 'id,price' }
+            );
+            if (data?.variants) {
+              for (const v of data.variants) {
+                variantPriceMap.set(String(v.id), parseFloat(v.price));
+              }
+            }
+          } catch (fetchErr) {
+            console.warn('[Checkout] Variant price fetch batch failed:', fetchErr);
+          }
+        }
+
+        if (variantPriceMap.size > 0) {
+          serverSubtotal = 0;
+          for (const item of items) {
             const rawId = String(item.variantId).split('/').pop() || '';
-            return rawId;
-          })
-          .filter(Boolean);
-
-        if (variantIds.length > 0 && variantIds.length === items.length) {
-          // Batch fetch variant prices from Shopify Admin API (unpaid / store-credit paths only)
-          const { shopifyFetch } = await import('@/lib/shopify-admin');
-          const variantPriceMap = new Map<string, number>();
-
-          const batchSize = 50;
-          for (let i = 0; i < variantIds.length; i += batchSize) {
-            const batch = variantIds.slice(i, i + batchSize);
-            try {
-              const data = await shopifyFetch<{ variants: Array<{ id: number; price: string }> }>(
-                `variants.json`,
-                { ids: batch.join(','), fields: 'id,price' }
-              );
-              if (data?.variants) {
-                for (const v of data.variants) {
-                  variantPriceMap.set(String(v.id), parseFloat(v.price));
-                }
-              }
-            } catch (fetchErr) {
-              console.warn('[Checkout] Variant price fetch batch failed:', fetchErr);
+            const authoritative = variantPriceMap.get(rawId);
+            if (authoritative !== undefined) {
+              // INR checkout: the Shopify INR price. International: the same unit price
+              // the storefront showed and Razorpay charged (see toCheckoutCurrency).
+              const unitPrice = toCheckoutCurrency ? toCheckoutCurrency(authoritative) : authoritative;
+              serverSubtotal += unitPrice * (item.quantity || 1);
+            } else {
+              // Variant not found in Shopify — fall back to client price with a warning
+              console.warn(`[Checkout] Variant ${rawId} not found in Shopify; using client price ₹${item.price}`);
+              serverSubtotal += parseFloat(item.price || '0') * (item.quantity || 1);
             }
           }
-
-          if (variantPriceMap.size > 0) {
-            serverSubtotal = 0;
-            for (const item of items) {
-              const rawId = String(item.variantId).split('/').pop() || '';
-              const authoritative = variantPriceMap.get(rawId);
-              if (authoritative !== undefined) {
-                serverSubtotal += authoritative * (item.quantity || 1);
-              } else {
-                console.warn(`[Checkout] Variant ${rawId} not found in Shopify; using client price ₹${item.price}`);
-                serverSubtotal += parseFloat(item.price || '0') * (item.quantity || 1);
-              }
-            }
-            serverSubtotal = Math.round(serverSubtotal * 100) / 100;
-            priceVerified = true;
-          }
+          serverSubtotal = Math.round(serverSubtotal * 100) / 100;
+          priceVerified = true;
         }
       }
     } catch (priceErr) {
@@ -223,10 +242,6 @@ export async function POST(req: Request) {
     const isFullStoreCredit = paymentMethod === "store_credit" || paymentMethod === "STORE_CREDIT" || Number(total) === 0;
 
 
-    // Overlap session lookup with payment verify — both are independent network/DB waits.
-    const sessionPromise = getServerSession(authOptions);
-    const tPay0 = Date.now();
-
     // 1. Verify Payment (Required for prepaid and COD upfront fee, unless 100% store credit)
     if (!isFullStoreCredit) {
       if (paymentMethod !== "COD" || razorpay) {
@@ -242,15 +257,15 @@ export async function POST(req: Request) {
            razorpay.razorpay_signature === 'mock_sig_valid');
 
         if (!isMock) {
-          let creds: { key_id: string; key_secret: string };
+          let secret: string;
           try {
-            creds = await resolveRazorpayCredentials();
+            secret = (await resolveRazorpayCredentials()).key_secret;
           } catch {
             return NextResponse.json({ error: "Payment verification not configured" }, { status: 500 });
           }
 
           const generated_signature = crypto
-            .createHmac("sha256", creds.key_secret)
+            .createHmac("sha256", secret)
             .update(razorpay.razorpay_order_id + "|" + razorpay.razorpay_payment_id)
             .digest("hex");
 
@@ -266,156 +281,180 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Invalid payment signature" }, { status: 400 });
           }
 
-          // Require a live Razorpay capture — signature alone is not enough (authorized ≠ paid).
+          // A valid signature only proves AUTHORIZATION. Confirm server-side that the
+          // money is CAPTURED before the order may become paid / cod_upfront_paid.
+          // If capture can't be confirmed yet, the order stays payment_pending and the
+          // payment.captured / order.paid webhook completes it (no lost/duplicate order).
           try {
-            const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+            const creds = await resolveRazorpayCredentials();
+            const { confirmRazorpayCapture } = await import('@/lib/razorpay-payment');
+            const capture = await confirmRazorpayCapture(razorpay.razorpay_payment_id, {
+              key_id: creds.key_id,
+              key_secret: creds.key_secret,
+            }, { expectedOrderId: razorpay.razorpay_order_id });
+            if (!capture.captured) throw new Error(capture.reason);
+            const payment = capture.payment;
+            captureConfirmed = true;
+            capturedRupees = Number(payment.amount) / 100;
             const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
-            const payment = await assertCapturedCharge({
-              paymentId: razorpay.razorpay_payment_id,
-              credentials: { key_id: creds.key_id, key_secret: creds.key_secret },
-              expectedMinRupees: isCodOrder ? expectedCharge : 0,
-              orderId: razorpay.razorpay_order_id,
-            });
-            capturedRupees = paymentAmountRupees(payment);
-            if (!isCodOrder && Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
+            if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
               paymentUnderpaid = true;
               console.error(
                 `[Checkout] Underpayment: captured ₹${capturedRupees} < expected ₹${expectedCharge} (payment ${razorpay.razorpay_payment_id})`
               );
             }
           } catch (amtErr: any) {
-            console.error('[Checkout] Razorpay capture verification failed:', amtErr?.message || amtErr);
-            return NextResponse.json(
-              { error: isCodOrder ? 'COD upfront payment not captured' : 'Payment not captured' },
-              { status: 402 }
-            );
+            console.warn('[Checkout] Could not verify Razorpay captured amount:', amtErr?.message || amtErr);
           }
         } else {
-          acceptedMockPayment = true;
           console.warn('[Checkout] Accepting MOCK payment for testing');
+          captureConfirmed = true;
         }
       } else {
         return NextResponse.json({ error: "COD upfront payment details missing" }, { status: 400 });
       }
     }
 
-    console.log(`[Checkout Complete][timing] payment-verify ${Date.now() - tPay0}ms`);
-
-    // 2. Find/create customer only — merge + Address table writes run in deferred tasks
-    const tCust0 = Date.now();
-    const session = await sessionPromise;
+    // 2. Find/Sync Customer & Address using customerService
+    const session = await getServerSession(authOptions);
     const sessionUserId = (session?.user as any)?.id || null;
-    const { customer: localCustomer, normalizedAddress } = await resolveAndSyncCustomerAddress(
-      shop.id,
-      address,
-      sessionUserId,
-      { skipSideEffects: true }
-    );
-    console.log(`[Checkout Complete][timing] customer-resolve ${Date.now() - tCust0}ms`);
+    const { customer: localCustomer, normalizedAddress } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
-    // Shopify customer create is deferred — syncOrderToShopify already creates the customer
-    // when shopifyId is still temp_/google_/apple_.
-    let shopifyCustomerId = localCustomer.shopifyId;
-
-    // Heavy duplicate-account merge (many tables) — never block confirmation
+    // Duplicate account check and merge
     if (address.phone) {
-      const mergeCustomerId = localCustomer.id;
-      const mergePhone = address.phone;
-      deferredTasks.push({
-        name: 'customer-duplicate-merge',
-        run: async () => {
-          const duplicateCustomer = await prisma.customer.findFirst({
-            where: { phone: mergePhone, id: { not: mergeCustomerId } },
-          });
-          if (!duplicateCustomer) return;
-          console.log(`[Checkout Merge] Merging duplicate customer account: ${duplicateCustomer.id} -> ${mergeCustomerId}`);
-          try {
-            await prisma.$transaction([
-              prisma.order.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.address.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.return.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.returnRequest.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.exchangeRequest.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.payment.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.profileHistory.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.mobileOrder.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.communityMessage.updateMany({
-                where: { customerId: duplicateCustomer.id },
-                data: { customerId: mergeCustomerId },
-              }),
-              prisma.cart.deleteMany({ where: { customerId: duplicateCustomer.id } }),
-              prisma.follow.deleteMany({
-                where: {
-                  OR: [
-                    { followerId: duplicateCustomer.id },
-                    { followingId: duplicateCustomer.id },
-                  ],
-                },
-              }),
-            ]);
-
-            const dupWishlist = await prisma.wishlist.findMany({
-              where: { customerId: duplicateCustomer.id },
-            });
-            for (const item of dupWishlist) {
-              try {
-                await prisma.wishlist.update({
-                  where: { id: item.id },
-                  data: { customerId: mergeCustomerId },
-                });
-              } catch {
-                await prisma.wishlist.delete({ where: { id: item.id } });
-              }
-            }
-
-            const dupCommunity = await prisma.communityMember.findUnique({
-              where: { customerId: duplicateCustomer.id },
-            });
-            if (dupCommunity) {
-              const primCommunity = await prisma.communityMember.findUnique({
-                where: { customerId: mergeCustomerId },
-              });
-              if (!primCommunity) {
-                await prisma.communityMember.update({
-                  where: { id: dupCommunity.id },
-                  data: { customerId: mergeCustomerId },
-                });
-              } else {
-                await prisma.communityMember.delete({ where: { id: dupCommunity.id } });
-              }
-            }
-
-            await prisma.customer.delete({ where: { id: duplicateCustomer.id } });
-            console.log(`[Checkout Merge] Merging completed successfully.`);
-          } catch (mergeErr: any) {
-            console.error("[Checkout Merge] Error occurred during account merge:", mergeErr);
-          }
-        },
+      const duplicateCustomer = await prisma.customer.findFirst({
+        where: {
+          phone: address.phone,
+          id: { not: localCustomer.id }
+        }
       });
+
+      if (duplicateCustomer) {
+        console.log(`[Checkout Merge] Merging duplicate customer account: ${duplicateCustomer.id} -> ${localCustomer.id}`);
+        try {
+          await prisma.$transaction([
+            prisma.order.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.address.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.return.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.returnRequest.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.exchangeRequest.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.payment.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.profileHistory.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.mobileOrder.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.communityMessage.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id }
+            }),
+            prisma.cart.deleteMany({
+              where: { customerId: duplicateCustomer.id }
+            }),
+            prisma.follow.deleteMany({
+              where: {
+                OR: [
+                  { followerId: duplicateCustomer.id },
+                  { followingId: duplicateCustomer.id }
+                ]
+              }
+            })
+          ]);
+
+          const dupWishlist = await prisma.wishlist.findMany({
+            where: { customerId: duplicateCustomer.id }
+          });
+          for (const item of dupWishlist) {
+            try {
+              await prisma.wishlist.update({
+                where: { id: item.id },
+                data: { customerId: localCustomer.id }
+              });
+            } catch {
+              await prisma.wishlist.delete({
+                where: { id: item.id }
+              });
+            }
+          }
+
+          const dupCommunity = await prisma.communityMember.findUnique({
+            where: { customerId: duplicateCustomer.id }
+          });
+          if (dupCommunity) {
+            const primCommunity = await prisma.communityMember.findUnique({
+              where: { customerId: localCustomer.id }
+            });
+            if (!primCommunity) {
+              await prisma.communityMember.update({
+                where: { id: dupCommunity.id },
+                data: { customerId: localCustomer.id }
+              });
+            } else {
+              await prisma.communityMember.delete({
+                where: { id: dupCommunity.id }
+              });
+            }
+          }
+
+          await prisma.customer.delete({
+            where: { id: duplicateCustomer.id }
+          });
+          console.log(`[Checkout Merge] Merging completed successfully.`);
+        } catch (mergeErr: any) {
+          console.error("[Checkout Merge] Error occurred during account merge:", mergeErr);
+        }
+      }
+    }
+
+    // Sync with Shopify if needed
+    let shopifyCustomerId = localCustomer.shopifyId;
+    if (shopifyCustomerId.startsWith('temp_') || shopifyCustomerId.startsWith('google_') || shopifyCustomerId.startsWith('apple_')) {
+      try {
+        const hasValidEmail = Boolean(address.email && String(address.email).includes('@'));
+        const sCustomer = await createCustomer({
+          first_name: address.name.split(' ')[0],
+          last_name: address.name.split(' ').slice(1).join(' ') || '.',
+          email: hasValidEmail ? address.email : undefined,
+          phone: address.phone,
+          verified_email: hasValidEmail,
+          addresses: [{
+            address1: address.street,
+            city: address.city,
+            province: address.state,
+            zip: address.zip,
+            country: address.country,
+            default: true
+          }]
+        });
+        shopifyCustomerId = sCustomer.id.toString();
+        await prisma.customer.update({
+          where: { id: localCustomer.id },
+          data: { shopifyId: shopifyCustomerId }
+        });
+      } catch (e) {
+        console.error("Shopify Customer Sync Error:", e);
+      }
     }
 
     // ─── BUG 1 FIX: Determine final order number BEFORE Shopify creation ───
@@ -434,6 +473,18 @@ export async function POST(req: Request) {
       });
     }
 
+    // The Razorpay webhook may already have confirmed capture for this order.
+    const CAPTURE_CONFIRMED_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
+    if (!captureConfirmed && CAPTURE_CONFIRMED_STATUSES.includes(String(existingPreCreatedOrder?.paymentStatus || ''))) {
+      captureConfirmed = true;
+    }
+    // Authorized but capture not confirmed: save the order as PENDING (pending number,
+    // no capture time, no COD upfront recorded) and run none of the "order confirmed"
+    // side effects. The shopper's page re-sends this request until capture is
+    // confirmed (normal path below), and the payment.captured / order.paid webhook
+    // confirms the order if the page is gone.
+    const awaitingCapture = !isFullStoreCredit && !captureConfirmed;
+
     // Determine the final universalOrderNumber based on pre-created order state
     let universalOrderNumber = '';
     let preCreatedWasPromoted = false;
@@ -443,6 +494,9 @@ export async function POST(req: Request) {
         // Pre-created order already has a real ZB number → reuse it, do NOT mint
         universalOrderNumber = oldNumber;
         console.log(`[Checkout Complete] Reusing existing real order number: ${universalOrderNumber}`);
+      } else if (awaitingCapture && isFailedPrefixNumber(oldNumber)) {
+        // Not captured yet → keep the pending number; promotion happens on capture.
+        universalOrderNumber = oldNumber;
       } else if (isFailedPrefixNumber(oldNumber)) {
         // Pre-created order has a failed-prefix number → mint a new real number and promote NOW
         let mintedNumber = '';
@@ -501,59 +555,52 @@ export async function POST(req: Request) {
         }
       }
     } else {
-      // No pre-created order → mint a fresh number
+      // No pre-created order → mint a fresh number (pending-prefix while awaiting capture)
       try {
-        universalOrderNumber = await assignUniversalOrderNumber(prisma);
+        universalOrderNumber = awaitingCapture
+          ? await assignFailedOrderNumber(prisma, { cause: 'pending' })
+          : await assignUniversalOrderNumber(prisma);
       } catch (seqErr: any) {
         console.error('[Checkout] Failed to generate universal order number:', seqErr.message);
         universalOrderNumber = `ZB${Date.now().toString().slice(-8)}`;
       }
     }
 
-    const tOrder0 = Date.now();
-    // Resolve products from DB (single batch query — not N sequential lookups)
-    const cleanProductIds = items
-      .map((item: any) => (item.productId ? String(item.productId) : null))
-      .filter(Boolean) as string[];
-    type ProductRow = { id: string; shopifyProductId: string; featuredImage: string | null };
-    const productRows: ProductRow[] =
-      cleanProductIds.length > 0
-        ? await prisma.product.findMany({
-            where: {
-              OR: [
-                { shopifyProductId: { in: cleanProductIds } },
-                { id: { in: cleanProductIds } },
-              ],
-            },
-            select: { id: true, shopifyProductId: true, featuredImage: true },
-          })
-        : [];
-    const productByShopifyId = new Map(productRows.map((p: ProductRow) => [p.shopifyProductId, p]));
-    const productById = new Map(productRows.map((p: ProductRow) => [p.id, p]));
-
-    const resolvedItems = items.map((item: any, index: number) => {
-      let dbProductId: string | null = null;
+    // Resolve products from DB
+    const resolvedItems = [];
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      let dbProductId = null;
       let image = item.image || null;
       if (item.productId) {
         const cleanId = String(item.productId);
-        const match = productByShopifyId.get(cleanId) || productById.get(cleanId);
-        if (match) {
-          dbProductId = match.id;
-          if (!image) image = match.featuredImage;
+        const byShopifyId = await prisma.product.findUnique({
+          where: { shopifyProductId: cleanId }
+        });
+        if (byShopifyId) {
+          dbProductId = byShopifyId.id;
+          if (!image) image = byShopifyId.featuredImage;
+        } else {
+          const byCuid = await prisma.product.findUnique({
+            where: { id: cleanId }
+          });
+          if (byCuid) {
+            dbProductId = byCuid.id;
+            if (!image) image = byCuid.featuredImage;
+          }
         }
       }
-      return {
+      resolvedItems.push({
         shopifyLineItemId: `web_${Date.now()}_${index}_${item.productId || item.variantId || 'item'}`,
         productId: dbProductId,
         title: item.title,
         quantity: item.quantity,
         price: parseFloat(item.price || '0'),
         sku: item.variantId || item.productId || null,
-        image,
-        size: item.size || null,
-        variantId: item.variantId || null,
-      };
-    });
+        variantId: normalizeVariantId(item.variantId),
+        image: image
+      });
+    }
 
     // 4. Update existing pre-created Order OR Create Order in local DB
     if (existingPreCreatedOrder) {
@@ -583,25 +630,15 @@ export async function POST(req: Request) {
 
     let localOrder: any = null;
     const finalPaymentMethod = isFullStoreCredit ? "store_credit" : isCodOrder ? "cod" : "razorpay";
-    // COD upfront is only "paid" after capture verification above (or mock in non-prod).
     const orderPaymentStatus = isFullStoreCredit
       ? "paid"
-      : isCodOrder
-        ? "cod_upfront_paid"
-        : paymentUnderpaid
-          ? "partially_paid"
-          : "paid";
-    // COD upfront amount is locked from live capture only (mock fee only in non-prod opt-in).
-    const lockedCodUpfrontPaid = isCodOrder
-      ? (Number.isFinite(capturedRupees as number) && (capturedRupees as number) > 0
-          ? (capturedRupees as number)
-          : acceptedMockPayment
-            ? resolvedCodFee
-            : 0)
-      : 0;
-    if (isCodOrder && lockedCodUpfrontPaid <= 0) {
-      return NextResponse.json({ error: 'COD upfront payment not captured' }, { status: 402 });
-    }
+      : !captureConfirmed
+        ? "payment_pending" // authorized / unverifiable → webhook marks it paid on capture
+        : isCodOrder
+          ? "cod_upfront_paid"
+          : paymentUnderpaid
+            ? "partially_paid"
+            : "paid";
     const orderTotalPrice = priceVerified
       ? authoritativeTotal
       : Math.max(0, Number(subtotal || total || 0) - Number(finalCouponDiscount || 0) - parsedStoreCredit);
@@ -609,6 +646,9 @@ export async function POST(req: Request) {
     const underpayNote = paymentUnderpaid && capturedRupees != null
       ? ` | UNDERPAID: captured ₹${capturedRupees} vs expected ₹${isCodOrder ? resolvedCodFee : orderTotalPrice}`
       : '';
+
+    const awaitingCaptureNote = `Web Store ${isCodOrder ? 'COD ' : ''}order — Razorpay payment ${razorpay?.razorpay_payment_id || 'N/A'} was authorized at checkout; the order is confirmed only once Razorpay reports it captured`;
+    const orderTags = `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}${awaitingCapture ? ', payment_pending' : ''}`;
 
     if (existingPreCreatedOrder) {
       // Recalculate correct total: prefer server-verified totals when available
@@ -620,10 +660,10 @@ export async function POST(req: Request) {
         (existingPreCreatedOrder.shopifySyncError || '').includes('pending manual');
 
       const updateData: any = {
-        status: isCodOrder ? "open" : "approved",
+        status: awaitingCapture ? "payment_pending" : isCodOrder ? "open" : "approved",
         paymentStatus: orderPaymentStatus,
         razorpayPaymentId: razorpay?.razorpay_payment_id || null,
-        paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
+        paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
         paymentMethod: finalPaymentMethod,
         storeCreditAmount: parsedStoreCredit,
         totalPrice: correctedTotal,
@@ -631,13 +671,15 @@ export async function POST(req: Request) {
         discountCode: finalCouponCode || null,
         discountAmount: Number(finalCouponDiscount) || 0,
         paymentFailureReason: null,
-        codUpfrontPaid: lockedCodUpfrontPaid,
-        codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
-        tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
-        note: isFullStoreCredit
+        codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
+        codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
+        tags: orderTags,
+        note: awaitingCapture
+          ? awaitingCaptureNote
+          : isFullStoreCredit
           ? `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`
           : isCodOrder
-          ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${lockedCodUpfrontPaid} upfront fee paid via Razorpay${underpayNote}`
+          ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay${underpayNote}`
           : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})${underpayNote}`,
         internalOrderNumber: universalOrderNumber,
         customerId: localCustomer.id,
@@ -649,10 +691,23 @@ export async function POST(req: Request) {
         shopifySyncError: null,
       };
 
-      localOrder = await prisma.order.update({
-        where: { id: existingPreCreatedOrder.id },
-        data: updateData,
-      });
+      if (awaitingCapture) {
+        // Never overwrite a payment the webhook confirmed in the meantime.
+        const guarded = await prisma.order.updateMany({
+          where: { id: existingPreCreatedOrder.id, paymentStatus: { notIn: CAPTURE_CONFIRMED_STATUSES } },
+          data: updateData,
+        });
+        if (guarded.count === 0) {
+          // Captured meanwhile → the page re-sends and the normal path completes it.
+          return NextResponse.json({ orderId: existingPreCreatedOrder.id, paymentState: 'pending_capture' }, { status: 202 });
+        }
+        localOrder = await prisma.order.findUnique({ where: { id: existingPreCreatedOrder.id } });
+      } else {
+        localOrder = await prisma.order.update({
+          where: { id: existingPreCreatedOrder.id },
+          data: updateData,
+        });
+      }
 
       // Always replace line items from the verified checkout payload.
       // Pre-create refresh used to call a non-existent prisma.lineItem model, so
@@ -667,18 +722,40 @@ export async function POST(req: Request) {
           quantity: Number(item.quantity) || 1,
           price: item.price,
           sku: item.sku,
+          variantId: item.variantId ?? null,
           image: item.image,
         })),
       });
       console.log(`[Checkout Complete] Updated pre-created order ${localOrder.id} (${universalOrderNumber}) + refreshed ${resolvedItems.length} item(s)`);
 
-      // Stash recovery Shopify id for deferred cancel-before-sync (must not race with sync)
+      // If a recovery placeholder already synced to Shopify, cancel it and clear the
+      // link so the choke-point below can create the real order.
       if (
         wasRazorpayRecovery &&
         localOrder.shopifyOrderId &&
         /^\d+$/.test(String(localOrder.shopifyOrderId))
       ) {
-        (localOrder as any).__recoveryShopifyId = String(localOrder.shopifyOrderId);
+        try {
+          const { cancelOrder } = await import('@/lib/shopify-admin');
+          await cancelOrder(String(localOrder.shopifyOrderId), 'other');
+          console.warn(
+            `[Checkout Complete] Cancelled recovery Shopify order ${localOrder.shopifyOrderId} for ${localOrder.id}`
+          );
+        } catch (cancelErr: any) {
+          console.error(
+            `[Checkout Complete] Could not cancel recovery Shopify order ${localOrder.shopifyOrderId}:`,
+            cancelErr?.message
+          );
+        }
+        localOrder = await prisma.order.update({
+          where: { id: localOrder.id },
+          data: {
+            shopifyOrderId: null,
+            shopifyOrderName: null,
+            shopifySyncStatus: 'pending',
+            shopifySyncError: 'Cleared recovery Shopify placeholder for re-sync',
+          },
+        });
       }
     } else {
       localOrder = await prisma.order.create({
@@ -686,7 +763,7 @@ export async function POST(req: Request) {
           shopId: shop.id,
           shopifyOrderId: null,
           customerId: localCustomer.id,
-          status: isCodOrder ? "open" : "approved",
+          status: awaitingCapture ? "payment_pending" : isCodOrder ? "open" : "approved",
           totalPrice: orderTotalPrice,
           subtotalPrice: orderSubtotalPrice,
           currency: body.currency || "INR",
@@ -699,18 +776,20 @@ export async function POST(req: Request) {
           razorpayOrderId: razorpay?.razorpay_order_id || null,
           razorpayPaymentId: razorpay?.razorpay_payment_id || null,
           paymentMethod: finalPaymentMethod,
-          codUpfrontPaid: lockedCodUpfrontPaid,
-          codUpfrontPaymentId: isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
+          codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
+          codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
           storeCreditAmount: parsedStoreCredit,
-          paymentCapturedAt: (razorpay || isFullStoreCredit) ? new Date() : null,
+          paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
           orderType: "WEB_STORE",
-          tags: `WebStoreOrder, Web, ${finalPaymentMethod}, zb-order-${universalOrderNumber}`,
+          tags: orderTags,
           discountCode: finalCouponCode || null,
           discountAmount: Number(finalCouponDiscount) || 0,
           internalOrderNumber: universalOrderNumber,
           shopifySyncStatus: 'pending',
           shopifySyncError: null,
-          note: underpayNote
+          note: awaitingCapture
+            ? awaitingCaptureNote
+            : underpayNote
             ? `Web checkout${underpayNote}`
             : undefined,
           items: {
@@ -721,6 +800,7 @@ export async function POST(req: Request) {
               quantity: item.quantity,
               price: item.price,
               sku: item.sku,
+              variantId: item.variantId ?? null,
               image: item.image
             }))
           }
@@ -728,42 +808,23 @@ export async function POST(req: Request) {
       });
     }
 
-    console.log(`[Checkout Complete][timing] local-order-write ${Date.now() - tOrder0}ms`);
+    // ─── Capture not confirmed: stop here — order saved as pending, nothing confirmed ───
+    // No Shopify sync, Meta/Snap/OpenAI Purchase, analytics, coupon usage, cashback,
+    // cart conversion, affiliate attribution, email or WhatsApp until capture is confirmed.
+    if (awaitingCapture) {
+      console.warn(`[Checkout Complete] Payment ${razorpay?.razorpay_payment_id} for ${localOrder.id} authorized but not captured — order kept pending`);
+      return NextResponse.json({ orderId: localOrder.id, paymentState: 'pending_capture' }, { status: 202 });
+    }
 
     // ─── ONE AND ONLY ONE SHOPIFY-CREATE CHOKE POINT (FIX 1) ───
     // Deferred: syncOrderToShopify is idempotent (atomic claim + Shopify idempotency key) and is
     // also retried by the Razorpay webhook / recovery jobs, so it must not block the customer.
+    // Runs after the WebStoreOrder upsert below, and updates that row's notes itself.
     const localOrderIdForSync = localOrder.id;
-    const recoveryShopifyIdForSync = (localOrder as any).__recoveryShopifyId as string | undefined;
     deferredTasks.push({
       name: 'shopify-order-sync',
       run: async () => {
-        // Cancel recovery placeholder first so sync creates the real Shopify order
-        if (recoveryShopifyIdForSync) {
-          try {
-            const { cancelOrder } = await import('@/lib/shopify-admin');
-            await cancelOrder(recoveryShopifyIdForSync, 'other');
-            console.warn(
-              `[Checkout Complete] Cancelled recovery Shopify order ${recoveryShopifyIdForSync} for ${localOrderIdForSync}`
-            );
-          } catch (cancelErr: any) {
-            console.error(
-              `[Checkout Complete] Could not cancel recovery Shopify order ${recoveryShopifyIdForSync}:`,
-              cancelErr?.message
-            );
-          }
-          await prisma.order.update({
-            where: { id: localOrderIdForSync },
-            data: {
-              shopifyOrderId: null,
-              shopifyOrderName: null,
-              shopifySyncStatus: 'pending',
-              shopifySyncError: 'Cleared recovery Shopify placeholder for re-sync',
-            },
-          });
-        }
         try {
-          const { syncOrderToShopify } = await import('@/lib/services/shopifyOrderSyncService');
           await syncOrderToShopify(localOrderIdForSync);
         } catch (syncErr: any) {
           console.error('[Checkout Complete] Shopify order sync error (will be retried):', syncErr.message);
@@ -805,131 +866,81 @@ export async function POST(req: Request) {
       }
     }
 
-    // Server-side ad pixels — deferred so Meta/Snap/OpenAI never hold the HTTP response
+    // ─── Authoritative server-side Meta CAPI Purchase ───
+    // lib/meta/purchase.ts rebuilds the event from the stored order (value, currency,
+    // variant ids, quantities, payment status) and sends it exactly once via the
+    // AdConversionDelivery ledger, shared with the Razorpay webhook and /api/meta/event.
+    // This request comes from the shopper's browser, so it carries the real UA, IP,
+    // _fbp/_fbc and zb_external_id. event_id = localOrder.id (= browser Pixel eventID).
     const resolvedOrderCurrency = (body.currency || 'INR').toUpperCase();
-    {
-      const cookieHeader = req.headers.get('cookie') || '';
-      const parseCookie = (name: string): string | undefined => {
-        const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-        return match ? decodeURIComponent(match[1]) : undefined;
-      };
-      const fbp = body.fbp || parseCookie('_fbp');
-      const fbc = body.fbc || parseCookie('_fbc');
-      const externalId = body.externalId || parseCookie('zb_external_id') || localCustomer.id;
-      const clientIp = req.headers.get('do-connecting-ip')
-        || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-        || req.headers.get('x-real-ip')
-        || parseCookie('zb_client_ip')
-        || undefined;
-      const ua = req.headers.get('user-agent') || '';
-      const capiOrderId = localOrder.id;
-      const capiTotal = Number(orderTotalPrice || total || 0);
-      const capiItems = items;
+    emitMetaPurchase(
+      localOrder.id,
+      metaContextFromRequest(req, { fbp: body.fbp, fbc: body.fbc, externalId: body.externalId }),
+      { paymentConfirmed: isFullStoreCredit || captureConfirmed },
+    )
+      .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Meta Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
+      .catch(() => {});
 
-      deferredTasks.push({
-        name: 'ad-pixels-capi',
-        run: async () => {
-          const toItemId = (item: any): string => {
-            const raw = item.variantId || item.sku || item.productId || '';
-            const s = String(raw);
-            const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-            const m = stripped.match(/(\d+)\s*$/);
-            return m ? m[1] : stripped;
-          };
-          const contentIds = capiItems.map(toItemId);
-          const eventSourceUrl = `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${capiOrderId}/confirmation`;
-          const userDataBase = {
-            em: address.email || undefined,
-            ph: address.phone || undefined,
-            fn: address.name?.trim().split(/\s+/)[0] || undefined,
-            ln: address.name?.trim().split(/\s+/).slice(1).join(' ') || undefined,
-            ct: address.city || undefined,
-            st: address.state || undefined,
-            zp: address.zip || undefined,
-            country: address.country || undefined,
-          };
+    // ─── Authoritative server-side Snap CAPI Purchase ───
+    // lib/snap/purchase.ts rebuilds the event from the stored order (value,
+    // currency, variant ids, quantities, payment status) and sends it exactly
+    // once via the AdConversionDelivery ledger. This request comes from the
+    // shopper's browser, so its cookies carry ScCid/_scid for attribution.
+    // Confirmed = Razorpay CAPTURED the money (prepaid / COD upfront). Web store
+    // credit is app-only (rejected above). If capture isn't confirmed yet the order
+    // stays payment_pending and the payment.captured / order.paid webhook sends it.
+    emitSnapPurchase(localOrder.id, snapContextFromRequest(req), {
+      paymentConfirmed: isFullStoreCredit || captureConfirmed,
+    })
+      .then((r) => { if (r.status !== 'sent') console.info(`[Checkout Complete] Snap Purchase ${localOrder.id}: ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`); })
+      .catch(() => {});
 
-          try {
-            const { sendCapiEvent } = await import('@/lib/metaCapi');
-            await sendCapiEvent({
-              eventName: 'Purchase',
-              eventId: capiOrderId,
-              eventTime: Math.floor(Date.now() / 1000),
-              eventSourceUrl,
-              userAgent: ua,
-              actionSource: 'website',
-              userData: {
-                ...userDataBase,
-                client_ip_address: clientIp,
-                client_user_agent: ua || undefined,
-                fbp: fbp || undefined,
-                fbc: fbc || undefined,
-                external_id: externalId || undefined,
-              },
-              customData: {
-                value: capiTotal,
-                currency: resolvedOrderCurrency,
-                order_id: capiOrderId,
-                content_type: 'product',
-                content_ids: contentIds,
-                contents: capiItems.map((item: any, idx: number) => ({
-                  id: contentIds[idx],
-                  quantity: item.quantity || 1,
-                  item_price: parseFloat(item.price || '0'),
-                  title: item.title,
-                })),
-                num_items: capiItems.reduce((sum: number, it: any) => sum + (it.quantity || 1), 0),
-              },
-            });
-          } catch (capiErr: any) {
-            console.error('[Checkout Complete] Meta CAPI Purchase fire error:', capiErr?.message || capiErr);
-          }
-
-          try {
-            const { sendSnapEvent } = await import('@/lib/snap-capi');
-            await sendSnapEvent({
-              eventName: 'PURCHASE',
-              eventId: capiOrderId,
-              eventSourceUrl,
-              userAgent: ua,
-              ipAddress: clientIp,
-              userData: userDataBase,
-              customData: {
-                price: Number(total || 0),
-                currency: resolvedOrderCurrency,
-                item_ids: contentIds,
-                transaction_id: capiOrderId,
-                number_items: capiItems.length || 1,
-              },
-            });
-          } catch { /* non-fatal */ }
-
-          try {
-            const { sendOpenAiEvent, toMinorUnits } = await import('@/lib/openai-capi');
-            await sendOpenAiEvent({
-              eventName: 'order_created',
-              eventId: capiOrderId,
-              eventSourceUrl,
-              userAgent: ua,
-              ipAddress: clientIp,
-              userData: userDataBase,
-              data: {
-                type: 'contents',
-                amount: toMinorUnits(Number(total || 0), resolvedOrderCurrency),
-                currency: resolvedOrderCurrency,
-                contents: capiItems.map((item: any) => ({
-                  id: toItemId(item),
-                  name: item.title,
-                  content_type: 'product' as const,
-                  quantity: item.quantity || 1,
-                  amount: toMinorUnits(parseFloat(item.price || '0'), resolvedOrderCurrency),
-                  currency: resolvedOrderCurrency,
-                })),
-              },
-            });
-          } catch { /* non-fatal */ }
-        },
+    // ─── Authoritative server-side OpenAI Ads order_created ───
+    // Same dedup pattern: id = localOrder.id matches browser pixel event_id.
+    try {
+      const openAiContents = items.map((item: any) => {
+        const raw = item.variantId || item.sku || item.productId || '';
+        const s = String(raw);
+        const stripped = s.startsWith('variant:') ? s.slice(8) : s;
+        const m = stripped.match(/(\d+)\s*$/);
+        const itemId = m ? m[1] : stripped;
+        return {
+          id: itemId,
+          name: item.title,
+          content_type: 'product' as const,
+          quantity: item.quantity || 1,
+          amount: toMinorUnits(parseFloat(item.price || '0'), resolvedOrderCurrency),
+          currency: resolvedOrderCurrency,
+        };
       });
+
+      sendOpenAiEvent({
+        eventName: 'order_created',
+        eventId: localOrder.id,
+        eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${localOrder.id}/confirmation`,
+        userAgent: req.headers.get('user-agent') || '',
+        ipAddress: req.headers.get('do-connecting-ip')
+          || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
+          || req.headers.get('x-real-ip') || undefined,
+        userData: {
+          em: address.email || undefined,
+          ph: address.phone || undefined,
+          fn: address.name?.trim().split(/\s+/)[0] || undefined,
+          ln: address.name?.trim().split(/\s+/).slice(1).join(' ') || undefined,
+          ct: address.city || undefined,
+          st: address.state || undefined,
+          zp: address.zip || undefined,
+          country: address.country || undefined,
+        },
+        data: {
+          type: 'contents',
+          amount: toMinorUnits(Number(total || 0), resolvedOrderCurrency),
+          currency: resolvedOrderCurrency,
+          contents: openAiContents,
+        },
+      }).catch(() => {}); // fire-and-forget; never block order response
+    } catch (oaiErr: any) {
+      console.warn('[Checkout Complete] OpenAI CAPI order_created fire failed:', oaiErr.message);
     }
 
     // Record purchase event in analytics (deferred; non-fatal)
@@ -993,9 +1004,15 @@ export async function POST(req: Request) {
           });
 
           if (matchingCarts.length > 0) {
-            const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
             const primaryCart = matchingCarts[0];
-            await linkCartToOrderSafe(primaryCart.id, localOrder.id);
+            await prisma.cart.update({
+              where: { id: primaryCart.id },
+              data: {
+                status: "converted",
+                convertedOrderId: localOrder.id
+              }
+            });
+
             if (matchingCarts.length > 1) {
               const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
               await prisma.cart.updateMany({
@@ -1003,221 +1020,208 @@ export async function POST(req: Request) {
                 data: { status: "merged" }
               });
             }
+            console.log(`[Checkout] Marked cart converted: ${primaryCart.id} for order: ${localOrder.id}`);
           }
         } catch (cartErr: any) {
-          if (cartErr?.code !== 'P2002') {
-            console.warn("[Checkout] Failed to mark cart converted:", cartErr.message);
-          }
+          console.error("[Checkout] Failed to mark cart converted:", cartErr.message);
         }
       },
     });
 
-    // ── Everything below is deferred: coupon, cashback, WebStoreOrder, email, WhatsApp, profile ──
+    // Increment coupon usedCount if coupon was applied
     if (finalCouponCode) {
-      const couponCodeForDefer = finalCouponCode.toUpperCase().trim();
-      deferredTasks.push({
-        name: 'coupon-usage-increment',
-        run: async () => {
-          try {
-            await prisma.webStoreCoupon.update({
-              where: { code: couponCodeForDefer },
-              data: { usedCount: { increment: 1 } },
-            });
-          } catch (couponUsageErr: any) {
-            console.error(`[Checkout] Failed to increment usedCount for coupon: ${couponCodeForDefer}`, couponUsageErr.message);
-          }
-        },
-      });
+      try {
+        await prisma.webStoreCoupon.update({
+          where: { code: finalCouponCode.toUpperCase().trim() },
+          data: { usedCount: { increment: 1 } },
+        });
+        console.log(`[Checkout] Successfully incremented usage for coupon: ${finalCouponCode}`);
+      } catch (couponUsageErr: any) {
+        console.error(`[Checkout] Failed to increment usedCount for coupon: ${finalCouponCode}`, couponUsageErr.message);
+      }
     }
 
+    // Issue cashback if coupon has cashback store credits enabled
     if (finalCouponCode && Number(cashbackAmount) > 0) {
-      // Recompute server-side from coupon + paid product amount (never trust client alone).
-      const cashbackCustomerId = localCustomer.id;
-      const cashbackOrderId = localOrder.id;
-      const cashbackCoupon = finalCouponCode.toUpperCase();
-      const clientCb = parseFloat(String(cashbackAmount)) || 0;
-      deferredTasks.push({
-        name: 'coupon-cashback-pending',
-        run: async () => {
-          try {
-            const coupon = await prisma.webStoreCoupon.findFirst({
-              where: { code: { equals: cashbackCoupon, mode: 'insensitive' } },
-            });
-            let cbAmt = clientCb;
-            if (coupon?.cashbackEnabled) {
-              const sub = Number(localOrder.subtotalPrice || localOrder.totalPrice || 0);
-              const disc = Number(localOrder.discountAmount || 0);
-              const paidBase = Math.max(0, sub - disc);
-              const cbVal = Number(coupon.cashbackValue || 0);
-              cbAmt =
-                coupon.cashbackType === 'percentage'
-                  ? Math.round((paidBase * cbVal) / 100)
-                  : Math.min(cbVal, paidBase);
+      try {
+        const cbAmt = parseFloat(String(cashbackAmount));
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 90);
+
+        await prisma.$transaction([
+          prisma.customer.update({
+            where: { id: localCustomer.id },
+            data: {
+              storeCredits: { increment: cbAmt }
             }
-            if (cbAmt <= 0) return;
-            const { recordPendingCouponCashback } = await import('@/lib/storeCreditsHelper');
-            await recordPendingCouponCashback({
-              customerId: cashbackCustomerId,
+          }),
+          prisma.storeCredit.create({
+            data: {
+              customerId: localCustomer.id,
               amount: cbAmt,
-              orderId: cashbackOrderId,
-              couponCode: cashbackCoupon,
-            });
-          } catch (storeCreditErr: any) {
-            console.error("[Checkout Store Credit] Failed to record pending cashback:", storeCreditErr.message);
-          }
-        },
-      });
+              type: "COUPON_REBATE",
+              description: `Cashback for applying coupon code ${finalCouponCode.toUpperCase()}`,
+              orderId: localOrder.id,
+              expiresAt,
+              remainingAmount: cbAmt
+            }
+          })
+        ]);
+        console.log(`[Checkout Store Credit] Successfully credited ₹${cbAmt} (90-day expiry) to customer ${localCustomer.id}`);
+      } catch (storeCreditErr: any) {
+        console.error("[Checkout Store Credit] Failed to issue cashback:", storeCreditErr.message);
+      }
     }
 
-    // WebStoreOrder dashboard row — not needed to show confirmation
-    {
-      const wsoLocalOrderId = localOrder.id;
-      const wsoShopifyOrderId = localOrder.shopifyOrderId;
-      const wsoNumber = universalOrderNumber;
-      const wsoPaymentStatus = orderPaymentStatus;
-      const wsoCodUpfrontPaid = lockedCodUpfrontPaid;
-      const wsoCodUpfrontPaymentId = isCodOrder ? (razorpay?.razorpay_payment_id || null) : null;
-      const wsoRzpOrderId = razorpay?.razorpay_order_id || null;
-      const wsoRzpPaymentId = razorpay?.razorpay_payment_id || null;
-      const wsoPrevNumbers = existingPreCreatedOrder?.previousOrderNumbers
+    // Sync WebStoreOrder for dashboard integration
+    let webStoreOrder: any = null;
+    try {
+      const prevNumbers = existingPreCreatedOrder?.previousOrderNumbers
         ? existingPreCreatedOrder.previousOrderNumbers.split(',').map((s: string) => s.trim()).filter(Boolean)
         : [];
-      const wsoOldInternal = existingPreCreatedOrder?.internalOrderNumber;
-      const wsoPreCreatedId = existingPreCreatedOrder?.id;
-      const wsoAddr = normalizedAddress || address;
-      const wsoItems = items;
-      const wsoSubtotal = subtotal;
-      const wsoTotal = total;
-      const wsoCoupon = finalCouponCode || null;
-      const wsoDiscount = Number(finalCouponDiscount) || 0;
-      const wsoStoreCredit = parsedStoreCredit;
-      const wsoPaymentMethod = finalPaymentMethod;
-      const wsoIsFullStoreCredit = isFullStoreCredit;
-      const wsoIsCod = isCodOrder;
+      const oldInternalNumber = existingPreCreatedOrder?.internalOrderNumber;
 
-      deferredTasks.push({
-        name: 'webstore-order-sync',
-        run: async () => {
-          try {
-            let existingWebStoreOrder = await prisma.webStoreOrder.findFirst({
-              where: {
-                OR: [
-                  ...(wsoRzpOrderId ? [{ razorpayOrderId: wsoRzpOrderId }] : []),
-                  { orderNumber: wsoNumber },
-                  ...(wsoOldInternal ? [{ orderNumber: wsoOldInternal }] : []),
-                  ...wsoPrevNumbers.map((num: string) => ({ orderNumber: num })),
-                  ...(wsoPreCreatedId ? [{ notes: { contains: `Local: ${wsoPreCreatedId}` } }] : []),
-                ],
-              },
-            });
-
-            const wsNotes = wsoIsFullStoreCredit
-              ? `Paid 100% via Store Credit (₹${wsoStoreCredit})`
-              : `${wsoIsCod ? `COD Order (₹${wsoCodUpfrontPaid} upfront fee paid)` : "Paid via Razorpay"} ${wsoStoreCredit > 0 ? `+ ₹${wsoStoreCredit} Store Credit` : ''} | Shopify: ${wsoShopifyOrderId || 'Pending'} | Local: ${wsoLocalOrderId}`;
-
-            const sharedUpdate = {
-              orderNumber: wsoNumber,
-              paymentStatus: wsoPaymentStatus,
-              paymentMethod: wsoPaymentMethod,
-              razorpayOrderId: wsoRzpOrderId,
-              razorpayPaymentId: wsoRzpPaymentId,
-              storeCreditAmount: wsoStoreCredit,
-              codUpfrontPaid: wsoCodUpfrontPaid,
-              codUpfrontPaymentId: wsoCodUpfrontPaymentId,
-              paymentFailureReason: null as string | null,
-              notes: wsNotes,
-              customerName: (wsoAddr as any)?.name || address.name,
-              customerEmail: (wsoAddr as any)?.email || address.email || "",
-              customerPhone: (wsoAddr as any)?.phone || address.phone || "",
-              shippingAddress: wsoAddr as any,
-            };
-
-            if (existingWebStoreOrder) {
-              await prisma.webStoreOrder.update({
-                where: { id: existingWebStoreOrder.id },
-                data: {
-                  ...sharedUpdate,
-                  razorpayOrderId: wsoRzpOrderId || existingWebStoreOrder.razorpayOrderId,
-                },
-              });
-            } else {
-              const byOrderNum = await prisma.webStoreOrder.findUnique({
-                where: { orderNumber: wsoNumber },
-              });
-              if (byOrderNum) {
-                await prisma.webStoreOrder.update({
-                  where: { id: byOrderNum.id },
-                  data: {
-                    ...sharedUpdate,
-                    razorpayOrderId: wsoRzpOrderId || byOrderNum.razorpayOrderId,
-                  },
-                });
-              } else {
-                await prisma.webStoreOrder.create({
-                  data: {
-                    ...sharedUpdate,
-                    items: wsoItems.map((item: any) => ({
-                      product_id: item.productId,
-                      variant_id: item.variantId || "",
-                      title: item.title,
-                      image_url: item.image || "",
-                      quantity: item.quantity,
-                      price: Number(item.price) || 0,
-                      size: item.size || "",
-                    })) as any,
-                    subtotal: wsoSubtotal,
-                    shippingCharge: 0,
-                    discountCode: wsoCoupon,
-                    discountAmount: wsoDiscount,
-                    totalAmount: wsoTotal,
-                    fulfillmentStatus: "unfulfilled",
-                    source: "web",
-                  },
-                });
-              }
-            }
-            console.log(`[Checkout] Successfully synced WebStoreOrder for localOrder: ${wsoLocalOrderId}`);
-          } catch (webStoreOrderErr: any) {
-            console.error("[Checkout] Failed to sync WebStoreOrder in DB:", webStoreOrderErr.message);
-          }
-        },
+      let existingWebStoreOrder = await prisma.webStoreOrder.findFirst({
+        where: {
+          OR: [
+            ...(razorpay?.razorpay_order_id ? [{ razorpayOrderId: razorpay.razorpay_order_id }] : []),
+            { orderNumber: universalOrderNumber },
+            ...(oldInternalNumber ? [{ orderNumber: oldInternalNumber }] : []),
+            ...prevNumbers.map((num: string) => ({ orderNumber: num })),
+            ...(existingPreCreatedOrder?.id ? [{ notes: { contains: `Local: ${existingPreCreatedOrder.id}` } }] : [])
+          ]
+        }
       });
+
+      const wsPaymentStatus = orderPaymentStatus;
+      const wsCodUpfrontPaid = isCodOrder ? resolvedCodFee : 0;
+      const wsCodUpfrontPaymentId = isCodOrder ? (razorpay?.razorpay_payment_id || null) : null;
+      const wsNotes = isFullStoreCredit
+        ? `Paid 100% via Store Credit (₹${parsedStoreCredit})`
+        : `${isCodOrder ? `COD Order (₹${wsCodUpfrontPaid} upfront fee paid)` : "Paid via Razorpay"} ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} | Shopify: ${localOrder.shopifyOrderId || 'Pending'} | Local: ${localOrder.id}`;
+
+      if (existingWebStoreOrder) {
+        webStoreOrder = await prisma.webStoreOrder.update({
+          where: { id: existingWebStoreOrder.id },
+          data: {
+            orderNumber: universalOrderNumber,
+            paymentStatus: wsPaymentStatus,
+            paymentMethod: finalPaymentMethod,
+            razorpayOrderId: razorpay?.razorpay_order_id || existingWebStoreOrder.razorpayOrderId,
+            razorpayPaymentId: razorpay?.razorpay_payment_id || null,
+            storeCreditAmount: parsedStoreCredit,
+            codUpfrontPaid: wsCodUpfrontPaid,
+            codUpfrontPaymentId: wsCodUpfrontPaymentId,
+            paymentFailureReason: null,
+            notes: wsNotes,
+            customerName: (normalizedAddress as any)?.name || address.name || existingWebStoreOrder.customerName,
+            customerEmail: (normalizedAddress as any)?.email || address.email || existingWebStoreOrder.customerEmail || "",
+            customerPhone: (normalizedAddress as any)?.phone || address.phone || existingWebStoreOrder.customerPhone || "",
+            shippingAddress: (normalizedAddress || address) as any,
+          }
+        });
+        console.log(`[Checkout Complete] Updated pre-created WebStoreOrder ${webStoreOrder.id} (${universalOrderNumber}) to ${wsPaymentStatus}`);
+      } else {
+        // Double check by orderNumber before create to prevent P2002 unique constraint conflict
+        const byOrderNum = await prisma.webStoreOrder.findUnique({
+          where: { orderNumber: universalOrderNumber }
+        });
+
+        if (byOrderNum) {
+          webStoreOrder = await prisma.webStoreOrder.update({
+            where: { id: byOrderNum.id },
+            data: {
+              paymentStatus: wsPaymentStatus,
+              paymentMethod: finalPaymentMethod,
+              razorpayOrderId: razorpay?.razorpay_order_id || byOrderNum.razorpayOrderId,
+              razorpayPaymentId: razorpay?.razorpay_payment_id || null,
+              storeCreditAmount: parsedStoreCredit,
+              codUpfrontPaid: wsCodUpfrontPaid,
+              codUpfrontPaymentId: wsCodUpfrontPaymentId,
+              paymentFailureReason: null,
+              notes: wsNotes,
+              customerName: (normalizedAddress as any)?.name || address.name || byOrderNum.customerName,
+              customerEmail: (normalizedAddress as any)?.email || address.email || byOrderNum.customerEmail || "",
+              customerPhone: (normalizedAddress as any)?.phone || address.phone || byOrderNum.customerPhone || "",
+              shippingAddress: (normalizedAddress || address) as any,
+            }
+          });
+          console.log(`[Checkout Complete] Re-adopted WebStoreOrder by orderNumber: ${universalOrderNumber}`);
+        } else {
+          webStoreOrder = await prisma.webStoreOrder.create({
+            data: {
+              orderNumber: universalOrderNumber,
+              customerName: (normalizedAddress as any)?.name || address.name,
+              customerEmail: (normalizedAddress as any)?.email || address.email || "",
+              customerPhone: (normalizedAddress as any)?.phone || address.phone || "",
+              shippingAddress: (normalizedAddress || address) as any,
+              items: items.map((item: any) => ({
+                product_id: item.productId,
+                variant_id: item.variantId || "",
+                title: item.title,
+                image_url: item.image || "",
+                quantity: item.quantity,
+                price: Number(item.price) || 0,
+                size: item.size || ""
+              })) as any,
+              subtotal: subtotal,
+              shippingCharge: 0,
+              discountCode: finalCouponCode || null,
+              discountAmount: Number(finalCouponDiscount) || 0,
+              storeCreditAmount: parsedStoreCredit,
+              totalAmount: total,
+              paymentStatus: wsPaymentStatus,
+              paymentMethod: finalPaymentMethod,
+              razorpayOrderId: razorpay?.razorpay_order_id || null,
+              razorpayPaymentId: razorpay?.razorpay_payment_id || null,
+              codUpfrontPaid: wsCodUpfrontPaid,
+              codUpfrontPaymentId: wsCodUpfrontPaymentId,
+              fulfillmentStatus: "unfulfilled",
+              notes: wsNotes,
+              source: "web"
+            }
+          });
+        }
+      }
+      console.log(`[Checkout] Successfully synced WebStoreOrder for localOrder: ${localOrder.id}, shopifyOrderId: ${localOrder.shopifyOrderId}`);
+    } catch (webStoreOrderErr: any) {
+      console.error("[Checkout] Failed to sync WebStoreOrder in DB:", webStoreOrderErr.message);
     }
 
-    deferredTasks.push({
-      name: 'order-confirmation-email',
-      run: async () => {
-        const orderPayload = {
-          orderId: universalOrderNumber,
-          customerEmail: address.email,
-          customerName: address.name || "Customer",
-          items: items.map((item: any) => ({
-            name: item.title,
-            size: item.size || 'N/A',
-            quantity: Number(item.quantity || 1),
-            price: Number(item.price || 0),
-            image: item.image || '',
-            product_id: item.productId || null,
-            variant_title: item.variantId || null,
-          })),
-          total: Number(total),
-          currency: localOrder.currency || body.currency || 'INR',
-          orderDate: new Date(localOrder.createdAt).toLocaleDateString('en-IN', { dateStyle: 'long' }),
-          paymentMethod: finalPaymentMethod,
-          subtotal: Number(subtotal),
-          shipping: 0,
-          discount: Number(finalCouponDiscount) || 0,
-          shippingAddress: `${address.street || ''}, ${address.city || ''}, ${address.state || ''} - ${address.zip || ''}, ${address.country || 'India'}`,
-        };
+    // Send order confirmation email to the user
+    try {
+      const orderPayload = {
+        orderId: universalOrderNumber,
+        customerEmail: address.email,
+        customerName: address.name || "Customer",
+        items: items.map((item: any) => ({
+          name: item.title,
+          size: item.size || 'N/A',
+          quantity: Number(item.quantity || 1),
+          price: Number(item.price || 0),
+          image: item.image || '',
+          product_id: item.productId || null,
+          variant_title: item.variantId || null,
+        })),
+        total: Number(total),
+        currency: localOrder.currency || body.currency || 'INR',
+        orderDate: new Date(localOrder.createdAt).toLocaleDateString('en-IN', { dateStyle: 'long' }),
+        paymentMethod: finalPaymentMethod,
+        subtotal: Number(subtotal),
+        shipping: 0,
+        discount: Number(finalCouponDiscount) || 0,
+        shippingAddress: `${address.street || ''}, ${address.city || ''}, ${address.state || ''} - ${address.zip || ''}, ${address.country || 'India'}`,
+      };
+
+      // Send order confirmation email in background (non-blocking for fast redirect)
+      const sendEmailTask = async () => {
         try {
-          const { sendOrderConfirmationEmail, sendOrderCodConfirmationEmail } = await import(
-            '@/lib/services/orderEmailService'
-          );
           if (paymentMethod.toLowerCase() === 'cod') {
             await sendOrderCodConfirmationEmail(orderPayload);
           } else {
             await sendOrderConfirmationEmail(orderPayload);
           }
+
           await prisma.emailLog.create({
             data: {
               recipientEmail: address.email,
@@ -1228,7 +1232,7 @@ export async function POST(req: Request) {
               referenceId: localOrder.id,
               status: 'sent',
               sentBy: 'system',
-            },
+            }
           });
         } catch (emailErr: any) {
           console.error("[Email Trigger Error] Failed to send order confirmation email:", emailErr.message);
@@ -1236,39 +1240,44 @@ export async function POST(req: Request) {
             data: {
               recipientEmail: address.email,
               recipientName: address.name,
-              subject: `Order Confirmed - ${universalOrderNumber}`,
+              subject: `Order Confirmed - ${webStoreOrder?.orderNumber || localOrder.shopifyOrderId || localOrder.id}`,
               templateName: 'ORDER_CONFIRMATION',
               triggerEvent: 'checkout/complete',
               referenceId: localOrder.id,
               status: 'failed',
               errorMessage: emailErr.message,
-            },
+            }
           }).catch(() => null);
         }
-      },
-    });
+      };
 
-    deferredTasks.push({
-      name: 'order-confirmation-whatsapp',
-      run: async () => {
+      sendEmailTask();
+    } catch (emailErr: any) {
+      console.error("[Email Trigger Setup Error]:", emailErr.message);
+    }
+
+    // Send order confirmation WhatsApp to the user in background (non-blocking)
+    try {
+      const customerPhone = address.phone || localCustomer?.phone;
+      const orderIdStr = String(universalOrderNumber);
+      const isCod = paymentMethod.toLowerCase() === 'cod';
+      const customerName = address.name || "Customer";
+      const firstLineItem = items[0];
+      const productImageUrl = firstLineItem?.image || '';
+      const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://zicabella.com';
+      const orderStatusUrl = `${appBaseUrl}/orders/${orderIdStr}`;
+      const totalAmount = Number(total);
+      const itemCount = items.length || 1;
+
+      const sendWhatsAppTask = async () => {
         try {
-          const customerPhone = address.phone || localCustomer?.phone;
-          const orderIdStr = String(universalOrderNumber);
-          const isCod = paymentMethod.toLowerCase() === 'cod';
-          const customerName = address.name || "Customer";
-          const firstLineItem = items[0];
-          const productImageUrl = firstLineItem?.image || '';
-          const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://zicabella.com';
-          const orderStatusUrl = `${appBaseUrl}/orders/${orderIdStr}`;
-          const totalAmount = Number(total);
-          const itemCount = items.length || 1;
           const { getWhatsAppSetting } = await import('@/lib/whatsapp/logger');
           if (isCod) {
             const enabled = (await getWhatsAppSetting('cod_confirmation_enabled', 'true')) === 'true';
             if (enabled && customerPhone) {
               const templateName = await getWhatsAppSetting('template_cod_confirmation', 'zica_cod_confirmation_v1');
               const alreadySent = await prisma.whatsAppMessage.findFirst({
-                where: { orderId: orderIdStr, templateName },
+                where: { orderId: orderIdStr, templateName }
               });
               if (!alreadySent) {
                 const { sendCODConfirmation } = await import('@/lib/whatsapp/templates');
@@ -1280,7 +1289,7 @@ export async function POST(req: Request) {
             if (enabled && customerPhone) {
               const templateName = await getWhatsAppSetting('template_order_confirmed', 'zica_order_confirmed_v1');
               const alreadySent = await prisma.whatsAppMessage.findFirst({
-                where: { orderId: orderIdStr, templateName },
+                where: { orderId: orderIdStr, templateName }
               });
               if (!alreadySent) {
                 const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
@@ -1291,7 +1300,7 @@ export async function POST(req: Request) {
                   productImageUrl,
                   orderStatusUrl,
                   totalAmount,
-                  itemCount,
+                  itemCount
                 });
               }
             }
@@ -1299,9 +1308,15 @@ export async function POST(req: Request) {
         } catch (waErr: any) {
           console.error('[WhatsApp Trigger Error] Failed to send webstore order confirmation:', waErr.message);
         }
-      },
-    });
+      };
 
+      sendWhatsAppTask().catch(err => console.error('[WhatsApp Async Error]', err));
+    } catch (waSetupErr: any) {
+      console.error('[WhatsApp Trigger Setup Error]:', waSetupErr.message);
+    }
+
+    // Update customer name/phone/address for next time, save the address book entry and
+    // refresh the Shopify customer (deferred; none of this is needed to show the confirmation).
     deferredTasks.push({
       name: 'customer-profile-and-address',
       run: async () => {
@@ -1311,13 +1326,14 @@ export async function POST(req: Request) {
             data: {
               name: address.name,
               phone: address.phone,
-              defaultAddress: JSON.stringify(address),
-            },
+              defaultAddress: JSON.stringify(address)
+            }
           });
         } catch (profileErr: any) {
           console.error("[Checkout] Failed to update customer profile:", profileErr.message);
         }
 
+        // Save shipping address to Address table
         try {
           const existingAddr = await prisma.address.findFirst({
             where: {
@@ -1325,13 +1341,13 @@ export async function POST(req: Request) {
               address1: address.street,
               city: address.city,
               zip: address.zip,
-              phone: address.phone || "",
-            },
+              phone: address.phone || ""
+            }
           });
 
           if (!existingAddr) {
             const addressesCount = await prisma.address.count({
-              where: { customerId: localCustomer.id },
+              where: { customerId: localCustomer.id }
             });
 
             await prisma.address.create({
@@ -1350,104 +1366,54 @@ export async function POST(req: Request) {
                 lat: address.lat != null ? parseFloat(address.lat) : null,
                 lng: address.lng != null ? parseFloat(address.lng) : null,
                 placeId: address.placeId || null,
-              },
+              }
             });
+            console.log(`[Checkout] Saved new shipping address for customer: ${localCustomer.id}`);
           }
         } catch (addrErr: any) {
           console.error("[Checkout] Error saving shipping address to Address table:", addrErr.message);
         }
 
-        const isProvisionalShopifyId =
-          !shopifyCustomerId ||
-          shopifyCustomerId.startsWith('temp_') ||
-          shopifyCustomerId.startsWith('google_') ||
-          shopifyCustomerId.startsWith('apple_');
-        if (!isProvisionalShopifyId) {
-          try {
-            const { updateCustomer } = await import('@/lib/shopify-admin');
-            await updateCustomer(shopifyCustomerId, {
-              first_name: address.name.split(' ')[0],
-              last_name: address.name.split(' ').slice(1).join(' ') || '.',
-              phone: address.phone,
-            });
-          } catch (e: any) {
-            console.warn("[Checkout] Shopify customer name update skipped:", e?.message || e);
-          }
+        try {
+          await updateCustomer(shopifyCustomerId, {
+            first_name: address.name.split(' ')[0],
+            last_name: address.name.split(' ').slice(1).join(' ') || '.',
+            phone: address.phone,
+          });
+        } catch (e: any) {
+          // Shopify 422 "phone has already been taken" is expected for returning customers.
+          console.warn("[Checkout] Shopify customer name update skipped:", e?.message || e);
         }
       },
     });
 
     const orderIdToReturn = localOrder.id;
-    const confirmationOrder = {
-      id: orderIdToReturn,
-      orderNumber: universalOrderNumber,
-      shopifyOrderId: null,
-      paymentMethod: finalPaymentMethod === 'cod' ? 'COD' : finalPaymentMethod.toUpperCase(),
-      isCod: isCodOrder,
-      codUpfrontPaid: lockedCodUpfrontPaid,
-      codBalanceDue: isCodOrder ? Math.max(0, Number(orderTotalPrice) - Number(lockedCodUpfrontPaid)) : 0,
-      totalPrice: orderTotalPrice,
-      subtotalPrice: orderSubtotalPrice,
-      discountCode: finalCouponCode || null,
-      discountAmount: Number(finalCouponDiscount) || 0,
-      storeCreditAmount: parsedStoreCredit,
-      currency: localOrder.currency || body.currency || 'INR',
-      createdAt: localOrder.createdAt,
-      shippingAddress: typeof localOrder.shippingAddress === 'string'
-        ? localOrder.shippingAddress
-        : JSON.stringify(normalizedAddress || address),
-      items: resolvedItems.map((item: any) => ({
-        id: item.shopifyLineItemId,
-        title: item.title,
-        quantity: item.quantity,
-        price: item.price,
-        sku: item.sku,
-        size: item.size,
-        variantId: item.variantId,
-        productId: item.productId,
-        image: item.image,
-      })),
-      customer: {
-        id: localCustomer.id,
-        name: address.name || localCustomer.name,
-        email: address.email || localCustomer.email,
-        phone: address.phone || localCustomer.phone,
-      },
-      customerId: localCustomer.id,
-      customerPhone: address.phone || localCustomer.phone || null,
-    };
-
     const respondedInMs = Date.now() - requestStartedAt;
-    const tasksToRun = deferredTasks.slice();
 
-    // CRITICAL: schedule outside the request async context. Starting deferred work with
-    // a bare `void async()` keeps Next.js 14 from flushing the response until tasks yield,
-    // which made confirmation feel like it still waited on email/WhatsApp/Shopify.
-    runAfterResponse(() => {
-      void (async () => {
-        const queueStartedAt = Date.now();
-        const results = await Promise.allSettled(
-          tasksToRun.map(async (task) => {
-            const taskStartedAt = Date.now();
-            try {
-              await task.run();
-            } finally {
-              console.log(`[Checkout Complete][deferred] ${task.name} finished in ${Date.now() - taskStartedAt}ms`);
-            }
-          })
-        );
-        const failed = results.filter((r) => r.status === 'rejected').length;
-        console.log(
-          `[Checkout Complete][deferred] order ${orderIdToReturn}: ${tasksToRun.length} task(s) done in ` +
-          `${Date.now() - queueStartedAt}ms (${failed} failed); response was sent after ${respondedInMs}ms`
-        );
-      })().catch((queueErr: any) => {
-        console.error('[Checkout Complete][deferred] queue error:', queueErr?.message || queueErr);
-      });
+    // Fire the deferred queue AFTER the response is built. Tasks are independent, so they
+    // run in parallel; each handles its own errors and can never fail the checkout.
+    void (async () => {
+      const queueStartedAt = Date.now();
+      const results = await Promise.allSettled(
+        deferredTasks.map(async (task) => {
+          const taskStartedAt = Date.now();
+          try {
+            await task.run();
+          } finally {
+            console.log(`[Checkout Complete][deferred] ${task.name} finished in ${Date.now() - taskStartedAt}ms`);
+          }
+        })
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      console.log(
+        `[Checkout Complete][deferred] order ${orderIdToReturn}: ${deferredTasks.length} task(s) done in ` +
+        `${Date.now() - queueStartedAt}ms (${failed} failed); response was sent after ${respondedInMs}ms`
+      );
+    })().catch((queueErr: any) => {
+      console.error('[Checkout Complete][deferred] queue error:', queueErr?.message || queueErr);
     });
 
-    console.log(`[Checkout Complete] Responding in ${respondedInMs}ms for order ${orderIdToReturn}`);
-    return NextResponse.json({ orderId: orderIdToReturn, order: confirmationOrder });
+    return NextResponse.json({ orderId: orderIdToReturn });
   } catch (error: any) {
     console.error("Order Completion Error:", error);
     return NextResponse.json({ error: error.message || "Order completion failed" }, { status: 500 });

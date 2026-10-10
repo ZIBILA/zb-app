@@ -63,6 +63,7 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
         const geoData = await geoRes.json();
         if (geoData.ok) {
           sessionStorage.setItem('zb_geo_data', JSON.stringify({
+            source: 'ip', // ISP-level: city / zip are not the shopper's address
             city: geoData.city || null,
             state: geoData.region || null,
             zip: geoData.zip || null,
@@ -71,10 +72,11 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
             latitude: geoData.lat,
             longitude: geoData.lng,
           }));
+          // IP geolocation is accurate to the country / region; its city and
+          // postal code are the ISP's, not the shopper's, so they are not stored
+          // as customer data (Meta already geo-matches on the client IP).
           await saveUserDataToCookies({
-            city: geoData.city || undefined,
             state: geoData.region || undefined,
-            zip: geoData.zip || undefined,
             country: geoData.country || undefined,
           });
           initPixel();
@@ -124,6 +126,7 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
         if (geoData.ok) {
           const cleanZip = geoData.zip && geoData.zip !== '0' && geoData.zip !== 'null' ? geoData.zip : null;
           sessionStorage.setItem('zb_geo_data', JSON.stringify({
+            source: 'ip', // ISP-level: city / zip are not the shopper's address
             city: geoData.city || null,
             state: geoData.region || null,
             zip: cleanZip,
@@ -132,10 +135,9 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
             latitude: geoData.lat,
             longitude: geoData.lng,
           }));
+          // IP-derived: country / region only (see above).
           await saveUserDataToCookies({
-            city: geoData.city || undefined,
             state: geoData.region || undefined,
-            zip: cleanZip || undefined,
             country: geoData.country || undefined,
           });
           initPixel();

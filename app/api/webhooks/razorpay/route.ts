@@ -64,17 +64,21 @@ export async function POST(req: Request) {
     paymentLog('info', 'webhook', { message: `Received event: ${eventType}`, eventId });
 
     // 4. Process specific webhook events
+    //
+    // payment.authorized means the bank has only RESERVED the money; it is not
+    // collected and is auto-refunded if never captured. It must not mark an
+    // order paid, recover an order, or count as a conversion (Meta/Snap).
+    // Orders become paid on payment.captured / order.paid only.
     if (eventType === 'payment.authorized') {
-      // Authorized ≠ captured. Do not mark orders paid until payment.captured / order.paid.
       paymentLog('info', 'webhook', {
-        message: 'Ignoring payment.authorized (waiting for capture)',
+        message: 'payment.authorized received — not treated as paid; waiting for payment.captured / order.paid',
         eventId,
       });
       await prisma.webhookEvent.update({
         where: { id: webhookRecord.id },
         data: { processed: true, processedAt: new Date() },
       });
-      return NextResponse.json({ success: true, message: 'Authorized only — not marking paid' });
+      return NextResponse.json({ success: true, ignored: 'payment.authorized is not a completed payment' });
     }
 
     if (eventType === 'payment.captured' || eventType === 'order.paid') {
@@ -85,8 +89,6 @@ export async function POST(req: Request) {
 
       const razorpayOrderId = payment.order_id || payment.notes?.order_id || payment.notes?.razorpay_order_id;
       const razorpayPaymentId = payment.id;
-      const { isCapturedPaymentEntity, paymentAmountRupees } = await import('@/lib/razorpay-payment');
-      const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
 
       if (!razorpayOrderId) {
         paymentLog('warn', 'webhook', { message: 'Received payment without order_id', razorpayPaymentId });
@@ -105,32 +107,6 @@ export async function POST(req: Request) {
           (order.paymentMethod || "").toLowerCase().trim() === "cod" ||
           (order.tags || "").toLowerCase().includes("cod") ||
           (order.note || "").toLowerCase().includes("cod order");
-        const expectedCod =
-          isCOD
-            ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
-            : 0;
-
-        if (
-          !isCapturedPaymentEntity(payment, {
-            minRupees: isCOD ? expectedCod : 0,
-            orderId: razorpayOrderId,
-          })
-        ) {
-          paymentLog('warn', 'webhook', {
-            message: 'Skipping mark-paid: payment entity not a verified capture',
-            razorpayPaymentId,
-            status: payment.status,
-            captured: payment.captured,
-            amount: payment.amount,
-          });
-          await prisma.webhookEvent.update({
-            where: { id: webhookRecord.id },
-            data: { processed: true, processedAt: new Date() },
-          });
-          return NextResponse.json({ success: true, message: 'Payment not captured — not marking paid' });
-        }
-
-        const capturedRupees = paymentAmountRupees(payment);
         const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "paid";
         const isAlreadyPaid = order.paymentStatus === 'paid' || order.paymentStatus === 'partially_paid' || order.paymentStatus === 'cod_upfront_paid';
 
@@ -152,9 +128,9 @@ export async function POST(req: Request) {
               paymentCapturedAt: new Date(),
               status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending') ? 'OPEN' : order.status,
               tags: cleanedTags,
-              note: isCOD ? `COD Order (₹${capturedRupees} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
+              note: isCOD ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
               ...(isCOD ? {
-                codUpfrontPaid: capturedRupees,
+                codUpfrontPaid: Number(payment.amount / 100) || Number((order as any).codUpfrontPaid) || 0,
                 codUpfrontPaymentId: razorpayPaymentId,
               } : {}),
             },
@@ -226,9 +202,9 @@ export async function POST(req: Request) {
             paymentStatus: targetPaymentStatus,
             razorpayPaymentId,
             ...(isCOD ? {
-              codUpfrontPaid: capturedRupees,
+              codUpfrontPaid: Number(payment.amount / 100) || 0,
               codUpfrontPaymentId: razorpayPaymentId,
-              notes: `COD Order (₹${capturedRupees} upfront fee paid via Razorpay) | Order: ${currentOrderNum || order.id}`
+              notes: `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay) | Order: ${currentOrderNum || order.id}`
             } : {})
           },
         });
@@ -272,67 +248,36 @@ export async function POST(req: Request) {
 
         paymentLog('info', 'webhook', { message: `Order ${order.id} marked as ${targetPaymentStatus}`, orderId: order.id });
 
-        // Dispatch server-side Meta CAPI Purchase event (Item #30)
-        // Deduplicated with client browser pixel and checkout complete route via eventId = order.id
-        try {
-          const { sendCapiEvent } = await import('@/lib/metaCapi');
-          const orderWithDetails = await prisma.order.findUnique({
-            where: { id: order.id },
-            include: { customer: true, items: true },
+        // Meta CAPI Purchase safety net for orders whose browser never reached
+        // checkout/complete. Only payment.captured / order.paid reach this point.
+        // Idempotent with checkout/complete and the retry cron via the delivery
+        // ledger (one send per order, even though both captured and order.paid
+        // arrive). It re-checks paymentStatus (paid / cod_upfront_paid) and uses
+        // the browser context recorded at Razorpay pre-create; no request-derived
+        // signals here, because this request comes from Razorpay, not the shopper.
+        // Not awaited (as on main): the Graph call must not delay the webhook response.
+        // A send interrupted mid-flight is safe — the ledger row's lease expires and the
+        // retry cron resends it; a row never created is found by the recovery scan.
+        void import('@/lib/meta/purchase-server')
+          .then(({ emitMetaPurchase }) => emitMetaPurchase(order.id, undefined, { paymentConfirmed: true }))
+          .catch((metaErr: any) => {
+            console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr?.message);
           });
 
-          if (orderWithDetails) {
-            let addr: any = null;
-            try {
-              addr = orderWithDetails.shippingAddress ? JSON.parse(orderWithDetails.shippingAddress) : null;
-            } catch {}
-
-            const metaContentIds = (orderWithDetails.items || []).map((it: any) => {
-              const raw = it.variantId || it.sku || it.productId || '';
-              const s = String(raw);
-              const stripped = s.startsWith('variant:') ? s.slice(8) : s;
-              const m = stripped.match(/(\d+)\s*$/);
-              return m ? m[1] : stripped;
-            });
-
-            const metaContents = (orderWithDetails.items || []).map((it: any, idx: number) => ({
-              id: metaContentIds[idx],
-              quantity: it.quantity || 1,
-              item_price: parseFloat(String(it.price || '0')),
-              title: it.title,
-            }));
-
-            sendCapiEvent({
-              eventName: 'Purchase',
-              eventId: order.id,
-              eventTime: Math.floor(Date.now() / 1000),
-              eventSourceUrl: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com'}/orders/${order.id}/confirmation`,
-              userAgent: 'Razorpay-Webhook/1.0',
-              actionSource: 'website',
-              userData: {
-                em: orderWithDetails.customer?.email || addr?.email || undefined,
-                ph: orderWithDetails.customer?.phone || addr?.phone || undefined,
-                fn: (orderWithDetails.customer?.name || addr?.name || '').trim().split(/\s+/)[0] || undefined,
-                ln: (orderWithDetails.customer?.name || addr?.name || '').trim().split(/\s+/).slice(1).join(' ') || undefined,
-                ct: addr?.city || undefined,
-                st: addr?.state || undefined,
-                zp: addr?.zip || undefined,
-                country: addr?.country || 'in',
-                external_id: orderWithDetails.customerId || undefined,
-              },
-              customData: {
-                value: Number(orderWithDetails.totalPrice || payment.amount / 100),
-                currency: (orderWithDetails.currency || 'INR').toUpperCase(),
-                order_id: order.id,
-                content_type: 'product',
-                content_ids: metaContentIds,
-                contents: metaContents,
-                num_items: (orderWithDetails.items || []).reduce((s: number, it: any) => s + (it.quantity || 1), 0),
-              },
-            }).catch(() => {});
-          }
-        } catch (metaErr: any) {
-          console.warn('[Razorpay Webhook] Meta CAPI Purchase dispatch failed:', metaErr.message);
+        // Snap CAPI Purchase safety net for orders whose browser/app never reached
+        // checkout/complete. Idempotent with that path via the delivery ledger;
+        // uses the click context recorded at Razorpay pre-create. Native-app and
+        // unpaid orders are skipped inside emitSnapPurchase.
+        try {
+          // Only captured / order.paid reach this point → payment is confirmed.
+          // Web orders → website CAPI; native-app orders → MOBILE_APP CAPI.
+          // Each function skips orders that are not its type.
+          const { emitSnapPurchase } = await import('@/lib/snap/purchase-server');
+          const { emitSnapAppPurchase } = await import('@/lib/snap/app-purchase-server');
+          await emitSnapPurchase(order.id, undefined, { paymentConfirmed: true });
+          await emitSnapAppPurchase(order.id, { paymentConfirmed: true });
+        } catch (snapErr: any) {
+          console.warn('[Razorpay Webhook] Snap Purchase dispatch failed:', snapErr?.message);
         }
 
         // Link WebhookEvent to Order
@@ -397,19 +342,29 @@ export async function POST(req: Request) {
       const failureReason = payment?.error_description || payment?.error_code || payment?.error_reason || 'payment_failed';
 
       if (razorpayOrderId) {
-        await prisma.order.updateMany({
-          where: { razorpayOrderId },
+        // A failed attempt must never downgrade an order another attempt already paid
+        // (same Razorpay order: retry after a failure). Same guard as /api/payments/webhook.
+        const CONFIRMED_PAYMENT_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
+        const updatedFailed = await prisma.order.updateMany({
+          where: { razorpayOrderId, paymentStatus: { notIn: CONFIRMED_PAYMENT_STATUSES } },
           data: {
             paymentStatus: 'failed',
             status: 'FAILED',
             paymentFailureReason: failureReason,
           },
         });
+        if (updatedFailed.count === 0) {
+          paymentLog('info', 'webhook', { message: 'payment.failed ignored: order already confirmed by another attempt (or not found)', razorpayOrderId });
+        }
 
         // Assign a ZBPF failed prefix number if the order doesn't have one yet
         try {
           const failedOrder = await prisma.order.findFirst({ where: { razorpayOrderId } });
-          if (failedOrder && !failedOrder.internalOrderNumber?.startsWith('ZBPF')) {
+          if (
+            failedOrder &&
+            !CONFIRMED_PAYMENT_STATUSES.includes(String(failedOrder.paymentStatus || '').toLowerCase()) &&
+            !failedOrder.internalOrderNumber?.startsWith('ZBPF')
+          ) {
             const oldNumber = failedOrder.internalOrderNumber;
             const failedNumber = await assignFailedOrderNumber(prisma, { cause: 'payment_failed' });
             const previousNumbers = [failedOrder.previousOrderNumbers, oldNumber].filter(Boolean).join(',');
@@ -426,7 +381,7 @@ export async function POST(req: Request) {
         }
 
         await prisma.webStoreOrder.updateMany({
-          where: { razorpayOrderId },
+          where: { razorpayOrderId, paymentStatus: { notIn: CONFIRMED_PAYMENT_STATUSES } },
           data: {
             paymentStatus: 'failed',
             paymentFailureReason: failureReason,

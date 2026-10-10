@@ -138,7 +138,10 @@ export async function POST(req: Request) {
       }
 
       try {
-        await debitStoreCredits(customer.id, amount, orderId);
+        // Idempotent per order reference: a retried "apply" never debits twice.
+        await debitStoreCredits(customer.id, amount, orderId, {
+          idempotencyKey: orderId ? `apply:${customer.id}:${orderId}` : undefined,
+        });
         const updatedCustomer = await prisma.customer.findUnique({
           where: { id: customer.id },
           select: { storeCredits: true }
