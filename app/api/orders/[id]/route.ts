@@ -396,6 +396,19 @@ export async function GET(
     const storeCreditAmount = webStoreOrder?.storeCreditAmount
       ? Number(webStoreOrder.storeCreditAmount)
       : (order as any).storeCreditAmount || 0;
+
+    // Coupon store-credit reward (pending until delivery, or already released).
+    const couponCredit = await prisma.storeCredit.findFirst({
+      where: {
+        orderId: order!.id,
+        type: { in: ["PENDING_COUPON_REBATE", "COUPON_REBATE"] },
+        amount: { gt: 0 },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { amount: true, type: true },
+    });
+    const storeCreditEarned = couponCredit ? Number(couponCredit.amount) : 0;
+
     const subtotalPrice =
       order!.subtotalPrice ||
       webStoreOrder?.subtotal ||
@@ -451,6 +464,8 @@ export async function GET(
       discountCode,
       discountAmount,
       storeCreditAmount,
+      storeCreditEarned,
+      storeCreditEarnedStatus: couponCredit?.type === "COUPON_REBATE" ? "credited" : couponCredit ? "pending_delivery" : null,
       subtotalPrice,
       statusTimeline: statusTimeline(order),
     };

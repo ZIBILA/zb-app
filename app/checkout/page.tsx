@@ -1333,24 +1333,23 @@ export default function CheckoutPage() {
       setCouponMessage(data.message);
       if (data.valid) {
         setCouponValid(true);
-        setApplyAsStoreCredit(!!data.applyAsStoreCredit);
+        const discount = Number(data.discount) || 0;
+        const earned = Number(data.cashbackAmount) || 0;
 
-        // Handle double discounts: check if cashback is enabled
-        if (data.cashbackEnabled && data.cashbackAmount > 0) {
-          setCashbackAmount(data.cashbackAmount);
-          if (data.applyAsStoreCredit) {
-            setCouponDiscount(0);
-          } else {
-            setCouponDiscount(data.discount);
-          }
+        // BEST10-style: instant % off payable total + separate Store Credit Earned on amount paid.
+        // Never drop the instant discount when cashback is also enabled.
+        if (data.cashbackEnabled && earned > 0) {
+          setApplyAsStoreCredit(false);
+          setCouponDiscount(discount);
+          setCashbackAmount(earned);
+        } else if (data.applyAsStoreCredit) {
+          setApplyAsStoreCredit(true);
+          setCouponDiscount(0);
+          setCashbackAmount(discount);
         } else {
-          if (data.applyAsStoreCredit) {
-            setCouponDiscount(0);
-            setCashbackAmount(data.discount);
-          } else {
-            setCouponDiscount(data.discount);
-            setCashbackAmount(0);
-          }
+          setApplyAsStoreCredit(false);
+          setCouponDiscount(discount);
+          setCashbackAmount(0);
         }
       } else {
         setCouponDiscount(0);
@@ -1521,33 +1520,29 @@ export default function CheckoutPage() {
     if (best) {
       setCouponCode(best.coupon.code);
       setCouponValid(true);
-      setApplyAsStoreCredit(best.coupon.applyAsStoreCredit);
 
       if (best.calc.cashbackEnabled && best.calc.cashbackAmount > 0) {
+        setApplyAsStoreCredit(false);
+        setCouponDiscount(best.calc.discount);
         setCashbackAmount(best.calc.cashbackAmount);
-        if (best.coupon.applyAsStoreCredit) {
-          setCouponDiscount(0);
-        } else {
-          setCouponDiscount(best.calc.discount);
-        }
+      } else if (best.coupon.applyAsStoreCredit) {
+        setApplyAsStoreCredit(true);
+        setCouponDiscount(0);
+        setCashbackAmount(best.calc.discount);
       } else {
-        if (best.coupon.applyAsStoreCredit) {
-          setCouponDiscount(0);
-          setCashbackAmount(best.calc.discount);
-        } else {
-          setCouponDiscount(best.calc.discount);
-          setCashbackAmount(0);
-        }
+        setApplyAsStoreCredit(false);
+        setCouponDiscount(best.calc.discount);
+        setCashbackAmount(0);
       }
 
       let displayMessage = "";
-      if (best.calc.cashbackEnabled && !best.coupon.applyAsStoreCredit && best.calc.discount > 0) {
+      if (best.calc.cashbackEnabled && best.calc.discount > 0) {
         displayMessage = best.calc.type === "percentage"
-          ? `${best.calc.value}% instant off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} store credit cashback!`
-          : `₹${best.calc.value.toLocaleString("en-IN")} instant off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} store credit cashback!`;
+          ? `${best.calc.value}% off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`
+          : `₹${best.calc.value.toLocaleString("en-IN")} off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`;
       } else if (best.coupon.applyAsStoreCredit || (best.calc.cashbackEnabled && best.calc.discount === 0)) {
         const finalCashback = best.calc.discount > 0 ? best.calc.discount : best.calc.cashbackAmount;
-        displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit cashback will be added!`;
+        displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit will be earned after delivery!`;
       } else {
         displayMessage = best.calc.type === "percentage"
           ? `${best.calc.value}% off applied automatically!`
@@ -2170,9 +2165,9 @@ export default function CheckoutPage() {
     return (
       <div className="flex flex-col gap-3.5 w-full">
         {/* Product Preview Card */}
-        <div className="apple-glass-capsule p-4.5 rounded-[24px] flex flex-col gap-3.5">
+        <div className="apple-glass-capsule px-5 py-5 rounded-[24px] flex flex-col gap-4">
           {items.map((item) => (
-            <div key={item.id} className="flex gap-3 items-center">
+            <div key={item.id} className="flex gap-3.5 items-center">
               <div className="w-10 h-13 rounded-lg bg-foreground/[0.02] border border-foreground/10 overflow-hidden shrink-0 relative">
                 {item.image ? (
                   <img src={item.image} className="w-full h-full object-cover animate-in fade-in duration-300" alt={item.title} />
@@ -2191,19 +2186,19 @@ export default function CheckoutPage() {
           ))}
         </div>
 
-        {/* Store Coins Wallet Card (Domestic India only) - Item #25 */}
+        {/* Store Coins Wallet Card (Domestic India only) — B&W glass, matches site theme */}
         {!isInternational && availableStoreCredit > 0 && (
-          <div className="apple-glass-capsule p-3.5 rounded-2xl flex flex-col gap-2.5 transition-all duration-300 border-amber-500/20 bg-amber-500/[0.04]">
+          <div className="apple-glass-capsule p-3.5 rounded-2xl flex flex-col gap-2.5 transition-all duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-500 shrink-0">
+                <div className="w-7 h-7 rounded-lg bg-foreground/5 border border-foreground/10 flex items-center justify-center text-foreground/70 shrink-0">
                   <Coins className="w-4 h-4" />
                 </div>
                 <div>
                   <h4 className="text-[10px] font-semibold text-foreground tracking-wide leading-none">
                     Store Coins Balance
                   </h4>
-                  <p className="text-[8.5px] text-amber-500 font-medium mt-0.5">
+                  <p className="text-[8.5px] text-foreground/60 font-medium mt-0.5">
                     {Math.ceil(availableStoreCredit).toLocaleString('en-IN')} Coins
                   </p>
                 </div>
@@ -2211,18 +2206,18 @@ export default function CheckoutPage() {
               <button
                 type="button"
                 onClick={() => setShowCoinsModal(true)}
-                className="px-2.5 py-1 text-[9px] font-semibold rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 transition-colors flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1 text-[9px] font-semibold rounded-lg bg-foreground/5 hover:bg-foreground/10 text-foreground border border-foreground/10 transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <span>Redeem Coins</span>
               </button>
             </div>
-            <div className="text-[8px] text-foreground/50 flex items-center justify-between pt-1 border-t border-amber-500/10">
+            <div className="text-[8px] text-foreground/50 flex items-center justify-between pt-1 border-t border-foreground/5">
               <span>Redeemable only on the mobile app</span>
               <a
                 href="/app"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-amber-500 hover:underline font-medium inline-flex items-center gap-0.5"
+                className="text-foreground/70 hover:text-foreground underline underline-offset-2 font-medium inline-flex items-center gap-0.5"
               >
                 Get App <ArrowUpRight className="w-2.5 h-2.5" />
               </a>
@@ -2230,68 +2225,68 @@ export default function CheckoutPage() {
           </div>
         )}
 
-        {/* Calculations Summary */}
+        {/* Calculations Summary — Subtotal → Discount → Shipping → Total → Store Credit Earned */}
         <div className="apple-glass-capsule p-4 rounded-2xl flex flex-col gap-2.5">
-          <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-            <span className="text-foreground/40">Subtotal</span>
-            <span className="text-foreground/75">{fmtAmount(subtotal)}</span>
+          <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+            <span className="font-semibold text-foreground/70">Subtotal</span>
+            <span className="font-medium text-foreground/80">{fmtAmount(subtotal)}</span>
           </div>
 
           {couponDiscount > 0 && !applyAsStoreCredit && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-emerald-400/90">Discount ({couponCode})</span>
-              <span className="text-emerald-400/90">- {fmtAmount(couponDiscount)}</span>
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+              <span className="font-semibold text-foreground/70">Discount ({couponCode})</span>
+              <span className="font-medium text-emerald-500">- {fmtAmount(couponDiscount)}</span>
             </div>
           )}
 
           {appliedStoreCredit > 0 && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-emerald-400/90">Store Credit Applied</span>
-              <span className="text-emerald-400/90">- {fmtAmount(appliedStoreCredit)}</span>
-            </div>
-          )}
-
-          {cashbackAmount > 0 && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-emerald-400/90">Cashback ({couponCode})</span>
-              <span className="text-emerald-400/90">+ {fmtAmount(cashbackAmount)}</span>
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+              <span className="font-semibold text-foreground/70">Store Credit Applied</span>
+              <span className="font-medium text-emerald-500">- {fmtAmount(appliedStoreCredit)}</span>
             </div>
           )}
 
           {paymentMethod === "COD" && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-foreground/45">COD Upfront (included)</span>
-              <span className="text-foreground/60">{codFeeFormatted}</span>
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+              <span className="font-semibold text-foreground/70">COD Upfront (included)</span>
+              <span className="font-medium text-foreground/70">{codFeeFormatted}</span>
             </div>
           )}
 
-          <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-            <span className="text-foreground/40">Shipping</span>
-            <span className="text-foreground/75">FREE</span>
+          <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+            <span className="font-semibold text-foreground/70">Shipping</span>
+            <span className="font-medium text-foreground/80">FREE</span>
           </div>
 
           <div className="h-[1px] bg-foreground/5 my-0.5" />
 
           {paymentMethod === "COD" ? (
             <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-                <span className="text-foreground/40">Order Total</span>
-                <span className="text-foreground/75">{fmtAmount(finalTotal)}</span>
+              <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+                <span className="font-semibold text-foreground/70">Order Total</span>
+                <span className="font-medium text-foreground/80">{fmtAmount(finalTotal)}</span>
               </div>
-              <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-                <span className="text-foreground/40">Due at Delivery</span>
-                <span className="text-foreground/75">{fmtAmount(Math.max(0, finalTotal - codFeeBase))}</span>
+              <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+                <span className="font-semibold text-foreground/70">Due at Delivery</span>
+                <span className="font-medium text-foreground/80">{fmtAmount(Math.max(0, finalTotal - codFeeBase))}</span>
               </div>
               <div className="h-[1px] bg-foreground/5 my-0.5" />
               <div className="flex justify-between items-center">
-                <span className="font-light text-[9px] text-foreground/45 uppercase tracking-widest">Pay Now (Upfront)</span>
-                <span className="text-base font-medium text-foreground tracking-tight leading-none">{codFeeFormatted}</span>
+                <span className="font-semibold text-[9px] text-foreground uppercase tracking-widest">Pay Now (Upfront)</span>
+                <span className="text-base font-semibold text-foreground tracking-tight leading-none">{codFeeFormatted}</span>
               </div>
             </div>
           ) : (
             <div className="flex justify-between items-center">
-              <span className="font-light text-[9px] text-foreground/45 uppercase tracking-widest">Total</span>
-              <span className="text-base font-medium text-foreground tracking-tight leading-none">{fmtAmount(finalTotal)}</span>
+              <span className="font-semibold text-[9px] text-foreground uppercase tracking-widest">Total</span>
+              <span className="text-base font-semibold text-foreground tracking-tight leading-none">{fmtAmount(finalTotal)}</span>
+            </div>
+          )}
+
+          {cashbackAmount > 0 && (
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider pt-1.5 border-t border-foreground/5">
+              <span className="font-semibold text-foreground">Store Credit Earned{couponCode ? ` (${couponCode})` : ""}</span>
+              <span className="text-emerald-500 font-semibold">+ {fmtAmount(cashbackAmount)}</span>
             </div>
           )}
         </div>
@@ -2343,7 +2338,7 @@ export default function CheckoutPage() {
         {!couponValid && activeCoupons.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-1.5 pl-1 mb-0.5 leading-none">
-              <Sparkles className="w-3 h-3 text-yellow-500 animate-pulse" />
+              <Sparkles className="w-3 h-3 text-foreground/40" />
               <span className="text-[7.5px] font-light text-foreground/40 uppercase tracking-widest">Available Offers</span>
             </div>
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none snap-x snap-mandatory">
@@ -2372,8 +2367,11 @@ export default function CheckoutPage() {
                   benefitText = `₹${val} Off`;
                 }
 
-                if (coupon.applyAsStoreCredit) {
-                  benefitText = `${benefitText} Cashback`;
+                const hasStoreCreditEarn = !!coupon.cashbackEnabled;
+                if (hasStoreCreditEarn && val > 0) {
+                  benefitText = `${benefitText} + Store Credit`;
+                } else if (coupon.applyAsStoreCredit) {
+                  benefitText = `${benefitText} Store Credit`;
                 }
 
                 const isEligible = subtotal >= Number(coupon.minOrderValue);
@@ -2392,16 +2390,20 @@ export default function CheckoutPage() {
                       setIsManualCoupon(true);
                       handleApplyCoupon(coupon.code, paymentMethod, false);
                     }}
-                    className={`snap-start shrink-0 p-2.5 rounded-xl border text-left w-[150px] flex flex-col gap-1 transition-all duration-300 ${!isEligible || !isMethodApplicable
-                      ? "bg-foreground/[0.002] border-foreground/5 opacity-30 cursor-not-allowed"
-                      : "bg-foreground/[0.015] border-foreground/5 hover:border-foreground/10 hover:bg-foreground/[0.02]"
+                    className={`snap-start shrink-0 p-2.5 rounded-xl apple-glass-capsule text-left w-[150px] flex flex-col gap-1 transition-all duration-300 ${!isEligible || !isMethodApplicable
+                      ? "opacity-30 cursor-not-allowed"
+                      : "hover:opacity-95"
                       }`}
                   >
                     <span className="font-mono text-[8px] font-light text-foreground bg-foreground/10 px-1 py-0.5 rounded uppercase tracking-wider self-start leading-none">
                       {coupon.code}
                     </span>
                     <p className="text-[9px] font-light text-foreground/80 leading-tight mt-0.5">
-                      {benefitText} {coupon.applyAsStoreCredit ? "credited as cashback" : "instantly at checkout"}
+                      {hasStoreCreditEarn && val > 0
+                        ? "Discount now · credit after delivery"
+                        : coupon.applyAsStoreCredit
+                          ? "Store Credit after delivery"
+                          : "Instantly at checkout"}
                     </p>
                     <p className="text-[7px] text-foreground/35 font-light">
                       {Number(coupon.minOrderValue) > 0 ? `On orders above ₹${Number(coupon.minOrderValue).toLocaleString("en-IN")}` : "No minimum limit"}
@@ -2476,7 +2478,16 @@ export default function CheckoutPage() {
   };
 
   return (
-    <div className="min-h-[100dvh] relative bg-background text-foreground font-sans">
+    <div className="min-h-[100dvh] relative bg-background text-foreground font-sans overflow-x-hidden">
+      {/* Soft atmospheric plane so apple-glass capsules can frost (B&W only) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 50% at 50% -10%, rgba(0,0,0,0.04), transparent 55%), radial-gradient(ellipse 60% 40% at 100% 40%, rgba(0,0,0,0.03), transparent 50%), radial-gradient(ellipse 50% 35% at 0% 80%, rgba(0,0,0,0.025), transparent 45%)",
+        }}
+      />
       {isConfirmingPayment && (
         <div
           className="fixed inset-0 z-[10000] bg-background flex flex-col items-center justify-center px-6 text-center"
@@ -3164,14 +3175,14 @@ export default function CheckoutPage() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm apple-glass-capsule p-6 rounded-3xl border border-border/40 shadow-2xl relative flex flex-col items-center text-center gap-4 bg-background/95"
+              className="w-full max-w-sm apple-glass-capsule p-6 rounded-3xl relative flex flex-col items-center text-center gap-4"
             >
-              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 flex items-center justify-center text-amber-500">
+              <div className="w-12 h-12 rounded-2xl bg-foreground/5 border border-foreground/10 flex items-center justify-center text-foreground">
                 <Coins className="w-6 h-6" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-foreground">Redeem Store Coins</h3>
-                <p className="text-xs text-amber-500 font-semibold mt-1">
+                <p className="text-xs text-foreground/60 font-semibold mt-1">
                   Available: {Math.ceil(availableStoreCredit).toLocaleString('en-IN')} Coins
                 </p>
                 <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
@@ -3183,7 +3194,7 @@ export default function CheckoutPage() {
                   href="/app"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs transition-colors flex items-center justify-center gap-1.5"
+                  className="w-full py-2.5 px-4 rounded-xl bg-foreground text-background hover:opacity-90 font-semibold text-xs transition-opacity flex items-center justify-center gap-1.5"
                 >
                   <span>Download / Open App</span>
                   <ArrowUpRight className="w-3.5 h-3.5" />
@@ -3191,7 +3202,7 @@ export default function CheckoutPage() {
                 <button
                   type="button"
                   onClick={() => setShowCoinsModal(false)}
-                  className="w-full py-2.5 px-4 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground font-medium text-xs transition-colors cursor-pointer"
+                  className="w-full py-2.5 px-4 rounded-xl bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 text-foreground font-medium text-xs transition-colors cursor-pointer"
                 >
                   Continue on Web
                 </button>

@@ -414,7 +414,7 @@ export default function OrderConfirmationPage() {
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ duration: 0.5, ease: "backOut" }}
-            className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-500/10 text-emerald-500 mb-1 border border-emerald-500/20 shadow-lg shadow-emerald-500/10"
+            className="inline-flex items-center justify-center w-14 h-14 rounded-2xl apple-glass-capsule text-emerald-500 mb-1 border border-foreground/10"
           >
             <CheckCircle2 className="w-7 h-7" />
           </motion.div>
@@ -458,53 +458,44 @@ export default function OrderConfirmationPage() {
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          className={`p-5 rounded-2xl border shadow-sm ${
-            isCod ? "bg-amber-500/[0.04] border-amber-500/20" : "bg-emerald-500/[0.04] border-emerald-500/20"
-          }`}
+          className="apple-glass-capsule px-6 py-5 rounded-2xl border border-foreground/5"
         >
           <div className="flex items-center justify-between pb-3 border-b border-foreground/10">
             <div className="flex items-center gap-2">
               {isCod ? (
-                <Banknote className="w-4 h-4 text-amber-500" />
+                <Banknote className="w-4 h-4 text-foreground/60" />
               ) : (
-                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                <ShieldCheck className="w-4 h-4 text-foreground/60" />
               )}
-              <span className="text-[11px] font-bold uppercase tracking-wider">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-foreground">
                 {isCod ? "Cash on Delivery" : "Prepaid Order"}
               </span>
             </div>
-            <span
-              className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full ${
-                isCod ? "bg-amber-500/15 text-amber-500" : "bg-emerald-500/15 text-emerald-500"
-              }`}
-            >
+            <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-foreground/10 text-foreground border border-foreground/10">
               {isCod ? "Partial COD" : "Paid"}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 pt-3.5">
+          <div className="grid grid-cols-2 gap-5 pt-3.5">
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-foreground/40">
                 Amount Paid Online
               </p>
-              <p className="text-lg font-black text-emerald-500 tracking-tight mt-0.5">
+              <p className="text-lg font-black text-foreground tracking-tight mt-0.5">
                 {formatPriceString(upfrontPaid, currency, "en-US")}
               </p>
-              <p className="text-[8px] font-semibold text-emerald-500/80 mt-0.5">
+              <p className="text-[8px] font-semibold text-emerald-500 mt-0.5 inline-flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
                 {registrationStatus === "confirming"
-                  ? "✓ Payment received — confirming…"
-                  : "✓ Payment Confirmed"}
+                  ? "Payment received — confirming…"
+                  : "Payment Confirmed"}
               </p>
             </div>
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-foreground/40">
                 {isCod ? "Pay at Delivery" : "Remaining Balance"}
               </p>
-              <p
-                className={`text-lg font-black tracking-tight mt-0.5 ${
-                  isCod ? "text-amber-500" : "text-foreground/50"
-                }`}
-              >
+              <p className="text-lg font-black tracking-tight mt-0.5 text-foreground/70">
                 {formatPriceString(balanceDue, currency, "en-US")}
               </p>
               <p className="text-[8px] font-semibold text-foreground/40 mt-0.5">
@@ -540,7 +531,7 @@ export default function OrderConfirmationPage() {
         <div className="apple-glass-capsule p-5 rounded-2xl space-y-4 border border-foreground/5">
           <div className="flex items-center justify-between border-b border-foreground/5 pb-2.5">
             <h2 className="text-[11px] font-black uppercase tracking-[0.1em] text-foreground/80 flex items-center gap-1.5">
-              <ShoppingBag className="w-3.5 h-3.5 text-amber-500" /> Items & Billing Summary
+              <ShoppingBag className="w-3.5 h-3.5 text-foreground/50" /> Items & Billing Summary
             </h2>
             <Link
               href="/orders"
@@ -564,38 +555,48 @@ export default function OrderConfirmationPage() {
           </div>
 
           <div className="pt-3 border-t border-foreground/5 space-y-2 text-[11px]">
-            <div className="flex justify-between items-center text-foreground/60">
-              <span>Subtotal</span>
-              <span className="font-bold">{formatPriceString(subtotalPrice, currency, "en-US")}</span>
+            <div className="flex justify-between items-center">
+              <span className="font-semibold text-foreground/70">Subtotal</span>
+              <span className="font-bold text-foreground">{formatPriceString(subtotalPrice, currency, "en-US")}</span>
             </div>
 
             {discountAmount > 0 && (
-              <div className="flex justify-between items-center text-emerald-500 font-semibold">
-                <span>Discount {order.discountCode ? `(${order.discountCode})` : ""}</span>
-                <span>-{formatPriceString(discountAmount, currency, "en-US")}</span>
+              <div className="flex justify-between items-center">
+                <span className="font-semibold text-foreground/70">Discount {order.discountCode ? `(${order.discountCode})` : ""}</span>
+                <span className="font-semibold text-emerald-500">-{formatPriceString(discountAmount, currency, "en-US")}</span>
               </div>
             )}
 
             {storeCreditAmount > 0 && (
-              <div className="flex justify-between items-center text-purple-400 font-semibold">
-                <span>Store Credit Applied</span>
-                <span>-{formatPriceString(storeCreditAmount, currency, "en-US")}</span>
+              <div className="flex justify-between items-center">
+                <span className="font-semibold text-foreground/70">Store Credit Applied</span>
+                <span className="font-semibold text-emerald-500">-{formatPriceString(storeCreditAmount, currency, "en-US")}</span>
               </div>
             )}
 
-            <div className="flex justify-between items-center text-foreground/60">
-              <span>Shipping</span>
-              <span className="text-emerald-500 font-bold uppercase text-[9px] tracking-wider">FREE</span>
+            <div className="flex justify-between items-center">
+              <span className="font-semibold text-foreground/70">Shipping</span>
+              <span className="text-foreground font-bold uppercase text-[9px] tracking-wider">FREE</span>
             </div>
 
             <div className="pt-2 border-t border-foreground/10 flex justify-between items-center text-xs">
-              <span className="font-black uppercase tracking-widest text-foreground">
-                Total Order Amount
+              <span className="font-bold uppercase tracking-widest text-foreground">
+                Total
               </span>
               <span className="text-base font-black tracking-tight text-foreground">
                 {formatPriceString(totalPrice, currency, "en-US")}
               </span>
             </div>
+
+            {Number(order.storeCreditEarned || 0) > 0 && (
+              <div className="flex justify-between items-center pt-1 border-t border-foreground/5">
+                <span className="font-semibold text-foreground">
+                  Store Credit Earned
+                  {order.discountCode ? ` (${order.discountCode})` : ""}
+                </span>
+                <span className="font-semibold text-emerald-500">+{formatPriceString(Number(order.storeCreditEarned), currency, "en-US")}</span>
+              </div>
+            )}
           </div>
         </div>
 

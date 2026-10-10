@@ -139,28 +139,30 @@ export async function POST(req: Request) {
 
     // Format display message
     let displayMessage = "";
-    if (isCashbackEnabled && !coupon.applyAsStoreCredit && discount > 0) {
-      // Double Discount
+    if (isCashbackEnabled && discount > 0) {
+      // Instant discount + Store Credit Earned on amount paid after discount
       displayMessage = currentDiscountType === "percentage"
-        ? `${currentDiscountValue}% instant off + ₹${cashbackAmount.toLocaleString("en-IN")} store credit cashback!`
-        : `₹${currentDiscountValue.toLocaleString("en-IN")} instant off + ₹${cashbackAmount.toLocaleString("en-IN")} store credit cashback!`;
+        ? `${currentDiscountValue}% off + ₹${cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`
+        : `₹${currentDiscountValue.toLocaleString("en-IN")} off + ₹${cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`;
     } else if (coupon.applyAsStoreCredit || (isCashbackEnabled && discount === 0)) {
-      // Pure Cashback
       const finalCashback = discount > 0 ? discount : cashbackAmount;
-      displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit cashback will be added!`;
+      displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit will be earned after delivery!`;
     } else {
-      // Pure Discount
       displayMessage = currentDiscountType === "percentage"
         ? `${currentDiscountValue}% off applied!`
         : `₹${currentDiscountValue.toLocaleString("en-IN")} off applied!`;
     }
+
+    // When both instant discount and store-credit reward exist, discount must reduce the payable total.
+    const applyAsStoreCredit =
+      isCashbackEnabled && discount > 0 ? false : !!coupon.applyAsStoreCredit;
 
     return NextResponse.json({
       valid: true,
       discount,
       discountType: currentDiscountType,
       couponId: coupon.id,
-      applyAsStoreCredit: coupon.applyAsStoreCredit,
+      applyAsStoreCredit,
       cashbackEnabled: isCashbackEnabled,
       cashbackType: coupon.cashbackType || "percentage",
       cashbackValue: Number(coupon.cashbackValue || 0),

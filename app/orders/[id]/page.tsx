@@ -426,7 +426,7 @@ export default function OrderDetailsPage() {
         </div>
 
         {/* Status Card matching Mobile App */}
-        <div className="mb-10 p-5 rounded-3xl border border-foreground/5 bg-foreground/[0.01] dark:bg-foreground/[0.02] flex items-center justify-between relative overflow-hidden">
+        <div className="mb-10 p-5 rounded-3xl apple-glass-capsule border border-foreground/5 flex items-center justify-between relative overflow-hidden">
             <div className="flex-1 min-w-0">
                <p className="text-[8px] font-black uppercase tracking-[0.15em] text-foreground/30 mb-1 font-mono">Status</p>
                <h3 className="text-[15px] font-extrabold text-foreground tracking-wide leading-tight">
@@ -556,7 +556,7 @@ export default function OrderDetailsPage() {
               {order.items.map((item: any) => (
                 <div 
                    key={item.id} 
-                   className="flex items-center gap-4 p-3 rounded-2xl glass-panel"
+                   className="flex items-center gap-4 p-3 rounded-2xl apple-glass-capsule border border-foreground/5"
                 >
                    <div className="w-14 h-14 rounded-xl overflow-hidden bg-foreground/5 border border-foreground/5 flex-shrink-0">
                       {(() => {
@@ -585,7 +585,7 @@ export default function OrderDetailsPage() {
            <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
               Delivery Address
            </h4>
-           <div className="p-5 rounded-3xl glass-panel">
+           <div className="p-5 rounded-3xl apple-glass-capsule border border-foreground/5">
               {(() => {
                 if (!order.shippingAddress) return <p className="text-[10px] text-foreground/40">No address provided.</p>;
                 try {
@@ -623,33 +623,45 @@ export default function OrderDetailsPage() {
            <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
               Billing Summary
            </h4>
-           <div className="p-5 rounded-3xl glass-panel space-y-3">
-              <div className="flex justify-between items-center text-[11px] font-medium text-foreground/60">
-                 <span>Subtotal</span>
-                 <span className="font-bold text-foreground/80">{formatPriceString(Number(order.subtotalPrice || (order.totalPrice + (order.discountAmount || 0))), order.currency || "INR", "en-US")}</span>
+           <div className="apple-glass-capsule p-5 rounded-3xl border border-foreground/5 space-y-3">
+              <div className="flex justify-between items-center text-[11px]">
+                 <span className="font-semibold text-foreground/70">Subtotal</span>
+                 <span className="font-bold text-foreground">{formatPriceString(Number(order.subtotalPrice || (order.totalPrice + (order.discountAmount || 0) + (order.storeCreditAmount || 0))), order.currency || "INR", "en-US")}</span>
               </div>
               {order.discountAmount > 0 && (
-                 <div className="flex justify-between items-center text-[11px] font-medium text-foreground/60">
-                    <span>Discount ({order.discountCode || 'Coupon'})</span>
-                    <span className="font-bold text-emerald-500/80">- {formatPriceString(Number(order.discountAmount), order.currency || "INR", "en-US")}</span>
+                 <div className="flex justify-between items-center text-[11px]">
+                    <span className="font-semibold text-foreground/70">Discount ({order.discountCode || 'Coupon'})</span>
+                    <span className="font-bold text-emerald-500">- {formatPriceString(Number(order.discountAmount), order.currency || "INR", "en-US")}</span>
                  </div>
               )}
-              <div className="flex justify-between items-center text-[11px] font-medium text-foreground/60">
-                 <span>Shipping</span>
-                 <span className="text-emerald-500 uppercase text-[9px] font-black tracking-widest">Free</span>
+              {Number(order.storeCreditAmount || 0) > 0 && (
+                 <div className="flex justify-between items-center text-[11px]">
+                    <span className="font-semibold text-foreground/70">Store Credit Applied</span>
+                    <span className="font-bold text-emerald-500">- {formatPriceString(Number(order.storeCreditAmount), order.currency || "INR", "en-US")}</span>
+                 </div>
+              )}
+              <div className="flex justify-between items-center text-[11px]">
+                 <span className="font-semibold text-foreground/70">Shipping</span>
+                 <span className="text-foreground uppercase text-[9px] font-black tracking-widest">Free</span>
               </div>
               <div className="pt-4 mt-2 border-t border-foreground/5 space-y-2">
                  <div className="flex justify-between items-center">
-                    <span className="text-[12px] font-black uppercase tracking-widest text-foreground/50">Total Order Amount</span>
+                    <span className="text-[12px] font-bold uppercase tracking-widest text-foreground">Total</span>
                     <span className="text-lg font-black tracking-tight text-foreground">{formatPriceString(Number(order.totalPrice), order.currency || "INR", "en-US")}</span>
                  </div>
+                 {Number(order.storeCreditEarned || 0) > 0 && (
+                    <div className="flex justify-between items-center text-[11px] pt-1 border-t border-foreground/5">
+                       <span className="font-semibold text-foreground">Store Credit Earned{order.discountCode ? ` (${order.discountCode})` : ""}</span>
+                       <span className="font-semibold text-emerald-500">+ {formatPriceString(Number(order.storeCreditEarned), order.currency || "INR", "en-US")}</span>
+                    </div>
+                 )}
                  {order.isCod && (
                     <div className="pt-2 border-t border-dashed border-foreground/10 space-y-1.5 text-[11px]">
-                       <div className="flex justify-between items-center text-emerald-500 font-semibold">
+                       <div className="flex justify-between items-center text-foreground font-semibold">
                           <span>Amount Paid Online (Upfront)</span>
-                          <span>✓ {formatPriceString(Number(order.codUpfrontPaid || 0), order.currency || "INR", "en-US")}</span>
+                          <span className="text-emerald-500">✓ {formatPriceString(Number(order.codUpfrontPaid || 0), order.currency || "INR", "en-US")}</span>
                        </div>
-                       <div className="flex justify-between items-center text-amber-500 font-bold">
+                       <div className="flex justify-between items-center text-foreground/70 font-bold">
                           <span>Balance Due at Delivery</span>
                           <span>{formatPriceString(Number(order.codBalanceDue || Math.max(0, order.totalPrice - Number(order.codUpfrontPaid || 0))), order.currency || "INR", "en-US")}</span>
                        </div>
@@ -668,9 +680,9 @@ export default function OrderDetailsPage() {
                 fetchReviewableItems();
                 setShowReviewModal(true);
               }}
-              className="w-full py-4 rounded-2xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-[0.98] shadow-lg shadow-amber-500/5"
+              className="w-full py-4 px-5 rounded-2xl apple-glass-capsule border border-foreground/10 text-foreground text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-[0.98] hover:bg-foreground/[0.03]"
             >
-              <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+              <Star className="w-4 h-4 text-foreground fill-foreground/20" />
               <span>{reviewableItems.some(i => i.reviewed) ? "View & Update Product Reviews" : "Rate & Review Products"}</span>
             </button>
           )}
