@@ -28,6 +28,7 @@ import Link from "next/link";
 import { formatPriceString } from "@/lib/global-pricing-client";
 import { useParams, useRouter } from "next/navigation";
 import OrderReviewModal from "@/components/reviews/OrderReviewModal";
+import AppDialog from "@/components/ui/AppDialog";
 
 const STEPS = [
   { id: "order_placed",   label: "Order Placed",   icon: CheckCircle2 },
@@ -55,6 +56,14 @@ export default function OrderDetailsPage() {
   const [syncing, setSyncing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showCancelRequestModal, setShowCancelRequestModal] = useState(false);
+  const [requestDialog, setRequestDialog] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    tone?: "default" | "danger" | "success";
+  }>({ open: false, title: "", description: "" });
+  const [cancellingRequest, setCancellingRequest] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [reviewableItems, setReviewableItems] = useState<any[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -190,26 +199,61 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const handleCancelReturnExchange = async () => {
-    const pendingReq = order.returnRequests?.find((r: any) => r.status === 'pending_approval')
-      || order.exchangeRequests?.find((e: any) => e.status === 'pending_approval');
-    if (!pendingReq) {
-      alert("No pending return or exchange request to cancel.");
+  const pendingReturnOrExchange = useMemo(() => {
+    if (!order) return null;
+    return (
+      order.returnRequests?.find((r: any) => r.status === "pending_approval") ||
+      order.exchangeRequests?.find((e: any) => e.status === "pending_approval") ||
+      null
+    );
+  }, [order]);
+
+  const openCancelReturnExchange = () => {
+    if (!pendingReturnOrExchange) {
+      setRequestDialog({
+        open: true,
+        title: "Nothing to Cancel",
+        description: "No pending return or exchange request to cancel.",
+        tone: "default",
+      });
       return;
     }
-    if (!confirm("Are you sure you want to cancel this return/exchange request?")) return;
+    setShowCancelRequestModal(true);
+  };
+
+  const handleCancelReturnExchange = async () => {
+    if (!pendingReturnOrExchange) return;
+    setCancellingRequest(true);
     try {
       const res = await fetch("/api/returns/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ returnRequestId: pendingReq.id })
+        body: JSON.stringify({ returnRequestId: pendingReturnOrExchange.id }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to cancel");
-      alert("Return/Exchange request cancelled.");
+      setShowCancelRequestModal(false);
+      setRequestDialog({
+        open: true,
+        title: "Request Cancelled",
+        description: data.message || "Your return/exchange request has been cancelled.",
+        tone: "success",
+      });
       fetchOrder();
     } catch (e: any) {
-      alert(e.message || "Failed to cancel request");
+      setShowCancelRequestModal(false);
+      // Prefer API's customer-safe message; fall back to a generic line (never dump stack/provider text).
+      const msg = typeof e?.message === "string" && e.message.length < 220
+        ? e.message
+        : "We couldn’t cancel this request right now. Please try again in a few minutes or contact support.";
+      setRequestDialog({
+        open: true,
+        title: "Could Not Cancel",
+        description: msg,
+        tone: "danger",
+      });
+    } finally {
+      setCancellingRequest(false);
     }
   };
 
@@ -710,7 +754,7 @@ export default function OrderDetailsPage() {
           {/* Cancel pending return/exchange */}
           {hasPendingRequest && (
             <button
-              onClick={handleCancelReturnExchange}
+              onClick={openCancelReturnExchange}
               className="w-full py-4 rounded-2xl text-[11px] font-bold uppercase tracking-wider text-red-500 bg-red-500/5 border border-red-500/15 hover:bg-red-500/10 transition-all active:scale-[0.98]"
             >
               Cancel Return/Exchange Request
@@ -768,68 +812,72 @@ export default function OrderDetailsPage() {
         )}
       </AnimatePresence>
 
-      {/* Custom Cancellation Modal */}
-      <AnimatePresence>
-        {showCancelModal && (
-          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowCancelModal(false)}
-              className="absolute inset-0 bg-black/85 backdrop-blur-md"
-            />
-            
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md glass-card p-8 rounded-[32px] border border-foreground/15 shadow-2xl space-y-6 bg-[#090909]/95 text-left z-10"
-            >
-              <div className="flex items-center gap-3 text-red-500">
-                <AlertCircle className="w-5 h-5" />
-                <h3 className="text-[12px] font-black uppercase tracking-[0.25em]">Cancel Order</h3>
-              </div>
+      <AppDialog
+        open={showCancelModal}
+        onClose={() => !cancelling && setShowCancelModal(false)}
+        title="Cancel Order"
+        tone="danger"
+        confirmLabel="Confirm Cancel"
+        loading={cancelling}
+        onConfirm={handleCancelOrder}
+        description={
+          <>
+            <p>
+              Are you sure you want to cancel order{" "}
+              <span className="text-foreground font-semibold">
+                {order?.orderNumber || order?.id}
+              </span>
+              ?
+            </p>
+            <p className="text-[10px] text-foreground/45 leading-normal">
+              All items will be restocked.
+              {isCOD ? (
+                isProcessed ? (
+                  <span className="text-foreground/60 font-medium block mt-1">
+                    Note: Since this order has already been processed, the upfront COD fee of ₹
+                    {Number(order?.codUpfrontPaid || 0)} is non-refundable.
+                  </span>
+                ) : (
+                  <span className="text-emerald-500 font-medium block mt-1">
+                    The upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} will be fully
+                    refunded to your source account.
+                  </span>
+                )
+              ) : (
+                " Any upfront online payments will be refunded to your source account automatically."
+              )}{" "}
+              This action is irreversible.
+            </p>
+          </>
+        }
+      />
 
-              <div className="space-y-3">
-                <p className="text-[12px] text-foreground/70 leading-relaxed font-medium">
-                  Are you sure you want to cancel order <span className="text-foreground font-semibold">{order?.orderNumber || order?.id}</span>?
-                </p>
-                <p className="text-[10px] text-foreground/45 leading-normal">
-                  All items will be restocked.
-                  {isCOD ? (
-                    isProcessed ? (
-                      <span className="text-amber-500/90 font-medium block mt-1">Note: Since this order has already been processed, the upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} is non-refundable.</span>
-                    ) : (
-                      <span className="text-emerald-400/90 font-medium block mt-1">The upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} will be fully refunded to your source account.</span>
-                    )
-                  ) : (
-                    " Any upfront online payments will be refunded to your source account automatically."
-                  )}
-                  {" This action is irreversible."}
-                </p>
-              </div>
+      <AppDialog
+        open={showCancelRequestModal}
+        onClose={() => !cancellingRequest && setShowCancelRequestModal(false)}
+        title="Cancel Request"
+        tone="danger"
+        confirmLabel="Cancel Request"
+        loading={cancellingRequest}
+        onConfirm={handleCancelReturnExchange}
+        description={
+          <>
+            <p>Are you sure you want to cancel this return/exchange request?</p>
+            <p className="text-[10px] text-foreground/45">
+              If you paid an exchange upgrade online, we will refund it before cancelling. If the
+              refund cannot be completed, the request will stay open.
+            </p>
+          </>
+        }
+      />
 
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={() => setShowCancelModal(false)}
-                  className="flex-1 py-3 bg-foreground/5 hover:bg-foreground/10 text-foreground/60 text-[10px] font-bold uppercase tracking-wider rounded-xl transition-all"
-                >
-                  Go Back
-                </button>
-                <button
-                  onClick={handleCancelOrder}
-                  disabled={cancelling}
-                  className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
-                >
-                  {cancelling && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  Confirm Cancel
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <AppDialog
+        open={requestDialog.open}
+        onClose={() => setRequestDialog((d) => ({ ...d, open: false }))}
+        title={requestDialog.title}
+        description={requestDialog.description}
+        tone={requestDialog.tone || "default"}
+      />
 
     </div>
   );

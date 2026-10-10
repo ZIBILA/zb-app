@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import AffiliateCreatorTab from "@/components/profile/AffiliateCreatorTab";
+import AppDialog from "@/components/ui/AppDialog";
 import { useBookmarks } from "@/lib/bookmark-context";
 import {
   COUNTRIES,
@@ -96,6 +97,8 @@ export default function ProfilePage() {
   const [savingAddress, setSavingAddress] = useState(false);
   const [addressModalError, setAddressModalError] = useState("");
   const [zipLoading, setZipLoading] = useState(false);
+  const [deleteAddressId, setDeleteAddressId] = useState<string | null>(null);
+  const [deletingAddress, setDeletingAddress] = useState(false);
 
   useEffect(() => {
     const fetchZipDetails = async () => {
@@ -318,17 +321,21 @@ export default function ProfilePage() {
     }
   };
 
-  const handleDeleteAddress = async (addressId: string) => {
-    if (!confirm("Are you sure you want to delete this address?")) return;
+  const handleDeleteAddress = async () => {
+    if (!deleteAddressId) return;
+    setDeletingAddress(true);
     try {
-      const res = await fetch(`/api/customer/addresses?id=${addressId}`, {
+      const res = await fetch(`/api/customer/addresses?id=${deleteAddressId}`, {
         method: "DELETE",
       });
       if (res.ok) {
-        setAddresses(prev => prev.filter(a => a.id !== addressId));
+        setAddresses(prev => prev.filter(a => a.id !== deleteAddressId));
+        setDeleteAddressId(null);
       }
     } catch (e) {
       console.error("Error deleting address", e);
+    } finally {
+      setDeletingAddress(false);
     }
   };
 
@@ -903,7 +910,7 @@ export default function ProfilePage() {
                             </button>
                           )}
                           <button
-                            onClick={() => handleDeleteAddress(addr.id)}
+                            onClick={() => setDeleteAddressId(addr.id)}
                             className="p-1.5 text-foreground/20 hover:text-red-500/70 transition-colors"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -1332,6 +1339,17 @@ export default function ProfilePage() {
           </div>
         )}
       </AnimatePresence>
+
+      <AppDialog
+        open={!!deleteAddressId}
+        onClose={() => !deletingAddress && setDeleteAddressId(null)}
+        title="Delete Address"
+        tone="danger"
+        confirmLabel="Delete"
+        loading={deletingAddress}
+        onConfirm={handleDeleteAddress}
+        description="Are you sure you want to delete this address? This cannot be undone."
+      />
     </div>
   );
 }

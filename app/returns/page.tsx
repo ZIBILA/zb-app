@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import RequestStatusCard from "@/components/RequestStatusCard";
+import AppDialog from "@/components/ui/AppDialog";
 import { useRouter } from "next/navigation";
 
 export default function ReturnsExchangesPage() {
@@ -23,6 +24,12 @@ export default function ReturnsExchangesPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
+  const [alertDialog, setAlertDialog] = useState<{ open: boolean; title: string; description: string; tone?: "default" | "danger" | "success" }>({
+    open: false,
+    title: "",
+    description: "",
+  });
   const [activeTab, setActiveTab] = useState<'all' | 'eligible' | 'active'>('all');
   const router = useRouter();
 
@@ -56,20 +63,36 @@ export default function ReturnsExchangesPage() {
     }
   };
 
-  const handleCancelRequest = async (requestId: string) => {
-    if (!confirm("Are you sure you want to cancel this request?")) return;
-    setCancellingId(requestId);
+  const handleCancelRequest = async () => {
+    if (!cancelTargetId) return;
+    setCancellingId(cancelTargetId);
     try {
       const res = await fetch("/api/returns/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ returnRequestId: requestId })
+        body: JSON.stringify({ returnRequestId: cancelTargetId })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to cancel request");
+      setCancelTargetId(null);
+      setAlertDialog({
+        open: true,
+        title: "Request Cancelled",
+        description: data.message || "Your request has been cancelled.",
+        tone: "success",
+      });
       await fetchOrders();
     } catch (e: any) {
-      alert(e.message || "Error cancelling request");
+      setCancelTargetId(null);
+      const msg = typeof e?.message === "string" && e.message.length < 220
+        ? e.message
+        : "We couldn’t cancel this request right now. Please try again in a few minutes or contact support.";
+      setAlertDialog({
+        open: true,
+        title: "Could Not Cancel",
+        description: msg,
+        tone: "danger",
+      });
     } finally {
       setCancellingId(null);
     }
@@ -262,7 +285,7 @@ export default function ReturnsExchangesPage() {
                         action={
                           r.status === 'pending_approval' ? (
                             <button
-                              onClick={() => handleCancelRequest(r.id)}
+                              onClick={() => setCancelTargetId(r.id)}
                               disabled={cancellingId === r.id}
                               className="px-3 py-1 rounded-lg text-[8px] font-bold uppercase tracking-wider text-red-500 hover:bg-red-500/10 border border-red-500/20 transition-colors"
                             >
@@ -284,7 +307,7 @@ export default function ReturnsExchangesPage() {
                         action={
                           e.status === 'pending_approval' ? (
                             <button
-                              onClick={() => handleCancelRequest(e.id)}
+                              onClick={() => setCancelTargetId(e.id)}
                               disabled={cancellingId === e.id}
                               className="px-3 py-1 rounded-lg text-[8px] font-bold uppercase tracking-wider text-red-500 hover:bg-red-500/10 border border-red-500/20 transition-colors"
                             >
@@ -338,6 +361,25 @@ export default function ReturnsExchangesPage() {
           </div>
         )}
       </main>
+
+      <AppDialog
+        open={!!cancelTargetId}
+        onClose={() => !cancellingId && setCancelTargetId(null)}
+        title="Cancel Request"
+        tone="danger"
+        confirmLabel="Cancel Request"
+        loading={!!cancellingId}
+        onConfirm={handleCancelRequest}
+        description="Are you sure you want to cancel this return/exchange request? If an exchange upgrade was paid online, we will refund it before cancelling."
+      />
+
+      <AppDialog
+        open={alertDialog.open}
+        onClose={() => setAlertDialog((d) => ({ ...d, open: false }))}
+        title={alertDialog.title}
+        description={alertDialog.description}
+        tone={alertDialog.tone || "default"}
+      />
     </div>
   );
 }

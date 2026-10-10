@@ -76,6 +76,7 @@ export async function POST(req: Request) {
       }
 
       // 2. Refund any price difference the customer already paid online (no-op for COD / free).
+      const paidUpgrade = Math.round((Number(exchangeRequest!.priceDifference) || 0) * 100) / 100;
       const refund = await refundExchangePayment(returnRequestId, customer.email || customer.id, 'Exchange cancelled by customer');
       if (!refund.ok) {
         // Un-cancel so the customer can simply try again; nothing is lost.
@@ -83,8 +84,20 @@ export async function POST(req: Request) {
           where: { id: returnRequestId, status: 'cancelled' },
           data: { status: 'pending_approval' },
         });
+        // Log gateway detail for ops — never expose raw Razorpay/provider text to customers.
+        console.error('[Cancel Return] Exchange refund blocked cancel:', {
+          exchangeRequestId: returnRequestId,
+          priceDifference: paidUpgrade,
+          paymentId: exchangeRequest!.paymentId,
+          error: refund.error,
+          inProgress: refund.inProgress,
+        });
         return NextResponse.json(
-          { error: 'We could not refund your payment right now, so your exchange was not cancelled. Please try again in a few minutes or contact support.' },
+          {
+            error: refund.inProgress
+              ? 'Your refund is still processing. Please wait a few minutes, then try cancelling again. If it keeps failing, contact support.'
+              : 'We could not complete the refund for your exchange upgrade right now, so the request was left open. Please try again in a few minutes or contact support.',
+          },
           { status: refund.inProgress ? 409 : 502, headers: corsHeaders }
         );
       }
