@@ -1,11 +1,34 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Coins, Smartphone, Zap, ShieldCheck, ArrowRight, Sparkles, Download, CheckCircle2 } from "lucide-react";
+import { Coins, Zap, ShieldCheck, ArrowRight, Sparkles, CheckCircle2, ChevronRight } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Zica Bella App | Fashion Redefined",
   description: "Download the Zica Bella mobile app to redeem Store Coins, enjoy exclusive archival drops, and experience seamless real-time order tracking.",
 };
+
+/** Official store listings — App Store Connect id 6769545889 / Android package com.zicabella.app */
+const APP_STORE_URL = "https://apps.apple.com/app/zica-bella/id6769545889";
+const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.zicabella.app";
+
+function AppleLogo({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" />
+    </svg>
+  );
+}
+
+function GooglePlayLogo({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#EA4335" d="M3.6 2.2c-.4.4-.6 1-.6 1.7v16.2c0 .7.2 1.3.6 1.7l.1.1L13 12.1v-.2L3.7 2.1l-.1.1z" />
+      <path fill="#FBBC04" d="M16.7 15.9 13 12.1v-.2l3.7-3.8.1.1 4.4 2.5c1.3.7 1.3 1.9 0 2.7l-4.5 2.5z" />
+      <path fill="#4285F4" d="M16.8 15.8 13 12 3.6 21.6c.5.5 1.3.6 2.2.1l11-5.9z" />
+      <path fill="#34A853" d="M16.8 8.2 5.8 2.3c-.9-.5-1.7-.4-2.2.1L13 12l3.8-3.8z" />
+    </svg>
+  );
+}
 
 export default function MobileAppLandingPage() {
   const perks = [
@@ -54,21 +77,33 @@ export default function MobileAppLandingPage() {
           Unlock your Store Coins, experience lightning-fast checkout, and access exclusive streetwear drops right from your pocket.
         </p>
 
-        {/* Call to Actions */}
-        <div className="mt-8 flex flex-col sm:flex-row items-center gap-3 w-full max-w-md">
+        {/* App Store CTAs */}
+        <div className="mt-8 flex flex-col sm:flex-row items-stretch gap-3 w-full max-w-lg">
           <a
-            href="zicabella://"
-            className="w-full sm:flex-1 py-3.5 px-6 rounded-2xl bg-amber-500 hover:bg-amber-600 text-black font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 hover:scale-[1.02]"
+            href={APP_STORE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full sm:flex-1 py-3.5 pl-4 pr-3 rounded-2xl border border-foreground/15 bg-foreground/[0.06] hover:bg-foreground/[0.1] hover:border-foreground/25 text-foreground transition-all flex items-center gap-3 shadow-[0_0_24px_-8px_rgba(245,158,11,0.15)] hover:scale-[1.02]"
           >
-            <Smartphone className="w-4 h-4" />
-            <span>Open in App</span>
+            <AppleLogo className="w-7 h-7 shrink-0" />
+            <span className="flex-1 text-left leading-tight">
+              <span className="block text-[9px] font-semibold uppercase tracking-wider text-foreground/55">Download on the</span>
+              <span className="block text-sm font-bold tracking-tight">App Store</span>
+            </span>
+            <ChevronRight className="w-4 h-4 text-foreground/40 shrink-0" />
           </a>
           <a
-            href="#install"
-            className="w-full sm:flex-1 py-3.5 px-6 rounded-2xl border border-foreground/15 hover:border-foreground/30 bg-foreground/5 hover:bg-foreground/10 text-foreground font-semibold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+            href={PLAY_STORE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full sm:flex-1 py-3.5 pl-4 pr-3 rounded-2xl border border-foreground/15 bg-foreground/[0.06] hover:bg-foreground/[0.1] hover:border-foreground/25 text-foreground transition-all flex items-center gap-3 shadow-[0_0_24px_-8px_rgba(245,158,11,0.15)] hover:scale-[1.02]"
           >
-            <Download className="w-4 h-4" />
-            <span>Download Guide</span>
+            <GooglePlayLogo className="w-7 h-7 shrink-0" />
+            <span className="flex-1 text-left leading-tight">
+              <span className="block text-[9px] font-semibold uppercase tracking-wider text-foreground/55">Get it on</span>
+              <span className="block text-sm font-bold tracking-tight">Play Store</span>
+            </span>
+            <ChevronRight className="w-4 h-4 text-foreground/40 shrink-0" />
           </a>
         </div>
 
@@ -123,7 +158,7 @@ export default function MobileAppLandingPage() {
                 <span className="text-xs font-bold">iOS (Apple iPhone)</span>
               </div>
               <p className="text-[11px] text-foreground/60 leading-relaxed">
-                Available on the Apple App Store for iOS 16+. Tap &ldquo;Open in App&rdquo; above if already installed, or search &ldquo;Zica Bella&rdquo; in the App Store.
+                Available on the Apple App Store for iOS 16+. Tap &ldquo;App Store&rdquo; above to download, or search &ldquo;Zica Bella&rdquo; in the App Store.
               </p>
             </div>
             <div className="p-4 rounded-2xl border border-foreground/10 bg-foreground/[0.02]">
