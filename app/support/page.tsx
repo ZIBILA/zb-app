@@ -160,10 +160,18 @@ function SupportPageContent() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isNearBottomRef = useRef(true);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((force = true) => {
+    if (!force && !isNearBottomRef.current) return;
     requestAnimationFrame(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      const container = chatContainerRef.current;
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      } else {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }
+      isNearBottomRef.current = true;
     });
   }, []);
 
@@ -246,8 +254,9 @@ function SupportPageContent() {
     if (!vv) return;
 
     const handleResize = () => {
+      // Keep composer visible when the keyboard opens, but don't yank if the user scrolled up.
       if (activeTab === 'chat' && ticketId) {
-        scrollToBottom();
+        scrollToBottom(false);
       }
     };
 
@@ -662,6 +671,12 @@ function SupportPageContent() {
                         {/* Messages list — GPU-promoted scroll container */}
                         <div
                           ref={chatContainerRef}
+                          onScroll={() => {
+                            const el = chatContainerRef.current;
+                            if (!el) return;
+                            isNearBottomRef.current =
+                              el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+                          }}
                           className="flex-1 space-y-3 md:space-y-4 overflow-y-auto pr-1 md:pr-2 custom-scrollbar ios-scroll min-h-0 support-chat-scroll"
                         >
                           {chatMessages.length === 0 ? (
