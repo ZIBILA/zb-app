@@ -64,25 +64,66 @@ export async function POST(req: Request) {
     const paymentId = body.paymentId || body.payment_id;
     const rzpOrderId = body.razorpayOrderId || body.razorpay_order_id;
     
-    // Normalize payment status
+    // Normalize payment status — never trust client "paid" without Razorpay capture proof
     let paymentStatus = (body.paymentStatus || body.financial_status || 'pending').toLowerCase();
     const isCod = paymentMethod === 'COD';
-    // COD with a successful Razorpay upfront payment is partially paid, not "pending"
-    if (isCod && (paymentStatus === 'paid' || paymentStatus === 'captured' || paymentStatus === 'success') && (paymentId || rzpOrderId)) {
-      paymentStatus = 'cod_upfront_paid';
-    } else if (isCod && paymentStatus === 'paid') {
-      // paid without payment ids — treat as upfront collected only if fee present
-      paymentStatus = Number(body.codUpfrontPaid || body.codFee || 0) > 0 ? 'cod_upfront_paid' : 'pending';
-    }
+    const clientClaimsPaid =
+      paymentStatus === 'paid' ||
+      paymentStatus === 'captured' ||
+      paymentStatus === 'success' ||
+      paymentStatus === 'cod_upfront_paid' ||
+      paymentStatus === 'partially_paid';
 
     const subtotal = Number(body.subtotal || body.subtotal_price || 0);
     const total = Number(body.total || body.total_price || 0);
     const appliedStoreCredits = Number(body.appliedStoreCredits || 0);
 
-    const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
+    const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
     const configuredCodFee = paymentMethod === 'COD' ? await getConfiguredCodUpfrontAmount() : 0;
     // Always use dashboard fee — never trust client for the locked amount
     const resolvedCodFee = configuredCodFee;
+    let verifiedCodUpfrontPaid = 0;
+
+    if (clientClaimsPaid) {
+      if (!paymentId) {
+        return jsonError('paymentId is required to mark an order as paid', 400);
+      }
+      if (!rzpOrderId) {
+        return jsonError('razorpayOrderId is required to mark an order as paid', 400);
+      }
+      // One captured payment may confirm only one local order
+      const paymentAlreadyUsed = await prisma.order.findFirst({
+        where: {
+          OR: [
+            { razorpayPaymentId: paymentId },
+            { codUpfrontPaymentId: paymentId },
+          ],
+          ...(rzpOrderId ? { NOT: { razorpayOrderId: rzpOrderId } } : {}),
+        },
+        select: { id: true, internalOrderNumber: true },
+      });
+      if (paymentAlreadyUsed) {
+        return jsonError('This payment is already linked to another order', 409);
+      }
+      try {
+        const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
+        const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+        const creds = await resolveRazorpayCredentials();
+        const captured = await assertCapturedCharge({
+          paymentId,
+          credentials: creds,
+          expectedMinRupees: isCod ? resolvedCodFee || DEFAULT_COD_UPFRONT_AMOUNT : 0,
+          orderId: rzpOrderId,
+        });
+        verifiedCodUpfrontPaid = paymentAmountRupees(captured);
+        paymentStatus = isCod ? 'cod_upfront_paid' : 'paid';
+      } catch (verifyErr: any) {
+        console.error('[App API] Payment capture verification failed:', verifyErr?.message || verifyErr);
+        return jsonError('Payment not captured on Razorpay — cannot mark order paid', 402);
+      }
+    } else if (isCod) {
+      paymentStatus = 'pending';
+    }
 
     // Fallback to auth email if missing in body
     if (!customerEmail && auth?.customerEmail) {
@@ -476,10 +517,12 @@ export async function POST(req: Request) {
             shopifyOrderId: finalShopifyOrderId,
             status: initialStatus,
             paymentStatus,
-            paymentMethod: paymentMethod === 'COD' ? 'COD' : 'Razorpay',
+            paymentMethod: isFullStoreCreditCheckout ? 'store_credit' : paymentMethod === 'COD' ? 'COD' : 'Razorpay',
             razorpayPaymentId: paymentId || existingOrder!.razorpayPaymentId || null,
-            codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : (existingOrder as any).codUpfrontPaid || 0,
-            codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || (existingOrder as any).codUpfrontPaymentId || null) : null,
+            codUpfrontPaid: paymentMethod === 'COD'
+              ? (verifiedCodUpfrontPaid || resolvedCodFee || 0)
+              : (existingOrder as any).codUpfrontPaid || 0,
+            codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || null) : null,
             paymentCapturedAt: isPaidLike ? now : existingOrder!.paymentCapturedAt,
             totalPrice: total,
             subtotalPrice: subtotal,
@@ -529,15 +572,9 @@ export async function POST(req: Request) {
         });
 
         if (matchingCarts.length > 0) {
+          const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
           const primaryCart = matchingCarts[0];
-          await prisma.cart.update({
-            where: { id: primaryCart.id },
-            data: {
-              status: "converted",
-              convertedOrderId: updated.id
-            }
-          });
-
+          await linkCartToOrderSafe(primaryCart.id, updated.id);
           if (matchingCarts.length > 1) {
             const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
             await prisma.cart.updateMany({
@@ -545,7 +582,6 @@ export async function POST(req: Request) {
               data: { status: "merged" }
             });
           }
-          console.log(`[MobileCheckout] Marked cart converted: ${primaryCart.id} for customer: ${resolvedCustomerId}`);
         }
       } catch (cartErr: any) {
         console.error("[MobileCheckout] Failed to mark cart converted:", cartErr.message);
@@ -616,7 +652,10 @@ export async function POST(req: Request) {
           tags: finalTags,
           razorpayPaymentId: paymentId || null,
           paymentMethod: isFullStoreCreditCheckout ? 'store_credit' : paymentMethod === 'COD' ? 'COD' : 'Razorpay',
-          codUpfrontPaid: paymentMethod === 'COD' ? resolvedCodFee : 0,
+          // Prefer Razorpay-verified COD upfront amount; fall back to configured fee.
+          codUpfrontPaid: paymentMethod === 'COD'
+            ? (verifiedCodUpfrontPaid || resolvedCodFee || 0)
+            : 0,
           codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || null) : null,
           paymentCapturedAt: isPaidLike ? now : null,
           
@@ -780,15 +819,9 @@ export async function POST(req: Request) {
       });
 
       if (matchingCarts.length > 0) {
+        const { linkCartToOrderSafe } = await import('@/lib/cartConversion');
         const primaryCart = matchingCarts[0];
-        await prisma.cart.update({
-          where: { id: primaryCart.id },
-          data: {
-            status: "converted",
-            convertedOrderId: created.id
-          }
-        });
-
+        await linkCartToOrderSafe(primaryCart.id, created.id);
         if (matchingCarts.length > 1) {
           const extraCartIds = matchingCarts.slice(1).map((c: any) => c.id);
           await prisma.cart.updateMany({
@@ -796,7 +829,6 @@ export async function POST(req: Request) {
             data: { status: "merged" }
           });
         }
-        console.log(`[MobileCheckout] Marked cart converted: ${primaryCart.id} for customer: ${resolvedCustomerId}`);
       }
     } catch (cartErr: any) {
       console.error("[MobileCheckout] Failed to mark cart converted:", cartErr.message);

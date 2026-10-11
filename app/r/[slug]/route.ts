@@ -66,7 +66,7 @@ export async function GET(
         req,
       });
 
-      const token = signAffiliateCookie({
+      const token = await signAffiliateCookie({
         code: directAffiliate.code,
         linkSlug: null,
         linkId: null,
@@ -87,7 +87,7 @@ export async function GET(
     });
 
     // 4. Sign attribution cookie
-    const token = signAffiliateCookie({
+    const token = await signAffiliateCookie({
       code: link.affiliate.code,
       linkSlug: link.slug,
       linkId: link.id,

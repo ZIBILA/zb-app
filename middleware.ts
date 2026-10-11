@@ -30,6 +30,7 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/web-store/customers",
     "/web-store/abandoned-carts",
     "/web-store/storefront",
+    "/web-store/merchandising",
     "/web-store/homepage",
     "/web-store/products",
     "/web-store/banners",
@@ -115,7 +116,6 @@ export default withAuth(
       pathname.startsWith('/api/webhooks') ||
       pathname.startsWith('/api/shopify/webhooks') ||
       pathname.startsWith('/api/payments/webhook') ||
-      pathname.startsWith('/api/delhivery/webhook') ||
       pathname.startsWith('/api/razorpay')
     ) {
       return NextResponse.next();
@@ -188,12 +188,12 @@ export default withAuth(
       ? (req.nextUrl.searchParams.get('ref') || req.nextUrl.searchParams.get('aff'))?.trim()
       : null;
 
-    const attachStorefrontCookies = (res: NextResponse) => {
+    const attachStorefrontCookies = async (res: NextResponse) => {
       attachClientIpCookie(res);
       if (refParam) {
         try {
-          const { signAffiliateCookie, getAffiliateCookieOptions } = require('@/lib/affiliate/cookie');
-          const token = signAffiliateCookie({
+          const { signAffiliateCookie, getAffiliateCookieOptions } = await import('@/lib/affiliate/cookie');
+          const token = await signAffiliateCookie({
             code: refParam.toUpperCase(),
             ts: Date.now(),
           });
@@ -208,7 +208,7 @@ export default withAuth(
 
     // Allow public API routes for the React Native app and Zica AI
     if (pathname.startsWith('/api/app/') || pathname.startsWith('/api/zica-ai')) {
-      return attachStorefrontCookies(NextResponse.next());
+      return await attachStorefrontCookies(NextResponse.next());
     }
 
     // CSRF for admin mutations only — never storefront checkout/cart/orders.
@@ -285,6 +285,9 @@ export default withAuth(
       "/api/discounts": "MARKETING",
       "/dashboard/vendors": "VENDORS",
       "/dashboard/returns": "RETURNS_EXCHANGES",
+      "/dashboard/exchanges": "RETURNS_EXCHANGES",
+      "/api/admin/returns": "RETURNS_EXCHANGES",
+      "/api/admin/exchanges": "RETURNS_EXCHANGES",
       "/dashboard/analytics": "ANALYTICS",
       "/api/admin/analytics": "ANALYTICS",
       "/dashboard/settings": "SETTINGS",
@@ -298,6 +301,7 @@ export default withAuth(
       "/api/webstore-settings": "STOREFRONT",
       "/api/admin/abandoned-carts": "STOREFRONT",
       "/api/admin/mood-board": "STOREFRONT",
+      "/api/admin/storefront": "STOREFRONT",
       
       // Admin API mappings for middleware double-guard
       "/api/admin/users": "ADMIN_USERS",
@@ -324,6 +328,7 @@ export default withAuth(
       "/api/admin/audit-logs": "/dashboard/audit-log",
       "/api/admin/abandoned-carts": "/web-store/abandoned-carts",
       "/api/admin/mood-board": "/web-store/products",
+      "/api/admin/storefront": "/web-store/merchandising",
       "/api/admin/analytics": "/dashboard/analytics",
     };
 
@@ -381,6 +386,10 @@ export default withAuth(
             // Enforce granular page-level check with crossing prevention
             if (hasAccess && permission.pages) {
               const allowedPages = (permission.pages as string).split(',');
+              // Admins who could manage the old Homepage Products / All Products pages keep access to the merged "Products & Order" page.
+              if (allowedPages.includes('/web-store/homepage') || allowedPages.includes('/web-store/products')) {
+                allowedPages.push('/web-store/merchandising');
+              }
               const knownPagesForModule = ALL_KNOWN_MODULE_PAGES[moduleMap[route]] || [];
               if (isApi) {
                 let targetPage: string | null = null;
@@ -433,7 +442,7 @@ export default withAuth(
       }
     }
 
-    return attachStorefrontCookies(NextResponse.next());
+    return await attachStorefrontCookies(NextResponse.next());
   },
   {
     callbacks: {

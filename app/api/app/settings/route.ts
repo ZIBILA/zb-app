@@ -16,7 +16,6 @@ export async function GET() {
       id,
       domain,
       accessToken,
-      delhiveryApiKey,
       razorpayKeyId,
       razorpayKeySecret,
       shiprocketEmail,

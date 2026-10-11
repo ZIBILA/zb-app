@@ -314,6 +314,8 @@ export default function CheckoutPage() {
     amount: number; // paise
     keyId: string;
     currency?: string;
+    localOrderId?: string | null;
+    internalOrderNumber?: string | null;
   } | null>(null);
 
   const paymentLockRef = useRef<boolean>(false);
@@ -1043,6 +1045,8 @@ export default function CheckoutPage() {
               amount: orderData.amount,
               keyId: orderData.keyId || orderData.key_id,
               currency: orderData.currency || countryConfig?.currencyCode || "INR",
+              localOrderId: orderData.localOrderId || null,
+              internalOrderNumber: orderData.internalOrderNumber || null,
             });
           } else {
             setPrefetchedOrder(null);
@@ -1340,24 +1344,23 @@ export default function CheckoutPage() {
       setCouponMessage(data.message);
       if (data.valid) {
         setCouponValid(true);
-        setApplyAsStoreCredit(!!data.applyAsStoreCredit);
+        const discount = Number(data.discount) || 0;
+        const earned = Number(data.cashbackAmount) || 0;
 
-        // Handle double discounts: check if cashback is enabled
-        if (data.cashbackEnabled && data.cashbackAmount > 0) {
-          setCashbackAmount(data.cashbackAmount);
-          if (data.applyAsStoreCredit) {
-            setCouponDiscount(0);
-          } else {
-            setCouponDiscount(data.discount);
-          }
+        // BEST10-style: instant % off payable total + separate Store Credit Earned on amount paid.
+        // Never drop the instant discount when cashback is also enabled.
+        if (data.cashbackEnabled && earned > 0) {
+          setApplyAsStoreCredit(false);
+          setCouponDiscount(discount);
+          setCashbackAmount(earned);
+        } else if (data.applyAsStoreCredit) {
+          setApplyAsStoreCredit(true);
+          setCouponDiscount(0);
+          setCashbackAmount(discount);
         } else {
-          if (data.applyAsStoreCredit) {
-            setCouponDiscount(0);
-            setCashbackAmount(data.discount);
-          } else {
-            setCouponDiscount(data.discount);
-            setCashbackAmount(0);
-          }
+          setApplyAsStoreCredit(false);
+          setCouponDiscount(discount);
+          setCashbackAmount(0);
         }
       } else {
         setCouponDiscount(0);
@@ -1477,15 +1480,16 @@ export default function CheckoutPage() {
       calculatedDiscount = Math.min(currentDiscountValue, subtotalAmount);
     }
 
-    // Calculate cashback if enabled
+    // Cashback = % of amount paid after instant discount (released after delivery).
     let cashbackAmount = 0;
     const isCashbackEnabled = !!coupon.cashbackEnabled;
     if (isCashbackEnabled) {
+      const paidBase = Math.max(0, subtotalAmount - calculatedDiscount);
       const cbVal = Number(coupon.cashbackValue || 0);
       if (coupon.cashbackType === "percentage") {
-        cashbackAmount = Math.round((subtotalAmount * cbVal) / 100);
+        cashbackAmount = Math.round((paidBase * cbVal) / 100);
       } else {
-        cashbackAmount = Math.min(cbVal, subtotalAmount);
+        cashbackAmount = Math.min(cbVal, paidBase);
       }
     }
 
@@ -1527,33 +1531,29 @@ export default function CheckoutPage() {
     if (best) {
       setCouponCode(best.coupon.code);
       setCouponValid(true);
-      setApplyAsStoreCredit(best.coupon.applyAsStoreCredit);
 
       if (best.calc.cashbackEnabled && best.calc.cashbackAmount > 0) {
+        setApplyAsStoreCredit(false);
+        setCouponDiscount(best.calc.discount);
         setCashbackAmount(best.calc.cashbackAmount);
-        if (best.coupon.applyAsStoreCredit) {
-          setCouponDiscount(0);
-        } else {
-          setCouponDiscount(best.calc.discount);
-        }
+      } else if (best.coupon.applyAsStoreCredit) {
+        setApplyAsStoreCredit(true);
+        setCouponDiscount(0);
+        setCashbackAmount(best.calc.discount);
       } else {
-        if (best.coupon.applyAsStoreCredit) {
-          setCouponDiscount(0);
-          setCashbackAmount(best.calc.discount);
-        } else {
-          setCouponDiscount(best.calc.discount);
-          setCashbackAmount(0);
-        }
+        setApplyAsStoreCredit(false);
+        setCouponDiscount(best.calc.discount);
+        setCashbackAmount(0);
       }
 
       let displayMessage = "";
-      if (best.calc.cashbackEnabled && !best.coupon.applyAsStoreCredit && best.calc.discount > 0) {
+      if (best.calc.cashbackEnabled && best.calc.discount > 0) {
         displayMessage = best.calc.type === "percentage"
-          ? `${best.calc.value}% instant off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} store credit cashback!`
-          : `₹${best.calc.value.toLocaleString("en-IN")} instant off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} store credit cashback!`;
+          ? `${best.calc.value}% off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`
+          : `₹${best.calc.value.toLocaleString("en-IN")} off + ₹${best.calc.cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`;
       } else if (best.coupon.applyAsStoreCredit || (best.calc.cashbackEnabled && best.calc.discount === 0)) {
         const finalCashback = best.calc.discount > 0 ? best.calc.discount : best.calc.cashbackAmount;
-        displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit cashback will be added!`;
+        displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit will be earned after delivery!`;
       } else {
         displayMessage = best.calc.type === "percentage"
           ? `${best.calc.value}% off applied automatically!`
@@ -1658,6 +1658,14 @@ export default function CheckoutPage() {
             sessionStorage.setItem("last_placed_order_id", completeData.orderId);
             const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ');
             sessionStorage.setItem(`order_categories_${completeData.orderId}`, joinedCategories);
+            if (completeData.order) {
+              try {
+                sessionStorage.setItem(
+                  `zb_confirmation_${completeData.orderId}`,
+                  JSON.stringify(completeData.order)
+                );
+              } catch { /* ignore quota */ }
+            }
           }
           clear();
           router.push(`/orders/${completeData.orderId}/confirmation`);
@@ -1712,6 +1720,8 @@ export default function CheckoutPage() {
       let keyId = "";
       let orderAmountPaise = 0;
       let orderCurrency = countryConfig?.currencyCode || "INR";
+      let localOrderId = "";
+      let internalOrderNumber = "";
 
       const prefetchMatches =
         !!prefetchedOrder &&
@@ -1724,7 +1734,9 @@ export default function CheckoutPage() {
         keyId = prefetchedOrder.keyId;
         orderAmountPaise = Number(prefetchedOrder.amount);
         orderCurrency = prefetchedOrder.currency || orderCurrency;
-        console.log("[Razorpay] Using pre-fetched order:", orderId);
+        localOrderId = prefetchedOrder.localOrderId || "";
+        internalOrderNumber = prefetchedOrder.internalOrderNumber || "";
+        console.log("[Razorpay] Using pre-fetched order:", orderId, "local:", localOrderId);
       } else {
         console.log("[Razorpay] Pre-fetched order missing or mismatch, fetching fresh...");
         const res = await fetch("/api/checkout/razorpay", {
@@ -1759,11 +1771,15 @@ export default function CheckoutPage() {
         keyId = data.keyId || data.key_id;
         orderAmountPaise = Number(data.amount);
         orderCurrency = data.currency || orderCurrency;
+        localOrderId = data.localOrderId || "";
+        internalOrderNumber = data.internalOrderNumber || "";
         setPrefetchedOrder({
           id: orderId,
           amount: orderAmountPaise,
           keyId,
           currency: orderCurrency,
+          localOrderId: localOrderId || null,
+          internalOrderNumber: internalOrderNumber || null,
         });
       }
 
@@ -1792,37 +1808,102 @@ export default function CheckoutPage() {
 
       // ═══════════════════════════════════════════════════════════
       // Shared success handler — called by Razorpay Standard Checkout
+      // Optimistic: navigate to confirmation immediately; complete runs there.
       // ═══════════════════════════════════════════════════════════
       const handlePaymentSuccess = async (response: any) => {
-        // Immediately cover checkout — Razorpay modal closes before complete finishes
         paymentSucceededRef.current = true;
         setIsConfirmingPayment(true);
         setIsOrderPlaced(true);
-        setLoading(true);
         setError("");
 
+        const completeBody = {
+          address: checkoutAddress,
+          paymentMethod,
+          items: convertedItems,
+          total: convertedTotal,
+          subtotal: convertedSubtotal,
+          currency: countryConfig?.currencyCode || "INR",
+          displayCountry: countryCode,
+          codFee: paymentMethod === "COD" ? codFee : 0,
+          razorpay: response,
+          couponCode: couponValid ? couponCode : null,
+          couponDiscount: fmtPrice(couponDiscount).amount,
+          applyAsStoreCredit,
+          cashbackAmount: fmtPrice(cashbackAmount).amount,
+          storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
+          guestId: getClientCookie("zb_device_id"),
+          fbp: getClientCookie("_fbp") || undefined,
+          fbc: getClientCookie("_fbc") || undefined,
+          externalId: getClientCookie("zb_external_id") || undefined,
+          localOrderId: localOrderId || undefined,
+        };
+
+        // Prefer pre-created local order id so we can land on a real URL immediately
+        const navOrderId = localOrderId || "";
+        if (navOrderId) {
+          const isCod = paymentMethod === "COD";
+          const paidOnline = isCod ? Number(codFee || 0) : Number(convertedTotal || 0);
+          const optimisticOrder = {
+            id: navOrderId,
+            orderNumber: internalOrderNumber || null,
+            shopifyOrderId: null,
+            paymentMethod: isCod ? "COD" : "RAZORPAY",
+            isCod,
+            codUpfrontPaid: isCod ? paidOnline : 0,
+            codBalanceDue: isCod ? Math.max(0, Number(convertedTotal || 0) - paidOnline) : 0,
+            totalPrice: Number(convertedTotal || 0),
+            subtotalPrice: Number(convertedSubtotal || 0),
+            discountCode: couponValid ? couponCode : null,
+            discountAmount: Number(fmtPrice(couponDiscount).amount || 0),
+            storeCreditAmount: Number(fmtPrice(appliedStoreCredit).amount || 0),
+            currency: countryConfig?.currencyCode || "INR",
+            createdAt: new Date().toISOString(),
+            shippingAddress: JSON.stringify(checkoutAddress),
+            items: convertedItems.map((item: any) => ({
+              id: item.id || `${item.productId}_${item.variantId}`,
+              title: item.title,
+              quantity: item.quantity,
+              price: Number(item.price || 0),
+              sku: item.variantId || item.productId || null,
+              size: item.size || null,
+              variantId: item.variantId || null,
+              productId: item.productId || null,
+              image: item.image || null,
+            })),
+            customer: {
+              id: null,
+              name: address.name || null,
+              email: address.email || null,
+              phone: address.phone || null,
+            },
+            customerId: null,
+            customerPhone: address.phone || null,
+            registrationStatus: "confirming",
+            razorpayPaymentId: response?.razorpay_payment_id || null,
+          };
+
+          try {
+            sessionStorage.setItem(`zb_confirmation_${navOrderId}`, JSON.stringify(optimisticOrder));
+            sessionStorage.setItem(
+              `zb_complete_pending_${navOrderId}`,
+              JSON.stringify({ body: completeBody, paymentId: response?.razorpay_payment_id || null })
+            );
+            sessionStorage.setItem("last_placed_order_id", navOrderId);
+            const joinedCategories = items.map(item => item.category).filter(Boolean).join(", ");
+            sessionStorage.setItem(`order_categories_${navOrderId}`, joinedCategories);
+            sessionStorage.removeItem("zb_pending_checkout");
+          } catch { /* ignore quota */ }
+
+          clear();
+          router.replace(`/orders/${navOrderId}/confirmation`);
+          return;
+        }
+
+        // Fallback (no pre-created local id): await complete before navigate (old path)
+        setLoading(true);
         try {
           // Re-sends while the payment is only authorized (paymentState "pending_capture").
-          const completion = await postCheckoutComplete({
-              address: checkoutAddress,
-              paymentMethod,
-              items: convertedItems,
-              total: convertedTotal,
-              subtotal: convertedSubtotal,
-              currency: countryConfig?.currencyCode || "INR",
-              displayCountry: countryCode,
-              codFee: paymentMethod === "COD" ? codFee : 0,
-              razorpay: response,
-              couponCode: couponValid ? couponCode : null,
-              couponDiscount: fmtPrice(couponDiscount).amount,
-              applyAsStoreCredit,
-              cashbackAmount: fmtPrice(cashbackAmount).amount,
-              storeCreditAmount: fmtPrice(appliedStoreCredit).amount,
-              guestId: getClientCookie("zb_device_id"),
-              fbp: getClientCookie("_fbp") || undefined,
-              fbc: getClientCookie("_fbc") || undefined,
-              externalId: getClientCookie("zb_external_id") || undefined,
-          });
+          const completion = await postCheckoutComplete(completeBody);
 
           if (completion.pendingCapture) {
             // Authorized, not captured: no success screen, cart kept, lock kept (no double pay).
@@ -1836,8 +1917,16 @@ export default function CheckoutPage() {
           if (verifyRes.ok && verifyData.orderId) {
             if (typeof window !== "undefined") {
               sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
-              const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ');
+              const joinedCategories = items.map(item => item.category).filter(Boolean).join(", ");
               sessionStorage.setItem(`order_categories_${verifyData.orderId}`, joinedCategories);
+              if (verifyData.order) {
+                try {
+                  sessionStorage.setItem(
+                    `zb_confirmation_${verifyData.orderId}`,
+                    JSON.stringify(verifyData.order)
+                  );
+                } catch { /* ignore */ }
+              }
               try {
                 sessionStorage.removeItem("zb_pending_checkout");
               } catch { /* ignore */ }
@@ -1847,7 +1936,6 @@ export default function CheckoutPage() {
             return;
           }
 
-          // Payment captured but complete failed — try recovery by Razorpay order id
           const rzpOrderId = response?.razorpay_order_id;
           if (rzpOrderId) {
             try {
@@ -1866,8 +1954,6 @@ export default function CheckoutPage() {
             } catch { /* fall through */ }
           }
 
-          // CRITICAL: Payment was captured successfully, but database registration failed.
-          // Do not allow retry to prevent double-charging the customer.
           setIsConfirmingPayment(false);
           setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered an issue registering your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can verify and manually create your order.`);
           setLoading(false);
@@ -1876,7 +1962,6 @@ export default function CheckoutPage() {
           setError(`Your payment of ${fmtAmount(paymentAmount)} was successful (ID: ${response.razorpay_payment_id || "N/A"}), but we encountered a connection issue confirming your order. Please do NOT try paying again. Contact support at support@zicabella.com with your payment ID so we can confirm your order manually.`);
           setLoading(false);
         }
-        // Keep lock held after success to prevent double-charge retries until navigation
       };
 
       // ═══════════════════════════════════════════════════════════
@@ -2110,9 +2195,9 @@ export default function CheckoutPage() {
     return (
       <div className="flex flex-col gap-3.5 w-full">
         {/* Product Preview Card */}
-        <div className="apple-glass-capsule p-4.5 rounded-[24px] flex flex-col gap-3.5">
+        <div className="apple-glass-capsule px-5 py-5 rounded-[24px] flex flex-col gap-4">
           {items.map((item) => (
-            <div key={item.id} className="flex gap-3 items-center">
+            <div key={item.id} className="flex gap-3.5 items-center">
               <div className="w-10 h-13 rounded-lg bg-foreground/[0.02] border border-foreground/10 overflow-hidden shrink-0 relative">
                 {item.image ? (
                   <img src={item.image} className="w-full h-full object-cover animate-in fade-in duration-300" alt={item.title} />
@@ -2131,38 +2216,38 @@ export default function CheckoutPage() {
           ))}
         </div>
 
-        {/* Store Coins Wallet Card (Domestic India only) - Item #25 */}
+        {/* Store Coins Wallet Card (Domestic India only) — B&W glass, matches site theme */}
         {!isInternational && availableStoreCredit > 0 && (
-          <div className="apple-glass-capsule p-3.5 rounded-2xl flex flex-col gap-2.5 transition-all duration-300 border-amber-500/20 bg-amber-500/[0.04]">
+          <div className="apple-glass-capsule p-3.5 rounded-2xl flex flex-col gap-2.5 transition-all duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-500 shrink-0">
+                <div className="w-7 h-7 rounded-lg bg-foreground/5 border border-foreground/10 flex items-center justify-center text-foreground/70 shrink-0">
                   <Coins className="w-4 h-4" />
                 </div>
                 <div>
                   <h4 className="text-[10px] font-semibold text-foreground tracking-wide leading-none">
                     Store Coins Balance
                   </h4>
-                  <p className="text-[8.5px] text-amber-500 font-medium mt-0.5">
-                    {availableStoreCredit.toLocaleString('en-IN')} Coins (₹{availableStoreCredit.toLocaleString('en-IN')})
+                  <p className="text-[8.5px] text-foreground/60 font-medium mt-0.5">
+                    {Math.ceil(availableStoreCredit).toLocaleString('en-IN')} Coins
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowCoinsModal(true)}
-                className="px-2.5 py-1 text-[9px] font-semibold rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 transition-colors flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1 text-[9px] font-semibold rounded-lg bg-foreground/5 hover:bg-foreground/10 text-foreground border border-foreground/10 transition-colors flex items-center gap-1 cursor-pointer"
               >
                 <span>Redeem Coins</span>
               </button>
             </div>
-            <div className="text-[8px] text-foreground/50 flex items-center justify-between pt-1 border-t border-amber-500/10">
+            <div className="text-[8px] text-foreground/50 flex items-center justify-between pt-1 border-t border-foreground/5">
               <span>Redeemable only on the mobile app</span>
               <a
                 href="/app"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-amber-500 hover:underline font-medium inline-flex items-center gap-0.5"
+                className="text-foreground/70 hover:text-foreground underline underline-offset-2 font-medium inline-flex items-center gap-0.5"
               >
                 Get App <ArrowUpRight className="w-2.5 h-2.5" />
               </a>
@@ -2170,68 +2255,68 @@ export default function CheckoutPage() {
           </div>
         )}
 
-        {/* Calculations Summary */}
+        {/* Calculations Summary — Subtotal → Discount → Shipping → Total → Store Credit Earned */}
         <div className="apple-glass-capsule p-4 rounded-2xl flex flex-col gap-2.5">
-          <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-            <span className="text-foreground/40">Subtotal</span>
-            <span className="text-foreground/75">{fmtAmount(subtotal)}</span>
+          <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+            <span className="font-semibold text-foreground/70">Subtotal</span>
+            <span className="font-medium text-foreground/80">{fmtAmount(subtotal)}</span>
           </div>
 
           {couponDiscount > 0 && !applyAsStoreCredit && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-emerald-400/90">Discount ({couponCode})</span>
-              <span className="text-emerald-400/90">- {fmtAmount(couponDiscount)}</span>
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+              <span className="font-semibold text-foreground/70">Discount ({couponCode})</span>
+              <span className="font-medium text-emerald-500">- {fmtAmount(couponDiscount)}</span>
             </div>
           )}
 
           {appliedStoreCredit > 0 && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-emerald-400/90">Store Credit Applied</span>
-              <span className="text-emerald-400/90">- {fmtAmount(appliedStoreCredit)}</span>
-            </div>
-          )}
-
-          {cashbackAmount > 0 && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-emerald-400/90">Cashback ({couponCode})</span>
-              <span className="text-emerald-400/90">+ {fmtAmount(cashbackAmount)}</span>
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+              <span className="font-semibold text-foreground/70">Store Credit Applied</span>
+              <span className="font-medium text-emerald-500">- {fmtAmount(appliedStoreCredit)}</span>
             </div>
           )}
 
           {paymentMethod === "COD" && (
-            <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-              <span className="text-foreground/45">COD Upfront (included)</span>
-              <span className="text-foreground/60">{codFeeFormatted}</span>
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+              <span className="font-semibold text-foreground/70">COD Upfront (included)</span>
+              <span className="font-medium text-foreground/70">{codFeeFormatted}</span>
             </div>
           )}
 
-          <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-            <span className="text-foreground/40">Shipping</span>
-            <span className="text-foreground/75">FREE</span>
+          <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+            <span className="font-semibold text-foreground/70">Shipping</span>
+            <span className="font-medium text-foreground/80">FREE</span>
           </div>
 
           <div className="h-[1px] bg-foreground/5 my-0.5" />
 
           {paymentMethod === "COD" ? (
             <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-                <span className="text-foreground/40">Order Total</span>
-                <span className="text-foreground/75">{fmtAmount(finalTotal)}</span>
+              <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+                <span className="font-semibold text-foreground/70">Order Total</span>
+                <span className="font-medium text-foreground/80">{fmtAmount(finalTotal)}</span>
               </div>
-              <div className="flex justify-between items-center text-[9px] font-light uppercase tracking-wider">
-                <span className="text-foreground/40">Due at Delivery</span>
-                <span className="text-foreground/75">{fmtAmount(Math.max(0, finalTotal - codFeeBase))}</span>
+              <div className="flex justify-between items-center text-[9px] uppercase tracking-wider">
+                <span className="font-semibold text-foreground/70">Due at Delivery</span>
+                <span className="font-medium text-foreground/80">{fmtAmount(Math.max(0, finalTotal - codFeeBase))}</span>
               </div>
               <div className="h-[1px] bg-foreground/5 my-0.5" />
               <div className="flex justify-between items-center">
-                <span className="font-light text-[9px] text-foreground/45 uppercase tracking-widest">Pay Now (Upfront)</span>
-                <span className="text-base font-medium text-foreground tracking-tight leading-none">{codFeeFormatted}</span>
+                <span className="font-semibold text-[9px] text-foreground uppercase tracking-widest">Pay Now (Upfront)</span>
+                <span className="text-base font-semibold text-foreground tracking-tight leading-none">{codFeeFormatted}</span>
               </div>
             </div>
           ) : (
             <div className="flex justify-between items-center">
-              <span className="font-light text-[9px] text-foreground/45 uppercase tracking-widest">Total</span>
-              <span className="text-base font-medium text-foreground tracking-tight leading-none">{fmtAmount(finalTotal)}</span>
+              <span className="font-semibold text-[9px] text-foreground uppercase tracking-widest">Total</span>
+              <span className="text-base font-semibold text-foreground tracking-tight leading-none">{fmtAmount(finalTotal)}</span>
+            </div>
+          )}
+
+          {cashbackAmount > 0 && (
+            <div className="flex justify-between items-center text-[9px] uppercase tracking-wider pt-1.5 border-t border-foreground/5">
+              <span className="font-semibold text-foreground">Store Credit Earned{couponCode ? ` (${couponCode})` : ""}</span>
+              <span className="text-emerald-500 font-semibold">+ {fmtAmount(cashbackAmount)}</span>
             </div>
           )}
         </div>
@@ -2283,7 +2368,7 @@ export default function CheckoutPage() {
         {!couponValid && activeCoupons.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-1.5 pl-1 mb-0.5 leading-none">
-              <Sparkles className="w-3 h-3 text-yellow-500 animate-pulse" />
+              <Sparkles className="w-3 h-3 text-foreground/40" />
               <span className="text-[7.5px] font-light text-foreground/40 uppercase tracking-widest">Available Offers</span>
             </div>
             <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none snap-x snap-mandatory">
@@ -2312,8 +2397,11 @@ export default function CheckoutPage() {
                   benefitText = `₹${val} Off`;
                 }
 
-                if (coupon.applyAsStoreCredit) {
-                  benefitText = `${benefitText} Cashback`;
+                const hasStoreCreditEarn = !!coupon.cashbackEnabled;
+                if (hasStoreCreditEarn && val > 0) {
+                  benefitText = `${benefitText} + Store Credit`;
+                } else if (coupon.applyAsStoreCredit) {
+                  benefitText = `${benefitText} Store Credit`;
                 }
 
                 const isEligible = subtotal >= Number(coupon.minOrderValue);
@@ -2332,16 +2420,20 @@ export default function CheckoutPage() {
                       setIsManualCoupon(true);
                       handleApplyCoupon(coupon.code, paymentMethod, false);
                     }}
-                    className={`snap-start shrink-0 p-2.5 rounded-xl border text-left w-[150px] flex flex-col gap-1 transition-all duration-300 ${!isEligible || !isMethodApplicable
-                      ? "bg-foreground/[0.002] border-foreground/5 opacity-30 cursor-not-allowed"
-                      : "bg-foreground/[0.015] border-foreground/5 hover:border-foreground/10 hover:bg-foreground/[0.02]"
+                    className={`snap-start shrink-0 p-2.5 rounded-xl apple-glass-capsule text-left w-[150px] flex flex-col gap-1 transition-all duration-300 ${!isEligible || !isMethodApplicable
+                      ? "opacity-30 cursor-not-allowed"
+                      : "hover:opacity-95"
                       }`}
                   >
                     <span className="font-mono text-[8px] font-light text-foreground bg-foreground/10 px-1 py-0.5 rounded uppercase tracking-wider self-start leading-none">
                       {coupon.code}
                     </span>
                     <p className="text-[9px] font-light text-foreground/80 leading-tight mt-0.5">
-                      {benefitText} {coupon.applyAsStoreCredit ? "credited as cashback" : "instantly at checkout"}
+                      {hasStoreCreditEarn && val > 0
+                        ? "Discount now · credit after delivery"
+                        : coupon.applyAsStoreCredit
+                          ? "Store Credit after delivery"
+                          : "Instantly at checkout"}
                     </p>
                     <p className="text-[7px] text-foreground/35 font-light">
                       {Number(coupon.minOrderValue) > 0 ? `On orders above ₹${Number(coupon.minOrderValue).toLocaleString("en-IN")}` : "No minimum limit"}
@@ -2416,7 +2508,16 @@ export default function CheckoutPage() {
   };
 
   return (
-    <div className="min-h-[100dvh] relative bg-background text-foreground font-sans">
+    <div className="min-h-[100dvh] relative bg-background text-foreground font-sans overflow-x-hidden">
+      {/* Soft atmospheric plane so apple-glass capsules can frost (B&W only) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 50% at 50% -10%, rgba(0,0,0,0.04), transparent 55%), radial-gradient(ellipse 60% 40% at 100% 40%, rgba(0,0,0,0.03), transparent 50%), radial-gradient(ellipse 50% 35% at 0% 80%, rgba(0,0,0,0.025), transparent 45%)",
+        }}
+      />
       {isConfirmingPayment && (
         <div
           className="fixed inset-0 z-[10000] bg-background flex flex-col items-center justify-center px-6 text-center"
@@ -3104,15 +3205,15 @@ export default function CheckoutPage() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm apple-glass-capsule p-6 rounded-3xl border border-border/40 shadow-2xl relative flex flex-col items-center text-center gap-4 bg-background/95"
+              className="w-full max-w-sm apple-glass-capsule p-6 rounded-3xl relative flex flex-col items-center text-center gap-4"
             >
-              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 flex items-center justify-center text-amber-500">
+              <div className="w-12 h-12 rounded-2xl bg-foreground/5 border border-foreground/10 flex items-center justify-center text-foreground">
                 <Coins className="w-6 h-6" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-foreground">Redeem Store Coins</h3>
-                <p className="text-xs text-amber-500 font-semibold mt-1">
-                  Available: {availableStoreCredit.toLocaleString('en-IN')} Coins (₹{availableStoreCredit.toLocaleString('en-IN')})
+                <p className="text-xs text-foreground/60 font-semibold mt-1">
+                  Available: {Math.ceil(availableStoreCredit).toLocaleString('en-IN')} Coins
                 </p>
                 <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
                   Store Coins can only be redeemed through the Zica Bella mobile app. Open or download the app to use your coins towards this order!
@@ -3123,7 +3224,7 @@ export default function CheckoutPage() {
                   href="/app"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs transition-colors flex items-center justify-center gap-1.5"
+                  className="w-full py-2.5 px-4 rounded-xl bg-foreground text-background hover:opacity-90 font-semibold text-xs transition-opacity flex items-center justify-center gap-1.5"
                 >
                   <span>Download / Open App</span>
                   <ArrowUpRight className="w-3.5 h-3.5" />
@@ -3131,7 +3232,7 @@ export default function CheckoutPage() {
                 <button
                   type="button"
                   onClick={() => setShowCoinsModal(false)}
-                  className="w-full py-2.5 px-4 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground font-medium text-xs transition-colors cursor-pointer"
+                  className="w-full py-2.5 px-4 rounded-xl bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 text-foreground font-medium text-xs transition-colors cursor-pointer"
                 >
                   Continue on Web
                 </button>

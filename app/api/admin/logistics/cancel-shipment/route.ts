@@ -36,6 +36,13 @@ export async function POST(req: Request) {
     const { awb } = parsed.data;
     const result = await cancelShipment(awb);
 
+    if (!result.success) {
+      return NextResponse.json(
+        { success: false, error: result.message || 'Failed to cancel shipment', message: result.message },
+        { status: 400 }
+      );
+    }
+
     await logAudit({
       action: 'SHIPMENT_CANCELLED',
       module: 'LOGISTICS',

@@ -40,7 +40,11 @@ export async function GET(req: Request) {
     }
 
     if (permission.pages && path && !isApi) {
-      const allowedPages = permission.pages.split(',');
+      const allowedPages: string[] = permission.pages.split(',');
+      // Old Homepage Products / All Products access carries over to the merged "Products & Order" page.
+      if (allowedPages.includes('/web-store/homepage') || allowedPages.includes('/web-store/products')) {
+        allowedPages.push('/web-store/merchandising');
+      }
       const hasPageAccess = allowedPages.some((allowedPage: any) => 
         path === allowedPage || path.startsWith(allowedPage + "/")
       );

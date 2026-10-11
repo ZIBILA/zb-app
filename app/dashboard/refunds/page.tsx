@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Coins,
   Search,
@@ -68,6 +68,11 @@ interface SummaryStats {
 
 export default function RefundsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialStatus = (() => {
+    const s = String(searchParams.get("status") || "all").toLowerCase();
+    return ["all", "pending", "completed", "rejected"].includes(s) ? s : "all";
+  })();
   const [refunds, setRefunds] = useState<RefundItem[]>([]);
   const [summary, setSummary] = useState<SummaryStats>({
     totalRequests: 0,
@@ -81,7 +86,7 @@ export default function RefundsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [methodFilter, setMethodFilter] = useState("all");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
@@ -134,6 +139,14 @@ export default function RefundsPage() {
     fetchRefunds(false);
   }, [fetchRefunds]);
 
+  // Deep-link from Returns dashboard: /dashboard/refunds?status=pending
+  useEffect(() => {
+    const s = String(searchParams.get("status") || "").toLowerCase();
+    if (["pending", "completed", "rejected", "all"].includes(s)) {
+      setStatusFilter(s);
+    }
+  }, [searchParams]);
+
   useEffect(() => {
     const handleSync = () => fetchRefunds(true);
     window.addEventListener("realtime-sync", handleSync);
@@ -155,7 +168,6 @@ export default function RefundsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          overrideRefundMethod: overrideMethod,
           overrideAmount: parseFloat(customAmount) || selectedRefund.refundAmount,
         }),
       });
@@ -571,43 +583,33 @@ export default function RefundsPage() {
                 ))}
               </div>
 
-              {/* Target Refund Method Selection */}
+              {/* Customer refund method (read-only — no admin override) */}
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block">
-                  Select Refund Processing Target
+                  Customer Refund Method
                 </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setOverrideMethod("original_method")}
-                    className={`p-3.5 rounded-xl border text-left flex flex-col gap-1 transition-all ${
-                      overrideMethod === "original_method"
-                        ? "bg-blue-500/15 border-blue-500 text-blue-400 ring-2 ring-blue-500/30"
-                        : "bg-secondary/30 border-border/50 text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 font-bold text-xs">
-                      <CreditCard className="w-4 h-4" />
-                      <span>Razorpay Auto-Refund</span>
-                    </div>
-                    <p className="text-[10px] opacity-80">Refunds back to original UPI/Card/Netbanking gateway</p>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setOverrideMethod("store_credit")}
-                    className={`p-3.5 rounded-xl border text-left flex flex-col gap-1 transition-all ${
-                      overrideMethod === "store_credit"
-                        ? "bg-emerald-500/15 border-emerald-500 text-emerald-400 ring-2 ring-emerald-500/30"
-                        : "bg-secondary/30 border-border/50 text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 font-bold text-xs">
+                <div
+                  className={`p-3.5 rounded-xl border text-left flex flex-col gap-1 ${
+                    (selectedRefund.refundMethod || "original_method") === "store_credit"
+                      ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
+                      : "bg-blue-500/15 border-blue-500/40 text-blue-400"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 font-bold text-xs">
+                    {(selectedRefund.refundMethod || "original_method") === "store_credit" ? (
                       <Wallet className="w-4 h-4" />
-                      <span>Store Credit</span>
-                    </div>
-                    <p className="text-[10px] opacity-80">Credits customer account balance instantly</p>
-                  </button>
+                    ) : (
+                      <CreditCard className="w-4 h-4" />
+                    )}
+                    <span>
+                      {(selectedRefund.refundMethod || "original_method") === "store_credit"
+                        ? "Store Credit"
+                        : "Original Payment Method"}
+                    </span>
+                  </div>
+                  <p className="text-[10px] opacity-80">
+                    Processed automatically from the customer&apos;s choice at return request. No manual override.
+                  </p>
                 </div>
               </div>
 

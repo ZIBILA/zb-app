@@ -22,8 +22,12 @@ export interface CheckoutAddressPayload {
 export async function resolveAndSyncCustomerAddress(
   shopId: string,
   rawAddress: CheckoutAddressPayload,
-  sessionUserId?: string | null
+  sessionUserId?: string | null,
+  opts?: { skipSideEffects?: boolean }
 ) {
+  // skipSideEffects: find/create customer only — merge + Address writes run deferred
+  const skipSideEffects = Boolean(opts?.skipSideEffects);
+
   // Combine address lines into a single street string for storage
   const streetParts = [rawAddress.houseNo, rawAddress.street, rawAddress.landmark, rawAddress.apartment].filter(Boolean);
   const fullStreet = streetParts.length > 0 ? streetParts.join(', ') : (rawAddress.street || 'Default Street');
@@ -98,93 +102,94 @@ export async function resolveAndSyncCustomerAddress(
     });
   }
 
-  // 3. Merge duplicate accounts if another customer record exists with the same phone
-  if (phone && localCustomer) {
-    try {
-      const duplicateCustomer = await prisma.customer.findFirst({
-        where: {
-          phone,
-          id: { not: localCustomer.id },
-        },
-      });
+  if (!skipSideEffects) {
+    // 3. Merge duplicate accounts if another customer record exists with the same phone
+    if (phone && localCustomer) {
+      try {
+        const duplicateCustomer = await prisma.customer.findFirst({
+          where: {
+            phone,
+            id: { not: localCustomer.id },
+          },
+        });
 
-      if (duplicateCustomer) {
-        console.log(`[CustomerService] Merging duplicate customer account: ${duplicateCustomer.id} -> ${localCustomer.id}`);
+        if (duplicateCustomer) {
+          console.log(`[CustomerService] Merging duplicate customer account: ${duplicateCustomer.id} -> ${localCustomer.id}`);
 
-        // If duplicate has a valid name and localCustomer doesn't, recover duplicate's valid name
-        if (!isValidName(localCustomer.name) && isValidName(duplicateCustomer.name)) {
-          await prisma.customer.update({
-            where: { id: localCustomer.id },
-            data: { name: duplicateCustomer.name }
-          });
-          localCustomer.name = duplicateCustomer.name;
+          if (!isValidName(localCustomer.name) && isValidName(duplicateCustomer.name)) {
+            await prisma.customer.update({
+              where: { id: localCustomer.id },
+              data: { name: duplicateCustomer.name }
+            });
+            localCustomer.name = duplicateCustomer.name;
+          }
+
+          await prisma.$transaction([
+            prisma.order.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id },
+            }),
+            prisma.address.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id },
+            }),
+            prisma.payment.updateMany({
+              where: { customerId: duplicateCustomer.id },
+              data: { customerId: localCustomer.id },
+            }),
+            prisma.cart.deleteMany({
+              where: { customerId: duplicateCustomer.id },
+            }),
+          ]);
+
+          await prisma.customer.delete({
+            where: { id: duplicateCustomer.id },
+          }).catch(() => null);
         }
-
-        await prisma.$transaction([
-          prisma.order.updateMany({
-            where: { customerId: duplicateCustomer.id },
-            data: { customerId: localCustomer.id },
-          }),
-          prisma.address.updateMany({
-            where: { customerId: duplicateCustomer.id },
-            data: { customerId: localCustomer.id },
-          }),
-          prisma.payment.updateMany({
-            where: { customerId: duplicateCustomer.id },
-            data: { customerId: localCustomer.id },
-          }),
-          prisma.cart.deleteMany({
-            where: { customerId: duplicateCustomer.id },
-          }),
-        ]);
-
-        await prisma.customer.delete({
-          where: { id: duplicateCustomer.id },
-        }).catch(() => null);
+      } catch (mergeErr: any) {
+        console.warn('[CustomerService] Account merge notice:', mergeErr.message);
       }
-    } catch (mergeErr: any) {
-      console.warn('[CustomerService] Account merge notice:', mergeErr.message);
     }
-  }
 
-  // 4. Save/Sync to Address Table
-  try {
-    const existingAddr = await prisma.address.findFirst({
-      where: {
-        customerId: localCustomer.id,
-        address1: fullStreet,
-        city: normalizedAddress.city,
-        zip: normalizedAddress.zip,
-      },
-    });
-
-    if (!existingAddr) {
-      const count = await prisma.address.count({
-        where: { customerId: localCustomer.id },
-      });
-
-      await prisma.address.create({
-        data: {
+    // 4. Save/Sync to Address Table
+    try {
+      const existingAddr = await prisma.address.findFirst({
+        where: {
           customerId: localCustomer.id,
-          name: rawRecipientName || localCustomer.name || 'Customer',
-          phone: phone || '',
-          email: email || '',
           address1: fullStreet,
-          address2: normalizedAddress.apartment || '',
           city: normalizedAddress.city,
-          state: normalizedAddress.state,
           zip: normalizedAddress.zip,
-          country: normalizedAddress.country,
-          isDefault: count === 0,
-          lat: normalizedAddress.lat != null ? parseFloat(String(normalizedAddress.lat)) : null,
-          lng: normalizedAddress.lng != null ? parseFloat(String(normalizedAddress.lng)) : null,
-          placeId: normalizedAddress.placeId || null,
         },
       });
-      console.log(`[CustomerService] Saved new address to Address table for customer: ${localCustomer.id}`);
+
+      if (!existingAddr) {
+        const count = await prisma.address.count({
+          where: { customerId: localCustomer.id },
+        });
+
+        await prisma.address.create({
+          data: {
+            customerId: localCustomer.id,
+            name: rawRecipientName || localCustomer.name || 'Customer',
+            phone: phone || '',
+            email: email || '',
+            address1: fullStreet,
+            address2: normalizedAddress.apartment || '',
+            city: normalizedAddress.city,
+            state: normalizedAddress.state,
+            zip: normalizedAddress.zip,
+            country: normalizedAddress.country,
+            isDefault: count === 0,
+            lat: normalizedAddress.lat != null ? parseFloat(String(normalizedAddress.lat)) : null,
+            lng: normalizedAddress.lng != null ? parseFloat(String(normalizedAddress.lng)) : null,
+            placeId: normalizedAddress.placeId || null,
+          },
+        });
+        console.log(`[CustomerService] Saved new address to Address table for customer: ${localCustomer.id}`);
+      }
+    } catch (addrErr: any) {
+      console.error('[CustomerService] Error saving Address table entry:', addrErr.message);
     }
-  } catch (addrErr: any) {
-    console.error('[CustomerService] Error saving Address table entry:', addrErr.message);
   }
 
   return { customer: localCustomer, normalizedAddress };

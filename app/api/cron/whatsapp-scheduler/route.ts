@@ -625,12 +625,8 @@ export async function GET(req: NextRequest) {
 
             if (matchedOrder) {
               isPhoneConverted = true;
-              // Auto-link the cart to the matched order
-              await db.cart.update({
-                where: { id: cart.id },
-                data: { status: "converted", convertedOrderId: matchedOrder.id }
-              }).catch(() => {});
-              console.log(`[WhatsApp Scheduler] Cart ${cart.id} auto-reconciled to order ${matchedOrder.id} via phone match. Skipping recovery.`);
+              const { linkCartToOrderSafe } = await import("@/lib/cartConversion");
+              await linkCartToOrderSafe(cart.id, matchedOrder.id, db as any).catch(() => {});
             }
           }
         } catch (reconErr: any) {

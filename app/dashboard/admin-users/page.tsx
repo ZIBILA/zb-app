@@ -88,6 +88,7 @@ const MODULE_PAGES: Record<string, { name: string; href: string }[]> = {
     { name: "Customers List", href: "/web-store/customers" },
     { name: "Abandoned Carts", href: "/web-store/abandoned-carts" },
     { name: "Web Storefront config", href: "/web-store/storefront" },
+    { name: "Products & Order", href: "/web-store/merchandising" },
     { name: "Homepage Products", href: "/web-store/homepage" },
     { name: "All Products", href: "/web-store/products" },
     { name: "Homepage Banners CMS", href: "/web-store/banners" },

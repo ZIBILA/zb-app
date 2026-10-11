@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { resolveRefundMethod } from "@/lib/returnPolicy";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
+import { splitRefundAcrossLines } from '@/lib/services/refundSplit';
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+async function POST_impl(req: Request, { params }: { params: { id: string } }) {
   try {
     const { id } = params;
     const body = await req.json();
@@ -23,7 +26,27 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "Return request not found" }, { status: 404 });
     }
 
-    const refundAmount = actualRefund !== undefined ? actualRefund : returnRequest.estimatedRefund;
+    if (!["pending_approval", "submitted"].includes(returnRequest.status)) {
+      return NextResponse.json(
+        { error: `Return request is already "${returnRequest.status}" and cannot be accepted again.` },
+        { status: 400 }
+      );
+    }
+
+    const refundAmount = actualRefund !== undefined ? Number(actualRefund) : returnRequest.estimatedRefund;
+    const orderTotal = Number(returnRequest.order?.totalPrice);
+    if (!Number.isFinite(refundAmount) || refundAmount < 0) {
+      return NextResponse.json({ error: "Refund amount must be a valid number." }, { status: 400 });
+    }
+    if (Number.isFinite(orderTotal) && orderTotal > 0 && refundAmount > orderTotal + 0.01) {
+      return NextResponse.json({ error: `Refund amount ₹${refundAmount} exceeds the order total ₹${orderTotal}.` }, { status: 400 });
+    }
+    // COD → store credit only. Prepaid always uses the customer's saved choice (no admin override).
+    const refundMethod = resolveRefundMethod(
+      returnRequest.order,
+      returnRequest.returns[0]?.refundMethod || returnRequest.refundType || 'original_method'
+    );
+    const storeCreditRefund = refundMethod === 'store_credit';
 
     const result = await prisma.$transaction(async (tx: any) => {
       // 1. Update the return request status
@@ -32,21 +55,25 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         data: {
           status: "approved",
           actualRefund: refundAmount,
-          approvedAt: new Date()
+          approvedAt: new Date(),
+          refundType: storeCreditRefund ? "store_credit" : "original_source"
         }
       });
 
       // 2. Update individual return items (keep refundStatus PENDING until QC and Admin Refund Approval)
-      await tx.return.updateMany({
-        where: { returnRequestId: id },
-        data: { 
-          status: "APPROVED",
-          refundAmount: isStoreCredit ? refundAmount : refundAmount,
-          storeCreditAmount: isStoreCredit ? refundAmount : 0,
-          refundStatus: "PENDING",
-          refundMethod: isStoreCredit ? "store_credit" : "original_method"
-        }
-      });
+      // Each line carries ITS OWN share; the shares add up to the request total.
+      for (const part of splitRefundAcrossLines(returnRequest.returns, refundAmount)) {
+        await tx.return.update({
+          where: { id: part.id },
+          data: {
+            status: "APPROVED",
+            refundAmount: part.amount,
+            storeCreditAmount: storeCreditRefund ? part.amount : 0,
+            refundStatus: "PENDING",
+            refundMethod
+          }
+        });
+      }
 
       // 4. Update order status & auto-cancel any pending exchange requests for mutual exclusivity
       await tx.order.update({
@@ -65,76 +92,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         }
       });
 
-      // 5. Create a reverse shipment tracking record with real Delhivery reverse pickup
-      let reverseAwb: string | null = null;
-      let pickupStatus = 'pickup_pending';
-      let requestStatus = 'approved';
-      let delhiveryRaw: any = null;
+      // Accepting does NOT book a courier any more: ops now selects the logistics partner
+      // (POST /api/admin/returns/[id]/pickup) which creates the AWB and requests the pickup.
+      return { finalRequest: updatedRequest, reverseAwb: null as string | null, awaitingPartner: true };
 
-      try {
-        const { createReversePickup } = await import('@/lib/delhivery');
-        
-        let addrObj: any = {};
-        const shippingRaw = returnRequest.order.shippingAddress;
-        if (typeof shippingRaw === 'string') {
-          try { addrObj = JSON.parse(shippingRaw); } catch (_) { addrObj = { add: shippingRaw }; }
-        } else if (shippingRaw && typeof shippingRaw === 'object') {
-          addrObj = shippingRaw;
-        }
-
-        const customer = returnRequest.order.customer;
-        const name = addrObj.name || (addrObj.first_name ? `${addrObj.first_name} ${addrObj.last_name || ''}`.trim() : customer?.name || 'Customer');
-        const add = addrObj.add || addrObj.address1 || addrObj.street || addrObj.fullAddress || (typeof shippingRaw === 'string' ? shippingRaw : 'Address Not Specified');
-        const pin = addrObj.pin || addrObj.zip || addrObj.pincode || addrObj.postalCode || '110001';
-        const phone = addrObj.phone || customer?.phone || '9876543210';
-        const prodDesc = returnRequest.returns.map((r: any) => r.sku || 'Item').join(', ');
-
-        const pickupRes = await createReversePickup({
-          name,
-          add,
-          pin: String(pin),
-          phone: String(phone),
-          order: returnRequest.id, // Deterministic request reference
-          products_desc: `Return: ${prodDesc}`,
-          weight: '500',
-          seller_name: 'Zica Bella',
-          pickup_location_name: process.env.DELHIVERY_PICKUP_LOCATION || 'Zica Bella Warehouse',
-        });
-
-        reverseAwb = pickupRes.awb;
-        pickupStatus = pickupRes.status;
-        requestStatus = 'approved';
-        delhiveryRaw = pickupRes.rawResponse;
-      } catch (dErr: any) {
-        console.error('[Return Approve] Delhivery reverse pickup failed:', dErr.message);
-        pickupStatus = 'pickup_registration_failed';
-        requestStatus = 'approved_pickup_failed';
-        delhiveryRaw = { error: dErr.message, note: 'Delhivery pickup creation failed. Marked as approved_pickup_failed for admin retry.' };
-      }
-
-      await tx.shipment.create({
-        data: {
-          orderId: returnRequest.orderId,
-          awb: reverseAwb,
-          trackingNumber: reverseAwb,
-          courier: "Delhivery",
-          status: pickupStatus,
-          type: "reverse_pickup",
-          trackingUrl: reverseAwb ? `https://www.delhivery.com/track/package/${reverseAwb}` : null,
-          rawDelhiveryResponse: JSON.stringify(delhiveryRaw)
-        }
-      });
-
-      // Update ReturnRequest status & store reverseAwb
-      const finalRequest = await tx.returnRequest.update({
-        where: { id },
-        data: {
-          status: requestStatus,
-          reverseAwb: reverseAwb
-        }
-      });
-
-      return { finalRequest, reverseAwb };
     });
 
     // Mark SKUs on returned items as RETURNED (not yet restocked — that happens on RECEIVED)
@@ -149,37 +110,18 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       console.error('[Return Approve] SKU status update failed:', skuErr);
     }
 
-    // Auto-send Return Pickup Scheduled WhatsApp notification
-    try {
-      const { sendReturnPickupScheduled } = await import('@/lib/whatsapp/templates');
-      const cust = returnRequest.order.customer;
-      let phone = cust?.phone;
-      if (!phone && returnRequest.order.shippingAddress) {
-        try {
-          const parsed = typeof returnRequest.order.shippingAddress === 'string'
-            ? JSON.parse(returnRequest.order.shippingAddress)
-            : returnRequest.order.shippingAddress;
-          phone = parsed?.phone;
-        } catch (_) {}
-      }
-      if (phone) {
-        const orderIdDisplay = returnRequest.order.shopifyOrderId || returnRequest.orderId;
-        const customerName = cust?.name || 'Valued Customer';
-        await sendReturnPickupScheduled({
-          phone,
-          customerName,
-          orderId: orderIdDisplay,
-          pickupDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-          awbNumber: result.reverseAwb || 'Pickup Scheduled',
-        });
-      }
-    } catch (waErr: any) {
-      console.error('[Return Approve] WhatsApp pickup notification error:', waErr.message);
-    }
-
     return NextResponse.json(result);
   } catch (error: any) {
     console.error("Approve Return Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

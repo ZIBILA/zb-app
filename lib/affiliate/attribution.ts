@@ -181,7 +181,7 @@ export async function attributeOrder(params: {
       return { attributed: false, error: 'No attribution cookie' };
     }
 
-    const payload = verifyAffiliateCookie(rawCookie);
+    const payload = await verifyAffiliateCookie(rawCookie);
     if (!payload || !payload.code) {
       return { attributed: false, error: 'Invalid or expired attribution cookie' };
     }

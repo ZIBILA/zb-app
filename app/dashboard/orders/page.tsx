@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ShoppingCart,
   Loader2,
@@ -23,6 +24,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import { formatDisplayOrderNumber } from "@/lib/formatOrderNumber";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
+import { LOGISTICS_FILTER_OPTIONS, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
 
 interface OrderItem {
   id: string;
@@ -70,6 +72,9 @@ interface Order {
   shopifyOrderName?: string | null;
   shopifySyncStatus?: string | null;
   shopifySyncError?: string | null;
+  tags?: string | null;
+  returnRequests?: Array<{ id: string; displayId?: string | null; status: string }>;
+  exchangeRequests?: Array<{ id: string; displayId?: string | null; status: string }>;
   discountAmount?: number;
   subtotalPrice?: number | null;
   paidAmount?: number;
@@ -81,7 +86,7 @@ const STATUS_THEME: Record<string, { label: string; color: string; bg: string; d
   paid: { label: "Settled", color: "text-emerald-500", bg: "bg-emerald-500/10", dot: "bg-emerald-500" },
   success: { label: "Settled", color: "text-emerald-500", bg: "bg-emerald-500/10", dot: "bg-emerald-500" },
   pending: { label: "Pending", color: "text-amber-500", bg: "bg-amber-500/10", dot: "bg-amber-500" },
-  cod_upfront_paid: { label: "COD (Upfront Paid)", color: "text-amber-500", bg: "bg-amber-500/10", dot: "bg-amber-500" },
+  cod_upfront_paid: { label: "COD Upfront", color: "text-amber-500", bg: "bg-amber-500/10", dot: "bg-amber-500" },
   refunded: { label: "Refunded", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   fulfilled: { label: "Dispatched", color: "text-blue-500", bg: "bg-blue-500/10", dot: "bg-blue-500" },
   unfulfilled: { label: "Draft", color: "text-foreground/40", bg: "bg-foreground/5", dot: "bg-foreground/20" },
@@ -90,6 +95,13 @@ const STATUS_THEME: Record<string, { label: string; color: string; bg: string; d
   'in transit': { label: "In Transit", color: "text-indigo-400", bg: "bg-indigo-400/10", dot: "bg-indigo-400" },
   'out for delivery': { label: "Out for Delivery", color: "text-amber-400", bg: "bg-amber-400/10", dot: "bg-amber-400" },
   shipped: { label: "Shipped", color: "text-blue-500", bg: "bg-blue-500/10", dot: "bg-blue-500" },
+  confirmed: { label: "Booked", color: "text-cyan-400", bg: "bg-cyan-400/10", dot: "bg-cyan-400" },
+  'pickup scheduled': { label: "Pickup Scheduled", color: "text-amber-400", bg: "bg-amber-400/10", dot: "bg-amber-400" },
+  undelivered: { label: "Delivery Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  rto: { label: "RTO", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  'returned to origin': { label: "RTO Received", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  lost: { label: "Lost / Damaged", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  partially_refunded: { label: "Partially Refunded", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   awaiting_approval: { label: "Reviewing", color: "text-purple-500", bg: "bg-purple-500/10", dot: "bg-purple-500" },
   payment_failed: { label: "Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   failed: { label: "Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
@@ -119,6 +131,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function OrdersPage() {
+  const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -127,6 +140,7 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState("any");
   const [paymentFilter, setPaymentFilter] = useState("any");
   const [fulfillmentFilter, setFulfillmentFilter] = useState("any");
+  const [logisticsFilter, setLogisticsFilter] = useState("any");
   const [tab, setTab] = useState<'all' | 'unfulfilled' | 'unpaid' | 'open'>('all');
   const [toast, setToast] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
@@ -156,7 +170,7 @@ export default function OrdersPage() {
       if (tab === 'open') finalStatus = 'active';
 
       const offset = (page - 1) * LIMIT;
-      const url = `/api/admin/orders?limit=${LIMIT}&offset=${offset}&status=${finalStatus}&paymentStatus=${finalPayment}&fulfillmentStatus=${finalFulfillment}&search=${encodeURIComponent(search)}`;
+      const url = `/api/admin/orders?limit=${LIMIT}&offset=${offset}&status=${finalStatus}&paymentStatus=${finalPayment}&fulfillmentStatus=${finalFulfillment}&logistics=${logisticsFilter}&search=${encodeURIComponent(search)}`;
       
       const res = await fetch(url, { signal: controller.signal });
       if (controller.signal.aborted) return;
@@ -180,7 +194,7 @@ export default function OrdersPage() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [statusFilter, paymentFilter, fulfillmentFilter, search, tab, page]);
+  }, [statusFilter, paymentFilter, fulfillmentFilter, logisticsFilter, search, tab, page]);
 
   const handleUpdateOrderItemSize = async (orderItemId: string, newSize: string) => {
     try {
@@ -204,7 +218,7 @@ export default function OrdersPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, paymentFilter, fulfillmentFilter, search, tab]);
+  }, [statusFilter, paymentFilter, fulfillmentFilter, logisticsFilter, search, tab]);
 
   useEffect(() => {
     const timer = setTimeout(() => fetchOrders(false), 250);
@@ -351,9 +365,22 @@ export default function OrdersPage() {
           <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/10 group-focus-within:text-foreground/40 transition-colors" />
           <input
             type="text"
-            placeholder="Search by ID, customer, or phone..."
+            placeholder="Search by ID, R_/E_/G_E_, customer, or phone..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={async (e) => {
+              if (e.key !== 'Enter') return;
+              const q = search.trim();
+              if (!/^(R_|E_|G_E_)/i.test(q)) return;
+              try {
+                const res = await fetch(`/api/admin/linked-id?q=${encodeURIComponent(q)}`);
+                const data = await res.json();
+                if (data?.found && data.href) {
+                  e.preventDefault();
+                  router.push(data.href);
+                }
+              } catch { /* fall through to list search */ }
+            }}
             className="w-full bg-foreground/[0.03] border border-foreground/5 rounded-2xl pl-14 pr-6 py-4 text-[13px] text-foreground placeholder:text-foreground/10 outline-none focus:border-foreground/10 transition-all"
           />
         </div>
@@ -368,15 +395,13 @@ export default function OrdersPage() {
             ]},
             { value: paymentFilter, onChange: setPaymentFilter, options: [
               { label: 'Payment: All', value: 'any' },
-              { label: 'Settled', value: 'paid' },
+              { label: 'Paid / Settled', value: 'settled' },
+              { label: 'Refunded', value: 'refunded' },
+              { label: 'COD Upfront', value: 'cod_upfront' },
               { label: 'Awaiting', value: 'pending' },
               { label: 'Failed', value: 'failed' }
             ]},
-            { value: fulfillmentFilter, onChange: setFulfillmentFilter, options: [
-              { label: 'Logistics: All', value: 'any' },
-              { label: 'Dispatched', value: 'fulfilled' },
-              { label: 'In Progress', value: 'unfulfilled' }
-            ]}
+            { value: logisticsFilter, onChange: setLogisticsFilter, options: LOGISTICS_FILTER_OPTIONS.map((o) => ({ label: o.label, value: o.value })) }
           ].map((filter, i) => (
             <div key={i} className="relative group">
               <select
@@ -551,9 +576,23 @@ export default function OrdersPage() {
 
                   <div className="col-span-2">
                     <StatusBadge status={order.status === 'cancelled' ? 'cancelled' : (order.deliveryStatus || order.fulfillmentStatus || 'unfulfilled')} />
+                    {(order.returnRequests?.length || order.exchangeRequests?.length) ? (
+                      <div className="mt-1.5 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
+                        {order.returnRequests?.filter((r) => r.status !== 'cancelled' && (r.displayId || !order.exchangeRequests?.length)).map((r) => (
+                          <a key={r.id} href={`/dashboard/returns/${r.id}`} className="px-1.5 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-[8px] font-mono font-bold text-amber-500 tracking-tight" title={`Return · ${r.status.replace(/_/g, ' ')}`}>
+                            {r.displayId || 'RETURN'}
+                          </a>
+                        ))}
+                        {order.exchangeRequests?.filter((r) => r.status !== 'cancelled').map((r) => (
+                          <a key={r.id} href={`/dashboard/exchanges/${r.id}`} className="px-1.5 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-[8px] font-mono font-bold text-blue-500 tracking-tight" title={`Exchange · ${r.status.replace(/_/g, ' ')}`}>
+                            {r.displayId || 'EXCHANGE'}
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                     {(() => {
-                      const shipment = order.shipments?.[0];
-                      const awb = order.trackingNumber || shipment?.trackingNumber || shipment?.awb || order.delhivery_awb;
+                      const shipment = pickActiveOutboundShipment((order.shipments || []) as any[]) as any;
+                      const awb = order.trackingNumber || shipmentAwb(shipment) || order.delhivery_awb;
                       const trackUrl = order.trackingUrl || shipment?.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
                       const courierName = order.courier || shipment?.courier || (order.delhivery_awb ? 'Delhivery' : null);
 

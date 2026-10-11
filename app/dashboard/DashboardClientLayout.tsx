@@ -216,7 +216,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Web Store Customers", href: "/web-store/customers", icon: Users, module: 'STOREFRONT' },
     { name: "Abandoned Carts", href: "/web-store/abandoned-carts", icon: ShoppingCart, module: 'STOREFRONT' },
     { name: "Web Storefront", href: "/web-store/storefront", icon: Monitor, module: 'STOREFRONT' },
-    { name: "Homepage Products", href: "/web-store/homepage", icon: LayoutGrid, module: 'STOREFRONT' },
+    { name: "Products & Order", href: "/web-store/merchandising", icon: LayoutGrid, module: 'STOREFRONT' },
     { name: "All Products", href: "/web-store/products", icon: Sparkles, module: 'STOREFRONT' },
     { name: "Homepage Banners", href: "/web-store/banners", icon: Monitor, module: 'STOREFRONT' },
     { name: "Gallery CMS", href: "/web-store/gallery", icon: Sparkles, module: 'STOREFRONT' },
@@ -412,7 +412,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* ──────── Sidebar ──────── */}
       <aside
-        className={`fixed inset-y-0 left-0 lg:m-4 lg:rounded-[2.5rem] glass overflow-hidden border-r lg:border border-foreground/5 shadow-3xl z-[60] flex flex-col transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 lg:m-4 lg:rounded-[2.5rem] glass overflow-hidden border-r lg:border border-foreground/5 shadow-3xl z-[60] flex flex-col transition-all duration-300 ease-apple lg:translate-x-0 ${
           isSidebarOpen ? "translate-x-0" : "-translate-x-full"
         } ${isCollapsed ? "lg:w-20 w-72" : "w-72"}`}
       >

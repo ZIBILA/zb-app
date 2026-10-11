@@ -14,8 +14,78 @@
  *  - Merged/expired are excluded from all counts
  */
 
+import prisma from '@/lib/db';
+
 // Re-export the runtime order validation helper
 export { isOrderValidConverted } from './cartValidation';
+
+/**
+ * Link a cart to an order without violating unique(converted_order_id).
+ * If another cart already owns the order id, mark this cart converted/merged
+ * without setting convertedOrderId (avoids P2002 log spam).
+ */
+export async function linkCartToOrderSafe(
+  cartId: string,
+  orderId: string,
+  db: { cart: typeof prisma.cart } = prisma
+): Promise<'linked' | 'already_linked' | 'merged_without_link' | 'skipped'> {
+  if (!cartId || !orderId) return 'skipped';
+
+  try {
+    const existingOwner = await db.cart.findFirst({
+      where: { convertedOrderId: orderId },
+      select: { id: true },
+    });
+
+    if (existingOwner) {
+      if (existingOwner.id === cartId) {
+        await db.cart.update({
+          where: { id: cartId },
+          data: { status: 'converted' },
+        });
+        return 'already_linked';
+      }
+      await db.cart.update({
+        where: { id: cartId },
+        data: { status: 'merged' },
+      });
+      return 'merged_without_link';
+    }
+
+    const claimed = await db.cart.updateMany({
+      where: { id: cartId, convertedOrderId: null },
+      data: { status: 'converted', convertedOrderId: orderId },
+    });
+    if (claimed.count > 0) return 'linked';
+
+    // Cart already had a different convertedOrderId or raced — mark converted if same order
+    const cart = await db.cart.findUnique({
+      where: { id: cartId },
+      select: { convertedOrderId: true },
+    });
+    if (cart?.convertedOrderId === orderId) {
+      await db.cart.update({
+        where: { id: cartId },
+        data: { status: 'converted' },
+      });
+      return 'already_linked';
+    }
+    await db.cart.update({
+      where: { id: cartId },
+      data: { status: 'merged' },
+    }).catch(() => {});
+    return 'merged_without_link';
+  } catch (err: any) {
+    if (err?.code === 'P2002') {
+      await db.cart.update({
+        where: { id: cartId },
+        data: { status: 'merged' },
+      }).catch(() => {});
+      return 'merged_without_link';
+    }
+    throw err;
+  }
+}
 
 /**
  * Prisma `where` fragment that matches a cart whose linked order is genuinely valid.

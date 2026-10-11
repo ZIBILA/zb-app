@@ -1,5 +1,5 @@
 /**
- * POST /api/webhooks/logistics — Delhivery/Shiprocket Webhook Handler
+ * POST /api/webhooks/logistics — Shiprocket (and legacy carrier) webhook handler
  * 
  * Validates signature, uses webhook_events table for idempotency,
  * updates shipment status, and triggers push notifications.
@@ -7,30 +7,17 @@
  * NOT protected by session auth — uses signature validation.
  */
 
+import crypto from 'crypto';
 import { NextResponse, NextRequest } from 'next/server';
-import * as crypto from 'crypto';
 import prisma from '@/lib/db';
 import { validateWebhookSignature, resolveWebhookSecret } from '@/lib/services/logistics';
+import { delhiveryRawStatus, normalizeCarrierStatus, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
 
 export const dynamic = 'force-dynamic';
 
-// Status mapping from logistics partner status codes to our internal status
-const STATUS_MAP: Record<string, string> = {
-  // Shiprocket
-  '1': 'confirmed', '2': 'packed', '3': 'packed', '4': 'shipped',
-  '5': 'shipped', '6': 'out_for_delivery', '7': 'delivered',
-  '8': 'cancelled', '9': 'rto',
-  // Generic
-  'confirmed': 'confirmed', 'picked_up': 'shipped', 'packed': 'packed',
-  'in_transit': 'shipped', 'shipped': 'shipped', 'out_for_delivery': 'out_for_delivery',
-  'delivered': 'delivered', 'cancelled': 'cancelled', 'returned': 'rto', 'failed': 'failed',
-  // Delhivery
-  'Manifested': 'confirmed', 'In Transit': 'shipped', 'Dispatched': 'shipped',
-  'Out for Delivery': 'out_for_delivery', 'Delivered': 'delivered', 'RTO': 'rto',
-};
-
 function normalizeStatus(rawStatus: string): string {
-  return STATUS_MAP[rawStatus] || rawStatus.toLowerCase().replace(/\s+/g, '_');
+  const canonical = normalizeCarrierStatus(rawStatus);
+  return canonical !== 'unknown' ? canonical : rawStatus.toLowerCase().replace(/\s+/g, '_');
 }
 
 interface ShipmentDetail {
@@ -62,6 +49,20 @@ interface ShipmentDetail {
   };
   estimated_delivery?: string;
   etd?: string;
+  // Shiprocket webhook fields
+  current_timestamp?: string;
+  current_status_id?: number | string;
+  shipment_status_id?: number | string;
+  courier_name?: string;
+  is_return?: number | string | boolean;
+  scans?: Array<{
+    date?: string;
+    activity?: string;
+    location?: string;
+    'sr-status'?: string | number;
+    'sr-status-label'?: string;
+    status?: string;
+  }>;
 }
 
 interface WebhookPayload extends ShipmentDetail {
@@ -69,9 +70,8 @@ interface WebhookPayload extends ShipmentDetail {
 }
 
 /**
- * Logs a webhook event to the webhook_logs table for audit/debugging.
- * Uses raw SQL since the table is not modeled in Prisma.
- * Silently catches errors if the table doesn't exist yet.
+ * Persist logistics webhook for audit via existing WebhookEvent model
+ * (replaces missing raw `webhook_logs` table that spammed production logs).
  */
 async function logToWebhookLogs(
   source: string,
@@ -79,18 +79,30 @@ async function logToWebhookLogs(
   status: string
 ): Promise<void> {
   try {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO "webhook_logs" ("id", "source", "payload", "status", "created_at") VALUES ($1, $2, $3, $4, NOW())`,
-      crypto.randomUUID(),
-      source,
-      payload.substring(0, 10000),
-      status
-    );
+    await prisma.webhookEvent.create({
+      data: {
+        source,
+        eventType: `logistics.${status}`,
+        payload: payload.substring(0, 10000),
+        processed: status === 'processed' || status === 'success',
+        processedAt: status === 'processed' || status === 'success' ? new Date() : null,
+      },
+    });
   } catch (err) {
-    // webhook_logs table may not exist yet — log warning but don't fail the webhook
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.warn('[Webhook] Could not write to webhook_logs:', errMsg.substring(0, 150));
+    // Non-fatal — never fail the webhook over audit logging
+    if (process.env.NODE_ENV !== 'production') {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn('[Webhook] Could not write WebhookEvent:', errMsg.substring(0, 150));
+    }
   }
+}
+
+/** Constant-time comparison of a presented token (optionally Bearer/Token-prefixed) with the secret. */
+function tokenMatchesSecret(presented: string, secret: string): boolean {
+  const clean = presented.replace(/^Bearer\s+/i, '').replace(/^Token\s+/i, '').trim();
+  const a = crypto.createHash('sha256').update(clean).digest();
+  const b = crypto.createHash('sha256').update(secret.trim()).digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 export async function POST(req: NextRequest) {
@@ -101,52 +113,47 @@ export async function POST(req: NextRequest) {
     let earlyPayload: { Shipment?: unknown } | null = null;
     try { earlyPayload = JSON.parse(rawBody) as { Shipment?: unknown }; } catch {}
 
-    // Detect provider: Delhivery sends x-delhivery-signature or nested Shipment object
-    const isDelhivery =
-      !!req.headers.get('x-delhivery-signature') ||
-      !!earlyPayload?.Shipment;
+    const provider = 'shiprocket';
 
-    const provider = isDelhivery ? 'delhivery' : 'generic';
+    // Shiprocket sends the configured token verbatim in `x-api-key`. HMAC-style signatures are
+    // still accepted for other / legacy carriers.
+    const candidates = [
+      req.headers.get('x-api-key'),
+      req.headers.get('authorization'),
+      req.headers.get('x-shiprocket-token'),
+      req.headers.get('x-webhook-signature'),
+      req.headers.get('x-shiprocket-signature'),
+    ]
+      .map((v) => (v || '').trim())
+      .filter(Boolean);
 
-    // Signature precedence: for Delhivery, x-delhivery-signature MUST take priority
-    // over stray authorization header
-    const signature = (isDelhivery
-      ? (req.headers.get('x-delhivery-signature') ||
-         req.headers.get('x-webhook-signature') ||
-         req.headers.get('authorization') || '')
-      : (req.headers.get('authorization') ||
-         req.headers.get('x-webhook-signature') ||
-         req.headers.get('x-shiprocket-signature') ||
-         req.headers.get('x-delhivery-signature') || '')).trim();
-
-    // Validate webhook signature using the unified secret resolver
     const { secret, source } = await resolveWebhookSecret();
-    const mode = (process.env.DELHIVERY_WEBHOOK_MODE || 'token').trim().toLowerCase();
 
     const ip =
       req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
       req.headers.get('x-real-ip') ||
       '127.0.0.1';
 
-    if (secret && signature) {
-      const isValid = validateWebhookSignature(rawBody, signature, secret, provider);
-      if (!isValid) {
-        const secretTail = secret ? secret.slice(-4) : '';
-        const sigHead = signature ? signature.slice(0, 12) : '';
-        console.warn(`[Webhook] Signature mismatch. provider=${provider}, mode=${mode}, source=${source}, secret tail=****${secretTail}, token head=${sigHead}..., rawBody length=${rawBody.length}`);
-        
-        const debugPayload = `Provider: ${provider} | Mode: ${mode} | Secret source: ${source} | Secret tail: ****${secretTail} | Received token head: ${sigHead}... | IP: ${ip} | RawBody length: ${rawBody.length}`;
-        await logToWebhookLogs('delhivery', debugPayload, 'unauthorized_signature_mismatch');
-        return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 });
-      }
-    } else if (!signature && secret) {
-      // Secret configured but no signature sent — reject
-      const secretTail = secret ? secret.slice(-4) : '';
-      console.warn(`[Webhook] No signature provided from IP ${ip} at ${new Date().toISOString()} but webhook secret is configured. provider=${provider}, mode=${mode}, source=${source}, secret tail=****${secretTail}, rawBody length=${rawBody.length}`);
-      
-      const debugPayload = `Provider: ${provider} | Mode: ${mode} | Secret source: ${source} | Secret tail: ****${secretTail} | IP: ${ip} | RawBody length: ${rawBody.length}`;
-      await logToWebhookLogs('delhivery', debugPayload, 'unauthorized_missing_signature');
-      return NextResponse.json({ error: 'Missing webhook signature' }, { status: 401 });
+    // Fail closed: a webhook that can change order / return state must never run unauthenticated.
+    if (!secret) {
+      console.error(`[Webhook] Logistics webhook rejected from ${ip}: no webhook secret configured (set SHIPROCKET_WEBHOOK_SECRET).`);
+      await logToWebhookLogs('shiprocket', `No webhook secret configured | IP: ${ip}`, 'rejected_no_secret');
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 503 });
+    }
+
+    if (candidates.length === 0) {
+      console.warn(`[Webhook] No credential provided from IP ${ip} at ${new Date().toISOString()}. source=${source}`);
+      await logToWebhookLogs('shiprocket', `Missing credential | IP: ${ip} | RawBody length: ${rawBody.length}`, 'unauthorized_missing_signature');
+      return NextResponse.json({ error: 'Missing webhook credential' }, { status: 401 });
+    }
+
+    const authenticated = candidates.some(
+      (c) => tokenMatchesSecret(c, secret) || validateWebhookSignature(rawBody, c, secret, provider)
+    );
+    if (!authenticated) {
+      console.warn(`[Webhook] Credential mismatch. provider=${provider}, source=${source}, IP=${ip}, rawBody length=${rawBody.length}`);
+      await logToWebhookLogs('shiprocket', `Credential mismatch | Secret source: ${source} | IP: ${ip} | RawBody length: ${rawBody.length}`, 'unauthorized_signature_mismatch');
+      return NextResponse.json({ error: 'Invalid webhook credential' }, { status: 401 });
     }
 
     // Parse the payload
@@ -173,11 +180,28 @@ export async function POST(req: NextRequest) {
 
     // Handle nested Status structure from default payload
     if (shipmentData.Status) {
-      rawStatus = rawStatus || shipmentData.Status.Status || shipmentData.Status.StatusType;
+      rawStatus =
+        rawStatus ||
+        delhiveryRawStatus(shipmentData.Status.Status, shipmentData.Status.StatusType) ||
+        shipmentData.Status.StatusType;
       timestamp = timestamp || shipmentData.Status.StatusDateTime || shipmentData.Status.PickUpDate;
       location = location || shipmentData.Status.StatusLocation || '';
       description = description || shipmentData.Status.Instructions || '';
     }
+
+    // Shiprocket: numeric status id when the text is missing; ISO-ish timestamp field name differs.
+    // Only `shipment_status_id` is in the id space we map. `current_status_id` is a different
+    // (tracking-level) numbering and would be misread, so it is never used as a fallback.
+    rawStatus = rawStatus ||
+      (shipmentData.shipment_status_id !== undefined ? String(shipmentData.shipment_status_id) : undefined);
+    timestamp = timestamp || shipmentData.current_timestamp;
+    const scanEvents = (shipmentData.scans || []).map((sc) => ({
+      status: sc.activity || sc['sr-status-label'] || sc.status || '',
+      location: sc.location || '',
+      timestamp: sc.date || '',
+      description: sc.activity || sc['sr-status-label'] || '',
+    }));
+    if (!location && scanEvents.length > 0) location = scanEvents[scanEvents.length - 1].location;
 
     timestamp = timestamp || new Date().toISOString();
     const estimatedDelivery = shipmentData.estimated_delivery || shipmentData.etd || null;
@@ -217,16 +241,22 @@ export async function POST(req: NextRequest) {
 
     // FIX 2: Expanded AWB field lookup — check trackingNumber and awb on Shipment,
     // plus delhivery_awb on the related Order, to handle AWBs stored under any column.
-    const shipment = await prisma.shipment.findFirst({
-      where: {
-        OR: [
-          { trackingNumber },
-          { awb: trackingNumber },
-          { order: { delhivery_awb: trackingNumber } },
-        ],
-      },
-      include: { order: { include: { customer: true } } },
+    const includeOrder = { order: { include: { customer: true } } } as const;
+    let shipment = await prisma.shipment.findFirst({
+      where: { OR: [{ awb: trackingNumber }, { trackingNumber }] },
+      include: includeOrder,
     });
+    if (!shipment) {
+      // Legacy: AWB stored only on the order. Never resolve to a return / exchange pickup.
+      shipment = await prisma.shipment.findFirst({
+        where: {
+          order: { delhivery_awb: trackingNumber },
+          NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
+        },
+        orderBy: { createdAt: 'desc' },
+        include: includeOrder,
+      });
+    }
 
     // FIX 1: Graceful handling for unknown AWBs — return 200 instead of 404
     if (!shipment) {
@@ -237,20 +267,18 @@ export async function POST(req: NextRequest) {
         data: { processed: true, processedAt: new Date() },
       });
       // Log to webhook_logs with skipped status
-      await logToWebhookLogs('delhivery', rawBody, 'skipped_unknown_awb');
+      await logToWebhookLogs('shiprocket', rawBody, 'skipped_unknown_awb');
       return NextResponse.json({ success: true, message: 'AWB not tracked' }, { status: 200 });
     }
 
-    // Use central tracking helper to update shipment, order, and reverse requests
-    const { updateOrderTracking } = await import('@/lib/delhivery/tracking');
-    await updateOrderTracking({
-      awb: trackingNumber,
-      shopifyOrderId: shipmentData.ReferenceNo || '',
-      status: rawStatus,
-      statusDateTime: timestamp,
-      statusType: description,
+    // Central status update (order + reverse request side-effects)
+    const { applyShipmentStatusUpdate } = await import('@/lib/services/shipmentStatusService');
+    await applyShipmentStatusUpdate({
+      shipmentId: shipment.id,
+      rawStatus,
       location,
-      instructions: description,
+      estimatedDelivery: estimatedDelivery || null,
+      events: scanEvents,
     });
 
     // Mark event processed
@@ -260,25 +288,12 @@ export async function POST(req: NextRequest) {
     });
 
     // Log successful processing to webhook_logs
-    await logToWebhookLogs('delhivery', rawBody, 'processed');
+    await logToWebhookLogs('shiprocket', rawBody, 'processed');
 
     console.log(`[Webhook] ✅ Processed tracking update for AWB ${trackingNumber} → ${normalizedStatus}`);
 
-    // SKU lifecycle tracking: restore SKUs when RTO is detected
-    if (normalizedStatus === 'rto' && shipment) {
-      try {
-        const { restoreOrderSkus } = await import('@/lib/services/skuService');
-        const restoredCount = await restoreOrderSkus(shipment.orderId, 'RTO_RESTORE', 'System (Delhivery RTO)');
-        if (restoredCount > 0) {
-          console.log(`[Webhook] Restored ${restoredCount} SKU(s) for RTO order ${shipment.orderId}`);
-        }
-
-        const { reverseReferral } = await import('@/lib/affiliate/earnings');
-        await reverseReferral(shipment.orderId, 'delhivery_rto');
-      } catch (skuErr) {
-        console.error(`[Webhook] SKU restoration / affiliate reversal on RTO failed:`, skuErr);
-      }
-    }
+    // RTO side effects (SKU restore, affiliate reversal, RTO tag) are applied centrally
+    // by applyShipmentStatusUpdate.
 
     return NextResponse.json({
       success: true,

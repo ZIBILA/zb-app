@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,12 +68,11 @@ function paymentStatusFromOrder(order: any): 'pending' | 'paid' | 'failed' {
 
 function trackingFromOrder(order: any) {
   const shipments = Array.isArray(order.shipments) ? order.shipments : [];
-  const latest = shipments
-    .slice()
-    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  if (!latest?.awb && !latest?.trackingNumber) return null;
+  // Outbound parcel only — never a return / exchange pickup.
+  const latest: any = pickActiveOutboundShipment(shipments);
+  if (!latest || !shipmentAwb(latest)) return null;
   return {
-    awb: latest.awb || latest.trackingNumber || null,
+    awb: shipmentAwb(latest),
     carrier: latest.courier || null,
     lastLocation: latest.currentLocation || null,
     estimatedDelivery: latest.estimatedDelivery ? new Date(latest.estimatedDelivery).toISOString() : null,

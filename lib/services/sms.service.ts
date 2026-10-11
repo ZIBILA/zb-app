@@ -10,6 +10,15 @@ function getTwilioClient(sid?: string | null, token?: string | null) {
   return null;
 }
 
+function normalizeE164(to: string): string | null {
+  let formatted = String(to || '').trim().replace(/[\s\-\(\)]/g, '');
+  if (!formatted) return null;
+  if (!formatted.startsWith('+')) formatted = '+' + formatted.replace(/\D/g, '');
+  // E.164: + then 8–15 digits
+  if (!/^\+[1-9]\d{7,14}$/.test(formatted)) return null;
+  return formatted;
+}
+
 export const SmsService = {
   /**
    * Sends an SMS message via Twilio.
@@ -44,14 +53,10 @@ export const SmsService = {
     }
 
     try {
-      // Normalize phone number
-      let formattedPhone = to.trim();
-      formattedPhone = formattedPhone.replace(/[\s\-\(\)]/g, '');
-      if (!formattedPhone.startsWith('+')) {
-        formattedPhone = '+' + formattedPhone.replace(/\D/g, '');
+      const formattedPhone = normalizeE164(to);
+      if (!formattedPhone) {
+        throw new Error(`Invalid phone number for SMS: ${String(to).slice(0, 20)}`);
       }
-
-      console.log(`[SmsService] Attempting to send SMS to ${formattedPhone.slice(0, 4)}****${formattedPhone.slice(-4)}`);
 
       const messageOptions: any = {
         body,
@@ -67,12 +72,11 @@ export const SmsService = {
       }
 
       const response = await activeClient.messages.create(messageOptions);
-      console.log(`[SmsService] SMS sent successfully. SID: ${response.sid}`);
       return response;
     } catch (error: any) {
-      console.error('[SmsService] Twilio SMS error detail:', error);
+      const code = error?.code || error?.status || 'unknown';
+      console.warn(`[SmsService] Twilio SMS error [code=${code}]: ${error?.message || error}`);
       if (process.env.NODE_ENV === 'development') {
-        console.log(`[DEV FALLBACK] SMS to ${to}: ${body}`);
         return { sid: 'mock_sid' };
       }
       throw new Error(`Failed to send SMS: ${error.message}`);
@@ -91,17 +95,20 @@ export const SmsService = {
     }
 
     try {
-      let formattedPhone = to.trim().replace(/[\s\-\(\)]/g, '');
-      if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone.replace(/\D/g, '');
+      const formattedPhone = normalizeE164(to);
+      if (!formattedPhone) {
+        console.warn('[SmsService] Invalid phone for Verify send — skipping');
+        return null;
+      }
 
       const verification = await activeClient.verify.v2.services(serviceSid)
         .verifications
         .create({ to: formattedPhone, channel: 'sms' });
-      
-      console.log(`[SmsService] Verify OTP sent to ${formattedPhone}. SID: ${verification.sid}`);
+
       return verification;
     } catch (error: any) {
-      console.error('[SmsService] Twilio Verify send error:', error);
+      const code = error?.code || error?.status || 'unknown';
+      console.warn(`[SmsService] Twilio Verify send error [code=${code}]: ${error?.message || error}`);
       throw error;
     }
   },
@@ -115,24 +122,19 @@ export const SmsService = {
     if (!activeClient || !serviceSid) return null;
 
     try {
-      let formattedPhone = to.trim().replace(/[\s\-\(\)]/g, '');
-      if (!formattedPhone.startsWith('+')) formattedPhone = '+' + formattedPhone.replace(/\D/g, '');
+      const formattedPhone = normalizeE164(to);
+      if (!formattedPhone) return false;
 
       const check = await activeClient.verify.v2.services(serviceSid)
         .verificationChecks
         .create({ to: formattedPhone, code });
-      
-      console.log(`[SmsService] Verify OTP check for ${formattedPhone}: status=${check.status}, valid=${check.valid}`);
+
       return check.status === 'approved';
     } catch (error: any) {
-      // Log detailed error info for debugging — Twilio error codes:
-      // 20404: Verification not found (expired or already consumed)
-      // 60200: Invalid parameter (bad phone format or missing verification)
-      // 60202: Max check attempts reached
-      // 60203: Max send attempts reached
+      // 20404: expired/consumed — expected user path, keep quiet
       const twilioCode = error.code || error.status || 'unknown';
-      const twilioMsg = error.message || 'No message';
-      console.error(`[SmsService] Twilio Verify check error [code=${twilioCode}]: ${twilioMsg} (phone=${to})`);
+      if (twilioCode === 20404 || twilioCode === '20404') return false;
+      console.warn(`[SmsService] Twilio Verify check error [code=${twilioCode}]: ${error.message || 'No message'}`);
       return false;
     }
   }

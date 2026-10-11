@@ -1,27 +1,30 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { createRefund } from '@/lib/shopify-admin';
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { enrichSingleItem, enrichItemsWithSize } from '@/lib/enrichSize';
+import { liveReverseFields } from '@/lib/services/reverseShipmentExtras';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * PATCH /api/admin/returns/[id]
- * Update return request status with full workflow support:
- *   REQUESTED → APPROVED → RECEIVED → REFUNDED
- *   REQUESTED → REJECTED
+ * Update return request workflow status (e.g. mark RECEIVED).
+ * This endpoint never moves money: refunds / store credit go through
+ * POST /api/admin/refunds/[id]/approve.
  */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
-    const body = await req.json();
-    const { status, refundAmount, refundMethod } = body;
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+
+    const body = await req.json().catch(() => ({}));
+    const { status } = body;
     const returnRequestId = params.id;
 
     const validStatuses = ['APPROVED', 'REJECTED', 'RECEIVED', 'REFUNDED', 'PICKUP_SCHEDULED', 'REFUND_PENDING'];
-    const lowerStatus = status.toLowerCase(); // keep request level status lowercase
-    if (!status || !validStatuses.includes(status.toUpperCase())) {
+    if (!status || typeof status !== 'string' || !validStatuses.includes(status.toUpperCase())) {
       return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
     }
+    const lowerStatus = status.toLowerCase(); // keep request level status lowercase
 
     const returnRequest = await prisma.returnRequest.findUnique({
       where: { id: returnRequestId },
@@ -35,81 +38,39 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: 'Return request not found' }, { status: 404 });
     }
 
-    const updateData: any = { status: lowerStatus };
-    const returnItemUpdateData: any = { status: status.toUpperCase() };
+    const currentRequestStatus = String(returnRequest.status || '').toLowerCase();
+    const alreadyReceived =
+      !!returnRequest.receivedAt || ['received', 'qc_passed', 'refunded'].includes(currentRequestStatus);
 
-    if (lowerStatus === 'refunded') {
-      const actualRefundAmount = refundAmount || returnRequest.actualRefund || returnRequest.estimatedRefund;
-      updateData.actualRefund = actualRefundAmount;
-      returnItemUpdateData.refundStatus = 'COMPLETED';
-      returnItemUpdateData.refundAmount = actualRefundAmount;
+    if (['refunded', 'refund_pending'].includes(currentRequestStatus)) {
+      return NextResponse.json(
+        { error: `This request is already "${currentRequestStatus}" and can no longer be changed here.` },
+        { status: 409 }
+      );
+    }
 
-      // Check if refund needs to go to Razorpay (original method)
-      const isOriginalMethod = returnRequest.returns.some((r: any) => r.refundMethod === 'original_method') || 
-                               !returnRequest.returns.some((r: any) => r.storeCreditAmount && r.storeCreditAmount > 0);
-
-      if (isOriginalMethod && actualRefundAmount > 0) {
-        const order = returnRequest.order;
-        const paymentId = order.razorpayPaymentId;
-        
-        if (paymentId) {
-          try {
-            console.log(`[AdminRefund] Initiating Razorpay refund of ₹${actualRefundAmount} for payment ${paymentId}`);
-            
-            const isMock = paymentId.startsWith('pay_mock_') || 
-                           (order.razorpayOrderId && order.razorpayOrderId.startsWith('order_mock_'));
-            
-            if (isMock) {
-              console.warn(`[AdminRefund] Processing MOCK refund for mock payment ${paymentId}`);
-              await prisma.payment.create({
-                data: {
-                  orderId: order.id,
-                  customerId: order.customerId,
-                  amount: actualRefundAmount,
-                  type: 'refund',
-                  status: 'completed',
-                  gateway: 'razorpay'
-                }
-              });
-            } else {
-              const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
-              const Razorpay = (await import('razorpay')).default;
-              const creds = await resolveRazorpayCredentials();
-              const razorpayInstance = new Razorpay({ key_id: creds.key_id, key_secret: creds.key_secret });
-              
-              const amountInPaise = Math.round(actualRefundAmount * 100);
-              const refund = await razorpayInstance.payments.refund(paymentId, {
-                amount: amountInPaise,
-                notes: {
-                  returnRequestId: returnRequest.id,
-                  orderId: order.id,
-                  reason: 'Customer Return'
-                }
-              });
-              
-              console.log(`[AdminRefund] Razorpay refund successful! Refund ID: ${refund.id}`);
-              
-              await prisma.payment.create({
-                data: {
-                  orderId: order.id,
-                  customerId: order.customerId,
-                  amount: actualRefundAmount,
-                  type: 'refund',
-                  status: 'completed',
-                  gateway: 'razorpay'
-                }
-              });
-            }
-          } catch (refundErr: any) {
-            console.error(`[AdminRefund] Razorpay refund failed:`, refundErr);
-            const errMsg = refundErr?.error?.description || refundErr?.message || 'Unknown error';
-            return NextResponse.json({ error: `Refund failed on Razorpay: ${errMsg}. Please check credentials or transaction status.` }, { status: 500 });
-          }
-        } else {
-          console.warn(`[AdminRefund] Return request ${returnRequestId} wants original method refund but order has no razorpayPaymentId.`);
-        }
+    // State machine guards — the customer's money is only released after we hold the parcel.
+    if (lowerStatus === 'received') {
+      const receivable = ['approved', 'in_transit', 'delivered_to_warehouse', 'approved_pickup_failed', 'pickup_scheduled'];
+      if (!receivable.includes(currentRequestStatus) && !alreadyReceived) {
+        return NextResponse.json(
+          { error: `A request that is "${currentRequestStatus}" cannot be marked as received. Accept it first.` },
+          { status: 400 }
+        );
       }
     }
+    // Money movement is NOT allowed through this generic status endpoint. Refunds and store credit
+    // are released only through POST /api/admin/refunds/[id]/approve, which is atomic and idempotent.
+    if (lowerStatus === 'refund_pending' || lowerStatus === 'refunded') {
+      return NextResponse.json(
+        { error: 'Refunds cannot be set from here. Use "Release Refund" / "Release Store Credit" so the money movement is recorded safely.' },
+        { status: 400 }
+      );
+    }
+
+    const updateData: any = { status: lowerStatus };
+    if (lowerStatus === 'received' && !returnRequest.receivedAt) updateData.receivedAt = new Date();
+    const returnItemUpdateData: any = { status: status.toUpperCase() };
 
     const updatedReturnRequest = await prisma.$transaction(async (tx: any) => {
       // 1. Update the ReturnRequest
@@ -128,40 +89,6 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return reqUpdate;
     });
 
-    // When marked REFUNDED, create a Shopify refund for the relevant line items
-    if (lowerStatus === 'refunded') {
-      try {
-        const orderId = returnRequest.order.shopifyOrderId;
-        const refundLineItems: any[] = [];
-        
-        for (const item of returnRequest.returns) {
-           const matchingLineItem = returnRequest.order.items.find(
-             (oi: any) => oi.sku === item.sku || oi.productId === item.productId
-           );
-           
-           if (matchingLineItem?.shopifyLineItemId) {
-              refundLineItems.push({
-                line_item_id: parseInt(matchingLineItem.shopifyLineItemId, 10),
-                quantity: item.quantity || 1,
-                restock_type: 'return',
-              });
-           }
-        }
-
-        if (refundLineItems.length > 0) {
-          await createRefund(
-            orderId,
-            refundLineItems,
-            `Return completed: ${returnRequest.reason}`
-          );
-          console.log(`✅ Shopify refund created for order ${orderId}`);
-        }
-      } catch (refundError: any) {
-        console.error('⚠️ Shopify Refund Error:', refundError.message);
-        // We log but don't fail the request since local DB is updated
-      }
-    }
-
     // SKU lifecycle tracking: restore SKUs when items are physically received back
     if (lowerStatus === 'received') {
       try {
@@ -176,22 +103,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       }
     }
 
-    // SKU lifecycle tracking: if marked REFUNDED but SKUs haven't been restocked yet, do it now
-    if (lowerStatus === 'refunded') {
-      try {
-        const { restoreSkuToStock } = await import('@/lib/services/skuService');
-        for (const ret of returnRequest.returns) {
-          if (ret.sku) {
-            await restoreSkuToStock(ret.sku, 'RETURN_RESTOCK', 'Admin (Return Refunded)');
-          }
-        }
-      } catch (skuErr) {
-        console.error('[Return PATCH] SKU restoration on refunded failed:', skuErr);
-      }
-    }
-
     return NextResponse.json({ success: true, returnRequest: updatedReturnRequest }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Admin Return API Error:', error);
     return NextResponse.json({ error: 'Failed to update return request' }, { status: 500 });
   }
@@ -203,13 +119,30 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
  */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
     const returnRequest = await prisma.returnRequest.findUnique({
       where: { id: params.id },
       include: {
         returns: {
           include: { product: true }
         },
-        order: { include: { items: true, customer: true } },
+        order: {
+          include: {
+            items: true,
+            customer: true,
+            shipments: {
+              select: {
+                awb: true,
+                trackingNumber: true,
+                status: true,
+                currentLocation: true,
+                estimatedDelivery: true,
+                courier: true,
+                trackingUrl: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -289,16 +222,27 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       ? await enrichItemsWithSize(returnRequest.order.items)
       : [];
 
+    const live = liveReverseFields({
+      requestStatus: returnRequest.status,
+      receivedAt: returnRequest.receivedAt,
+      reverseAwb: returnRequest.reverseAwb,
+      shipments: returnRequest.order?.shipments,
+    });
+
     return NextResponse.json({
       return: {
         ...returnRequest,
         returns: enrichedReturns,
         order: returnRequest.order
           ? { ...returnRequest.order, items: enrichedOrderItems }
-          : null
+          : null,
+        ...live,
       }
     }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Return Detail API Error:', error.message);
     return NextResponse.json({ error: 'Failed to fetch return' }, { status: 500 });
   }

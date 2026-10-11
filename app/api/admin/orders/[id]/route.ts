@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { fetchProductById } from '@/lib/shopify-admin';
 import { extractItemVariantAndSize } from '@/lib/utils';
 import { enrichItemsWithSize, extractSize } from '@/lib/enrichSize';
+import { isRenderDevEnv } from '@/lib/isRenderDevEnv';
 
 /**
  * Resolve the variant-specific inventory_item_id for a product_skus record.
@@ -102,7 +103,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           });
           if (syncedOrder) {
             const enrichedSyncedItems = await enrichItemsWithSize(syncedOrder.items);
-            return NextResponse.json({ success: true, order: { ...syncedOrder, items: enrichedSyncedItems } });
+            return NextResponse.json({
+              success: true,
+              order: { ...syncedOrder, items: enrichedSyncedItems },
+              testToolsEnabled: isRenderDevEnv(),
+            });
           }
         }
 
@@ -174,7 +179,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
           mappedOrder.totalPrice = mobSubtotal - mobDiscount;
         }
         
-        return NextResponse.json({ success: true, order: mappedOrder });
+        return NextResponse.json({
+          success: true,
+          order: mappedOrder,
+          testToolsEnabled: isRenderDevEnv(),
+        });
       }
     }
 
@@ -219,24 +228,57 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       resolvedDiscountAmount = 0;
     }
 
-    let resolvedCodUpfrontPaid = webStoreOrder?.codUpfrontPaid
-      ? Number(webStoreOrder.codUpfrontPaid)
-      : Number((order as any).codUpfrontPaid) || 0;
-    if (isCodOrder && resolvedCodUpfrontPaid === 0) {
-      const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
-      resolvedCodUpfrontPaid = resolveStoredCodUpfrontPaid({
-        storedPaid: 0,
-        paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
-        paymentMethod: order.paymentMethod,
-        tags: order.tags,
-        note: order.note,
-        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-      });
-    }
+    const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+    const resolvedCodUpfrontPaid = isCodOrder
+      ? resolveStoredCodUpfrontPaid({
+          storedPaid:
+            Number(webStoreOrder?.codUpfrontPaid) ||
+            Number((order as any).codUpfrontPaid) ||
+            0,
+          paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
+          paymentMethod: order.paymentMethod,
+          tags: order.tags,
+          note: order.note,
+          paymentId:
+            webStoreOrder?.codUpfrontPaymentId ||
+            webStoreOrder?.razorpayPaymentId ||
+            order.codUpfrontPaymentId ||
+            order.razorpayPaymentId ||
+            null,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        })
+      : 0;
+
+    const baseStatus = String(webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
+    const codSettled =
+      isCodOrder &&
+      String(order.deliveryStatus || '').toLowerCase() === 'delivered' &&
+      ['paid', 'cod_upfront_paid', 'partially_paid', 'pending', 'payment_pending'].includes(baseStatus);
+
+    // Linked return / exchange requests (R_ / E_ / G_E_ ids) for traceability
+    const [linkedReturns, linkedExchanges, replacementOf] = await Promise.all([
+      prisma.returnRequest.findMany({
+        where: { orderId: order.id },
+        select: { id: true, displayId: true, status: true, reverseAwb: true, logisticsPartner: true, receivedAt: true, createdAt: true, reason: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.exchangeRequest.findMany({
+        where: { orderId: order.id },
+        select: { id: true, displayId: true, replacementDisplayId: true, replacementOrderId: true, status: true, reverseAwb: true, logisticsPartner: true, receivedAt: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.exchangeRequest.findFirst({
+        where: { replacementOrderId: order.id },
+        select: { id: true, displayId: true, orderId: true, order: { select: { id: true, internalOrderNumber: true, shopifyOrderName: true, shopifyOrderId: true } } },
+      }),
+    ]);
 
     // Enrich the order payload with correct webstore fields if available
     const enrichedOrder = {
       ...order,
+      linkedReturns: linkedReturns.filter((r: any) => !(r.reason || '').includes('EXCHANGE_RETURN')),
+      linkedExchanges,
+      replacementOf,
       items: enrichedItems,
       codUpfrontPaid: resolvedCodUpfrontPaid,
       codUpfrontPaymentId: webStoreOrder?.codUpfrontPaymentId || order.razorpayPaymentId || null,
@@ -246,10 +288,18 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       razorpayOrderId: webStoreOrder?.razorpayOrderId || order.razorpayOrderId || null,
       razorpayPaymentId: webStoreOrder?.razorpayPaymentId || order.razorpayPaymentId || null,
       paymentMethod: finalPaymentMethod,
-      paymentStatus: webStoreOrder?.paymentStatus || (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus),
+      paymentStatus: codSettled
+        ? 'paid'
+        : webStoreOrder?.paymentStatus || (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus),
+      /** COD cash collected by the courier on delivery → fully settled. */
+      codSettled,
     };
 
-    return NextResponse.json({ success: true, order: enrichedOrder });
+    return NextResponse.json({
+      success: true,
+      order: enrichedOrder,
+      testToolsEnabled: isRenderDevEnv(),
+    });
   } catch (error: any) {
     console.error('[Admin Order Detail API] Error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

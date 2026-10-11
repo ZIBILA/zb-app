@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { enrichExchangeItem, enrichItemsWithSize } from '@/lib/enrichSize';
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +11,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
     const exchangeRequest = await prisma.exchangeRequest.findUnique({
       where: { id: params.id },
       include: {
@@ -122,6 +124,28 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         ? await enrichItemsWithSize(exchangeRequest.order.items)
         : [];
 
+      // Outbound AWB of the G_E_ replacement order (NOT the original order's AWB).
+      let replacementForwardAwb: string | null = null;
+      if (exchangeRequest.replacementOrderId) {
+        const repl = await prisma.order.findUnique({
+          where: { id: exchangeRequest.replacementOrderId },
+          select: {
+            delhivery_awb: true,
+            shipments: { where: { type: 'outbound' }, orderBy: { createdAt: 'desc' }, take: 1, select: { awb: true, trackingNumber: true } },
+          },
+        });
+        replacementForwardAwb =
+          repl?.shipments?.[0]?.awb || repl?.shipments?.[0]?.trackingNumber || repl?.delhivery_awb || null;
+      }
+
+      const { liveReverseFields } = await import('@/lib/services/reverseShipmentExtras');
+      const live = liveReverseFields({
+        requestStatus: exchangeRequest.status,
+        receivedAt: exchangeRequest.receivedAt,
+        reverseAwb: exchangeRequest.reverseAwb,
+        shipments: exchangeRequest.order?.shipments,
+      });
+
       return NextResponse.json({
         exchangeRequest: {
           ...exchangeRequest,
@@ -130,9 +154,14 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             ? { ...exchangeRequest.order, items: enrichedOrderItems }
             : null,
           linkedReturn,
+          replacementForwardAwb,
+          ...live,
         }
       }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Exchange Detail API Error:', error.message);
     return NextResponse.json({ error: 'Failed to fetch exchange' }, { status: 500 });
   }
@@ -146,6 +175,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
  */
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
     const body = await req.json();
     const { status, trackingNumber, qcNotes, qcStatus } = body;
     const exchangeId = params.id;
@@ -164,6 +194,22 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     if (!exchangeRequest) {
       return NextResponse.json({ error: 'Exchange request not found' }, { status: 404 });
+    }
+
+    // State-machine guards: these steps have dedicated endpoints that perform the real work
+    // (receipt confirmation, replacement order creation) and must not be skipped.
+    const currentStatus = String(exchangeRequest.status || '').toLowerCase();
+    if (status === 'rejected' || status === 'approved') {
+      return NextResponse.json({ error: `Use the dedicated ${status === 'rejected' ? 'Reject (refunds any online payment)' : 'Approve'} action.` }, { status: 400 });
+    }
+    if (['received', 'qc_passed'].includes(status)) {
+      return NextResponse.json({ error: 'Use "Mark as Received & QC" (receive endpoint) to confirm the parcel.' }, { status: 400 });
+    }
+    if (status === 'new_order_created') {
+      return NextResponse.json({ error: 'Use "Create Replacement Order" — it creates the G_E_ order and its shipment.' }, { status: 400 });
+    }
+    if ((status === 'shipped' || status === 'completed') && !['new_order_created', 'shipped'].includes(currentStatus)) {
+      return NextResponse.json({ error: `Cannot mark "${currentStatus}" exchange as ${status}; the replacement order must be created first.` }, { status: 400 });
     }
 
     // Build update data
@@ -215,6 +261,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     return NextResponse.json({ success: true, exchangeRequest: updatedRequest }, { status: 200 });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Admin Exchange API Error:', error);
     return NextResponse.json({ error: 'Failed to update exchange request' }, { status: 500 });
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -38,9 +38,9 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
-import DelhiveryActions from "@/components/orders/DelhiveryActions";
 import ShiprocketActions from "@/components/orders/ShiprocketActions";
 import LineItemEditor from "@/components/orders/LineItemEditor";
+import { carrierStatusLabel, isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 
@@ -127,6 +127,8 @@ const STATUS_THEME: Record<string, { label: string; color: string; bg: string; d
   unfulfilled: { label: "Draft", color: "text-foreground/40", bg: "bg-foreground/5", dot: "bg-foreground/20" },
   delivered: { label: "Arrived", color: "text-emerald-500", bg: "bg-emerald-500/10", dot: "bg-emerald-500" },
   cancelled: { label: "Cancelled", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  cancellation_requested: { label: "Cancellation Requested", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
+  'cancellation requested': { label: "Cancellation Requested", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   payment_failed: { label: "Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   failed: { label: "Failed", color: "text-rose-500", bg: "bg-rose-500/10", dot: "bg-rose-500" },
   payment_pending: { label: "Unpaid", color: "text-amber-500", bg: "bg-amber-500/10", dot: "bg-amber-500" },
@@ -169,10 +171,13 @@ export default function OrderDetailPage() {
   const { data: session } = useSession();
 
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [testToolsEnabled, setTestToolsEnabled] = useState(false);
+  const [markingDelivered, setMarkingDelivered] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [logisticsSyncing, setLogisticsSyncing] = useState(false);
+  const logisticsSyncedForOrderRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [delhiveryLoading, setDelhiveryLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -195,8 +200,10 @@ export default function OrderDetailPage() {
     try {
       const res = await fetch(`/api/admin/orders/${id}`);
       const data = await res.json();
-      if (data.success) setOrder(data.order);
-      else setError(data.error);
+      if (data.success) {
+        setOrder(data.order);
+        setTestToolsEnabled(!!data.testToolsEnabled);
+      } else setError(data.error);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -206,8 +213,81 @@ export default function OrderDetailPage() {
   }, [id]);
 
   useEffect(() => {
+    logisticsSyncedForOrderRef.current = null;
     if (id) fetchOrder();
   }, [id, fetchOrder]);
+
+  // Lazy logistics sync: page renders from DB first, then after paint we pull
+  // Shiprocket. While Cancellation Requested, keep polling until exact Cancelled.
+  useEffect(() => {
+    if (loading || !order?.id) return;
+
+    const live = pickActiveOutboundShipment((order.shipments || []) as any[]);
+    const liveCode = normalizeCarrierStatus(live?.status || order.deliveryStatus);
+    const awaitingFinalCancel = liveCode === 'cancellation_requested';
+    const awb = live?.awb || order.delhivery_awb;
+
+    if (!awb && !awaitingFinalCancel) {
+      logisticsSyncedForOrderRef.current = order.id;
+      return;
+    }
+
+    // One-shot sync for normal statuses; poll while void is in progress.
+    if (!awaitingFinalCancel && logisticsSyncedForOrderRef.current === order.id) return;
+
+    let cancelled = false;
+    let idleId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    const runSync = async () => {
+      if (cancelled) return;
+      if (!awaitingFinalCancel) logisticsSyncedForOrderRef.current = order.id;
+      setLogisticsSyncing(true);
+      try {
+        const res = await fetch('/api/logistics/sync-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_id: order.id }),
+        });
+        if (!cancelled && res.ok) await fetchOrder(true);
+      } catch {
+        /* best-effort — manual Sync Status still available */
+      } finally {
+        if (!cancelled) setLogisticsSyncing(false);
+      }
+    };
+
+    const schedule =
+      typeof window !== 'undefined' && 'requestIdleCallback' in window
+        ? () => {
+            idleId = window.requestIdleCallback(() => {
+              void runSync();
+            }, { timeout: 2500 });
+          }
+        : () => {
+            timeoutId = setTimeout(() => {
+              void runSync();
+            }, 0);
+          };
+
+    schedule();
+
+    if (awaitingFinalCancel) {
+      pollId = setInterval(() => {
+        void runSync();
+      }, 15_000);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId != null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId) clearTimeout(timeoutId);
+      if (pollId) clearInterval(pollId);
+    };
+  }, [loading, order, fetchOrder]);
 
   useEffect(() => {
     if (order) {
@@ -332,25 +412,6 @@ export default function OrderDetailPage() {
       throw e;
     } finally {
       setSaving(false);
-      setTimeout(() => setToast(null), 3000);
-    }
-  };
-
-  const handleAction = async (action: string) => {
-    setDelhiveryLoading(true);
-    try {
-      const res = await fetch(`/api/admin/orders/${id}/delhivery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, weight: "500", shippingMode: "Surface" })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setToast("Protocol Executed");
-        fetchOrder(true);
-      }
-    } finally {
-      setDelhiveryLoading(false);
       setTimeout(() => setToast(null), 3000);
     }
   };
@@ -511,8 +572,8 @@ export default function OrderDetailPage() {
                 </div>
               )}
               {(() => {
-                const s = order.shipments?.[0];
-                const awb = s?.trackingNumber || s?.awb || order.delhivery_awb;
+                const s = pickActiveOutboundShipment((order.shipments || []) as any[]) as any;
+                const awb = shipmentAwb(s) || order.delhivery_awb;
                 const courier = s?.courier || (order.delhivery_awb ? 'Delhivery' : 'Courier');
                 const trackUrl = s?.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
                 if (!awb) return null;
@@ -616,9 +677,17 @@ export default function OrderDetailPage() {
               { 
                 label: "Logistics", 
                 key: 'deliveryStatus', 
-                value: isEditing ? editValues.deliveryStatus : (order.status === 'cancelled' ? 'cancelled' : (order.paymentStatus === 'failed' || order.status === 'payment_failed' ? 'failed' : (order.deliveryStatus || 'awaiting'))), 
+                value: isEditing
+                  ? editValues.deliveryStatus
+                  : (order.status === 'cancelled'
+                    ? 'cancelled'
+                    : (order.paymentStatus === 'failed' || order.status === 'payment_failed'
+                      ? 'failed'
+                      : (order.tracking_status?.trim()
+                          || order.deliveryStatus
+                          || 'awaiting'))), 
                 icon: Truck,
-                options: ['awaiting', 'manifested', 'in transit', 'out for delivery', 'delivered']
+                options: ['awaiting', 'manifested', 'in transit', 'out for delivery', 'delivered', 'cancellation_requested', 'cancelled']
               },
               { 
                 label: "Method", 
@@ -805,23 +874,73 @@ export default function OrderDetailPage() {
                   <p className="text-[10px] font-bold text-foreground/40 uppercase tracking-widest">Grand Total</p>
                   <p className="text-4xl font-black text-foreground tracking-tighter italic mb-1">₹{finalGrandTotal.toLocaleString("en-IN")}</p>
                   <p className="text-[11px] text-emerald-400 font-bold uppercase tracking-widest leading-none">
-                    Paid: ₹{(detectPaymentMethod(order) === 'COD' ? codUpfrontAmount : (order.paymentStatus === 'paid' ? finalGrandTotal : 0)).toLocaleString("en-IN")}
+                    Paid: ₹{(detectPaymentMethod(order) === 'COD' ? ((order as any).codSettled ? finalGrandTotal : codUpfrontAmount) : (order.paymentStatus === 'paid' ? finalGrandTotal : 0)).toLocaleString("en-IN")}
                   </p>
                 </div>
                 {detectPaymentMethod(order) === 'COD' && (
-                  <div className="text-right space-y-1">
-                    <p className="text-[10px] font-bold text-amber-400/80 uppercase tracking-widest">Balance Due at Delivery</p>
-                    <p className="text-xl font-bold text-amber-400">₹{Math.max(0, finalGrandTotal - codUpfrontAmount).toLocaleString("en-IN")}</p>
-                  </div>
+                  (order as any).codSettled ? (
+                    <div className="text-right space-y-1">
+                      <p className="text-[10px] font-bold text-emerald-400/80 uppercase tracking-widest">COD Collected on Delivery</p>
+                      <p className="text-xl font-bold text-emerald-400">₹{Math.max(0, finalGrandTotal - codUpfrontAmount).toLocaleString("en-IN")}</p>
+                    </div>
+                  ) : (
+                    <div className="text-right space-y-1">
+                      <p className="text-[10px] font-bold text-amber-400/80 uppercase tracking-widest">Balance Due at Delivery</p>
+                      <p className="text-xl font-bold text-amber-400">₹{Math.max(0, finalGrandTotal - codUpfrontAmount).toLocaleString("en-IN")}</p>
+                    </div>
+                  )
                 )}
               </div>
             </div>
           </div>
 
+          {/* Linked returns / exchanges (R_ / E_ / G_E_) */}
+          {(((order as any).linkedReturns?.length || 0) + ((order as any).linkedExchanges?.length || 0) > 0 || (order as any).replacementOf) && (
+            <div className="p-8 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-4">
+              <h3 className="text-sm font-semibold text-foreground tracking-tight">Linked Returns &amp; Exchanges</h3>
+              {(order as any).replacementOf && (
+                <a
+                  href={`/dashboard/orders/${(order as any).replacementOf.orderId}`}
+                  className="flex items-center justify-between text-[11px] px-4 py-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/5"
+                >
+                  <span className="font-mono font-bold text-emerald-500">Replacement for {(order as any).replacementOf.displayId}</span>
+                  <span className="text-foreground/50 font-mono">
+                    Original {(order as any).replacementOf.order?.internalOrderNumber || (order as any).replacementOf.order?.shopifyOrderName || (order as any).replacementOf.orderId}
+                  </span>
+                </a>
+              )}
+              {((order as any).linkedReturns || []).map((r: any) => (
+                <a key={r.id} href={`/dashboard/returns/${r.id}`} className="flex items-center justify-between text-[11px] px-4 py-3 rounded-2xl border border-amber-500/20 bg-amber-500/5">
+                  <span className="font-mono font-bold text-amber-500">{r.displayId || "Return"}</span>
+                  <span className="text-foreground/60 uppercase tracking-widest text-[9px] font-bold">
+                    {String(r.status || "").replace(/_/g, " ")}{r.reverseAwb ? ` · AWB ${r.reverseAwb}` : ""}
+                  </span>
+                </a>
+              ))}
+              {((order as any).linkedExchanges || []).map((e: any) => (
+                <div key={e.id} className="rounded-2xl border border-blue-500/20 bg-blue-500/5 px-4 py-3 space-y-1">
+                  <a href={`/dashboard/exchanges/${e.id}`} className="flex items-center justify-between text-[11px]">
+                    <span className="font-mono font-bold text-blue-500">{e.displayId || "Exchange"}</span>
+                    <span className="text-foreground/60 uppercase tracking-widest text-[9px] font-bold">
+                      {String(e.status || "").replace(/_/g, " ")}{e.reverseAwb ? ` · AWB ${e.reverseAwb}` : ""}
+                    </span>
+                  </a>
+                  {e.replacementDisplayId && (
+                    <a href={`/dashboard/orders/${e.replacementOrderId || ""}`} className="block text-[10px] font-mono font-bold text-emerald-500">
+                      → {e.replacementDisplayId}
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Logistics Terminal */}
           <div className={`p-10 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-8 ${(order.status === 'cancelled' || order.status === 'payment_failed') ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
             {(() => {
               const allShipments = ((order as any).shipments || []) as Array<{
+                type?: string | null;
+                createdAt?: string | Date | null;
                 status?: string | null;
                 trackingNumber?: string | null;
                 awb?: string | null;
@@ -831,23 +950,29 @@ export default function OrderDetailPage() {
               }>;
               // Prefer a live shipment; never surface AWB/tracking from a cancelled row
               // (that left Logistics showing CANCELLED while the old AWB badge stayed visible).
-              const activeShipment =
-                allShipments.find((s) => (s.status || '').toLowerCase() !== 'cancelled') || null;
-              const logisticsCancelled =
+              // Return/exchange pickups (reverse) are never the order's forward shipment.
+              const activeShipment = pickActiveOutboundShipment(allShipments);
+              const activeCode = normalizeCarrierStatus(activeShipment?.status || order.deliveryStatus);
+              const logisticsFullyCancelled =
                 !activeShipment &&
                 (order.deliveryStatus === 'cancelled' ||
-                  allShipments.some((s) => (s.status || '').toLowerCase() === 'cancelled'));
-              const externalId = activeShipment?.trackingNumber || null;
-              const awb = activeShipment?.awb || null;
-              const courier = logisticsCancelled
+                  allShipments.some(
+                    (s) => !isReverseShipmentType(s.type) && normalizeCarrierStatus(s.status) === 'cancelled'
+                  ));
+              // Only hide AWB when fully Cancelled. Cancellation Requested keeps
+              // the AWB so status sync can continue until Shiprocket says Cancelled.
+              const showAsCancelled = logisticsFullyCancelled || activeCode === 'cancelled';
+              const externalId = showAsCancelled ? null : activeShipment?.trackingNumber || null;
+              const awb = showAsCancelled ? null : activeShipment?.awb || null;
+              const courier = showAsCancelled
                 ? 'Courier Logistics Hub'
-                : activeShipment?.courier || (order.delhivery_awb ? 'Delhivery Logistics' : 'Courier Logistics Hub');
-              const trackingUrl =
-                activeShipment?.trackingUrl ||
-                (awb ? `https://shiprocket.co/tracking/${awb}` : null);
-              // Shiprocket often assigns a *Delhivery* courier (e.g. "Delhivery Surface 5kg").
-              // Never treat courier name alone as native Delhivery — that wrongly swaps in
-              // DelhiveryActions and hides the Shiprocket resume/book flow.
+                : activeShipment?.courier || 'Courier Logistics Hub';
+              const trackingUrl = showAsCancelled
+                ? null
+                : activeShipment?.trackingUrl ||
+                  (awb ? `https://shiprocket.co/tracking/${awb}` : null);
+              // Shiprocket is the only booking path. Courier may still display "Delhivery …"
+              // when Shiprocket assigns that last-mile partner.
               let isShiprocketShipment = false;
               try {
                 const raw = activeShipment?.rawDelhiveryResponse;
@@ -857,22 +982,22 @@ export default function OrderDetailPage() {
                     meta?.provider === 'shiprocket' || Boolean(meta?.shipment_id);
                 }
               } catch { /* ignore */ }
-              if (!isShiprocketShipment && externalId && !awb && !order.delhivery_awb) {
+              if (!isShiprocketShipment && externalId && !awb) {
                 // Preliminary Shiprocket row stores shipment_id as trackingNumber before AWB
                 isShiprocketShipment = true;
               }
-              const isNativeDelhivery =
-                !isShiprocketShipment &&
-                (Boolean(order.delhivery_awb) ||
-                  (Boolean(courier) &&
-                    courier.toLowerCase().includes('delhivery') &&
-                    !String(courier).toLowerCase().includes('shiprocket')));
-              const displayStatus = logisticsCancelled
-                ? 'cancelled'
-                : activeShipment?.status || order.deliveryStatus || 'pending';
+              // Prefer the exact Shiprocket phrase from the last sync/webhook.
+              const displayStatus = (
+                order.tracking_status?.trim() ||
+                (showAsCancelled
+                  ? 'Canceled'
+                  : activeCode === 'cancellation_requested'
+                    ? 'Cancellation Requested'
+                    : carrierStatusLabel(
+                        activeShipment?.status || order.deliveryStatus || 'pending'
+                      ))
+              );
               const awbPending = Boolean(externalId || isShiprocketShipment) && !awb;
-              const showShiprocketActions = !isNativeDelhivery;
-              const showDelhiveryActions = isNativeDelhivery;
 
               return (
                 <>
@@ -883,6 +1008,12 @@ export default function OrderDetailPage() {
                         <Truck className="w-3.5 h-3.5 text-indigo-400" />
                         {courier}
                       </p>
+                      {logisticsSyncing && (
+                        <p className="text-[10px] text-foreground/35 font-medium flex items-center gap-1.5 pt-0.5">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Updating status from Shiprocket…
+                        </p>
+                      )}
                     </div>
                     {(awb || externalId) && (
                       <div className="flex flex-wrap items-center gap-2">
@@ -890,17 +1021,34 @@ export default function OrderDetailPage() {
                           <ScanLine className="w-3.5 h-3.5" />
                           <span>{awb ? `AWB ${awb}` : `SR Order ${externalId}`}</span>
                         </div>
-                        {trackingUrl && awb && (
-                          <a
-                            href={trackingUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-4 py-2 rounded-xl bg-foreground text-background hover:opacity-90 transition-all text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-foreground/5"
+                        {awb && trackingUrl ? (
+                          activeCode === 'cancellation_requested' ? (
+                            <span
+                              className="px-4 py-2 rounded-xl bg-foreground/10 text-foreground/35 text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 cursor-not-allowed opacity-50"
+                              title="Tracking locked while cancellation is in progress"
+                            >
+                              <span>Track Shipment</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </span>
+                          ) : (
+                            <a
+                              href={trackingUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-4 py-2 rounded-xl bg-foreground text-background hover:opacity-90 transition-all text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-foreground/5"
+                            >
+                              <span>Track Shipment</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )
+                        ) : awbPending ? (
+                          <span
+                            className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400/90 text-[11px] font-bold uppercase tracking-wider cursor-default"
+                            title="Shiprocket draft has no courier AWB yet"
                           >
-                            <span>Track Shipment</span>
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        )}
+                            AWB Pending — Not Trackable
+                          </span>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -924,19 +1072,22 @@ export default function OrderDetailPage() {
                       </div>
                       <div className="text-right">
                         <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/40">Delivery Status</p>
-                        <p className={`text-sm font-bold uppercase font-mono ${awbPending ? 'text-amber-400' : 'text-emerald-400'}`}>
+                        <p
+                          className={`text-sm font-bold uppercase font-mono ${
+                            activeCode === 'cancellation_requested' || activeCode === 'cancelled'
+                              ? 'text-rose-400'
+                              : awbPending
+                                ? 'text-amber-400'
+                                : 'text-emerald-400'
+                          }`}
+                        >
                           {displayStatus}
                         </p>
                       </div>
                     </div>
                   )}
 
-                  {showShiprocketActions && (
-                    <ShiprocketActions order={order as any} onRefresh={() => fetchOrder(true)} />
-                  )}
-                  {showDelhiveryActions && (
-                    <DelhiveryActions order={order as any} onRefresh={() => fetchOrder(true)} />
-                  )}
+                  <ShiprocketActions order={order as any} onRefresh={() => fetchOrder(true)} />
                 </>
               );
             })()}
@@ -1165,6 +1316,35 @@ export default function OrderDetailPage() {
               </>
             )}
 
+            {/* Dev/Render only — skip real delivery so return/exchange can be tested */}
+            {testToolsEnabled && (order.deliveryStatus || '').toLowerCase() !== 'delivered' && order.status !== 'cancelled' && (
+              <div className="space-y-2 relative z-10 pb-4 border-b border-dashed border-amber-500/20">
+                <p className="text-[8px] font-bold uppercase tracking-[0.25em] text-amber-500/70">Test tools (NODE_ENV=render)</p>
+                <button
+                  onClick={async () => {
+                    if (!confirm('Mark this order as delivered for testing? No real courier delivery is required.')) return;
+                    setMarkingDelivered(true);
+                    try {
+                      const res = await fetch(`/api/admin/orders/${id}/mark-delivered-test`, { method: 'POST' });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.error || 'Failed');
+                      setToast(data.message || 'Marked delivered for testing');
+                      fetchOrder(true);
+                    } catch (e: any) {
+                      setToast(e.message || 'Failed to mark delivered');
+                    } finally {
+                      setMarkingDelivered(false);
+                    }
+                  }}
+                  disabled={markingDelivered}
+                  className="w-full py-3.5 bg-amber-500/15 border border-amber-500/25 hover:bg-amber-500/25 text-amber-400 disabled:opacity-50 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+                >
+                  {markingDelivered ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
+                  Mark Delivered (Test)
+                </button>
+              </div>
+            )}
+
             {/* Cancel Action Row */}
             {order.status !== 'cancelled' && (
               <div className="space-y-4 relative z-10">
@@ -1254,18 +1434,21 @@ export default function OrderDetailPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const theme = STATUS_THEME[status.toLowerCase()] || { 
-    label: status.replace('_', ' '), 
-    color: "text-foreground/40", 
-    bg: "bg-foreground/5", 
-    dot: "bg-foreground/20" 
-  };
+  const key = status.toLowerCase().trim();
+  const theme = STATUS_THEME[key];
+  // Prefer exact carrier phrase (e.g. "Cancellation Requested") over mapped theme labels.
+  const label = theme && !key.includes(' ')
+    ? theme.label
+    : status.replace(/_/g, ' ');
+  const color = theme?.color || "text-foreground/40";
+  const bg = theme?.bg || "bg-foreground/5";
+  const dot = theme?.dot || "bg-foreground/20";
   
   return (
-    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg border border-foreground/5 ${theme.bg}`}>
-      <div className={`w-1 h-1 rounded-full ${theme.dot}`} />
-      <span className={`text-[9px] font-bold uppercase tracking-widest ${theme.color}`}>
-        {theme.label}
+    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg border border-foreground/5 ${bg}`}>
+      <div className={`w-1 h-1 rounded-full ${dot}`} />
+      <span className={`text-[9px] font-bold uppercase tracking-widest ${color}`}>
+        {label}
       </span>
     </div>
   );

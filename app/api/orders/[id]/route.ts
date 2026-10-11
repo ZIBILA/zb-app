@@ -1,3 +1,5 @@
+import { pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
+import { summarizeRequest } from "@/lib/services/requestSummary";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
@@ -105,14 +107,18 @@ export async function GET(
 
     // Orders list also links WebStoreOrder UUIDs for standalone web purchases.
     // Resolve those → local Order when possible, otherwise return a WSO-shaped payload.
-    // WebStoreOrder.id is Postgres UUID — querying with a cuid throws, so wrap in try/catch.
+    // WebStoreOrder.id is Postgres UUID — only query by id when orderId looks like a UUID.
     let accessWebStoreOrder: any = null;
     let standaloneWebStoreOrder: any = null;
     if (!order) {
       try {
+        const { isUuid } = await import('@/lib/is-uuid');
         const wso = await prisma.webStoreOrder.findFirst({
           where: {
-            OR: [{ id: orderId }, { orderNumber: orderId }],
+            OR: [
+              ...(isUuid(orderId) ? [{ id: orderId }] : []),
+              { orderNumber: orderId },
+            ],
           },
         });
 
@@ -295,13 +301,12 @@ export async function GET(
     }
 
     // Enrich order with tracking data from the latest shipment
-    const latestShipment = order!.shipments?.sort(
-      (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    )[0];
+    // Outbound parcel only — a return/exchange pickup must never be shown as "your shipment".
+    const latestShipment: any = pickActiveOutboundShipment((order!.shipments || []) as any[]);
 
     const enrichedOrder = {
       ...order!,
-      trackingNumber: latestShipment?.trackingNumber || null,
+      trackingNumber: shipmentAwb(latestShipment) || null,
       trackingUrl: latestShipment?.trackingUrl || null,
       trackingStatus: latestShipment?.status || null,
       currentLocation: latestShipment?.currentLocation || null,
@@ -359,20 +364,26 @@ export async function GET(
       ? "COD"
       : (webStoreOrder?.paymentMethod || order!.paymentMethod || "razorpay").toUpperCase();
 
-    let codUpfrontPaid = webStoreOrder?.codUpfrontPaid
-      ? Number(webStoreOrder.codUpfrontPaid)
-      : Number((order as any).codUpfrontPaid) || 0;
-    if (isCodOrder && codUpfrontPaid === 0) {
-      const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import("@/lib/cod-upfront");
-      codUpfrontPaid = resolveStoredCodUpfrontPaid({
-        storedPaid: 0,
-        paymentStatus: webStoreOrder?.paymentStatus || order!.paymentStatus,
-        paymentMethod: order!.paymentMethod,
-        tags: order!.tags,
-        note: order!.note,
-        configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
-      });
-    }
+    const { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import("@/lib/cod-upfront");
+    const codUpfrontPaid = isCodOrder
+      ? resolveStoredCodUpfrontPaid({
+          storedPaid:
+            Number(webStoreOrder?.codUpfrontPaid) ||
+            Number((order as any).codUpfrontPaid) ||
+            0,
+          paymentStatus: webStoreOrder?.paymentStatus || order!.paymentStatus,
+          paymentMethod: order!.paymentMethod,
+          tags: order!.tags,
+          note: order!.note,
+          paymentId:
+            webStoreOrder?.codUpfrontPaymentId ||
+            webStoreOrder?.razorpayPaymentId ||
+            (order as any).codUpfrontPaymentId ||
+            order!.razorpayPaymentId ||
+            null,
+          configuredFallback: DEFAULT_COD_UPFRONT_AMOUNT,
+        })
+      : 0;
 
     const discountCode = webStoreOrder?.discountCode || order!.discountCode || null;
     let discountAmount = webStoreOrder?.discountAmount
@@ -385,6 +396,19 @@ export async function GET(
     const storeCreditAmount = webStoreOrder?.storeCreditAmount
       ? Number(webStoreOrder.storeCreditAmount)
       : (order as any).storeCreditAmount || 0;
+
+    // Coupon store-credit reward (pending until delivery, or already released).
+    const couponCredit = await prisma.storeCredit.findFirst({
+      where: {
+        orderId: order!.id,
+        type: { in: ["PENDING_COUPON_REBATE", "COUPON_REBATE"] },
+        amount: { gt: 0 },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { amount: true, type: true },
+    });
+    const storeCreditEarned = couponCredit ? Number(couponCredit.amount) : 0;
+
     const subtotalPrice =
       order!.subtotalPrice ||
       webStoreOrder?.subtotal ||
@@ -402,8 +426,36 @@ export async function GET(
         ? order!.shopifyOrderId
         : `#ZB${order!.id.slice(-5).toUpperCase()}`);
 
+    // Return / exchange requests with one shared summary (id, pickup, received, refund, replacement)
+    const replacementIds = (order!.exchangeRequests || []).map((e: any) => e.replacementOrderId).filter(Boolean) as string[];
+    const replacementRows: any[] = replacementIds.length
+      ? await prisma.order.findMany({
+          where: { id: { in: replacementIds } },
+          select: { id: true, internalOrderNumber: true, status: true, deliveryStatus: true, shipments: true },
+        })
+      : [];
+    const summaryOrder = { paymentMethod: finalPaymentMethod, paymentStatus: order!.paymentStatus, tags: order!.tags, note: order!.note };
+    const returnRequestsWithSummary = (order!.returnRequests || [])
+      .filter((r: any) => !r.reason || !r.reason.includes('EXCHANGE_RETURN'))
+      .map((r: any) => ({
+        ...r,
+        summary: summarizeRequest({ kind: 'return', request: r, order: summaryOrder, shipments: (order!.shipments || []) as any[] }),
+      }));
+    const exchangeRequestsWithSummary = (order!.exchangeRequests || []).map((e: any) => ({
+      ...e,
+      summary: summarizeRequest({
+        kind: 'exchange',
+        request: e,
+        order: summaryOrder,
+        shipments: (order!.shipments || []) as any[],
+        replacementOrder: replacementRows.find((r: any) => r.id === e.replacementOrderId) || null,
+      }),
+    }));
+
     const finalOrder = {
       ...enrichedOrder,
+      returnRequests: [...returnRequestsWithSummary, ...(order!.returnRequests || []).filter((r: any) => r.reason && r.reason.includes('EXCHANGE_RETURN'))],
+      exchangeRequests: exchangeRequestsWithSummary,
       orderNumber,
       paymentMethod: finalPaymentMethod,
       isCod: isCodOrder,
@@ -412,6 +464,8 @@ export async function GET(
       discountCode,
       discountAmount,
       storeCreditAmount,
+      storeCreditEarned,
+      storeCreditEarnedStatus: couponCredit?.type === "COUPON_REBATE" ? "credited" : couponCredit ? "pending_delivery" : null,
       subtotalPrice,
       statusTimeline: statusTimeline(order),
     };
@@ -429,8 +483,13 @@ function statusTimeline(order: any) {
   const delivery = String(order.deliveryStatus || "").toLowerCase();
   const updatedAt = new Date(order.updatedAt).toISOString();
 
-  const hasActiveReturn = order.returnRequests?.some((r: any) => r.status !== "cancelled") || false;
-  const hasActiveExchange = order.exchangeRequests?.some((e: any) => e.status !== "cancelled") || false;
+  const isTerminalReq = (st: string) =>
+    ["cancelled", "rejected", "refunded", "completed", "new_order_created"].includes(String(st || "").toLowerCase());
+  const hasActiveReturn =
+    order.returnRequests?.some(
+      (r: any) => !isTerminalReq(r.status) && !String(r.reason || "").includes("EXCHANGE_RETURN")
+    ) || false;
+  const hasActiveExchange = order.exchangeRequests?.some((e: any) => !isTerminalReq(e.status)) || false;
   const isReturnInitiated =
     status.includes("return") ||
     status.includes("exchange") ||

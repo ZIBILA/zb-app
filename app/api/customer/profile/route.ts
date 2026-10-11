@@ -1,3 +1,4 @@
+import { buildRequestSummaries, isInternalExchangeReturn } from "@/lib/services/requestEnrichment";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
@@ -151,7 +152,7 @@ export async function GET() {
     const orderIds = customerOrders.map((o: any) => o.id);
 
     // Load active and historic return & exchange requests for the customer
-    const returnRequests = await prisma.returnRequest.findMany({
+    const allReturnRequests = await prisma.returnRequest.findMany({
       where: {
         OR: [
           { customerId: { in: customerIds } },
@@ -161,6 +162,7 @@ export async function GET() {
       include: {
         order: {
           include: {
+            shipments: true,
             items: {
               include: {
                 product: true
@@ -182,6 +184,7 @@ export async function GET() {
       include: {
         order: {
           include: {
+            shipments: true,
             items: {
               include: {
                 product: true
@@ -192,6 +195,14 @@ export async function GET() {
       },
       orderBy: { createdAt: "desc" }
     });
+
+    // The return the system auto-creates behind an exchange is internal; customers see the exchange only.
+    const returnRequests = allReturnRequests.filter((r: any) => !isInternalExchangeReturn(r));
+
+    const { returnSummaries, exchangeSummaries } = await buildRequestSummaries([
+      ...returnRequests.map((r: any) => ({ ...r.order, returnRequests: [r], exchangeRequests: [] })),
+      ...exchangeRequests.map((e: any) => ({ ...e.order, returnRequests: [], exchangeRequests: [e] })),
+    ]);
 
     // Helper to find matching WebStoreOrder and get proper sequence order number (#ZB40001)
     async function enrichOrderNumber(orderObj: any) {
@@ -237,6 +248,7 @@ export async function GET() {
         const orderNumber = await enrichOrderNumber(req.order);
         return {
           ...req,
+          summary: returnSummaries.get(req.id) || null,
           order: {
             ...req.order,
             orderNumber
@@ -251,6 +263,7 @@ export async function GET() {
         const orderNumber = await enrichOrderNumber(req.order);
         return {
           ...req,
+          summary: exchangeSummaries.get(req.id) || null,
           order: {
             ...req.order,
             orderNumber

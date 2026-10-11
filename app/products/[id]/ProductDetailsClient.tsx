@@ -505,7 +505,7 @@ export default function ProductDetailsClient({
                 src={allImages[activeImg]?.src || "/zb-logo-220px.png"}
                 alt={product.title}
                 fill
-                className="object-cover transition-all duration-[1200ms]"
+                className="object-cover transition-all duration-1200"
                 priority
                 sizes="(max-width: 1200px) 50vw, 600px"
               />

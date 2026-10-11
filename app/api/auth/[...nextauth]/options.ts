@@ -1221,5 +1221,7 @@ export const authOptions: AuthOptions = {
     },
   },
   secret: process.env.NEXTAUTH_SECRET,
-  debug: process.env.NODE_ENV === "development",
+  // Keep off by default — NextAuth prints a startup warning whenever debug is true.
+  // Opt in with NEXTAUTH_DEBUG=true when you actually need auth tracing.
+  debug: process.env.NEXTAUTH_DEBUG === "true",
 };

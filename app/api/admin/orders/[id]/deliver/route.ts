@@ -41,6 +41,13 @@ export async function POST(
     });
 
     try {
+      const { releasePendingCouponCashback } = await import('@/lib/storeCreditsHelper');
+      await releasePendingCouponCashback(updated.id);
+    } catch (e) {
+      console.error('Failed to release coupon cashback on deliver:', e);
+    }
+
+    try {
       const { NotificationService } = await import('@/lib/services/notification.service');
       await NotificationService.sendToUser(
         order.customerId,

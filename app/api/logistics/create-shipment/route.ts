@@ -4,6 +4,7 @@
  * Books Shiprocket (create + AWB) from local Order.
  */
 
+import { REVERSE_SHIPMENT_TYPES } from "@/lib/logistics/status";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { shipOrder } from "@/lib/services/logistics";
@@ -35,9 +36,10 @@ export async function POST(req: Request) {
     orderIdForLock = order_id;
 
     const existingShipment = await prisma.shipment.findFirst({
-      where: { 
+      where: {
         orderId: order_id,
-        status: { not: "cancelled" },
+        NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } },
+        status: { notIn: ["cancelled", "canceled", "rto", "rto_delivered", "lost"] },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -57,7 +59,10 @@ export async function POST(req: Request) {
 
     const order = await prisma.order.findUnique({
       where: { id: order_id },
-      include: { items: true },
+      include: {
+        items: true,
+        customer: { select: { name: true, email: true, phone: true } },
+      },
     });
 
     if (!order) {
@@ -72,13 +77,14 @@ export async function POST(req: Request) {
     }));
 
     const address = {
-      name: name || "Customer",
+      name: name || order.customer?.name || "Customer",
       address1: address1 || "",
       city: city || "",
       province: province || "",
       zip: zip || "",
       country: country || "India",
-      phone: phone || "",
+      phone: phone || order.customer?.phone || "",
+      email: order.customer?.email || "",
     };
 
     if (!address1 && order.shippingAddress) {
@@ -88,9 +94,10 @@ export async function POST(req: Request) {
         address.address1 = parsed.street || parsed.address1 || "";
         address.city = parsed.city || "";
         address.province = parsed.state || parsed.province || "";
-        address.zip = parsed.zip || "";
+        address.zip = parsed.zip || parsed.pincode || "";
         address.country = parsed.country || "India";
-        address.phone = parsed.phone || "";
+        address.phone = parsed.phone || order.customer?.phone || "";
+        address.email = parsed.email || address.email;
       } catch {
         /* use provided */
       }

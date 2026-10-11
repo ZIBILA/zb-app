@@ -270,7 +270,8 @@ export async function POST(req: Request) {
                   billingAddress: JSON.stringify(checkoutAddress),
                   razorpayOrderId: rzpOrder.id,
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
-                  codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
+                  // Never store the fee as "paid" before Razorpay capture
+                  codUpfrontPaid: 0,
                   discountCode: finalCouponCode || null,
                   discountAmount: Number(finalCouponDiscount) || 0,
                   storeCreditAmount: Number(rawStoreCredit) || 0,
@@ -328,7 +329,7 @@ export async function POST(req: Request) {
                     totalAmount: calculatedTotal,
                     paymentMethod: isCodOrder ? "cod" : "razorpay",
                     razorpayOrderId: rzpOrder.id,
-                    codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
+                    codUpfrontPaid: 0,
                   }
                 });
               }
@@ -367,7 +368,7 @@ export async function POST(req: Request) {
                 razorpayOrderId: rzpOrder.id,
                 razorpayPaymentId: null,
                 paymentMethod: isCodOrder ? "cod" : "razorpay",
-                codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
+                codUpfrontPaid: 0,
                 paymentCapturedAt: null,
                 orderType: "WEB_STORE",
                 tags: `WebStoreOrder, Web, ${isCodOrder ? "cod" : "razorpay"}, zb-order-${universalOrderNumber}, payment_pending, Order creation in process${sessionTagSuffix}`,
@@ -424,7 +425,7 @@ export async function POST(req: Request) {
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
                   razorpayOrderId: rzpOrder.id,
                   razorpayPaymentId: null,
-                  codUpfrontPaid: isCodOrder ? configuredCodFee : 0,
+                  codUpfrontPaid: 0,
                   fulfillmentStatus: "unfulfilled",
                   notes: rawStoreCredit > 0
                     ? `Order creation in process - ₹${rawStoreCredit} Store Credit applied - Remaining Payment pending`

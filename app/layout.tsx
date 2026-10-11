@@ -1,11 +1,10 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Poppins } from "next/font/google";
 import localFont from "next/font/local";
 import Script from "next/script";
 import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
-import StorefrontFooter from "@/components/StorefrontFooter";
+import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
 import { Toaster } from "sonner";
 import MetaPixelRouteTracker from "@/components/MetaPixelRouteTracker";
 import FacebookSDKInit from "@/components/FacebookSDKInit";
@@ -29,15 +28,24 @@ const geistSans = localFont({
 /* ISR/SSG enabled — force-dynamic removed from root layout.
    Only truly dynamic pages (checkout, cart, search) set their own dynamic mode. */
 
-const inter = Inter({
-  subsets: ["latin"],
+// Self-hosted — avoids Google Fonts network fetch warnings during `next build`
+const inter = localFont({
+  src: [
+    { path: "./fonts/inter-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/inter-latin-700.woff2", weight: "700", style: "normal" },
+  ],
   variable: "--font-inter",
   display: "swap",
 });
 
-const poppins = Poppins({
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+const poppins = localFont({
+  src: [
+    { path: "./fonts/poppins-latin-300.woff2", weight: "300", style: "normal" },
+    { path: "./fonts/poppins-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/poppins-latin-500.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/poppins-latin-600.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/poppins-latin-700.woff2", weight: "700", style: "normal" },
+  ],
   variable: "--font-poppins",
   display: "swap",
 });
@@ -137,7 +145,7 @@ export const metadata: Metadata = {
 };
 
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
@@ -151,6 +159,7 @@ export default function RootLayout({
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
   const adminGtmId = process.env.NEXT_PUBLIC_ADMIN_GTM_ID || "GTM-TDGKF386";
+  const footerData = await getStorefrontFooterData();
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -329,7 +338,7 @@ export default function RootLayout({
           <FacebookSDKInit />
           <SnapPixelRouteTracker />
           <OpenAiPixelRouteTracker />
-          <LayoutWrapper footer={<StorefrontFooter />}>
+          <LayoutWrapper footerData={footerData}>
             {children}
           </LayoutWrapper>
           <Toaster position="top-right" />

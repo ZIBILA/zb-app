@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { getAppAuthFromRequest } from '@/lib/appAuth';
+import { isReverseShipmentType, pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
+import { resolveRequestCustomer, resolveCustomerIdentityIds } from '@/lib/requestAuth';
+import { isCodOrder, COD_STORE_CREDIT_MESSAGE } from '@/lib/returnPolicy';
+import { buildRequestSummaries, isInternalExchangeReturn } from '@/lib/services/requestEnrichment';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,12 +67,11 @@ function paymentStatusFromOrder(order: any): 'pending' | 'paid' | 'failed' {
 
 function trackingFromOrder(order: any) {
   const shipments = Array.isArray(order.shipments) ? order.shipments : [];
-  const latest = shipments
-    .slice()
-    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  if (!latest?.awb && !latest?.trackingNumber) return null;
+  // Outbound parcel only — never a return / exchange pickup.
+  const latest: any = pickActiveOutboundShipment(shipments);
+  if (!latest || !shipmentAwb(latest)) return null;
   return {
-    awb: latest.awb || latest.trackingNumber || null,
+    awb: shipmentAwb(latest),
     carrier: latest.courier || null,
     lastLocation: latest.currentLocation || null,
     estimatedDelivery: latest.estimatedDelivery ? new Date(latest.estimatedDelivery).toISOString() : null,
@@ -95,7 +97,7 @@ function statusTimeline(order: any) {
       order.returnRequests?.some((r: any) => r.status === 'refunded') ||
       order.exchangeRequests?.some((e: any) => e.status === 'new_order_created');
 
-    const latestShipment = (order.shipments || []).find((s: any) => String(s.status).toLowerCase() === 'delivered');
+    const latestShipment = (order.shipments || []).find((s: any) => !isReverseShipmentType(s.type) && String(s.status).toLowerCase() === 'delivered');
     const deliveredAt = latestShipment?.updatedAt ? new Date(latestShipment.updatedAt).toISOString() : updatedAt;
 
     return [
@@ -129,12 +131,12 @@ function extractLocalOrderIdFromNotes(notes: string | null | undefined): string 
 
 export async function GET(req: Request, { params }: { params: { orderId: string } }) {
   const url = new URL(req.url);
-  const qCustomerId = url.searchParams.get('customerId');
   const qPhone = url.searchParams.get('phone');
   const qEmail = url.searchParams.get('email');
 
-  const auth = getAppAuthFromRequest(req);
-  
+  // Verified identity only. A customerId in the query string never authorizes anything.
+  const authCustomer = await resolveRequestCustomer(req);
+
   try {
     const includeRelations = {
       items: {
@@ -210,31 +212,33 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
 
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404, headers: corsHeaders });
 
-    // Auth check: Allow if JWT matches OR if guest tracking info (phone/email) matches the customer
-    let isAuthorized = false;
-    if (auth && order.customerId === auth.customerId) {
-      isAuthorized = true;
-    } else if (order.customer) {
-      // Check query params for guest tracking
-      if (qCustomerId === order.customerId) isAuthorized = true;
-      if (qEmail && order.customer.email === qEmail) isAuthorized = true;
-      if (qPhone) {
-        const orderPhone = order.customer.phone?.replace(/\D/g, '').slice(-10);
-        const inputPhone = qPhone.replace(/\D/g, '').slice(-10);
-        if (orderPhone && inputPhone && orderPhone === inputPhone) isAuthorized = true;
+    // Access rules:
+    //  - Owner (verified token / web session): full order.
+    //  - Guest who can prove the buyer's phone or email: REDACTED tracking view only.
+    let isOwner = false;
+    if (authCustomer && order.customerId) {
+      const ids = await resolveCustomerIdentityIds(authCustomer);
+      isOwner = ids.includes(order.customerId);
+    }
+
+    let isGuestMatch = false;
+    if (!isOwner && order.customer) {
+      const orderEmail = String(order.customer.email || '').trim().toLowerCase();
+      const inputEmail = String(qEmail || '').trim().toLowerCase();
+      if (inputEmail && orderEmail && inputEmail === orderEmail) isGuestMatch = true;
+
+      const orderPhone = String(order.customer.phone || '').replace(/\D/g, '').slice(-10);
+      const inputPhone = String(qPhone || '').replace(/\D/g, '').slice(-10);
+      if (inputPhone.length === 10 && orderPhone && inputPhone === orderPhone) isGuestMatch = true;
+    }
+
+    if (!isOwner && !isGuestMatch) {
+      if (!authCustomer) {
+        return NextResponse.json({ error: 'Unauthorized. Please sign in again.' }, { status: 401, headers: corsHeaders });
       }
-    } else if (qCustomerId === order.customerId) {
-      // Fallback for orders without customer record but matching ID
-      isAuthorized = true;
+      // Same answer as "not found" so order ids can't be probed.
+      return NextResponse.json({ error: 'Order not found' }, { status: 404, headers: corsHeaders });
     }
-
-    if (!isAuthorized && !auth) {
-      return NextResponse.json({ error: 'Unauthorized. Please sign in again.' }, { status: 401, headers: corsHeaders });
-    }
-    if (!isAuthorized) {
-      return NextResponse.json({ error: 'Unauthorized: not your order' }, { status: 403, headers: corsHeaders });
-    }
-
 
     // Extract size from title if present (e.g. "PRODUCT NAME - XL" → size "XL")
     const formatItem = (it: any) => {
@@ -263,8 +267,9 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
       };
     };
 
-    return NextResponse.json({
-      order: {
+    const requestSummaries = await buildRequestSummaries([order as any]);
+
+    const fullOrder: any = {
         id: order.id,
         orderId: order.id,
         orderNumber: order.internalOrderNumber || orderNumberFromOrder(order),
@@ -273,6 +278,8 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
         cancelledBy: order.cancelledBy || null,
         cancelledAt: order.cancelledAt || null,
         paymentMethod: paymentMethodFromOrder(order),
+        isCod: isCodOrder(order),
+        codStoreCreditMessage: isCodOrder(order) ? COD_STORE_CREDIT_MESSAGE : null,
         paymentStatus: paymentStatusFromOrder(order),
         fulfillmentStatus: order.fulfillmentStatus || 'unfulfilled',
         deliveryStatus: order.deliveryStatus || 'pending',
@@ -294,10 +301,41 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
         tags: order.tags,
         razorpayOrderId: order.razorpayOrderId,
         razorpayPaymentId: order.razorpayPaymentId,
-        returnRequests: order.returnRequests || [],
-        exchangeRequests: order.exchangeRequests || [],
-      },
-    }, { headers: corsHeaders });
+        returnRequests: (order.returnRequests || []).map((r: any) => ({
+          ...r,
+          isInternal: isInternalExchangeReturn(r),
+          summary: requestSummaries.returnSummaries.get(r.id) || null,
+        })),
+        exchangeRequests: (order.exchangeRequests || []).map((e: any) => ({
+          ...e,
+          summary: requestSummaries.exchangeSummaries.get(e.id) || null,
+        })),
+      };
+
+    if (isOwner) {
+      return NextResponse.json({ order: fullOrder }, { headers: corsHeaders });
+    }
+
+    // Guest tracking view: enough to follow the parcel, nothing that identifies payment or contact details.
+    const addr = fullOrder.shippingAddress;
+    const guestOrder = {
+      ...fullOrder,
+      razorpayOrderId: null,
+      razorpayPaymentId: null,
+      note: null,
+      tags: null,
+      shippingAddress: addr
+        ? { name: addr.name, line1: '', line2: '', city: addr.city, state: addr.state, pincode: addr.pincode, phone: '', email: '', country: addr.country }
+        : null,
+      returnRequests: [],
+      exchangeRequests: [],
+      shipments: (fullOrder.shipments || []).map((sh: any) => ({
+        id: sh.id, type: sh.type, status: sh.status, courier: sh.courier, awb: sh.awb, trackingNumber: sh.trackingNumber,
+        currentLocation: sh.currentLocation, estimatedDelivery: sh.estimatedDelivery, updatedAt: sh.updatedAt,
+      })),
+      isGuestView: true,
+    };
+    return NextResponse.json({ order: guestOrder }, { headers: corsHeaders });
   } catch (e: any) {
     console.error('[App API] orders/[orderId] error:', e);
     return NextResponse.json({ error: e?.message || 'Internal server error' }, { status: 500, headers: corsHeaders });

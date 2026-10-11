@@ -1,5 +1,6 @@
 "use client";
 
+import RequestStatusCard from "@/components/RequestStatusCard";
 import { useEffect, useState, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -27,6 +28,7 @@ import Link from "next/link";
 import { formatPriceString } from "@/lib/global-pricing-client";
 import { useParams, useRouter } from "next/navigation";
 import OrderReviewModal from "@/components/reviews/OrderReviewModal";
+import AppDialog from "@/components/ui/AppDialog";
 
 const STEPS = [
   { id: "order_placed",   label: "Order Placed",   icon: CheckCircle2 },
@@ -54,6 +56,14 @@ export default function OrderDetailsPage() {
   const [syncing, setSyncing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showCancelRequestModal, setShowCancelRequestModal] = useState(false);
+  const [requestDialog, setRequestDialog] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    tone?: "default" | "danger" | "success";
+  }>({ open: false, title: "", description: "" });
+  const [cancellingRequest, setCancellingRequest] = useState(false);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [reviewableItems, setReviewableItems] = useState<any[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -189,26 +199,61 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const handleCancelReturnExchange = async () => {
-    const pendingReq = order.returnRequests?.find((r: any) => r.status === 'pending_approval')
-      || order.exchangeRequests?.find((e: any) => e.status === 'pending_approval');
-    if (!pendingReq) {
-      alert("No pending return or exchange request to cancel.");
+  const pendingReturnOrExchange = useMemo(() => {
+    if (!order) return null;
+    return (
+      order.returnRequests?.find((r: any) => r.status === "pending_approval") ||
+      order.exchangeRequests?.find((e: any) => e.status === "pending_approval") ||
+      null
+    );
+  }, [order]);
+
+  const openCancelReturnExchange = () => {
+    if (!pendingReturnOrExchange) {
+      setRequestDialog({
+        open: true,
+        title: "Nothing to Cancel",
+        description: "No pending return or exchange request to cancel.",
+        tone: "default",
+      });
       return;
     }
-    if (!confirm("Are you sure you want to cancel this return/exchange request?")) return;
+    setShowCancelRequestModal(true);
+  };
+
+  const handleCancelReturnExchange = async () => {
+    if (!pendingReturnOrExchange) return;
+    setCancellingRequest(true);
     try {
       const res = await fetch("/api/returns/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ returnRequestId: pendingReq.id })
+        body: JSON.stringify({ returnRequestId: pendingReturnOrExchange.id }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to cancel");
-      alert("Return/Exchange request cancelled.");
+      setShowCancelRequestModal(false);
+      setRequestDialog({
+        open: true,
+        title: "Request Cancelled",
+        description: data.message || "Your return/exchange request has been cancelled.",
+        tone: "success",
+      });
       fetchOrder();
     } catch (e: any) {
-      alert(e.message || "Failed to cancel request");
+      setShowCancelRequestModal(false);
+      // Prefer API's customer-safe message; fall back to a generic line (never dump stack/provider text).
+      const msg = typeof e?.message === "string" && e.message.length < 220
+        ? e.message
+        : "We couldn’t cancel this request right now. Please try again in a few minutes or contact support.";
+      setRequestDialog({
+        open: true,
+        title: "Could Not Cancel",
+        description: msg,
+        tone: "danger",
+      });
+    } finally {
+      setCancellingRequest(false);
     }
   };
 
@@ -221,11 +266,10 @@ export default function OrderDetailsPage() {
   }, [order]);
   const isCancelled = useMemo(() => {
     if (!order) return false;
-    // Match list card: real order cancel only — not a voided Shiprocket shipment
+    // Real order cancel only — not a voided Shiprocket / fulfillment cancel
     if (order.cancelledBy) return true;
     const s = String(order.status || '').toLowerCase();
-    const f = String(order.fulfillmentStatus || '').toLowerCase();
-    return s.includes('cancel') || f.includes('cancel');
+    return s === 'cancelled' || s === 'canceled';
   }, [order]);
   const isDelivered = useMemo(() => {
     const ds = (order?.deliveryStatus || '').toLowerCase();
@@ -233,13 +277,24 @@ export default function OrderDetailsPage() {
     return ds === 'delivered' || s === 'delivered';
   }, [order]);
 
-  const activeReturnReq = useMemo(() => order?.returnRequests?.find((r: any) => r.status !== 'cancelled' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))), [order]);
-  const activeExchangeReq = useMemo(() => order?.exchangeRequests?.find((e: any) => e.status !== 'cancelled'), [order]);
+  const terminalRequest = (s: string) =>
+    ['cancelled', 'rejected', 'refunded', 'completed', 'new_order_created'].includes(String(s || '').toLowerCase());
+  const activeReturnReq = useMemo(
+    () =>
+      order?.returnRequests?.find(
+        (r: any) => !terminalRequest(r.status) && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))
+      ),
+    [order]
+  );
+  const activeExchangeReq = useMemo(
+    () => order?.exchangeRequests?.find((e: any) => !terminalRequest(e.status)),
+    [order]
+  );
 
   const hasActiveReturn = useMemo(() => !!activeReturnReq, [activeReturnReq]);
   const hasActiveExchange = useMemo(() => !!activeExchangeReq, [activeExchangeReq]);
   const hasPendingRequest = useMemo(() => {
-    return order?.returnRequests?.some((r: any) => r.status === 'pending_approval' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))) || 
+    return order?.returnRequests?.some((r: any) => r.status === 'pending_approval' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))) ||
            order?.exchangeRequests?.some((e: any) => e.status === 'pending_approval') || false;
   }, [order]);
 
@@ -249,7 +304,7 @@ export default function OrderDetailsPage() {
     const deliveredEntry = timelineArr.find((t: any) => t.step === 'delivered');
     const deliveredAt = order?.deliveredAt || deliveredEntry?.completedAt || order?.createdAt;
     if (!deliveredAt) return false;
-    const diffDays = Math.ceil(Math.abs(Date.now() - new Date(deliveredAt).getTime()) / (1000 * 60 * 60 * 24));
+    const diffDays = Math.floor((Date.now() - new Date(deliveredAt).getTime()) / (1000 * 60 * 60 * 24));
     return diffDays <= 15;
   }, [order, isDelivered]);
 
@@ -415,7 +470,7 @@ export default function OrderDetailsPage() {
         </div>
 
         {/* Status Card matching Mobile App */}
-        <div className="mb-10 p-5 rounded-3xl border border-foreground/5 bg-foreground/[0.01] dark:bg-foreground/[0.02] flex items-center justify-between relative overflow-hidden">
+        <div className="mb-10 p-5 rounded-3xl apple-glass-capsule border border-foreground/5 flex items-center justify-between relative overflow-hidden">
             <div className="flex-1 min-w-0">
                <p className="text-[8px] font-black uppercase tracking-[0.15em] text-foreground/30 mb-1 font-mono">Status</p>
                <h3 className="text-[15px] font-extrabold text-foreground tracking-wide leading-tight">
@@ -474,116 +529,67 @@ export default function OrderDetailsPage() {
           </div>
         )}
 
-        {/* ACTIVE RETURN REQUEST CARD */}
-        {activeReturnReq && (
-          <div className="mb-8 p-6 rounded-3xl glass-panel border border-amber-500/20 bg-amber-500/5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <RotateCcw className="w-4 h-4 text-amber-500" />
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-amber-500">Return Request</h3>
-              </div>
-              <span className="px-3 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                {activeReturnReq.status.replace('_', ' ')}
-              </span>
+        {/* RETURN / EXCHANGE REQUESTS — id, pickup, received, refund / store credit, replacement */}
+        {(order.returnRequests || [])
+          .filter((r: any) => r.status !== 'cancelled' && r.summary)
+          .map((r: any) => (
+            <div key={r.id} className="mb-8">
+              <RequestStatusCard summary={r.summary}>
+                <p className="font-medium">Requested on: {new Date(r.createdAt).toLocaleDateString('en-IN')}</p>
+                {r.reason && <p className="text-[10px] text-foreground/50">Reason: {r.reason}</p>}
+                {r.status === 'pending_approval' && (
+                  <p className="text-[9px] text-foreground/40 italic">Your return is under review. Our team will verify and arrange the pickup shortly.</p>
+                )}
+              </RequestStatusCard>
             </div>
-            <div className="text-[11px] space-y-1 text-foreground/70">
-              <p className="font-medium">Requested on: {new Date(activeReturnReq.createdAt).toLocaleDateString('en-IN')}</p>
-              <p className="font-medium">Estimated Refund: <span className="font-bold text-foreground">₹{activeReturnReq.estimatedRefund?.toLocaleString('en-IN')}</span></p>
-              {activeReturnReq.reason && <p className="text-[10px] text-foreground/50">Reason: {activeReturnReq.reason}</p>}
+          ))}
+        {(order.exchangeRequests || [])
+          .filter((e: any) => e.status !== 'cancelled' && e.summary)
+          .map((e: any) => (
+            <div key={e.id} className="mb-8">
+              <RequestStatusCard summary={e.summary}>
+                <p className="font-medium">Requested on: {new Date(e.createdAt).toLocaleDateString('en-IN')}</p>
+                <p className="font-medium">Price Difference: <span className="font-bold text-foreground">₹{e.priceDifference?.toLocaleString('en-IN')}</span> ({String(e.paymentStatus || '').replace(/_/g, ' ')})</p>
+                {e.reason && <p className="text-[10px] text-foreground/50">Reason: {e.reason}</p>}
+                {e.status === 'pending_approval' && (
+                  <p className="text-[9px] text-foreground/40 italic">Your exchange is under review. The replacement will be dispatched once we receive the original item.</p>
+                )}
+              </RequestStatusCard>
             </div>
-            {activeReturnReq.status === 'pending_approval' && (
-              <p className="text-[9px] text-foreground/40 italic">Your return is under review. Our team will verify and initiate pickup shortly.</p>
-            )}
-          </div>
-        )}
+          ))}
 
-        {/* ACTIVE EXCHANGE REQUEST CARD */}
-        {activeExchangeReq && (
-          <div className="mb-8 p-6 rounded-3xl glass-panel border border-blue-500/20 bg-blue-500/5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ArrowLeftRight className="w-4 h-4 text-blue-500" />
-                <h3 className="text-[12px] font-bold uppercase tracking-wider text-blue-500">Exchange Request</h3>
-              </div>
-              <span className="px-3 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest bg-blue-500/10 text-blue-500 border border-blue-500/20">
-                {activeExchangeReq.status.replace('_', ' ')}
-              </span>
-            </div>
-            <div className="text-[11px] space-y-1 text-foreground/70">
-              <p className="font-medium">Requested on: {new Date(activeExchangeReq.createdAt).toLocaleDateString('en-IN')}</p>
-              <p className="font-medium">Price Difference: <span className="font-bold text-foreground">₹{activeExchangeReq.priceDifference?.toLocaleString('en-IN')}</span> ({activeExchangeReq.paymentStatus})</p>
-              {activeExchangeReq.reason && <p className="text-[10px] text-foreground/50">Reason: {activeExchangeReq.reason}</p>}
-            </div>
-            {activeExchangeReq.status === 'pending_approval' && (
-              <p className="text-[9px] text-foreground/40 italic">Your exchange is under review. Replacement item order will be processed upon approval.</p>
-            )}
-          </div>
-        )}
-
-        {/* SHIPMENT DETAILS CARD — hide voided/cancelled courier rows so they don't contradict order status */}
+        {/* External Track only — no courier name, tracking number, or status (partners vary by shipment). */}
         {(() => {
           const activeShipment = (order.shipments || []).find((sh: any) => {
             const st = String(sh?.status || '').toLowerCase();
-            return !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
+            const reverse = ['reverse_pickup', 'reverse', 'return', 'exchange_pickup'].includes(String(sh?.type || '').toLowerCase());
+            return !reverse && !st.includes('cancel') && Boolean(sh?.awb || sh?.trackingNumber);
           });
           const s = activeShipment || null;
-          const awb = s?.trackingNumber || s?.awb || (!isCancelled ? (order.trackingNumber || order.delhivery_awb) : null);
-          const courier = s?.courier || order.courier || (order.delhivery_awb ? 'Delhivery' : 'Standard Express');
+          // Prefer real courier AWB — never use Shiprocket draft/order id for tracking links.
+          const awb =
+            s?.awb ||
+            (!isCancelled ? order.delhivery_awb : null) ||
+            null;
           const status = s?.status || order.deliveryStatus || order.fulfillmentStatus || 'Shipped';
-          const trackUrl = s?.trackingUrl || order.trackingUrl || (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
+          const trackUrl =
+            s?.trackingUrl ||
+            order.trackingUrl ||
+            (awb ? `https://zicabella.shiprocket.co/tracking/${awb}` : null);
 
-          if (!awb || String(status || '').toLowerCase().includes('cancel')) return null;
+          if (!trackUrl || !awb || String(status || '').toLowerCase().includes('cancel')) return null;
 
           return (
-            <div className="mb-8 p-5 rounded-3xl glass-panel overflow-hidden relative group">
-              <div className="absolute inset-x-0 bottom-0 h-1 bg-gradient-to-r from-foreground/0 via-foreground/10 to-foreground/0 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <div className="flex items-start justify-between mb-6">
-                  <div className="space-y-1">
-                      <p className="text-[7px] font-black uppercase tracking-[0.3em] text-foreground/40">Live Shipment</p>
-                      <h3 className="text-[12px] font-heading tracking-widest text-foreground/80 uppercase">
-                          {courier}
-                      </h3>
-                  </div>
-                  <div className="p-2 bg-foreground/10 rounded-xl">
-                     <Truck className="w-4 h-4 text-foreground/60" />
-                  </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-8 mb-4">
-                  <div>
-                     <p className="text-[6.5px] font-black uppercase tracking-widest text-foreground/15 mb-1.5 font-mono">Tracking No.</p>
-                     <p className="text-[10px] font-mono text-foreground/60 font-medium uppercase">{awb}</p>
-                  </div>
-                  <div>
-                     <p className="text-[6.5px] font-black uppercase tracking-widest text-foreground/15 mb-1.5 font-mono">Status</p>
-                     <p className="text-[10px] text-foreground/60 font-medium uppercase">{status}</p>
-                  </div>
-              </div>
-
-              {trackUrl && (
-                <button 
-                    onClick={() => window.open(trackUrl, '_blank')}
-                    className="w-full py-3 rounded-2xl glass-button text-[8px] font-black uppercase tracking-[0.2em] flex items-center justify-center gap-2"
-                >
-                    External Track <ExternalLink className="w-3 h-3 opacity-30" />
-                </button>
-              )}
+            <div className="mb-8">
+              <button
+                onClick={() => window.open(trackUrl, '_blank')}
+                className="w-full py-4 rounded-2xl glass-button text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+              >
+                External Track <ExternalLink className="w-3.5 h-3.5 opacity-40" />
+              </button>
             </div>
           );
         })()}
-
-        {/* Reverse Shipment (Return Pickup) */}
-        {order.shipments?.find((s: any) => String(s.awb || s.trackingNumber || '').startsWith('ZBRET') || String(s.status || '').includes('pickup')) && (
-          <div className="mb-8 p-5 rounded-3xl glass-panel border-amber-500/20 overflow-hidden">
-            <p className="text-[7px] font-black uppercase tracking-[0.3em] text-amber-500/60 mb-2">Return Pickup Logistics</p>
-            <p className="text-[10px] font-mono text-foreground/60">
-              {(() => {
-                const rs = order.shipments.find((s: any) => String(s.awb || s.trackingNumber || '').startsWith('ZBRET') || String(s.status || '').includes('pickup'));
-                return `${rs.courier || ''} • ${rs.awb || rs.trackingNumber} • Status: ${rs.status === 'pickup_pending' ? 'Awaiting Pickup Agent' : rs.status?.toUpperCase()}`;
-              })()}
-            </p>
-          </div>
-        )}
 
         {/* ORDER ITEMS */}
         <div className="mb-10">
@@ -594,7 +600,7 @@ export default function OrderDetailsPage() {
               {order.items.map((item: any) => (
                 <div 
                    key={item.id} 
-                   className="flex items-center gap-4 p-3 rounded-2xl glass-panel"
+                   className="flex items-center gap-4 p-3 rounded-2xl apple-glass-capsule border border-foreground/5"
                 >
                    <div className="w-14 h-14 rounded-xl overflow-hidden bg-foreground/5 border border-foreground/5 flex-shrink-0">
                       {(() => {
@@ -623,7 +629,7 @@ export default function OrderDetailsPage() {
            <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
               Delivery Address
            </h4>
-           <div className="p-5 rounded-3xl glass-panel">
+           <div className="p-5 rounded-3xl apple-glass-capsule border border-foreground/5">
               {(() => {
                 if (!order.shippingAddress) return <p className="text-[10px] text-foreground/40">No address provided.</p>;
                 try {
@@ -656,55 +662,50 @@ export default function OrderDetailsPage() {
            </div>
         </div>
 
-        {/* ORDER INFO */}
-        <div className="mb-10">
-           <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
-              Order Info
-           </h4>
-           <div className="p-5 rounded-3xl glass-panel divide-y divide-foreground/5 space-y-3">
-              <div className="flex justify-between items-center text-[10px] font-medium pt-0">
-                 <span className="text-foreground/40">Payment Method</span>
-                 <span className="text-foreground font-bold uppercase tracking-wider">{order.paymentMethod || 'Razorpay'}</span>
-              </div>
-              <div className="flex justify-between items-center text-[10px] font-medium pt-3">
-                 <span className="text-foreground/45">Order Source</span>
-                 <span className="text-foreground font-bold uppercase tracking-wider">{order.orderType === 'WEB_STORE' ? 'Web Store' : 'Mobile App'}</span>
-              </div>
-           </div>
-        </div>
-
         {/* BILLING SUMMARY */}
         <div className="mb-10">
            <h4 className="text-[8px] font-black uppercase tracking-[0.3em] text-foreground/20 mb-3 ml-1">
               Billing Summary
            </h4>
-           <div className="p-5 rounded-3xl glass-panel space-y-3">
-              <div className="flex justify-between items-center text-[11px] font-medium text-foreground/60">
-                 <span>Subtotal</span>
-                 <span className="font-bold text-foreground/80">{formatPriceString(Number(order.subtotalPrice || (order.totalPrice + (order.discountAmount || 0))), order.currency || "INR", "en-US")}</span>
+           <div className="apple-glass-capsule p-5 rounded-3xl border border-foreground/5 space-y-3">
+              <div className="flex justify-between items-center text-[11px]">
+                 <span className="font-semibold text-foreground/70">Subtotal</span>
+                 <span className="font-bold text-foreground">{formatPriceString(Number(order.subtotalPrice || (order.totalPrice + (order.discountAmount || 0) + (order.storeCreditAmount || 0))), order.currency || "INR", "en-US")}</span>
               </div>
               {order.discountAmount > 0 && (
-                 <div className="flex justify-between items-center text-[11px] font-medium text-foreground/60">
-                    <span>Discount ({order.discountCode || 'Coupon'})</span>
-                    <span className="font-bold text-emerald-500/80">- {formatPriceString(Number(order.discountAmount), order.currency || "INR", "en-US")}</span>
+                 <div className="flex justify-between items-center text-[11px]">
+                    <span className="font-semibold text-foreground/70">Discount ({order.discountCode || 'Coupon'})</span>
+                    <span className="font-bold text-emerald-500">- {formatPriceString(Number(order.discountAmount), order.currency || "INR", "en-US")}</span>
                  </div>
               )}
-              <div className="flex justify-between items-center text-[11px] font-medium text-foreground/60">
-                 <span>Shipping</span>
-                 <span className="text-emerald-500 uppercase text-[9px] font-black tracking-widest">Free</span>
+              {Number(order.storeCreditAmount || 0) > 0 && (
+                 <div className="flex justify-between items-center text-[11px]">
+                    <span className="font-semibold text-foreground/70">Store Credit Applied</span>
+                    <span className="font-bold text-emerald-500">- {formatPriceString(Number(order.storeCreditAmount), order.currency || "INR", "en-US")}</span>
+                 </div>
+              )}
+              <div className="flex justify-between items-center text-[11px]">
+                 <span className="font-semibold text-foreground/70">Shipping</span>
+                 <span className="text-foreground uppercase text-[9px] font-black tracking-widest">Free</span>
               </div>
               <div className="pt-4 mt-2 border-t border-foreground/5 space-y-2">
                  <div className="flex justify-between items-center">
-                    <span className="text-[12px] font-black uppercase tracking-widest text-foreground/50">Total Order Amount</span>
+                    <span className="text-[12px] font-bold uppercase tracking-widest text-foreground">Total</span>
                     <span className="text-lg font-black tracking-tight text-foreground">{formatPriceString(Number(order.totalPrice), order.currency || "INR", "en-US")}</span>
                  </div>
+                 {Number(order.storeCreditEarned || 0) > 0 && (
+                    <div className="flex justify-between items-center text-[11px] pt-1 border-t border-foreground/5">
+                       <span className="font-semibold text-foreground">Store Credit Earned{order.discountCode ? ` (${order.discountCode})` : ""}</span>
+                       <span className="font-semibold text-emerald-500">+ {formatPriceString(Number(order.storeCreditEarned), order.currency || "INR", "en-US")}</span>
+                    </div>
+                 )}
                  {order.isCod && (
                     <div className="pt-2 border-t border-dashed border-foreground/10 space-y-1.5 text-[11px]">
-                       <div className="flex justify-between items-center text-emerald-500 font-semibold">
+                       <div className="flex justify-between items-center text-foreground font-semibold">
                           <span>Amount Paid Online (Upfront)</span>
-                          <span>✓ {formatPriceString(Number(order.codUpfrontPaid || 0), order.currency || "INR", "en-US")}</span>
+                          <span className="text-emerald-500">✓ {formatPriceString(Number(order.codUpfrontPaid || 0), order.currency || "INR", "en-US")}</span>
                        </div>
-                       <div className="flex justify-between items-center text-amber-500 font-bold">
+                       <div className="flex justify-between items-center text-foreground/70 font-bold">
                           <span>Balance Due at Delivery</span>
                           <span>{formatPriceString(Number(order.codBalanceDue || Math.max(0, order.totalPrice - Number(order.codUpfrontPaid || 0))), order.currency || "INR", "en-US")}</span>
                        </div>
@@ -723,9 +724,9 @@ export default function OrderDetailsPage() {
                 fetchReviewableItems();
                 setShowReviewModal(true);
               }}
-              className="w-full py-4 rounded-2xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-[0.98] shadow-lg shadow-amber-500/5"
+              className="w-full py-4 px-5 rounded-2xl apple-glass-capsule border border-foreground/10 text-foreground text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-[0.98] hover:bg-foreground/[0.03]"
             >
-              <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+              <Star className="w-4 h-4 text-foreground fill-foreground/20" />
               <span>{reviewableItems.some(i => i.reviewed) ? "View & Update Product Reviews" : "Rate & Review Products"}</span>
             </button>
           )}
@@ -753,7 +754,7 @@ export default function OrderDetailsPage() {
           {/* Cancel pending return/exchange */}
           {hasPendingRequest && (
             <button
-              onClick={handleCancelReturnExchange}
+              onClick={openCancelReturnExchange}
               className="w-full py-4 rounded-2xl text-[11px] font-bold uppercase tracking-wider text-red-500 bg-red-500/5 border border-red-500/15 hover:bg-red-500/10 transition-all active:scale-[0.98]"
             >
               Cancel Return/Exchange Request
@@ -811,68 +812,72 @@ export default function OrderDetailsPage() {
         )}
       </AnimatePresence>
 
-      {/* Custom Cancellation Modal */}
-      <AnimatePresence>
-        {showCancelModal && (
-          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowCancelModal(false)}
-              className="absolute inset-0 bg-black/85 backdrop-blur-md"
-            />
-            
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md glass-card p-8 rounded-[32px] border border-foreground/15 shadow-2xl space-y-6 bg-[#090909]/95 text-left z-10"
-            >
-              <div className="flex items-center gap-3 text-red-500">
-                <AlertCircle className="w-5 h-5" />
-                <h3 className="text-[12px] font-black uppercase tracking-[0.25em]">Cancel Order</h3>
-              </div>
+      <AppDialog
+        open={showCancelModal}
+        onClose={() => !cancelling && setShowCancelModal(false)}
+        title="Cancel Order"
+        tone="danger"
+        confirmLabel="Confirm Cancel"
+        loading={cancelling}
+        onConfirm={handleCancelOrder}
+        description={
+          <>
+            <p>
+              Are you sure you want to cancel order{" "}
+              <span className="text-foreground font-semibold">
+                {order?.orderNumber || order?.id}
+              </span>
+              ?
+            </p>
+            <p className="text-[10px] text-foreground/45 leading-normal">
+              All items will be restocked.
+              {isCOD ? (
+                isProcessed ? (
+                  <span className="text-foreground/60 font-medium block mt-1">
+                    Note: Since this order has already been processed, the upfront COD fee of ₹
+                    {Number(order?.codUpfrontPaid || 0)} is non-refundable.
+                  </span>
+                ) : (
+                  <span className="text-emerald-500 font-medium block mt-1">
+                    The upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} will be fully
+                    refunded to your source account.
+                  </span>
+                )
+              ) : (
+                " Any upfront online payments will be refunded to your source account automatically."
+              )}{" "}
+              This action is irreversible.
+            </p>
+          </>
+        }
+      />
 
-              <div className="space-y-3">
-                <p className="text-[12px] text-foreground/70 leading-relaxed font-medium">
-                  Are you sure you want to cancel order <span className="text-foreground font-semibold">{order?.orderNumber || order?.id}</span>?
-                </p>
-                <p className="text-[10px] text-foreground/45 leading-normal">
-                  All items will be restocked.
-                  {isCOD ? (
-                    isProcessed ? (
-                      <span className="text-amber-500/90 font-medium block mt-1">Note: Since this order has already been processed, the upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} is non-refundable.</span>
-                    ) : (
-                      <span className="text-emerald-400/90 font-medium block mt-1">The upfront COD fee of ₹{Number(order?.codUpfrontPaid || 0)} will be fully refunded to your source account.</span>
-                    )
-                  ) : (
-                    " Any upfront online payments will be refunded to your source account automatically."
-                  )}
-                  {" This action is irreversible."}
-                </p>
-              </div>
+      <AppDialog
+        open={showCancelRequestModal}
+        onClose={() => !cancellingRequest && setShowCancelRequestModal(false)}
+        title="Cancel Request"
+        tone="danger"
+        confirmLabel="Cancel Request"
+        loading={cancellingRequest}
+        onConfirm={handleCancelReturnExchange}
+        description={
+          <>
+            <p>Are you sure you want to cancel this return/exchange request?</p>
+            <p className="text-[10px] text-foreground/45">
+              If you paid an exchange upgrade online, we will refund it before cancelling. If the
+              refund cannot be completed, the request will stay open.
+            </p>
+          </>
+        }
+      />
 
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={() => setShowCancelModal(false)}
-                  className="flex-1 py-3 bg-foreground/5 hover:bg-foreground/10 text-foreground/60 text-[10px] font-bold uppercase tracking-wider rounded-xl transition-all"
-                >
-                  Go Back
-                </button>
-                <button
-                  onClick={handleCancelOrder}
-                  disabled={cancelling}
-                  className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white text-[10px] font-bold uppercase tracking-wider rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
-                >
-                  {cancelling && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  Confirm Cancel
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <AppDialog
+        open={requestDialog.open}
+        onClose={() => setRequestDialog((d) => ({ ...d, open: false }))}
+        title={requestDialog.title}
+        description={requestDialog.description}
+        tone={requestDialog.tone || "default"}
+      />
 
     </div>
   );

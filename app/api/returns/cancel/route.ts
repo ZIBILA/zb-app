@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../auth/[...nextauth]/options';
 import prisma from '@/lib/db';
-import { getAppAuthFromRequest, resolveAuthCustomer } from '@/lib/appAuth';
+import { resolveRequestCustomer } from '@/lib/requestAuth';
+import { refundExchangePayment } from '@/lib/services/exchangePaymentRefund';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,29 +16,7 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: Request) {
-  let customer = null;
-  const auth = getAppAuthFromRequest(req);
-
-  if (auth) {
-    customer = await resolveAuthCustomer(auth);
-  } else {
-    const session = await getServerSession(authOptions);
-    if (session && session.user) {
-      const whereClause: any = { OR: [] };
-      if (session.user.email) {
-        whereClause.OR.push({ email: session.user.email });
-      }
-      const sessionUserId = (session.user as any).id;
-      if (sessionUserId) {
-        whereClause.OR.push({ id: sessionUserId });
-      }
-      if (whereClause.OR.length > 0) {
-        customer = await prisma.customer.findFirst({
-          where: whereClause
-        });
-      }
-    }
-  }
+  const customer = await resolveRequestCustomer(req);
 
   if (!customer) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
@@ -89,10 +66,41 @@ export async function POST(req: Request) {
 
     let updated;
     if (isExchange) {
-      updated = await prisma.exchangeRequest.update({
-        where: { id: returnRequestId },
+      // 1. Claim the cancellation so an admin approve / reject cannot race it.
+      const claimed = await prisma.exchangeRequest.updateMany({
+        where: { id: returnRequestId, status: 'pending_approval' },
         data: { status: 'cancelled' },
       });
+      if (claimed.count === 0) {
+        return NextResponse.json({ error: 'This exchange request was just processed and can no longer be cancelled.' }, { status: 409, headers: corsHeaders });
+      }
+
+      // 2. Refund any price difference the customer already paid online (no-op for COD / free).
+      const paidUpgrade = Math.round((Number(exchangeRequest!.priceDifference) || 0) * 100) / 100;
+      const refund = await refundExchangePayment(returnRequestId, customer.email || customer.id, 'Exchange cancelled by customer');
+      if (!refund.ok) {
+        // Un-cancel so the customer can simply try again; nothing is lost.
+        await prisma.exchangeRequest.updateMany({
+          where: { id: returnRequestId, status: 'cancelled' },
+          data: { status: 'pending_approval' },
+        });
+        // Log gateway detail for ops — never expose raw Razorpay/provider text to customers.
+        console.error('[Cancel Return] Exchange refund blocked cancel:', {
+          exchangeRequestId: returnRequestId,
+          priceDifference: paidUpgrade,
+          paymentId: exchangeRequest!.paymentId,
+          error: refund.error,
+          inProgress: refund.inProgress,
+        });
+        return NextResponse.json(
+          {
+            error: refund.inProgress
+              ? 'Your refund is still processing. Please wait a few minutes, then try cancelling again. If it keeps failing, contact support.'
+              : 'We could not complete the refund for your exchange upgrade right now, so the request was left open. Please try again in a few minutes or contact support.',
+          },
+          { status: refund.inProgress ? 409 : 502, headers: corsHeaders }
+        );
+      }
 
       await prisma.$transaction([
         prisma.exchange.updateMany({
@@ -104,11 +112,22 @@ export async function POST(req: Request) {
           data: { status: 'delivered' },
         }),
       ]);
+
+      updated = await prisma.exchangeRequest.findUnique({ where: { id: returnRequestId } });
+      if (refund.ok && refund.refunded) {
+        return NextResponse.json(
+          { success: true, message: `Exchange request cancelled. ₹${refund.amount} will be refunded to your original payment method.`, updated, refund: { amount: refund.amount } },
+          { headers: corsHeaders }
+        );
+      }
     } else {
-      updated = await prisma.returnRequest.update({
-        where: { id: returnRequestId },
+      const claimed = await prisma.returnRequest.updateMany({
+        where: { id: returnRequestId, status: 'pending_approval' },
         data: { status: 'cancelled' },
       });
+      if (claimed.count === 0) {
+        return NextResponse.json({ error: 'This return request was just processed and can no longer be cancelled.' }, { status: 409, headers: corsHeaders });
+      }
 
       await prisma.$transaction([
         prisma.return.updateMany({
@@ -120,6 +139,8 @@ export async function POST(req: Request) {
           data: { status: 'delivered' },
         }),
       ]);
+
+      updated = await prisma.returnRequest.findUnique({ where: { id: returnRequestId } });
     }
 
     return NextResponse.json({ success: true, message: `${isExchange ? 'Exchange' : 'Return'} request cancelled`, updated }, { headers: corsHeaders });

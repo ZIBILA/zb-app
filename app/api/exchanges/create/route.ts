@@ -1,43 +1,83 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "../../auth/[...nextauth]/options";
+import crypto from "crypto";
 import prisma from "@/lib/db";
 import { extractItemVariantAndSize } from "@/lib/utils";
+import { createWithLinkedId } from "@/lib/linkedIds";
+import { requestEligibilityError, isCodOrder, resolveRefundMethod } from "@/lib/returnPolicy";
+import { resolveRequestCustomer } from "@/lib/requestAuth";
+import { resolveRazorpayCredentials } from "@/lib/razorpay-credentials";
+import { assertCapturedCharge } from "@/lib/razorpay-payment";
+
+/**
+ * Prove that a Razorpay payment is real, captured, for at least `expectedRupees`, belongs to the
+ * Razorpay order the client was given, and has not already paid for something else.
+ * Throws a user-safe Error on any failure.
+ */
+async function verifyExchangePayment(
+  expectedRupees: number,
+  details: { razorpayOrderId?: string; razorpayPaymentId?: string; razorpaySignature?: string }
+) {
+  const paymentId = String(details.razorpayPaymentId || "").trim();
+  const razorpayOrderId = String(details.razorpayOrderId || "").trim();
+  const signature = String(details.razorpaySignature || "").trim();
+
+  if (!paymentId || !razorpayOrderId || !signature) {
+    throw new Error("Payment details are incomplete. Please retry the payment.");
+  }
+
+  // Test-mode shortcut only — never accepted in production.
+  if (process.env.NODE_ENV !== "production" && paymentId.startsWith("pay_mock_")) {
+    return paymentId;
+  }
+
+  let credentials;
+  try {
+    credentials = await resolveRazorpayCredentials();
+  } catch {
+    throw new Error("Online payments are not available right now. Please try again later.");
+  }
+
+  const expected = crypto
+    .createHmac("sha256", credentials.key_secret)
+    .update(`${razorpayOrderId}|${paymentId}`)
+    .digest("hex");
+  const a = Buffer.from(signature, "utf-8");
+  const b = Buffer.from(expected, "utf-8");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    throw new Error("Payment signature could not be verified.");
+  }
+
+  try {
+    await assertCapturedCharge({
+      paymentId,
+      credentials,
+      expectedMinRupees: expectedRupees,
+      orderId: razorpayOrderId,
+    });
+  } catch {
+    throw new Error(`We could not confirm this payment with Razorpay. If money was debited, please contact support with payment reference ${paymentId}.`);
+  }
+
+  // One payment can only ever pay for one thing.
+  const [usedByExchange, usedByOrder] = await Promise.all([
+    prisma.exchangeRequest.findFirst({ where: { paymentId }, select: { id: true } }),
+    prisma.order.findFirst({ where: { razorpayPaymentId: paymentId }, select: { id: true } }),
+  ]);
+  if (usedByExchange || usedByOrder) {
+    throw new Error("This payment has already been used.");
+  }
+
+  return paymentId;
+}
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    let resolvedUserId = null;
-
-    if (session && session.user) {
-      const whereClause: any = { OR: [] };
-      if (session.user.email) {
-        whereClause.OR.push({ email: session.user.email });
-      }
-      const sessionUserId = (session.user as any).id;
-      if (sessionUserId) {
-        whereClause.OR.push({ id: sessionUserId });
-      }
-
-      if (whereClause.OR.length > 0) {
-        const customer = await prisma.customer.findFirst({
-          where: whereClause
-        });
-        if (customer) {
-          resolvedUserId = customer.id;
-        }
-      }
-    }
+    // Identity comes from the verified app JWT / web session only — never from the body.
+    const authCustomer = await resolveRequestCustomer(req);
+    const resolvedUserId: string | null = authCustomer?.id ?? null;
 
     const body = await req.json();
-    const { orderId, userId: bodyUserId, exchangeItems, paymentDetails } = body;
-
-    if (!resolvedUserId) {
-      const authHeader = req.headers.get('authorization');
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        resolvedUserId = bodyUserId;
-      }
-    }
+    const { orderId, exchangeItems, paymentDetails } = body;
 
     if (!resolvedUserId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -64,33 +104,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized: Order does not belong to user" }, { status: 403 });
     }
 
-    const isDelivered = String(order.status || '').toLowerCase() === "delivered" ||
-                        String(order.deliveryStatus || '').toLowerCase() === "delivered";
-    if (!isDelivered) {
-      return NextResponse.json({ error: "Exchanges are only available for delivered orders" }, { status: 400 });
-    }
-
-    // 15-Day Delivery Window Enforcement
-    const deliveredTimestamp = order.deliveredAt || order.createdAt;
-    const diffDays = Math.ceil(Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays > 15) {
-      return NextResponse.json({ error: "The 15-day return/exchange window for this order has expired." }, { status: 400 });
-    }
-
-    // Mutual Exclusivity Check: prevent duplicate or conflicting active requests
-    const activeReturn = order.returnRequests?.find(
-      (r: any) => r.status !== 'cancelled' && (!r.reason || !r.reason.includes('EXCHANGE_RETURN'))
-    );
-    const activeExchange = order.exchangeRequests?.find((e: any) => e.status !== 'cancelled');
-
-    if (activeReturn || activeExchange) {
-      return NextResponse.json({
-        error: "An active return or exchange request already exists for this order."
-      }, { status: 400 });
+    // Delivered + inside the window + no other active request (shared with return create).
+    const eligibilityError = requestEligibilityError(order, 'exchange');
+    if (eligibilityError) {
+      return NextResponse.json({ error: eligibilityError }, { status: 400 });
     }
 
     let calculatedPriceDifference = 0;
-    const itemsToExchange = [];
+    const itemsToExchange: any[] = [];
 
     for (const item of exchangeItems) {
       const orderItem = order.items.find((oi: any) => oi.id === item.orderItemId);
@@ -156,7 +177,10 @@ export async function POST(req: Request) {
       // Calculate the price difference for this item
       const originalPrice = orderItem.price || 0;
       const newPrice = newProduct.price || 0;
-      const itemDiff = (newPrice - originalPrice) * (item.quantity || 1);
+      // Never trust the client quantity: 1..ordered quantity, whole units only.
+      const orderedQty = Math.max(1, Math.floor(Number(orderItem.quantity) || 1));
+      const exchangeQty = Math.min(orderedQty, Math.max(1, Math.floor(Number(item.quantity) || 1)));
+      const itemDiff = (newPrice - originalPrice) * exchangeQty;
       calculatedPriceDifference += itemDiff;
 
       const repSize = item.replacementVariant?.size || item.replacementSize || item.selectedSize || item.size || item.replacementVariantTitle || null;
@@ -184,33 +208,60 @@ export async function POST(req: Request) {
       });
     }
 
-    // Extract settlement preference (PREPAID_NOW vs COD_ON_DELIVERY)
-    const rawPref = body.settlementPreference || paymentDetails?.settlementPreference || paymentDetails?.paymentMethod;
-    const settlementPreference = (rawPref === 'COD_ON_DELIVERY' || rawPref === 'cod') ? 'COD_ON_DELIVERY' : 'PREPAID_NOW';
+    // Settlement: positive diff → PREPAID_NOW / COD_ON_DELIVERY;
+    // negative diff → REFUND_ORIGINAL_METHOD / REFUND_STORE_CREDIT (COD forced to store credit).
+    const rawPref = String(
+      body.settlementPreference || paymentDetails?.settlementPreference || paymentDetails?.paymentMethod || ""
+    );
+    const finalPriceDifference = Math.round(calculatedPriceDifference * 100) / 100;
 
-    // Use calculated price difference, fall back to client-provided if available
-    const finalPriceDifference = calculatedPriceDifference || paymentDetails?.priceDifference || 0;
+    let settlementPreference = "PREPAID_NOW";
+    if (finalPriceDifference < 0) {
+      const requestedRefund =
+        rawPref === "REFUND_STORE_CREDIT" || rawPref === "store_credit" ? "store_credit" : "original_method";
+      const refundMethod = resolveRefundMethod(order, requestedRefund);
+      settlementPreference =
+        refundMethod === "store_credit" ? "REFUND_STORE_CREDIT" : "REFUND_ORIGINAL_METHOD";
+      if (isCodOrder(order)) settlementPreference = "REFUND_STORE_CREDIT";
+    } else if (finalPriceDifference > 0) {
+      settlementPreference =
+        rawPref === "COD_ON_DELIVERY" || rawPref === "cod" ? "COD_ON_DELIVERY" : "PREPAID_NOW";
+    }
 
+    // The price difference is ALWAYS the server-calculated value. Any amount sent by the client
+    // (paymentDetails.priceDifference) is ignored.
     let paymentStatus = "not_required";
+    let verifiedPaymentId: string | null = null;
     if (finalPriceDifference > 0) {
       if (settlementPreference === "PREPAID_NOW") {
-        if (!paymentDetails || !paymentDetails.paymentId) {
-          return NextResponse.json({ error: "Payment required for prepaid exchange price difference" }, { status: 400 });
+        try {
+          verifiedPaymentId = await verifyExchangePayment(finalPriceDifference, {
+            razorpayOrderId: paymentDetails?.razorpayOrderId,
+            razorpayPaymentId: paymentDetails?.razorpayPaymentId || paymentDetails?.paymentId,
+            razorpaySignature: paymentDetails?.razorpaySignature,
+          });
+        } catch (payErr: any) {
+          return NextResponse.json({ error: payErr?.message || "Payment verification failed" }, { status: 402 });
         }
         paymentStatus = "paid";
       } else {
         paymentStatus = "cod_pending";
       }
+    } else if (finalPriceDifference < 0) {
+      paymentStatus =
+        settlementPreference === "REFUND_ORIGINAL_METHOD" ? "refund_original_pending" : "refund_credit_pending";
     }
 
-    const exchangeRequest = await prisma.exchangeRequest.create({
+    const exchangeRequest = await createWithLinkedId<any>(prisma as any, 'exchange', order, (displayId) => prisma.exchangeRequest.create({
       data: {
+        displayId,
         orderId,
         customerId: resolvedUserId,
         status: "pending_approval",
         priceDifference: finalPriceDifference,
         paymentStatus,
-        paymentId: paymentDetails?.paymentId || null,
+        // Only ever a payment id that passed verification above.
+        paymentId: verifiedPaymentId,
         settlementPreference: settlementPreference,
         reason: exchangeItems[0]?.reason || "Exchange request",
         exchanges: {
@@ -234,7 +285,7 @@ export async function POST(req: Request) {
           include: { originalProduct: true, newProduct: true }
         }
       }
-    });
+    }));
 
     // Update order status
     await prisma.order.update({
@@ -244,6 +295,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       exchangeRequestId: exchangeRequest.id,
+      displayId: exchangeRequest.displayId,
       orderId: exchangeRequest.orderId,
       status: exchangeRequest.status,
       priceDifference: exchangeRequest.priceDifference,

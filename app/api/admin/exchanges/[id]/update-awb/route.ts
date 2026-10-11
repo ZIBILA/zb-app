@@ -1,124 +1,104 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
-import { trackDelhiveryShipment } from "@/lib/delhivery";
-import { updateOrderTracking } from "@/lib/delhivery/tracking";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+async function POST_impl(req: Request, { params }: { params: { id: string } }) {
   try {
     const { id } = params;
     const body = await req.json();
-    const { awb, type = "reverse" } = body;
+    const { awb } = body;
+    const awbType: 'forward' | 'reverse' = body.type === 'forward' ? 'forward' : 'reverse';
 
-    if (!awb || !awb.trim()) {
+    if (!awb || !String(awb).trim()) {
       return NextResponse.json({ error: "AWB number is required" }, { status: 400 });
     }
 
-    const cleanAwb = awb.trim();
+    const cleanAwb = String(awb).trim();
 
-    const exchangeRequest = await prisma.exchangeRequest.findUnique({
+    const request = await prisma.exchangeRequest.findUnique({
       where: { id },
-      include: {
-        order: true
-      }
+      include: { order: true },
     });
 
-    if (!exchangeRequest) {
+    if (!request) {
       return NextResponse.json({ error: "Exchange request not found" }, { status: 404 });
     }
 
-    if (type === "forward") {
-      // Find replacement order
-      const newOrderId = exchangeRequest.newShopifyOrderId;
-      let replacementOrder = newOrderId
-        ? await prisma.order.findFirst({ where: { shopifyOrderId: newOrderId } })
-        : null;
+    const trackingUrl = `https://shiprocket.co/tracking/${cleanAwb}`;
+    const courier = (request as any).logisticsPartner || "Shiprocket";
 
-      if (!replacementOrder) {
-        replacementOrder = exchangeRequest.order;
+    // An AWB belongs to exactly one shipment. Never re-point another order's parcel at this exchange.
+    const existing = await prisma.shipment.findUnique({ where: { awb: cleanAwb }, select: { orderId: true, type: true } });
+
+    if (awbType === 'forward') {
+      // Outbound parcel of the replacement (G_E_) order — not the original order, not the pickup.
+      if (!request.replacementOrderId) {
+        return NextResponse.json({ error: "The replacement order has not been created yet." }, { status: 400 });
       }
-
-      await prisma.order.update({
-        where: { id: replacementOrder.id },
-        data: { delhivery_awb: cleanAwb }
-      });
-
-      await prisma.shipment.upsert({
-        where: { awb: cleanAwb },
-        update: {
-          courier: "Delhivery",
-          type: "outbound",
-          trackingUrl: `https://www.delhivery.com/track/package/${cleanAwb}`
-        },
-        create: {
-          orderId: replacementOrder.id,
-          awb: cleanAwb,
-          trackingNumber: cleanAwb,
-          courier: "Delhivery",
-          status: "manifested",
-          type: "outbound",
-          trackingUrl: `https://www.delhivery.com/track/package/${cleanAwb}`
-        }
-      });
-    } else {
-      // Reverse AWB update
-      await prisma.exchangeRequest.update({
-        where: { id },
-        data: { reverseAwb: cleanAwb }
-      });
-
-      await prisma.shipment.upsert({
-        where: { awb: cleanAwb },
-        update: {
-          courier: "Delhivery",
-          type: "reverse_pickup",
-          trackingUrl: `https://www.delhivery.com/track/package/${cleanAwb}`
-        },
-        create: {
-          orderId: exchangeRequest.orderId,
-          awb: cleanAwb,
-          trackingNumber: cleanAwb,
-          courier: "Delhivery",
-          status: "pickup_pending",
-          type: "reverse_pickup",
-          trackingUrl: `https://www.delhivery.com/track/package/${cleanAwb}`
-        }
-      });
+      if (existing && existing.orderId !== request.replacementOrderId) {
+        return NextResponse.json({ error: "This AWB is already assigned to a different order." }, { status: 409 });
+      }
+      await prisma.$transaction([
+        prisma.shipment.upsert({
+          where: { awb: cleanAwb },
+          update: { trackingUrl, courier },
+          create: {
+            orderId: request.replacementOrderId,
+            awb: cleanAwb,
+            trackingNumber: cleanAwb,
+            courier,
+            status: "confirmed",
+            type: "outbound",
+            trackingUrl,
+          },
+        }),
+        prisma.order.update({ where: { id: request.replacementOrderId }, data: { delhivery_awb: cleanAwb } }),
+      ]);
+      return NextResponse.json({ success: true, awb: cleanAwb, type: 'forward' });
     }
 
-    // Live sync with Delhivery API
-    let liveTrackingData = null;
-    try {
-      const delhiveryRes = await trackDelhiveryShipment(cleanAwb);
-      const pkg = delhiveryRes?.ShipmentData?.[0]?.Shipment || delhiveryRes?.packages?.[0];
-      if (pkg) {
-        const liveStatus = pkg.Status?.Status || pkg.CurrentStatus || pkg.status || 'Manifested';
-        const location = pkg.Status?.StatusLocation || pkg.ScannedLocation || '';
-        const instructions = pkg.Status?.Instructions || pkg.StatusType || '';
-        const statusDateTime = pkg.Status?.StatusDateTime || new Date().toISOString();
-
-        await updateOrderTracking({
-          awb: cleanAwb,
-          shopifyOrderId: exchangeRequest.order.shopifyOrderId || exchangeRequest.orderId,
-          status: liveStatus,
-          statusDateTime,
-          statusType: liveStatus,
-          location,
-          instructions
-        });
-        liveTrackingData = pkg;
-      }
-    } catch (dErr: any) {
-      console.warn(`[Update Exchange AWB] Delhivery live sync note: ${dErr.message}`);
+    if (existing && existing.orderId !== request.orderId) {
+      return NextResponse.json({ error: "This AWB is already assigned to a different order." }, { status: 409 });
+    }
+    if (existing && existing.type && !['reverse_pickup', 'reverse', 'return', 'exchange_pickup'].includes(String(existing.type))) {
+      return NextResponse.json({ error: "This AWB belongs to the outbound parcel, not a pickup." }, { status: 409 });
     }
 
-    return NextResponse.json({
-      success: true,
-      awb: cleanAwb,
-      type,
-      liveTrackingData
+    await prisma.exchangeRequest.update({
+      where: { id },
+      data: { reverseAwb: cleanAwb },
     });
+
+    await prisma.shipment.upsert({
+      where: { awb: cleanAwb },
+      update: {
+        type: "reverse_pickup",
+        trackingUrl,
+        courier,
+      },
+      create: {
+        orderId: request.orderId,
+        awb: cleanAwb,
+        trackingNumber: cleanAwb,
+        courier,
+        status: "pickup_pending",
+        type: "reverse_pickup",
+        trackingUrl,
+      },
+    });
+
+    return NextResponse.json({ success: true, awb: cleanAwb });
   } catch (error: any) {
     console.error("Update Exchange AWB Error:", error);
     return NextResponse.json({ error: error.message || "Failed to update AWB" }, { status: 500 });
   }
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

@@ -2,18 +2,58 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
 import { enrichSingleItem } from "@/lib/enrichSize";
 import { extractItemVariantAndSize } from "@/lib/utils";
+import { allocateLinkedId, parseLinkedId } from "@/lib/linkedIds";
+import { countByReverseStageFilter } from "@/lib/returnPolicy";
+import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = "force-dynamic";
 
-export async function GET(req: Request) {
+const LIVE_STAGE_FILTERS = new Set([
+  'pending',
+  'pickup_scheduled',
+  'in_transit',
+  'failed',
+  'received',
+]);
+
+const SHIPMENT_SELECT = {
+  awb: true,
+  trackingNumber: true,
+  status: true,
+  currentLocation: true,
+  estimatedDelivery: true,
+  courier: true,
+  trackingUrl: true,
+} as const;
+
+async function GET_impl(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const status = searchParams.get('status');
+    const status = searchParams.get('status') || searchParams.get('stage');
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
+    const isLiveFilter = LIVE_STAGE_FILTERS.has(String(status || '').toLowerCase());
 
-    const where = status && status !== 'all' ? { status } : {};
-    const standaloneWhere = status && status !== 'all' ? { exchangeRequestId: null, status: status.toUpperCase() } : { exchangeRequestId: null };
+    // Linked-id search (R_ZB…, E_ZB…, G_E_ZB…) is resolved server-side so it also finds older requests.
+    const parsedQ = parseLinkedId(searchParams.get('search'));
+    const statusWhere: any =
+      status && status !== 'all' && !isLiveFilter ? { status } : {};
+    const where: any = parsedQ
+      ? {
+          ...statusWhere,
+          OR: [
+          { displayId: { contains: parsedQ.id, mode: 'insensitive' } },
+          { replacementDisplayId: { contains: parsedQ.id, mode: 'insensitive' } },
+          { order: { OR: [{ internalOrderNumber: { contains: parsedQ.baseNumber, mode: 'insensitive' } }, { shopifyOrderName: { contains: parsedQ.baseNumber, mode: 'insensitive' } }] } },
+          ],
+        }
+      : statusWhere;
+    const standaloneWhere = parsedQ
+      ? ({ id: '__none__' } as any)
+      : status && status !== 'all' && !isLiveFilter
+        ? { exchangeRequestId: null, status: status.toUpperCase() }
+        : { exchangeRequestId: null };
 
     // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
     const rowCap = Math.min(Math.max(limit + offset, limit), 100);
@@ -26,7 +66,7 @@ export async function GET(req: Request) {
             include: { originalProduct: true, newProduct: true }
           },
           order: {
-            include: { customer: true }
+            include: { customer: true, shipments: { select: SHIPMENT_SELECT } }
           }
         },
         orderBy: { createdAt: "desc" },
@@ -43,7 +83,7 @@ export async function GET(req: Request) {
           originalProduct: true,
           newProduct: true,
           order: {
-            include: { customer: true }
+            include: { customer: true, shipments: { select: SHIPMENT_SELECT } }
           }
         },
         orderBy: { createdAt: "desc" },
@@ -102,8 +142,19 @@ export async function GET(req: Request) {
     const formattedExchanges = await Promise.all(
       exchanges.map(async (e: any) => {
         const enrichedItems = await Promise.all((e.exchanges || []).map(enrichExchangeItem));
+        const live = liveReverseFields({
+          requestStatus: e.status,
+          receivedAt: e.receivedAt,
+          reverseAwb: e.reverseAwb,
+          shipments: e.order?.shipments,
+        });
         return {
           exchangeRequestId: e.id,
+          displayId: e.displayId || null,
+          replacementDisplayId: e.replacementDisplayId || null,
+          logisticsPartner: e.logisticsPartner || null,
+          reverseAwb: e.reverseAwb || null,
+          receivedAt: e.receivedAt || null,
           orderId: e.orderId,
           shopifyOrderId: e.order?.shopifyOrderName || e.order?.internalOrderNumber || (e.order?.shopifyOrderId && `#${e.order.shopifyOrderId.replace('#', '')}`) || e.orderId,
           orderCreatedAt: e.order?.createdAt,
@@ -117,7 +168,8 @@ export async function GET(req: Request) {
           reason: e.reason,
           returnRequestId: e.returnRequestId,
           newShopifyOrderId: e.newShopifyOrderId,
-          items: enrichedItems
+          items: enrichedItems,
+          ...live,
         };
       })
     );
@@ -147,6 +199,12 @@ export async function GET(req: Request) {
           newSize: se.newSize,
         });
 
+        const live = liveReverseFields({
+          requestStatus: se.status?.toLowerCase(),
+          receivedAt: null,
+          reverseAwb: null,
+          shipments: se.order?.shipments,
+        });
         return {
           exchangeRequestId: se.id,
           orderId: se.orderId,
@@ -163,7 +221,8 @@ export async function GET(req: Request) {
           returnRequestId: null,
           newShopifyOrderId: se.newOrderId,
           isStandalone: true,
-          items: [enrichedItem]
+          items: [enrichedItem],
+          ...live,
         };
       })
     );
@@ -172,25 +231,31 @@ export async function GET(req: Request) {
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
-    const statusCounts: Record<string, number> = {};
+    const statusCounts: Record<string, number> = {
+      ...countByReverseStageFilter(combined.map((e: any) => e.liveStage)),
+    };
     
-    // Aggregate ExchangeRequest status counts
     statusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
-
-    // Aggregate standalone Exchange status counts
     standaloneStatusGroups.forEach((g: any) => {
       const s = g.status.toLowerCase();
       statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
     });
 
-    const paginated = combined.slice(offset, offset + limit);
+    const stageFiltered =
+      isLiveFilter ||
+      status === 'rejected' ||
+      status === 'completed' ||
+      status === 'new_order_created'
+        ? filterByLiveStage(combined, status)
+        : combined;
+    const paginated = stageFiltered.slice(offset, offset + limit);
 
     return NextResponse.json({
       exchanges: paginated,
-      total: combined.length,
+      total: stageFiltered.length,
       statusCounts
     });
   } catch (error: any) {
@@ -199,7 +264,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
+async function POST_impl(req: Request) {
   try {
     const { orderId, customerId, items } = await req.json();
 
@@ -242,9 +307,16 @@ export async function POST(req: Request) {
       };
     }));
 
+    const parentOrder = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!parentOrder) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+    const displayId = await allocateLinkedId(prisma as any, 'exchange', parentOrder);
+
     const exchangeRequest = await prisma.$transaction(async (tx: any) => {
       const er = await tx.exchangeRequest.create({
         data: {
+          displayId,
           orderId,
           customerId,
           status: 'pending_approval',
@@ -281,4 +353,22 @@ export async function POST(req: Request) {
     console.error("Create Admin Exchange Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function GET(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'view');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (GET_impl as any)(req, ctx);
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

@@ -19,6 +19,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment } from '@/lib/logistics/status';
 
 interface CourierOption {
   courier_company_id: number;
@@ -36,8 +37,11 @@ interface ShiprocketOrder {
   status: string;
   paymentMethod: string | null;
   deliveryStatus?: string | null;
+  tracking_status?: string | null;
   delhivery_awb?: string | null;
   shipments?: Array<{
+    type?: string | null;
+    createdAt?: string | Date | null;
     trackingNumber?: string | null;
     awb?: string | null;
     courier?: string | null;
@@ -73,19 +77,45 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   const [selectedCourierId, setSelectedCourierId] = useState<number | null>(null);
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [step, setStep] = useState<FlowStep>('idle');
+  // Optimistic: hide booked UI immediately after a successful cancel, before props refresh.
+  const [locallyCancelled, setLocallyCancelled] = useState(false);
 
   // Never fall back to a cancelled row — that kept showing the old AWB after cancel.
-  const activeShipment = order.shipments?.find((s) => (s.status || '').toLowerCase() !== 'cancelled') || null;
+  // Forward shipment only: never a cancelled one or a return/exchange pickup.
+  const activeShipment = pickActiveOutboundShipment(order.shipments || []);
   const isShipmentCancelled =
-    !activeShipment &&
-    (order.deliveryStatus === 'cancelled' ||
-      Boolean(order.shipments?.some((s) => (s.status || '').toLowerCase() === 'cancelled')));
+    locallyCancelled ||
+    (!activeShipment &&
+      (order.deliveryStatus === 'cancelled' ||
+        Boolean(
+          order.shipments?.some((s) => {
+            if (isReverseShipmentType(s.type)) return false;
+            return normalizeCarrierStatus(s.status) === 'cancelled';
+          })
+        )));
   const shipment = isShipmentCancelled ? null : activeShipment;
   const awb = shipment?.awb || (!isShipmentCancelled ? order.delhivery_awb : null) || null;
   const trackingNumber = shipment?.trackingNumber || null;
-  const status = isShipmentCancelled ? 'cancelled' : (shipment?.status || order.deliveryStatus || 'pending');
+  const status = isShipmentCancelled
+    ? 'cancelled'
+    : (shipment?.status || order.deliveryStatus || 'pending');
+  // Prefer exact Shiprocket phrase from last sync/webhook when present.
+  const statusLabel =
+    order.tracking_status?.trim() ||
+    (isShipmentCancelled ? 'Canceled' : String(status).replace(/_/g, ' '));
+  const isCancellationRequested =
+    normalizeCarrierStatus(status) === 'cancellation_requested' ||
+    normalizeCarrierStatus(order.deliveryStatus) === 'cancellation_requested' ||
+    /cancellation\s*requested/i.test(order.tracking_status || '');
+  /** Void in progress — lock label/invoice/track/cancel. Rebook stays allowed. */
+  const voidLocked = isCancellationRequested;
+  /** Real courier AWB only (not Shiprocket draft/order id). */
+  const hasRealAwb = Boolean(awb && String(awb).trim());
+  const awbPendingDraft = Boolean(trackingNumber && !hasRealAwb && !isShipmentCancelled);
   const trackingUrl =
-    shipment?.trackingUrl || (awb ? `https://shiprocket.co/tracking/${awb}` : null);
+    hasRealAwb
+      ? (shipment?.trackingUrl || `https://shiprocket.co/tracking/${awb}`)
+      : null;
 
   const pickupDone = status === 'pickup_scheduled' || Boolean(
     (() => {
@@ -101,6 +131,14 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   );
 
   const blocked = order.status === 'cancelled' || order.status === 'payment_failed';
+
+  // RTO: parcel is returning (in progress) or already back at the warehouse (received).
+  const shipmentCode = normalizeCarrierStatus(shipment?.status ?? order.deliveryStatus);
+  const isRtoInProgress = shipmentCode === 'rto';
+  const isRtoReceived = shipmentCode === 'rto_delivered';
+  const isRto = isRtoInProgress || isRtoReceived;
+  // Operator chose "Reassign courier" on an RTO order → show the booking flow again.
+  const [reship, setReship] = useState(false);
 
   const dimensionsValid =
     parseFloat(weight) > 0 &&
@@ -163,40 +201,27 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to book shipment');
+      setLocallyCancelled(false);
       setMessage(`AWB ${data.awb} assigned via ${data.courier}`);
       setStep('booked');
+      setReship(false);
       onRefresh();
     } catch (err: any) {
       const raw = String(err.message || '');
-      if (/awb assign failed|could not assign an awb|try a different courier/i.test(raw)) {
+      if (/SHIPROCKET_CONSIGNEE_REJECT|ER0005|suspicious order\/consignee|still rejected this consignee/i.test(raw)) {
         setError(
-          raw.includes('Try a different courier')
+          raw.replace(/^SHIPROCKET_CONSIGNEE_REJECT:\s*/i, '') ||
+            'Courier rejected consignee. Fix phone/name/address or try another courier.'
+        );
+      } else if (/awb assign failed|could not assign an awb|try a different courier/i.test(raw)) {
+        setError(
+          raw.includes('Try a different courier') || raw.includes('(')
             ? raw
             : 'This courier could not assign an AWB. Choose another courier/provider and try again — the shipment is already saved.'
         );
       } else {
         setError(raw || 'Failed to book shipment');
       }
-    } finally {
-      setLoading(null);
-    }
-  };
-
-  const handlePickup = async () => {
-    setLoading('pickup');
-    setError(null);
-    try {
-      const res = await fetch('/api/logistics/generate-pickup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: order.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to schedule pickup');
-      setMessage(data.message || 'Pickup scheduled');
-      onRefresh();
-    } catch (err: any) {
-      setError(err.message || 'Request failed');
     } finally {
       setLoading(null);
     }
@@ -222,15 +247,36 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
     }
   };
 
+  const handleMarkRtoReceived = async () => {
+    if (voidLocked) return;
+    setLoading('rto');
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/logistics/rto-received', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: order.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || 'Failed to mark RTO received');
+      setMessage('RTO marked as received — you can now reassign a courier.');
+      onRefresh();
+    } catch (err: any) {
+      setError(err.message || 'Request failed');
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const [showCancelModal, setShowCancelModal] = useState(false);
 
   const handleCancel = () => {
-    if (!awb && !trackingNumber) return;
+    if (voidLocked || (!hasRealAwb && !trackingNumber)) return;
     setShowCancelModal(true);
   };
 
   const handleConfirmCancel = async () => {
-    if (!awb && !trackingNumber) return;
+    if (voidLocked || (!hasRealAwb && !trackingNumber)) return;
     setLoading('cancel');
     setError(null);
     try {
@@ -240,10 +286,24 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
         body: JSON.stringify({ awb: awb || trackingNumber }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || data.message || 'Failed to cancel');
-      setMessage('Shipment cancelled — courier AWB has been voided.');
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || data.message || 'Failed to cancel');
+      }
       setShowCancelModal(false);
-      onRefresh();
+      const finalized =
+        /cancelled successfully/i.test(String(data.message || '')) || !hasRealAwb;
+      if (finalized) {
+        setMessage('Shipment cancelled — you can assign a new courier now.');
+        setLocallyCancelled(true);
+        setReship(false);
+      } else {
+        setMessage(
+          'Cancel sent to Shiprocket. Label/track locked — you can assign a new courier while void completes.'
+        );
+        setLocallyCancelled(false);
+        setReship(true);
+      }
+      await Promise.resolve(onRefresh());
     } catch (err: any) {
       setError(err.message || 'Request failed');
     } finally {
@@ -261,21 +321,55 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
   };
 
   // ─── AWB Already Assigned ──────────────────────────────────────────────────
-  if (awb) {
+  if (awb && !reship && !locallyCancelled) {
     return (
       <div className="space-y-6">
         <Alerts error={error} message={message} onClearError={() => setError(null)} />
+        {isRto && (
+          <div className="p-5 rounded-2xl bg-rose-500/10 border border-rose-500/20 space-y-3">
+            <p className="text-[11px] font-bold text-rose-400 uppercase tracking-widest">
+              {isRtoReceived ? 'RTO received at warehouse' : 'RTO in progress — parcel is returning to origin'}
+            </p>
+            <p className="text-[12px] text-foreground/60 leading-relaxed">
+              {isRtoReceived
+                ? 'The parcel is back. Reassign this order to a new courier to generate a fresh AWB.'
+                : 'Wait for the carrier to deliver the parcel back, or confirm physical receipt manually.'}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {isRtoReceived ? (
+                <button
+                  type="button"
+                  onClick={() => { setReship(true); setStep('idle'); setCouriers([]); setError(null); }}
+                  disabled={blocked || loading !== null}
+                  className="px-5 py-3 bg-foreground text-background rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Reassign to New Courier
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleMarkRtoReceived}
+                  disabled={voidLocked || loading !== null}
+                  className="px-5 py-3 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading === 'rto' ? 'Saving…' : 'Mark RTO Received'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <div className="p-6 rounded-[24px] bg-foreground/[0.03] border border-foreground/5 space-y-6">
             <div className="space-y-2">
               <p className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest">Status</p>
-              <StatusBadge status={status} />
+              <StatusBadge status={statusLabel} />
             </div>
             <div className="space-y-2">
               <p className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest">AWB Number</p>
               <div className="flex items-center justify-between p-3.5 rounded-xl bg-foreground/5 border border-foreground/10">
                 <span className="font-mono text-xs font-bold text-foreground select-all">{awb}</span>
                 <button
+                  type="button"
                   onClick={handleCopy}
                   className="p-1 rounded hover:bg-foreground/10 transition-colors text-foreground/40 hover:text-foreground"
                   title="Copy AWB"
@@ -284,48 +378,54 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
                 </button>
               </div>
             </div>
-            {pickupDone && (
-              <p className="text-[11px] text-emerald-400/90 font-medium">
-                Pickup has been requested in Shiprocket.
+            {isCancellationRequested ? (
+              <p className="text-[11px] font-medium text-rose-400/90">
+                Cancel sent — label/track locked. Assign a new courier anytime; status keeps syncing until Cancelled.
               </p>
-            )}
+            ) : !isRto ? (
+              <p className={`text-[11px] font-medium ${pickupDone ? 'text-emerald-400/90' : 'text-foreground/50'}`}>
+                {pickupDone
+                  ? 'Pickup queued at your Shiprocket primary address.'
+                  : 'Pickup is requested automatically after AWB assign (Shiprocket primary pickup location).'}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-3 justify-center">
-            <a
-              href={`/api/logistics/label?order_id=${order.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all group"
-            >
-              <Printer className="w-4 h-4" />
-              Download Shipping Label
-            </a>
-            <a
-              href={`/api/logistics/invoice?order_id=${order.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
-            >
-              <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
-              Download Invoice
-            </a>
-            {!pickupDone && (
-              <div className="space-y-2">
-                <button
-                  onClick={handlePickup}
-                  disabled={blocked || loading !== null}
-                  className="w-full flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
-                >
-                  {loading === 'pickup' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
-                  Generate Pickup
-                </button>
-                <p className="text-[11px] text-foreground/40 px-1 leading-relaxed">
-                  AWB only reserves the waybill. Click this when the parcel is packed so the courier schedules a warehouse pickup.
-                </p>
+            {voidLocked ? (
+              <div className="flex items-center justify-center gap-3 py-4 bg-foreground/5 border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-foreground/40 cursor-not-allowed opacity-50">
+                <Printer className="w-4 h-4" />
+                Download Shipping Label
               </div>
+            ) : (
+              <a
+                href={`/api/logistics/label?order_id=${order.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-3 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all group"
+              >
+                <Printer className="w-4 h-4" />
+                Download Shipping Label
+              </a>
+            )}
+            {voidLocked ? (
+              <div className="flex items-center justify-center gap-3 py-4 bg-foreground/5 border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-foreground/40 cursor-not-allowed opacity-50">
+                <FileText className="w-4 h-4" />
+                Download Invoice
+              </div>
+            ) : (
+              <a
+                href={`/api/logistics/invoice?order_id=${order.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+              >
+                <FileText className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
+                Download Invoice
+              </a>
             )}
             <button
+              type="button"
               onClick={handleSync}
               disabled={loading !== null}
               className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
@@ -333,25 +433,45 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
               {loading === 'sync' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanLine className="w-4 h-4" />}
               Sync Status from Shiprocket
             </button>
-            {trackingUrl && (
-              <a
-                href={trackingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+            {trackingUrl ? (
+              voidLocked ? (
+                <div className="flex items-center justify-center gap-3 py-4 bg-foreground/5 border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-foreground/40 cursor-not-allowed opacity-50">
+                  <ExternalLink className="w-4 h-4" />
+                  Track Shipment
+                </div>
+              ) : (
+                <a
+                  href={trackingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-3 py-4 bg-foreground/5 hover:bg-foreground hover:text-background border border-foreground/10 rounded-[20px] text-[11px] font-bold uppercase tracking-widest transition-all group"
+                >
+                  <ExternalLink className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
+                  Track Shipment
+                </a>
+              )
+            ) : null}
+            {isCancellationRequested ? (
+              <button
+                type="button"
+                onClick={() => { setReship(true); setStep('idle'); setCouriers([]); setError(null); setMessage(null); }}
+                disabled={blocked || loading !== null}
+                className="flex items-center justify-center gap-2.5 py-4 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-widest hover:opacity-90 transition-all disabled:opacity-50"
               >
-                <ExternalLink className="w-4 h-4 text-foreground/40 group-hover:text-background transition-colors" />
-                Track Shipment
-              </a>
-            )}
-            <button
-              onClick={handleCancel}
-              disabled={loading !== null}
-              className="flex items-center justify-center gap-2.5 py-4 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50 active:scale-95"
-            >
-              {loading === 'cancel' && <Loader2 className="w-4 h-4 animate-spin" />}
-              Cancel Shipment
-            </button>
+                <Truck className="w-4 h-4" />
+                Assign New Courier
+              </button>
+            ) : !isRto ? (
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={loading !== null}
+                className="flex items-center justify-center gap-2.5 py-4 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-[20px] text-[11px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50 active:scale-95"
+              >
+                {loading === 'cancel' && <Loader2 className="w-4 h-4 animate-spin" />}
+                Cancel Shipment
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -388,16 +508,26 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
 
                 <div className="space-y-4">
                   <p className="text-[13px] text-foreground/80 leading-relaxed font-medium">
-                    Are you sure you want to cancel the shipment for AWB{' '}
+                    Are you sure you want to cancel{' '}
+                    {hasRealAwb ? 'the shipment for AWB' : 'this Shiprocket draft'}{' '}
                     <strong className="text-foreground font-mono bg-foreground/5 px-2 py-0.5 rounded border border-foreground/10">
                       {awb || trackingNumber}
                     </strong>
                     ?
                   </p>
                   <div className="p-4 rounded-2xl bg-rose-500/5 border border-rose-500/10 space-y-2 text-[11px] text-rose-400/90 font-medium">
-                    <p>• The AWB will be immediately voided in Shiprocket.</p>
-                    <p>• Charged freight balance will be refunded to your Shiprocket wallet.</p>
-                    <p>• This action is available until courier physically picks up the package.</p>
+                    {hasRealAwb ? (
+                      <>
+                        <p>• Cancel is sent to Shiprocket immediately (stops shipping).</p>
+                        <p>• You can assign a new courier while the AWB void finishes.</p>
+                        <p>• Freight is refunded to your Shiprocket wallet when void completes.</p>
+                      </>
+                    ) : (
+                      <>
+                        <p>• This cancels the AWB-less Shiprocket draft/order.</p>
+                        <p>• You can immediately pick another courier and generate a new AWB.</p>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -440,16 +570,42 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
     <div className="space-y-6">
       <Alerts error={error} message={message} onClearError={() => setError(null)} />
 
-      {trackingNumber && !awb && (
-        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-1">
+      {reship && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-4">
           <p className="text-[11px] font-bold text-amber-400 uppercase tracking-widest">
-            Shiprocket shipment {trackingNumber} — AWB pending
+            {isCancellationRequested
+              ? 'Rebooking while previous AWB voids — choose a new courier'
+              : 'Reassigning after RTO — choose a new courier to generate a fresh AWB'}
           </p>
-          <p className="text-[12px] text-foreground/60">
-            Order already exists in Shiprocket. Re-enter dimensions, pick a courier that fits the weight
-            (avoid Surface 5kg if the parcel is heavier), and book again to resume AWB assign — do not
-            use the old Delhivery panel.
-          </p>
+          <button
+            type="button"
+            onClick={() => setReship(false)}
+            className="text-[10px] font-bold uppercase tracking-widest text-foreground/50 hover:text-foreground"
+          >
+            Back
+          </button>
+        </div>
+      )}
+
+      {awbPendingDraft && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-3">
+          <div className="space-y-1">
+            <p className="text-[11px] font-bold text-amber-400 uppercase tracking-widest">
+              Shiprocket draft {trackingNumber} — AWB not assigned yet
+            </p>
+            <p className="text-[12px] text-foreground/60">
+              Label, invoice, and tracking need a real AWB. Pick a courier below to assign one, or cancel
+              this draft and start fresh with another courier.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={blocked || loading !== null}
+            className="px-5 py-3 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-xl text-[10px] font-bold uppercase tracking-widest text-rose-500 transition-all disabled:opacity-50"
+          >
+            {loading === 'cancel' ? 'Cancelling…' : 'Cancel Draft Shipment'}
+          </button>
         </div>
       )}
 
@@ -599,9 +755,10 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
                 className="pt-2"
               >
                 <button
+                  type="button"
                   onClick={handleBookWithCourier}
                   disabled={blocked || loading !== null}
-                  className="w-full flex items-center justify-center gap-3 py-5 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-[0.25em] hover:opacity-90 active:scale-95 transition-all disabled:opacity-50"
+                  className="w-full flex items-center justify-center gap-3 py-5 bg-foreground text-background rounded-[20px] text-[11px] font-bold uppercase tracking-[0.25em] hover:opacity-90 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading === 'book' ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -617,6 +774,63 @@ export default function ShiprocketActions({ order, onRefresh }: ShiprocketAction
             )}
           </motion.div>
         )}
+
+        <AnimatePresence>
+          {showCancelModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => loading !== 'cancel' && setShowCancelModal(false)}
+                className="absolute inset-0 bg-background/80 backdrop-blur-md"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 16 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 16 }}
+                className="relative w-full max-w-md p-8 md:p-10 rounded-[36px] bg-[#0C0C0C]/95 border border-foreground/10 shadow-2xl space-y-6 text-left z-10"
+              >
+                <div className="flex items-center gap-4 text-rose-500">
+                  <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold uppercase tracking-tight text-foreground leading-none">
+                      {hasRealAwb ? 'Cancel Shipment' : 'Cancel Draft'}
+                    </h3>
+                    <p className="text-[10px] text-rose-500/70 uppercase tracking-[0.2em] mt-1.5 font-bold">
+                      Shiprocket Logistics Hub
+                    </p>
+                  </div>
+                </div>
+                <p className="text-[13px] text-foreground/80 leading-relaxed font-medium">
+                  Cancel {hasRealAwb ? 'AWB' : 'draft'}{' '}
+                  <strong className="font-mono">{awb || trackingNumber}</strong> in Shiprocket?
+                </p>
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCancelModal(false)}
+                    disabled={loading === 'cancel'}
+                    className="flex-1 py-4 bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 text-foreground/60 text-[10px] font-bold uppercase tracking-widest rounded-2xl transition-all disabled:opacity-50"
+                  >
+                    Keep
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmCancel}
+                    disabled={loading === 'cancel'}
+                    className="flex-1 py-4 bg-rose-500 hover:bg-rose-600 text-white text-[10px] font-bold uppercase tracking-widest rounded-2xl transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {loading === 'cancel' ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    Confirm Cancel
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
 
         {step === 'couriers' && couriers.length === 0 && (
           <motion.div
@@ -679,9 +893,21 @@ function Alerts({
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20"
+          className={`p-4 rounded-2xl border ${
+            /cancellation requested|actions locked/i.test(message)
+              ? 'bg-rose-500/10 border-rose-500/20'
+              : 'bg-emerald-500/10 border-emerald-500/20'
+          }`}
         >
-          <p className="text-emerald-400 text-[11px] uppercase tracking-widest font-bold">{message}</p>
+          <p
+            className={`text-[11px] uppercase tracking-widest font-bold ${
+              /cancellation requested|actions locked/i.test(message)
+                ? 'text-rose-400'
+                : 'text-emerald-400'
+            }`}
+          >
+            {message}
+          </p>
         </motion.div>
       )}
     </AnimatePresence>

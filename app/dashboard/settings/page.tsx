@@ -12,7 +12,6 @@ interface SettingsData {
   id: string;
   shopDomain: string;
   accessToken: string;
-  delhiveryApiKey: string;
   razorpayKeyId: string;
   razorpayKeySecret: string;
   codUpfrontAmount: number | string;
@@ -145,7 +144,7 @@ export default function AdminSettingsPage() {
     setSaveStatus('idle');
 
     const adminKeys: (keyof SettingsData)[] = [
-        'shopDomain', 'accessToken', 'delhiveryApiKey',
+        'shopDomain', 'accessToken',
         'razorpayKeyId', 'razorpayKeySecret', 'codUpfrontAmount',
         'shiprocketEmail', 'shiprocketPassword', 'shiprocketToken', 'webhookSecret',
         'whatsappPhoneId', 'whatsappToken', 'firebaseProjectId', 'firebaseClientEmail',
@@ -256,9 +255,6 @@ export default function AdminSettingsPage() {
 
         {/* Logistics Group */}
         <SettingsGroup title="Logistics Services" icon={Truck}>
-           <SettingsRow label="Delhivery API Key" icon={Zap} description="Primary logistics API">
-              <InputField value={settings.delhiveryApiKey!} onChange={set('delhiveryApiKey')} secret />
-           </SettingsRow>
            <SettingsRow label="Shiprocket Email" icon={Zap} description="Login Email">
               <InputField value={settings.shiprocketEmail!} onChange={set('shiprocketEmail')} />
            </SettingsRow>

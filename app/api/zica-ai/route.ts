@@ -170,9 +170,12 @@ export async function POST(req: NextRequest) {
       conversationHistory: returnConversationHistory.slice(-30),
     });
   } catch (error: any) {
-    console.error("[Zica AI] OpenAI API error:", error?.status, error?.message || error);
-
     const statusCode = error?.status || 500;
+    const { shouldLogThrottled } = await import("@/lib/log-throttle");
+    if (shouldLogThrottled(`openai:zica:${statusCode}`, 120_000)) {
+      console.warn("[Zica AI] OpenAI API error:", statusCode, error?.message || error);
+    }
+
     let userMessage = "Zica AI is temporarily unavailable. Please try again.";
 
     if (error?.message?.includes("API key") || error?.message?.includes("api_key") || statusCode === 401) {

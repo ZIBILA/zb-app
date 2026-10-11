@@ -35,17 +35,6 @@ export default function WebStoreProductsPage() {
   const [saveStatus, setSaveStatus] = useState<Record<string, 'idle' | 'success' | 'error'>>({});
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
 
-  // Tabs: 'moodboard' or 'sorting'
-  const [activeTab, setActiveTab] = useState<"moodboard" | "sorting">("moodboard");
-
-  // Shop All Link state
-  const [shopAllLink, setShopAllLink] = useState("/collections/all");
-  const [savingShopAll, setSavingShopAll] = useState(false);
-  const [shopAllSaved, setShopAllSaved] = useState(false);
-  const [collections, setCollections] = useState<{ id: string; title: string; handle: string }[]>([]);
-  const [shopSettings, setShopSettings] = useState<any>(null);
-  const [savingOrder, setSavingOrder] = useState(false);
-
   // Load data
   useEffect(() => {
     loadData();
@@ -54,11 +43,9 @@ export default function WebStoreProductsPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [productsRes, moodBoardsRes, settingsRes, collectionsRes] = await Promise.all([
+      const [productsRes, moodBoardsRes] = await Promise.all([
         fetch("/api/shopify/products?pageSize=250"),
         fetch("/api/admin/mood-board"),
-        fetch("/api/admin/settings"),
-        fetch("/api/shopify/collections?all=true"),
       ]);
 
       let loadedProducts: ShopifyProduct[] = [];
@@ -80,37 +67,8 @@ export default function WebStoreProductsPage() {
         setMoodBoards(map);
       }
 
-      if (settingsRes.ok) {
-        const settings = await settingsRes.json();
-        setShopSettings(settings);
-        setShopAllLink(settings.shopAllLink || "/collections/all");
-
-        // Custom sort products list according to the collectionProductOrders mapping
-        if (settings.collectionProductOrders) {
-          try {
-            const ordersMap = JSON.parse(settings.collectionProductOrders);
-            const orderedProductIds = ordersMap["all"] || ordersMap["0"] || [];
-            if (Array.isArray(orderedProductIds) && orderedProductIds.length > 0) {
-              const orderMap = new Map<string, number>();
-              orderedProductIds.forEach((id, idx) => orderMap.set(String(id), idx));
-              loadedProducts.sort((a, b) => {
-                const aIdx = orderMap.has(String(a.id)) ? orderMap.get(String(a.id))! : 999999;
-                const bIdx = orderMap.has(String(b.id)) ? orderMap.get(String(b.id))! : 999999;
-                return aIdx - bIdx;
-              });
-            }
-          } catch (e) {
-            console.error("Error sorting products:", e);
-          }
-        }
-      }
-
       setProducts(loadedProducts);
 
-      if (collectionsRes.ok) {
-        const cols = await collectionsRes.json();
-        setCollections(Array.isArray(cols) ? cols : []);
-      }
     } catch (err) {
       toast.error("Failed to load data");
     } finally {
@@ -224,61 +182,6 @@ export default function WebStoreProductsPage() {
     }
   };
 
-  // Save Shop All Link
-  const saveShopAllLink = async () => {
-    setSavingShopAll(true);
-    try {
-      const res = await fetch("/api/admin/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          shopId: shopSettings?.id,
-          shopDomain: shopSettings?.shopDomain || "8tiahf-bk.myshopify.com",
-          shopAllLink,
-        }),
-      });
-      if (!res.ok) throw new Error("Save failed");
-      setShopAllSaved(true);
-      toast.success("Shop All link updated");
-      setTimeout(() => setShopAllSaved(false), 3000);
-    } catch {
-      toast.error("Failed to save Shop All link");
-    } finally {
-      setSavingShopAll(false);
-    }
-  };
-
-  // Save Sort Order of Products
-  const saveProductsOrder = async () => {
-    setSavingOrder(true);
-    try {
-      const currentOrdersMap = shopSettings?.collectionProductOrders
-        ? JSON.parse(shopSettings.collectionProductOrders)
-        : {};
-
-      const idsStrList = products.map((p) => String(p.id));
-      currentOrdersMap["all"] = idsStrList;
-      currentOrdersMap["0"] = idsStrList;
-
-      const res = await fetch("/api/admin/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          shopId: shopSettings?.id,
-          shopDomain: shopSettings?.shopDomain || "8tiahf-bk.myshopify.com",
-          collectionProductOrders: JSON.stringify(currentOrdersMap),
-        }),
-      });
-
-      if (!res.ok) throw new Error("Save failed");
-      toast.success("All products sort order saved");
-    } catch {
-      toast.error("Failed to save product sort order");
-    } finally {
-      setSavingOrder(false);
-    }
-  };
-
   const productCount = products.length;
   const moodBoardCount = Object.values(moodBoards).filter(
     (imgs) => imgs.length > 0
@@ -309,7 +212,7 @@ export default function WebStoreProductsPage() {
             All Products — Webstore Manager
           </h1>
           <p className="text-[11px] text-foreground/50 tracking-wide max-w-xl">
-            Configure the "Shop All" link destination, manage the sorting/display order of all products on the webstore, and customize mood boards.
+            Customize mood boards. Product order and visibility for the homepage, Shop All and collections is now in "Products & Order".
           </p>
         </div>
         <div className="flex items-center gap-3 text-[9px] font-semibold uppercase tracking-widest text-foreground/50">
@@ -319,97 +222,8 @@ export default function WebStoreProductsPage() {
         </div>
       </div>
 
-      {/* Shop All Link Configuration */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true }}
-        transition={{ duration: 0.5 }}
-        className="space-y-4 relative z-10"
-      >
-        <div className="flex items-center gap-2">
-          <LinkIcon className="w-3.5 h-3.5 text-foreground/60" />
-          <h3 className="text-[9px] font-semibold uppercase tracking-widest text-foreground/50">
-            Shop All Link
-          </h3>
-        </div>
-        <div className="bg-background border border-foreground/[0.05] rounded-xl px-6 py-4 shadow-sm">
-          <div className="flex flex-col md:flex-row md:items-center gap-4">
-            <div className="flex items-center gap-3 flex-1 min-w-0">
-              <div className="w-8 h-8 rounded-md bg-foreground/[0.02] flex items-center justify-center text-foreground/60 border border-foreground/[0.05] shrink-0">
-                <ExternalLink className="w-4 h-4" />
-              </div>
-              <div className="flex flex-col flex-1 min-w-0">
-                <span className="text-[12px] font-medium text-foreground tracking-tight">
-                  Homepage "Shop All" Destination
-                </span>
-                <span className="text-[9px] text-foreground/50 uppercase tracking-widest">
-                  Where the "Shop All" link on the homepage points to
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 w-full md:max-w-sm">
-              <select
-                value={shopAllLink}
-                onChange={(e) => setShopAllLink(e.target.value)}
-                className="flex-1 bg-foreground/[0.02] px-3 py-2.5 rounded-md border border-foreground/[0.05] focus:border-foreground/20 text-[11px] font-medium text-foreground outline-none transition-colors"
-              >
-                <option value="/collections/all">All Products (Default)</option>
-                <option value="/collections">Collections Page</option>
-                {collections.map((c) => (
-                  <option key={c.id} value={`/collections/${c.handle}`}>
-                    {c.title}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={saveShopAllLink}
-                disabled={savingShopAll}
-                className={`flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-md text-[9px] font-medium tracking-[0.1em] uppercase transition-all shrink-0 ${
-                  shopAllSaved
-                    ? "bg-green-500 text-white"
-                    : "bg-foreground text-background hover:opacity-90"
-                } disabled:opacity-50`}
-              >
-                {savingShopAll ? (
-                  <RefreshCw className="w-3 h-3 animate-spin" />
-                ) : shopAllSaved ? (
-                  <CheckCircle className="w-3 h-3" />
-                ) : (
-                  <Save className="w-3 h-3" />
-                )}
-                {savingShopAll ? "…" : shopAllSaved ? "Saved" : "Save"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* Tabs */}
-      <div className="flex border-b border-foreground/[0.06] gap-6 relative z-10">
-        <button
-          onClick={() => setActiveTab("moodboard")}
-          className={`pb-3 text-[10px] font-bold uppercase tracking-widest transition-all ${
-            activeTab === "moodboard"
-              ? "border-b-2 border-foreground text-foreground animate-in fade-in"
-              : "text-foreground/45 hover:text-foreground/60 bg-transparent border-transparent"
-          }`}
-        >
-          Mood Board Images
-        </button>
-        <button
-          onClick={() => setActiveTab("sorting")}
-          className={`pb-3 text-[10px] font-bold uppercase tracking-widest transition-all ${
-            activeTab === "sorting"
-              ? "border-b-2 border-foreground text-foreground animate-in fade-in"
-              : "text-foreground/45 hover:text-foreground/60 bg-transparent border-transparent"
-          }`}
-        >
-          Product Ordering
-        </button>
-      </div>
-
-      {activeTab === "moodboard" ? (
+      {/* Mood boards */}
+      {(
         <div className="space-y-6">
           {/* Search */}
           <div className="relative">
@@ -681,85 +495,6 @@ export default function WebStoreProductsPage() {
               </p>
             </div>
           )}
-        </div>
-      ) : (
-        <div className="space-y-6 animate-in fade-in">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <GripVertical className="w-4 h-4 text-foreground/40" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-foreground/50">
-                All Products Sort Order (Drag & Drop)
-              </span>
-            </div>
-            <button
-              onClick={saveProductsOrder}
-              disabled={savingOrder}
-              className="flex items-center gap-1.5 px-4 py-2.5 rounded-md text-[9px] font-medium tracking-[0.1em] uppercase transition-all bg-foreground text-background hover:opacity-90 disabled:opacity-50 shadow-md"
-            >
-              {savingOrder ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Save className="w-3.5 h-3.5" />
-              )}
-              {savingOrder ? "Saving Order…" : "Save Display Order"}
-            </button>
-          </div>
-
-          <div className="px-4 py-3 bg-foreground/[0.02] rounded-xl border border-foreground/[0.05] flex items-center gap-3">
-            <Info className="w-4 h-4 text-foreground/50 shrink-0" />
-            <p className="text-[10px] font-medium text-foreground/50 uppercase tracking-widest">
-              Drag the grip icon on the left of each item to reorder. The custom order will define the storefront homepage / All Products list display sequence.
-            </p>
-          </div>
-
-          {/* Drag to Reorder List */}
-          <Reorder.Group
-            axis="y"
-            values={products}
-            onReorder={setProducts}
-            className="space-y-2"
-          >
-            {products.map((product) => (
-              <Reorder.Item
-                key={product.id}
-                value={product}
-                className="flex items-center gap-3 px-4 py-3 bg-background border border-foreground/[0.04] rounded-xl shadow-sm select-none"
-              >
-                <div className="cursor-grab active:cursor-grabbing text-foreground/30 hover:text-foreground/50 transition-colors py-1 px-0.5 shrink-0">
-                  <GripVertical className="w-4 h-4" />
-                </div>
-
-                {/* Product image */}
-                <div className="relative w-10 h-10 rounded-md overflow-hidden border border-foreground/[0.06] bg-foreground/[0.02] shrink-0">
-                  {product.image?.src || product.images?.[0]?.src ? (
-                    <NextImage
-                      src={
-                        product.image?.src || product.images?.[0]?.src || ""
-                      }
-                      alt={product.title}
-                      fill
-                      className="object-cover pointer-events-none"
-                      sizes="40px"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <Package className="w-4 h-4 text-foreground/15" />
-                    </div>
-                  )}
-                </div>
-
-                {/* Product info */}
-                <div className="min-w-0 flex-1">
-                  <h4 className="text-[11px] font-semibold text-foreground truncate pointer-events-none">
-                    {product.title}
-                  </h4>
-                  <p className="text-[9px] text-foreground/45 font-mono truncate pointer-events-none">
-                    {product.handle} • ID: {product.id}
-                  </p>
-                </div>
-              </Reorder.Item>
-            ))}
-          </Reorder.Group>
         </div>
       )}
 

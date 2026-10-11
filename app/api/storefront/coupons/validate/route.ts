@@ -124,42 +124,45 @@ export async function POST(req: Request) {
       discount = Math.min(currentDiscountValue, subtotal);
     }
 
-    // Calculate cashback if enabled
+    // Cashback is % of amount paid after instant discount (e.g. ₹10k − 10% = ₹9k → ₹900 coins).
     let cashbackAmount = 0;
     const isCashbackEnabled = !!coupon.cashbackEnabled;
     if (isCashbackEnabled) {
+      const paidBase = Math.max(0, subtotal - discount);
       const cbVal = Number(coupon.cashbackValue || 0);
       if (coupon.cashbackType === "percentage") {
-        cashbackAmount = Math.round((subtotal * cbVal) / 100);
+        cashbackAmount = Math.round((paidBase * cbVal) / 100);
       } else {
-        cashbackAmount = Math.min(cbVal, subtotal);
+        cashbackAmount = Math.min(cbVal, paidBase);
       }
     }
 
     // Format display message
     let displayMessage = "";
-    if (isCashbackEnabled && !coupon.applyAsStoreCredit && discount > 0) {
-      // Double Discount
+    if (isCashbackEnabled && discount > 0) {
+      // Instant discount + Store Credit Earned on amount paid after discount
       displayMessage = currentDiscountType === "percentage"
-        ? `${currentDiscountValue}% instant off + ₹${cashbackAmount.toLocaleString("en-IN")} store credit cashback!`
-        : `₹${currentDiscountValue.toLocaleString("en-IN")} instant off + ₹${cashbackAmount.toLocaleString("en-IN")} store credit cashback!`;
+        ? `${currentDiscountValue}% off + ₹${cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`
+        : `₹${currentDiscountValue.toLocaleString("en-IN")} off + ₹${cashbackAmount.toLocaleString("en-IN")} Store Credit after delivery!`;
     } else if (coupon.applyAsStoreCredit || (isCashbackEnabled && discount === 0)) {
-      // Pure Cashback
       const finalCashback = discount > 0 ? discount : cashbackAmount;
-      displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit cashback will be added!`;
+      displayMessage = `₹${finalCashback.toLocaleString("en-IN")} Store Credit will be earned after delivery!`;
     } else {
-      // Pure Discount
       displayMessage = currentDiscountType === "percentage"
         ? `${currentDiscountValue}% off applied!`
         : `₹${currentDiscountValue.toLocaleString("en-IN")} off applied!`;
     }
+
+    // When both instant discount and store-credit reward exist, discount must reduce the payable total.
+    const applyAsStoreCredit =
+      isCashbackEnabled && discount > 0 ? false : !!coupon.applyAsStoreCredit;
 
     return NextResponse.json({
       valid: true,
       discount,
       discountType: currentDiscountType,
       couponId: coupon.id,
-      applyAsStoreCredit: coupon.applyAsStoreCredit,
+      applyAsStoreCredit,
       cashbackEnabled: isCashbackEnabled,
       cashbackType: coupon.cashbackType || "percentage",
       cashbackValue: Number(coupon.cashbackValue || 0),

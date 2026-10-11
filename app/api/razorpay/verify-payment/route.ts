@@ -16,10 +16,21 @@ export async function POST(req: Request) {
 
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = parsed.data;
 
-    // Handle MOCK payment verification for testing
-    if (razorpay_order_id.startsWith('order_mock_') || razorpay_signature === 'mock_sig_valid') {
+    // Accept mock payments ONLY in non-production with explicit opt-in (same as checkout/complete)
+    const allowMock =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.ALLOW_MOCK_PAYMENTS === 'true' &&
+      (razorpay_order_id.startsWith('order_mock_') || razorpay_signature === 'mock_sig_valid');
+    if (allowMock) {
       paymentLog('warn', 'verify-payment', { orderId: razorpay_order_id, message: 'Mock verification' });
       return NextResponse.json({ success: true, payment_id: razorpay_payment_id, mock: true });
+    }
+    if (razorpay_order_id.startsWith('order_mock_') || razorpay_signature === 'mock_sig_valid') {
+      paymentLog('warn', 'verify-payment', {
+        orderId: razorpay_order_id,
+        message: 'Mock verification rejected (production or ALLOW_MOCK_PAYMENTS unset)',
+      });
+      return NextResponse.json({ success: false, error: 'Mock payments are disabled' }, { status: 400 });
     }
 
     let secret: string;
@@ -46,7 +57,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: 'Invalid payment signature' }, { status: 400 });
     }
 
-    // Update order in DB
+    // Update order in DB only after live capture confirmation
     try {
       const existingOrder = await prisma.order.findFirst({
         where: { razorpayOrderId: razorpay_order_id },
@@ -54,16 +65,58 @@ export async function POST(req: Request) {
       });
 
       const isCOD = (existingOrder?.paymentMethod || "").toLowerCase().trim() === "cod";
+      const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
+      const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
+      const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
+      const creds = await resolveRazorpayCredentials();
+      const expectedMin = isCOD
+        ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
+        : 0;
+      let capturedRupees = 0;
+      try {
+        const payment = await assertCapturedCharge({
+          paymentId: razorpay_payment_id,
+          credentials: creds,
+          expectedMinRupees: expectedMin,
+          orderId: razorpay_order_id,
+        });
+        capturedRupees = paymentAmountRupees(payment);
+      } catch (capErr: any) {
+        paymentLog('warn', 'verify-payment', {
+          orderId: razorpay_order_id,
+          paymentId: razorpay_payment_id,
+          message: `Capture check failed: ${capErr?.message || capErr}`,
+        });
+        return NextResponse.json(
+          { success: false, error: 'Payment not captured on Razorpay' },
+          { status: 402 }
+        );
+      }
+
       const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "PAID";
 
       await prisma.order.updateMany({
         where: { razorpayOrderId: razorpay_order_id },
-        data: { paymentStatus: targetPaymentStatus, status: 'CONFIRMED', razorpayPaymentId: razorpay_payment_id, paymentCapturedAt: new Date() },
+        data: {
+          paymentStatus: targetPaymentStatus,
+          status: 'CONFIRMED',
+          razorpayPaymentId: razorpay_payment_id,
+          paymentCapturedAt: new Date(),
+          ...(isCOD
+            ? { codUpfrontPaid: capturedRupees, codUpfrontPaymentId: razorpay_payment_id }
+            : {}),
+        },
       });
 
       await prisma.webStoreOrder.updateMany({
         where: { razorpayOrderId: razorpay_order_id },
-        data: { paymentStatus: isCOD ? "cod_upfront_paid" : "paid", razorpayPaymentId: razorpay_payment_id },
+        data: {
+          paymentStatus: isCOD ? "cod_upfront_paid" : "paid",
+          razorpayPaymentId: razorpay_payment_id,
+          ...(isCOD
+            ? { codUpfrontPaid: capturedRupees, codUpfrontPaymentId: razorpay_payment_id }
+            : {}),
+        },
       });
 
       // Upgrade WebStoreOrder number from ZBPP prefix to real order number

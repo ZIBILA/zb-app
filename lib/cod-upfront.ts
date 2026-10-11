@@ -93,10 +93,20 @@ export async function getConfiguredCodUpfrontAmount(): Promise<number> {
   }
 }
 
+/** True when value looks like a live Razorpay payment id (not mock / empty). */
+export function hasRazorpayPaymentProof(paymentId?: string | null): boolean {
+  return (
+    typeof paymentId === 'string' &&
+    /^pay_[A-Za-z0-9]+$/.test(paymentId) &&
+    !/^pay_mock_/i.test(paymentId)
+  );
+}
+
 /**
  * Resolve the upfront already paid on an existing order.
- * Prefers stored order fields; only falls back to configured amount when status
- * clearly indicates COD upfront was collected but the amount was never saved.
+ * Prefers stored order fields only when a Razorpay `pay_…` id exists.
+ * Status / stored ₹99 alone must never invent a paid amount
+ * (that caused false "₹99 paid" badges on unpaid / pending orders).
  */
 export function resolveStoredCodUpfrontPaid(opts: {
   storedPaid?: unknown;
@@ -104,8 +114,13 @@ export function resolveStoredCodUpfrontPaid(opts: {
   paymentMethod?: string | null;
   tags?: string | null;
   note?: string | null;
+  /** Razorpay payment id — required before any non-zero amount is trusted */
+  paymentId?: string | null;
   configuredFallback?: number;
 }): number {
+  const hasPaymentProof = hasRazorpayPaymentProof(opts.paymentId);
+  if (!hasPaymentProof) return 0;
+
   const stored = Number(opts.storedPaid);
   if (Number.isFinite(stored) && stored > 0) return Math.round(stored * 100) / 100;
 

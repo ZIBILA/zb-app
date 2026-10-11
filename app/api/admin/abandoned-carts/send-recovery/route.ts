@@ -81,11 +81,8 @@ export async function POST(req: Request) {
         });
 
         if (matchedOrder) {
-          // Auto-link the cart
-          await prisma.cart.update({
-            where: { id: cart.id },
-            data: { status: "converted", convertedOrderId: matchedOrder.id }
-          }).catch(() => {});
+          const { linkCartToOrderSafe } = await import("@/lib/cartConversion");
+          await linkCartToOrderSafe(cart.id, matchedOrder.id).catch(() => {});
           return NextResponse.json({
             error: "Customer has already placed a completed order. Recovery message blocked to prevent duplicate messaging."
           }, { status: 400 });

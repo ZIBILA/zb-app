@@ -10,14 +10,14 @@ import { CollectionJsonLd } from "@/components/seo/CollectionJsonLd";
 import { Breadcrumb } from "@/components/seo/Breadcrumb";
 import { CategorySEOContent } from "@/components/seo/CategorySEOContent";
 
-export const revalidate = 300; // ISR: revalidate every 5 minutes
+export const revalidate = 120; // ISR: re-render at most every 2 minutes (also refreshed instantly by Shopify webhooks / CMS)
 
 export async function generateMetadata({
   params,
 }: {
   params: { handle: string }
 }): Promise<Metadata> {
-  const { collection } = await fetchCollectionByHandle(params.handle, 1).catch(() => ({ collection: null }));
+  const { collection } = await fetchCollectionByHandle(params.handle).catch(() => ({ collection: null }));
 
   const titleMap: Record<string, string> = {
     'graphic-tees': 'Heavyweight Graphic Tees',
@@ -100,10 +100,8 @@ export default async function CollectionPage({
   params: { handle: string };
   searchParams: { sort?: string; min?: string; max?: string; size?: string; view?: string };
 }) {
-  const { collection, products: rawProducts } = await fetchCollectionByHandle(
-    params.handle,
-    48
-  );
+  // No limit: every eligible product, all Shopify pages, in the CMS order.
+  const { collection, products: rawProducts } = await fetchCollectionByHandle(params.handle);
   
   const allCollections = await fetchEnabledCollections('page');
 

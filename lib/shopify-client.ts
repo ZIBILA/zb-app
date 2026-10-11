@@ -12,6 +12,9 @@ export { API_VERSION };
  * Production DigitalOcean must leave those unset and keep using the legacy static token.
  */
 export function shouldAutoRefreshShopifyAdminToken(): boolean {
+  // Never mint rotating tokens during `next build` static generation —
+  // cache: 'no-store' fetch throws DYNAMIC_SERVER_USAGE and floods build logs.
+  if (process.env.NEXT_PHASE === 'phase-production-build') return false;
   if (process.env.SHOPIFY_AUTO_REFRESH_TOKEN === 'true') return true;
   if (String(process.env.SHOPIFY_ENV || '').toLowerCase() === 'render') return true;
   return String(process.env.NODE_ENV) === 'render';
@@ -249,15 +252,20 @@ export async function shopifyFetch<T>(endpoint: string, params?: Record<string, 
     }
 
     if (res.status === 429 || res.status >= 500) {
+      const { shouldLogThrottled } = await import('@/lib/log-throttle');
       if (res.status === 429 && cached) {
-        console.warn(`[Shopify Client] Rate limited. Serving stale cache for ${endpoint}`);
+        if (shouldLogThrottled(`shopify:429:stale:${endpoint}`, 60_000)) {
+          console.warn(`[Shopify Client] Rate limited. Serving stale cache for ${endpoint}`);
+        }
         return cached.data as T;
       }
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
       const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
-      console.warn(
-        `[Shopify Client] ${endpoint} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
-      );
+      if (shouldLogThrottled(`shopify:${res.status}:${endpoint}`, 30_000)) {
+        console.warn(
+          `[Shopify Client] ${endpoint} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
+        );
+      }
       await new Promise((resolve) => setTimeout(resolve, delay));
       lastError = new Error(`Shopify API ${res.status}: transient failure on ${endpoint}`);
       continue;

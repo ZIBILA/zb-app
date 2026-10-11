@@ -1,4 +1,5 @@
-import { fetchProducts, fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle, FALLBACK_PRODUCTS } from "@/lib/shopify-admin";
+import { fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle } from "@/lib/shopify-admin";
+import { isStorefrontEligible } from "@/lib/storefrontCatalog";
 import prisma, { getStoreSettings, getShopSettings, DEFAULT_SHOP_SETTINGS } from "@/lib/db";
 import NextImage from "next/image";
 import Link from "next/link";
@@ -90,7 +91,8 @@ export default async function Home() {
         return [];
       }
     })(),
-    (async () => {
+    (async (): Promise<ShopifyProduct[]> => {
+      // 1) Products hand-picked in the CMS (in the saved order). Anything no longer live on Shopify is skipped.
       try {
         if (s.homepageProducts && s.homepageProducts.trim()) {
           const { fetchProductById } = await import("@/lib/shopify-admin");
@@ -98,30 +100,34 @@ export default async function Home() {
           const fetched = await Promise.all(
             ids.map((id: string) => fetchProductById(id).catch(() => null))
           );
-          const valid = fetched.filter((p): p is ShopifyProduct => p !== null);
+          const valid = fetched.filter((p): p is ShopifyProduct => p !== null && isStorefrontEligible(p));
           if (valid.length > 0) return valid;
         }
-        
+      } catch (err) {
+        console.error("Error fetching hand-picked homepage products:", err);
+      }
+      // 2) A whole collection, in its CMS order.
+      try {
         if (s.homepageCollection && s.homepageCollection.trim()) {
           const colHandle = s.homepageCollection.trim().toLowerCase().replace(/\s+/g, '-');
-          const result = await fetchCollectionByHandle(colHandle, 24).catch(() => null);
-          if (result && result.products && result.products.length > 0) {
-            return result.products;
-          }
+          const result = await fetchCollectionByHandle(colHandle, 24);
+          if (result.products.length > 0) return result.products;
         }
-        
-        return await fetchProducts(24).catch(() => [] as ShopifyProduct[]);
       } catch (err) {
-        console.error("Error fetching homepage products:", err);
-        return await fetchProducts(24).catch(() => [] as ShopifyProduct[]);
+        console.error("Error fetching homepage collection:", err);
       }
+      return [];
     })(),
   ]);
 
-  // Ensure homepage product list ALWAYS has at least 16 products to fill all sections
-  const products: ShopifyProduct[] = (fetchedProducts && fetchedProducts.length >= 16)
-    ? fetchedProducts
-    : Array.from(new Set([...(fetchedProducts || []), ...FALLBACK_PRODUCTS])).slice(0, 16);
+  // The homepage sections need at least 16 products. When fewer are configured, top up with REAL products
+  // from Shop All (in its CMS order) — never with placeholder products.
+  let products: ShopifyProduct[] = fetchedProducts || [];
+  if (products.length < 16) {
+    const shopAll = await fetchCollectionByHandle('all').catch(() => ({ products: [] as ShopifyProduct[] }));
+    const have = new Set(products.map((p) => p.id));
+    products = [...products, ...shopAll.products.filter((p) => !have.has(p.id))].slice(0, Math.max(16, products.length));
+  }
 
   const nullIfEmpty = (val: string | null | undefined): string | null => {
     if (val === undefined || val === null) return null;

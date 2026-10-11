@@ -14,6 +14,8 @@ import {
   Package
 } from "lucide-react";
 import Link from "next/link";
+import RequestStatusCard from "@/components/RequestStatusCard";
+import AppDialog from "@/components/ui/AppDialog";
 import { useRouter } from "next/navigation";
 
 export default function ReturnsExchangesPage() {
@@ -22,6 +24,12 @@ export default function ReturnsExchangesPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
+  const [alertDialog, setAlertDialog] = useState<{ open: boolean; title: string; description: string; tone?: "default" | "danger" | "success" }>({
+    open: false,
+    title: "",
+    description: "",
+  });
   const [activeTab, setActiveTab] = useState<'all' | 'eligible' | 'active'>('all');
   const router = useRouter();
 
@@ -55,20 +63,36 @@ export default function ReturnsExchangesPage() {
     }
   };
 
-  const handleCancelRequest = async (requestId: string) => {
-    if (!confirm("Are you sure you want to cancel this request?")) return;
-    setCancellingId(requestId);
+  const handleCancelRequest = async () => {
+    if (!cancelTargetId) return;
+    setCancellingId(cancelTargetId);
     try {
       const res = await fetch("/api/returns/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ returnRequestId: requestId })
+        body: JSON.stringify({ returnRequestId: cancelTargetId })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to cancel request");
+      setCancelTargetId(null);
+      setAlertDialog({
+        open: true,
+        title: "Request Cancelled",
+        description: data.message || "Your request has been cancelled.",
+        tone: "success",
+      });
       await fetchOrders();
     } catch (e: any) {
-      alert(e.message || "Error cancelling request");
+      setCancelTargetId(null);
+      const msg = typeof e?.message === "string" && e.message.length < 220
+        ? e.message
+        : "We couldn’t cancel this request right now. Please try again in a few minutes or contact support.";
+      setAlertDialog({
+        open: true,
+        title: "Could Not Cancel",
+        description: msg,
+        tone: "danger",
+      });
     } finally {
       setCancellingId(null);
     }
@@ -251,61 +275,52 @@ export default function ReturnsExchangesPage() {
                     </div>
                   </div>
 
-                  {/* ACTIVE RETURN REQUEST PANEL */}
-                  {activeRet && (
-                    <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <RotateCcw className="w-4 h-4 text-amber-500" />
-                          <h4 className="text-[10px] font-bold uppercase tracking-wider text-amber-500">
-                            Return Request — {activeRet.status.replace(/_/g, ' ')}
-                          </h4>
-                        </div>
-                        {activeRet.status === 'pending_approval' && (
-                          <button
-                            onClick={() => handleCancelRequest(activeRet.id)}
-                            disabled={cancellingId === activeRet.id}
-                            className="px-3 py-1 rounded-lg text-[8px] font-bold uppercase tracking-wider text-red-500 hover:bg-red-500/10 border border-red-500/20 transition-colors"
-                          >
-                            {cancellingId === activeRet.id ? "Cancelling..." : "Cancel Request"}
-                          </button>
-                        )}
-                      </div>
-                      <div className="text-[9.5px] text-foreground/70 space-y-1">
-                        <p>Requested on: {new Date(activeRet.createdAt).toLocaleDateString('en-IN')}</p>
-                        <p>Estimated Refund: <span className="font-bold text-foreground">₹{activeRet.estimatedRefund?.toLocaleString('en-IN')}</span></p>
-                        {activeRet.reason && <p className="text-foreground/50">Reason: {activeRet.reason}</p>}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ACTIVE EXCHANGE REQUEST PANEL */}
-                  {activeEx && (
-                    <div className="p-4 rounded-2xl bg-blue-500/10 border border-blue-500/20 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <ArrowLeftRight className="w-4 h-4 text-blue-500" />
-                          <h4 className="text-[10px] font-bold uppercase tracking-wider text-blue-500">
-                            Exchange Request — {activeEx.status.replace(/_/g, ' ')}
-                          </h4>
-                        </div>
-                        {activeEx.status === 'pending_approval' && (
-                          <button
-                            onClick={() => handleCancelRequest(activeEx.id)}
-                            disabled={cancellingId === activeEx.id}
-                            className="px-3 py-1 rounded-lg text-[8px] font-bold uppercase tracking-wider text-red-500 hover:bg-red-500/10 border border-red-500/20 transition-colors"
-                          >
-                            {cancellingId === activeEx.id ? "Cancelling..." : "Cancel Request"}
-                          </button>
-                        )}
-                      </div>
-                      <div className="text-[9.5px] text-foreground/70 space-y-1">
-                        <p>Requested on: {new Date(activeEx.createdAt).toLocaleDateString('en-IN')}</p>
-                        <p>Price Difference: <span className="font-bold text-foreground">₹{activeEx.priceDifference?.toLocaleString('en-IN')}</span> ({activeEx.paymentStatus})</p>
-                        {activeEx.reason && <p className="text-foreground/50">Reason: {activeEx.reason}</p>}
-                      </div>
-                    </div>
-                  )}
+                  {/* RETURN / EXCHANGE REQUESTS (ids, pickup, refund — same data as admin) */}
+                  {(order.userReturnRequests || [])
+                    .filter((r: any) => r.status !== 'cancelled' && r.summary)
+                    .map((r: any) => (
+                      <RequestStatusCard
+                        key={r.id}
+                        summary={r.summary}
+                        action={
+                          r.status === 'pending_approval' ? (
+                            <button
+                              onClick={() => setCancelTargetId(r.id)}
+                              disabled={cancellingId === r.id}
+                              className="px-3 py-1 rounded-lg text-[8px] font-bold uppercase tracking-wider text-red-500 hover:bg-red-500/10 border border-red-500/20 transition-colors"
+                            >
+                              {cancellingId === r.id ? "Cancelling..." : "Cancel Request"}
+                            </button>
+                          ) : null
+                        }
+                      >
+                        <p>Requested on: {new Date(r.createdAt).toLocaleDateString('en-IN')}</p>
+                        {r.reason && <p className="text-foreground/50">Reason: {r.reason}</p>}
+                      </RequestStatusCard>
+                    ))}
+                  {(order.userExchangeRequests || [])
+                    .filter((e: any) => e.status !== 'cancelled' && e.summary)
+                    .map((e: any) => (
+                      <RequestStatusCard
+                        key={e.id}
+                        summary={e.summary}
+                        action={
+                          e.status === 'pending_approval' ? (
+                            <button
+                              onClick={() => setCancelTargetId(e.id)}
+                              disabled={cancellingId === e.id}
+                              className="px-3 py-1 rounded-lg text-[8px] font-bold uppercase tracking-wider text-red-500 hover:bg-red-500/10 border border-red-500/20 transition-colors"
+                            >
+                              {cancellingId === e.id ? "Cancelling..." : "Cancel Request"}
+                            </button>
+                          ) : null
+                        }
+                      >
+                        <p>Requested on: {new Date(e.createdAt).toLocaleDateString('en-IN')}</p>
+                        <p>Price Difference: <span className="font-bold text-foreground">₹{e.priceDifference?.toLocaleString('en-IN')}</span> ({String(e.paymentStatus || '').replace(/_/g, ' ')})</p>
+                        {e.reason && <p className="text-foreground/50">Reason: {e.reason}</p>}
+                      </RequestStatusCard>
+                    ))}
 
                   {/* ELIGIBLE ACTIONS */}
                   {order.isEligible && (
@@ -346,6 +361,25 @@ export default function ReturnsExchangesPage() {
           </div>
         )}
       </main>
+
+      <AppDialog
+        open={!!cancelTargetId}
+        onClose={() => !cancellingId && setCancelTargetId(null)}
+        title="Cancel Request"
+        tone="danger"
+        confirmLabel="Cancel Request"
+        loading={!!cancellingId}
+        onConfirm={handleCancelRequest}
+        description="Are you sure you want to cancel this return/exchange request? If an exchange upgrade was paid online, we will refund it before cancelling."
+      />
+
+      <AppDialog
+        open={alertDialog.open}
+        onClose={() => setAlertDialog((d) => ({ ...d, open: false }))}
+        title={alertDialog.title}
+        description={alertDialog.description}
+        tone={alertDialog.tone || "default"}
+      />
     </div>
   );
 }

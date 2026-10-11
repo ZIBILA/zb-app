@@ -46,7 +46,14 @@ export async function registerWebhooks() {
       'fulfillments/create',
       'fulfillments/update',
       'refunds/create',
-      'inventory_levels/update'
+      'inventory_levels/update',
+      // Storefront catalogue: product / collection edits must reach the live site immediately.
+      'products/create',
+      'products/update',
+      'products/delete',
+      'collections/create',
+      'collections/update',
+      'collections/delete',
     ];
 
     // Fetch existing webhooks

@@ -120,18 +120,24 @@ export async function sendZohoEmail(payload: ZohoEmailPayload): Promise<{ succes
     const result = await res.json();
 
     if (!res.ok || result.status?.code !== 200) {
-      console.error("[ZohoMail] Send error:", result);
+      const { shouldLogThrottled } = await import('@/lib/log-throttle');
+      const desc = result.status?.description || JSON.stringify(result).slice(0, 120);
+      if (shouldLogThrottled(`zoho:send:${desc.slice(0, 40)}`, 120_000)) {
+        console.warn("[ZohoMail] Send error:", desc);
+      }
       return { success: false, message: `Zoho API error: ${result.status?.description || JSON.stringify(result)}` };
     }
 
-    console.log(`[ZohoMail] ✅ Email sent: "${payload.subject}" → ${payload.toAddress}`);
     return {
       success: true,
       message: `Email sent to ${payload.toAddress}`,
       messageId: result.data?.messageId,
     };
   } catch (error: any) {
-    console.error("[ZohoMail] Error:", error);
+    const { shouldLogThrottled } = await import('@/lib/log-throttle');
+    if (shouldLogThrottled('zoho:send:exception', 120_000)) {
+      console.warn("[ZohoMail] Error:", error?.message || error);
+    }
     return { success: false, message: error.message || "Failed to send email" };
   }
 }

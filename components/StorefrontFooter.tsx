@@ -1,57 +1,17 @@
-import prisma, { getShopSettings } from "@/lib/db";
 import StorefrontFooterClient from "./StorefrontFooterClient";
+import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
 
+export { getStorefrontFooterData } from "@/lib/storefront-footer-data";
+export type { StorefrontFooterData } from "@/lib/storefront-footer-data";
+
+/** Optional direct render (e.g. pages that don't use LayoutWrapper). */
 export default async function StorefrontFooter() {
-  let shop = null;
-  let policies: any[] = [];
-  let socialLinks: any[] = [];
-
-  try {
-    const [shopData, policiesData, socialLinksData] = await Promise.all([
-      getShopSettings().catch(() => null),
-      prisma.policy.findMany({ 
-        select: { handle: true, title: true },
-        orderBy: { title: 'asc' }
-      }).catch(() => []),
-      prisma.storeSettings.findUnique({
-        where: { pageKey: 'social_links' }
-      }).catch(() => null)
-    ]);
-    shop = shopData;
-    policies = policiesData as any[];
-    
-    if (socialLinksData?.metaDescription) {
-      try {
-        socialLinks = JSON.parse(socialLinksData.metaDescription);
-      } catch (e) {
-        console.error("[Footer] Error parsing social links JSON:", e);
-      }
-    }
-  } catch (error) {
-    console.error("[Footer] Error querying settings/policies:", error);
-  }
-
-  // Serialize props to pass across Server-Client boundary cleanly
-  const serializedShop = shop ? {
-    domain: (shop as any).domain,
-    instagramUrl: (shop as any).instagramUrl || undefined,
-    appleUrl: (shop as any).appleUrl || undefined,
-    spotifyUrl: (shop as any).spotifyUrl || undefined,
-    youtubeUrl: (shop as any).youtubeUrl || undefined,
-    footerLogo3dUrl: (shop as any).footerLogo3dUrl || undefined,
-    footerVideo: (shop as any).footerVideo || undefined,
-  } : null;
-
-  const serializedPolicies = policies.map((p) => ({
-    handle: p.handle,
-    title: p.title,
-  }));
-
+  const data = await getStorefrontFooterData();
   return (
-    <StorefrontFooterClient 
-      shop={serializedShop} 
-      policies={serializedPolicies} 
-      socialLinks={socialLinks} 
+    <StorefrontFooterClient
+      shop={data.shop}
+      policies={data.policies}
+      socialLinks={data.socialLinks}
     />
   );
 }

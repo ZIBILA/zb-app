@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { resolveRequestCustomer } from "@/lib/requestAuth";
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
-    const authHeader = req.headers.get('authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // Must be a verified app token or web session — a bare "Bearer x" header is not enough.
+    const customer = await resolveRequestCustomer(req);
+    if (!customer) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -13,11 +17,14 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const returnRequest = await prisma.returnRequest.findUnique({
       where: { id },
       include: {
-        returns: true
+        returns: true,
+        order: { select: { customerId: true } },
       }
     });
 
-    if (!returnRequest) {
+    // Same response for "missing" and "not yours" so ids can't be probed.
+    const ownerId = returnRequest?.customerId || returnRequest?.order?.customerId || null;
+    if (!returnRequest || ownerId !== customer.id) {
       return NextResponse.json({ error: "Return request not found" }, { status: 404 });
     }
 
@@ -33,6 +40,6 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     });
   } catch (error: any) {
     console.error("Get Return Request Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }

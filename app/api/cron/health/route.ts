@@ -8,19 +8,21 @@ export async function GET(req: NextRequest) {
     const logs = await prisma.syncLog.findMany({
       where: {
         action: {
-          in: ["CRON_PING_ORDER_SYNC", "CRON_PING_WHATSAPP_SCHEDULER"]
+          in: ["CRON_PING_ORDER_SYNC", "CRON_PING_WHATSAPP_SCHEDULER", "CRON_PING_SHIPMENT_SYNC"]
         }
       },
       orderBy: { createdAt: "desc" },
-      take: 10
+      take: 30
     });
 
     const lastOrderSync = logs.find((l: any) => l.action === "CRON_PING_ORDER_SYNC");
     const lastWhatsApp = logs.find((l: any) => l.action === "CRON_PING_WHATSAPP_SCHEDULER");
+    const lastShipmentSync = logs.find((l: any) => l.action === "CRON_PING_SHIPMENT_SYNC");
 
     const now = Date.now();
     const orderSyncAgeMin = lastOrderSync ? Math.floor((now - new Date(lastOrderSync.createdAt).getTime()) / 60000) : null;
     const whatsAppAgeMin = lastWhatsApp ? Math.floor((now - new Date(lastWhatsApp.createdAt).getTime()) / 60000) : null;
+    const shipmentSyncAgeMin = lastShipmentSync ? Math.floor((now - new Date(lastShipmentSync.createdAt).getTime()) / 60000) : null;
 
     return NextResponse.json({
       success: true,
@@ -34,6 +36,11 @@ export async function GET(req: NextRequest) {
           lastPing: lastWhatsApp?.createdAt || null,
           ageMinutes: whatsAppAgeMin,
           isHealthy: whatsAppAgeMin !== null && whatsAppAgeMin <= 30
+        },
+        shipmentSync: {
+          lastPing: lastShipmentSync?.createdAt || null,
+          ageMinutes: shipmentSyncAgeMin,
+          isHealthy: shipmentSyncAgeMin !== null && shipmentSyncAgeMin <= 45
         }
       }
     });

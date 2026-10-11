@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/db";
+import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 
 /**
  * POST /api/admin/exchanges/[id]/receive
  * Mark exchange items as received at the facility.
  * Optionally pass quality check status.
  */
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+async function POST_impl(req: Request, { params }: { params: { id: string } }) {
   try {
     const { id } = params;
     const body = await req.json();
@@ -23,8 +24,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       return NextResponse.json({ error: "Exchange request not found" }, { status: 404 });
     }
 
-    if (!["approved", "return_created"].includes(exchangeRequest.status)) {
-      return NextResponse.json({ error: "Exchange must be in approved/return_created status to mark as received" }, { status: 400 });
+    if (!["approved", "return_created", "in_transit", "delivered_to_warehouse", "approved_pickup_failed"].includes(exchangeRequest.status)) {
+      return NextResponse.json({ error: `Exchange in status "${exchangeRequest.status}" cannot be marked as received` }, { status: 400 });
     }
 
     const result = await prisma.$transaction(async (tx: any) => {
@@ -36,6 +37,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         where: { id },
         data: {
           status: newStatus,
+          receivedAt: new Date(),
         }
       });
 
@@ -53,7 +55,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       if (exchangeRequest.returnRequestId) {
         await tx.returnRequest.update({
           where: { id: exchangeRequest.returnRequestId },
-          data: { status: "received" }
+          data: { status: "received", receivedAt: new Date() }
         }).catch(() => {
           // Ignore if return request not found
         });
@@ -97,12 +99,49 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       }
     }
 
+    // Auto-create G_E_ replacement order once QC passes (ops still books outbound AWB).
+    let replacement: any = null;
+    if (result.status === 'qc_passed') {
+      try {
+        const { createExchangeReplacementOrder } = await import(
+          '@/lib/services/exchangeReplacementOrder'
+        );
+        replacement = await createExchangeReplacementOrder(id);
+        if (!replacement.success) {
+          console.error('[Exchange Receive] Auto replacement create failed:', replacement.error);
+        } else {
+          console.log(
+            `[Exchange Receive] Auto-created replacement ${replacement.replacementDisplayId}`
+          );
+        }
+      } catch (createErr: any) {
+        console.error('[Exchange Receive] Auto replacement create error:', createErr?.message || createErr);
+      }
+    }
+
     return NextResponse.json({
       success: true,
-      exchangeRequest: result
+      exchangeRequest: replacement?.success ? replacement.exchangeRequest : result,
+      replacement: replacement?.success
+        ? {
+            replacementDisplayId: replacement.replacementDisplayId,
+            localOrderId: replacement.localOrderId,
+            shopifyOrderId: replacement.shopifyOrderId,
+          }
+        : null,
+      replacementError: replacement && !replacement.success ? replacement.error : null,
     });
   } catch (error: any) {
     console.error("Receive Exchange Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+export async function POST(req: Request, ctx: any) {
+  try {
+    await requirePermission('RETURNS_EXCHANGES', 'edit');
+  } catch (authError) {
+    return handleAuthError(authError);
+  }
+  return (POST_impl as any)(req, ctx);
 }

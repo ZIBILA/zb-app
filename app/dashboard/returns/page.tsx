@@ -8,15 +8,25 @@ import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import { formatDisplayOrderNumber } from "@/lib/formatOrderNumber";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
+import { parseLinkedId } from "@/lib/linkedIds";
+import { COD_STORE_CREDIT_MESSAGE } from "@/lib/returnPolicy";
 
 type ReturnRequest = {
   returnRequestId: string;
+  displayId?: string | null;
+  logisticsPartner?: string | null;
+  reverseAwb?: string | null;
+  receivedAt?: string | null;
+  /** COD orders can only be refunded as Store Credit — no method choice. */
+  isCod?: boolean;
   orderId: string;
   shopifyOrderId: string;
   userId: string;
   userName: string;
   userEmail: string;
   status: string;
+  liveStage?: string | null;
+  liveStageLabel?: string | null;
   estimatedRefund: number;
   actualRefund: number | null;
   createdAt: string;
@@ -24,32 +34,41 @@ type ReturnRequest = {
 };
 
 type Summary = {
-  requested: number;
-  approved: number;
-  rejected: number;
+  pending: number;
+  pickup_scheduled: number;
+  in_transit: number;
+  failed: number;
   received: number;
+  refund_pending: number;
   refunded: number;
+  rejected: number;
   total: number;
 };
 
 const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string; label: string }> = {
-  pending_approval: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending Approval" },
-  approved: { color: "text-blue-500", bg: "bg-blue-500/10", border: "border-blue-500/20", label: "Approved" },
-  rejected: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Rejected" },
+  pending: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending" },
+  awaiting_acceptance: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending" },
+  awaiting_partner: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Accepted – Pickup Pending" },
+  pending_approval: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Pending" },
+  approved: { color: "text-blue-500", bg: "bg-blue-500/10", border: "border-blue-500/20", label: "Accepted – Pickup Pending" },
   pickup_scheduled: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "Pickup Scheduled" },
+  in_transit: { color: "text-sky-500", bg: "bg-sky-500/10", border: "border-sky-500/20", label: "In Transit" },
+  awaiting_receipt: { color: "text-sky-500", bg: "bg-sky-500/10", border: "border-sky-500/20", label: "Delivered – Awaiting Check" },
+  failed: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Failed" },
+  pickup_failed: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Pickup Failed" },
   received: { color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20", label: "Received" },
+  rejected: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Rejected" },
   refunded: { color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "Refunded" },
-  requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" },
   refund_pending: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Refund Pending" },
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, label }: { status: string; label?: string | null }) {
   const normalized = (status || "").toLowerCase().replace(/[_-]/g, '_');
-  const cfg = STATUS_CONFIG[normalized] || STATUS_CONFIG.pending_approval;
+  const cfg = STATUS_CONFIG[normalized] || STATUS_CONFIG.pending;
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[8px] font-bold uppercase tracking-widest ${cfg.bg} ${cfg.color} border ${cfg.border}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${cfg.color.replace('text-', 'bg-')} ${normalized === 'pending_approval' || normalized === 'requested' ? 'animate-pulse' : ''}`} />
-      {cfg.label}
+      <span className={`w-1.5 h-1.5 rounded-full ${cfg.color.replace('text-', 'bg-')} ${normalized === 'pending' || normalized === 'awaiting_acceptance' ? 'animate-pulse' : ''}`} />
+      {label || cfg.label}
     </span>
   );
 }
@@ -57,9 +76,25 @@ function StatusBadge({ status }: { status: string }) {
 export default function ReturnsPage() {
   const router = useRouter();
   const [returns, setReturns] = useState<ReturnRequest[]>([]);
-  const [summary, setSummary] = useState<Summary>({ requested: 0, approved: 0, rejected: 0, received: 0, refunded: 0, total: 0 });
+  const [summary, setSummary] = useState<Summary>({
+    pending: 0,
+    pickup_scheduled: 0,
+    in_transit: 0,
+    failed: 0,
+    received: 0,
+    refund_pending: 0,
+    refunded: 0,
+    rejected: 0,
+    total: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  // Linked ids (R_/E_/G_E_) are looked up server-side (debounced) so older requests are found too.
+  const [linkedSearch, setLinkedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setLinkedSearch(parseLinkedId(search) ? search.trim() : ""), 350);
+    return () => clearTimeout(t);
+  }, [search]);
   const [statusFilter, setStatusFilter] = useState("all");
   const [toast, setToast] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -105,20 +140,29 @@ export default function ReturnsPage() {
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
+      if (linkedSearch) params.set("search", linkedSearch);
 
-      const res = await fetch(`/api/admin/returns?${params.toString()}`);
+      // Refund Pending card reuses Refunds Management's pending count — same source of truth.
+      const [res, refundsRes] = await Promise.all([
+        fetch(`/api/admin/returns?${params.toString()}`),
+        fetch("/api/admin/refunds"),
+      ]);
       if (res.ok) {
         const data = await res.json();
         setReturns(data.returns || []);
         
         const sc = data.statusCounts || {};
+        const refundSummary = refundsRes.ok ? await refundsRes.json() : null;
         setSummary({
-          requested: sc.pending_approval || 0,
-          approved: sc.approved || 0,
-          rejected: sc.rejected || 0,
+          pending: sc.pending || sc.pending_approval || 0,
+          pickup_scheduled: sc.pickup_scheduled || 0,
+          in_transit: sc.in_transit || 0,
+          failed: sc.failed || 0,
           received: sc.received || 0,
+          refund_pending: refundSummary?.summary?.pendingCount || 0,
           refunded: sc.refunded || 0,
-          total: data.total || 0
+          rejected: sc.rejected || 0,
+          total: data.total || 0,
         });
       }
     } catch (err) {
@@ -126,7 +170,7 @@ export default function ReturnsPage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, returns.length]);
+  }, [statusFilter, linkedSearch, returns.length]);
 
   useEffect(() => {
     fetchReturns(false);
@@ -217,7 +261,6 @@ export default function ReturnsPage() {
     if (!refundModal) return;
     handleAction(refundModal.returnRequestId, "approve", { 
       actualRefund: parseFloat(refundAmount) || refundModal.estimatedRefund,
-      isStoreCredit: refundType === "store_credit",
       customerId: refundModal.userId
     });
     setRefundModal(null);
@@ -229,6 +272,8 @@ export default function ReturnsPage() {
     const q = search.toLowerCase();
     return (
       r.shopifyOrderId?.toLowerCase().includes(q) ||
+      r.displayId?.toLowerCase().includes(q) ||
+
       r.userName?.toLowerCase().includes(q) ||
       r.userEmail?.toLowerCase().includes(q) ||
       r.returnRequestId?.toLowerCase().includes(q)
@@ -236,11 +281,21 @@ export default function ReturnsPage() {
   });
 
   const summaryCards = [
-    { label: "Pending", statusKey: "pending_approval", count: summary.requested, icon: Clock, color: "text-amber-500", bg: "bg-amber-500/10" },
-    { label: "Approved", statusKey: "approved", count: summary.approved, icon: CheckCircle2, color: "text-blue-500", bg: "bg-blue-500/10" },
-    { label: "Received", statusKey: "received", count: summary.received, icon: TruckIcon, color: "text-teal-500", bg: "bg-teal-500/10" },
-    { label: "Refunded", statusKey: "refunded", count: summary.refunded, icon: CreditCard, color: "text-emerald-500", bg: "bg-emerald-500/10" },
-    { label: "Rejected", statusKey: "rejected", count: summary.rejected, icon: XCircle, color: "text-rose-500", bg: "bg-rose-500/10" },
+    { label: "Pending", statusKey: "pending", count: summary.pending, icon: Clock, color: "text-amber-500", bg: "bg-amber-500/10" },
+    { label: "Pickup Scheduled", statusKey: "pickup_scheduled", count: summary.pickup_scheduled, icon: Package, color: "text-indigo-500", bg: "bg-indigo-500/10" },
+    { label: "In Transit", statusKey: "in_transit", count: summary.in_transit, icon: TruckIcon, color: "text-sky-500", bg: "bg-sky-500/10" },
+    { label: "Failed", statusKey: "failed", count: summary.failed, icon: AlertTriangle, color: "text-rose-500", bg: "bg-rose-500/10" },
+    { label: "Received", statusKey: "received", count: summary.received, icon: Inbox, color: "text-teal-500", bg: "bg-teal-500/10" },
+    {
+      label: "Refund Pending",
+      statusKey: "refund_pending",
+      count: summary.refund_pending,
+      icon: CreditCard,
+      color: "text-amber-500",
+      bg: "bg-amber-500/10",
+      // Same queue as Refunds Management → Pending
+      href: "/dashboard/refunds?status=pending",
+    },
   ];
 
   return (
@@ -271,11 +326,22 @@ export default function ReturnsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {summaryCards.map((card) => {
           const Icon = card.icon;
+          const isActive = !("href" in card && card.href) && statusFilter === card.statusKey;
           return (
-            <motion.button key={card.label} onClick={() => setStatusFilter(card.statusKey)} className={`glass-card p-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98] group relative overflow-hidden ${statusFilter === card.statusKey ? "ring-1 ring-foreground/20" : ""}`}>
+            <motion.button
+              key={card.label}
+              onClick={() => {
+                if ("href" in card && card.href) {
+                  router.push(card.href);
+                  return;
+                }
+                setStatusFilter(card.statusKey);
+              }}
+              className={`glass-card p-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98] group relative overflow-hidden ${isActive ? "ring-1 ring-foreground/20" : ""}`}
+            >
               <div className="flex items-center justify-between mb-3">
                 <span className="text-[9px] font-bold text-foreground/40 uppercase tracking-[0.3em]">{card.label}</span>
                 <div className={`w-7 h-7 rounded-lg ${card.bg} flex items-center justify-center`}><Icon className={`w-3.5 h-3.5 ${card.color}`} /></div>
@@ -288,7 +354,7 @@ export default function ReturnsPage() {
 
       <div className="flex flex-col md:flex-row gap-3">
         <div className="flex items-center bg-background border border-foreground/[0.05] rounded-md p-1 overflow-x-auto">
-          {["all", "pending_approval", "approved", "received", "refunded", "rejected"].map((s) => (
+          {["all", "pending", "pickup_scheduled", "in_transit", "failed", "received", "refunded", "rejected"].map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)} className={`px-3 py-1.5 rounded-[4px] text-[8px] font-medium uppercase tracking-[0.15em] transition-colors whitespace-nowrap ${statusFilter === s ? "bg-foreground text-background" : "text-foreground/50 hover:bg-foreground/[0.03]"}`}>
               {s === "all" ? "All" : STATUS_CONFIG[s]?.label || s}
             </button>
@@ -298,10 +364,23 @@ export default function ReturnsPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground/30" />
           <input
             type="text"
-            placeholder="Search by order ID, customer..."
+            placeholder="Search by order ID, R_/E_/G_E_ ID, customer..."
             className="w-full bg-background border border-foreground/[0.05] rounded-md pl-10 pr-4 py-2 text-[11px] outline-none focus:border-foreground/20 transition-colors"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={async (e) => {
+              if (e.key !== 'Enter') return;
+              const q = search.trim();
+              if (!/^(R_|E_|G_E_)/i.test(q)) return;
+              try {
+                const res = await fetch(`/api/admin/linked-id?q=${encodeURIComponent(q)}`);
+                const data = await res.json();
+                if (data?.found && data.href) {
+                  e.preventDefault();
+                  router.push(data.href);
+                }
+              } catch { /* list search still works */ }
+            }}
           />
         </div>
       </div>
@@ -344,6 +423,10 @@ export default function ReturnsPage() {
                   >
                     <td className="px-4 py-3">
                       <div className="text-[11px] font-semibold text-foreground">{formatDisplayOrderNumber(req.shopifyOrderId || req.orderId)}</div>
+                      {req.displayId && (
+                        <div className="text-[9px] font-bold text-blue-500 mt-0.5 font-mono">{req.displayId}</div>
+                      )}
+
                       {(req as any).orderCreatedAt && (
                         <div className="text-[9px] text-foreground/40 mt-0.5 font-mono">
                           Ordered: {formatExactDateTime((req as any).orderCreatedAt)}
@@ -389,7 +472,7 @@ export default function ReturnsPage() {
                       <span className="text-[11px] font-semibold text-foreground">₹{(req.actualRefund || req.estimatedRefund).toLocaleString("en-IN")}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={req.status} />
+                      <StatusBadge status={req.liveStage || req.status} label={req.liveStageLabel} />
                     </td>
                     <td className="px-4 py-3 text-center hidden sm:table-cell">
                       <div className="text-[10px] font-medium text-foreground/70">{formatExactDateTime(req.createdAt)}</div>
@@ -440,10 +523,13 @@ export default function ReturnsPage() {
                   <p className="text-[10px] text-foreground/70">{refundModal.userName} • {refundModal.userEmail}</p>
                 </div>
 
-                <div className="flex gap-2">
-                  <button onClick={() => setRefundType("original_method")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "original_method" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Original Method</button>
-                  <button onClick={() => setRefundType("store_credit")} className={`flex-1 py-2 rounded-lg text-[8px] font-bold uppercase tracking-widest border transition-all ${refundType === "store_credit" ? "bg-foreground text-background" : "border-foreground/[0.05] text-foreground/40"}`}>Store Credit</button>
-                </div>
+                {refundModal.isCod ? (
+                  <p className="text-[10px] text-amber-500 leading-relaxed">{COD_STORE_CREDIT_MESSAGE}</p>
+                ) : (
+                  <p className="text-[10px] text-foreground/60 leading-relaxed">
+                    Refund method follows the customer&apos;s choice at request time (Original Payment or Store Credit).
+                  </p>
+                )}
 
                 <div>
                   <label className="block text-[9px] font-semibold uppercase tracking-widest text-foreground/50 mb-1.5">Refund Amount (₹)</label>

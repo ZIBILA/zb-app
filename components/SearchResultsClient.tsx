@@ -425,7 +425,7 @@ export default function SearchResultsClient({
                     fill
                     sizes="(max-width: 768px) 100vw, 60vw"
                     priority
-                    className="object-cover object-center group-hover:scale-[1.02] transition-transform duration-[4000ms] ease-out brightness-[0.5] sm:brightness-75"
+                    className="object-cover object-center group-hover:scale-[1.02] transition-transform duration-4000 ease-out brightness-[0.5] sm:brightness-75"
                     onError={handleImageError}
                   />
                   <div className="absolute inset-0 bg-gradient-to-r from-black via-black/85 to-transparent z-10" />

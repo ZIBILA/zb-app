@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import AffiliateCreatorTab from "@/components/profile/AffiliateCreatorTab";
+import AppDialog from "@/components/ui/AppDialog";
 import { useBookmarks } from "@/lib/bookmark-context";
 import {
   COUNTRIES,
@@ -96,6 +97,8 @@ export default function ProfilePage() {
   const [savingAddress, setSavingAddress] = useState(false);
   const [addressModalError, setAddressModalError] = useState("");
   const [zipLoading, setZipLoading] = useState(false);
+  const [deleteAddressId, setDeleteAddressId] = useState<string | null>(null);
+  const [deletingAddress, setDeletingAddress] = useState(false);
 
   useEffect(() => {
     const fetchZipDetails = async () => {
@@ -318,17 +321,21 @@ export default function ProfilePage() {
     }
   };
 
-  const handleDeleteAddress = async (addressId: string) => {
-    if (!confirm("Are you sure you want to delete this address?")) return;
+  const handleDeleteAddress = async () => {
+    if (!deleteAddressId) return;
+    setDeletingAddress(true);
     try {
-      const res = await fetch(`/api/customer/addresses?id=${addressId}`, {
+      const res = await fetch(`/api/customer/addresses?id=${deleteAddressId}`, {
         method: "DELETE",
       });
       if (res.ok) {
-        setAddresses(prev => prev.filter(a => a.id !== addressId));
+        setAddresses(prev => prev.filter(a => a.id !== deleteAddressId));
+        setDeleteAddressId(null);
       }
     } catch (e) {
       console.error("Error deleting address", e);
+    } finally {
+      setDeletingAddress(false);
     }
   };
 
@@ -481,12 +488,11 @@ export default function ProfilePage() {
               { label: "WISHLIST", value: mounted ? bookmarks.length : 0, icon: Heart },
               { 
                 label: "STORE COINS", 
-                value: storeCredits > 0 ? `${storeCredits.toLocaleString("en-IN")} Coins` : "0 Coins", 
+                value: storeCredits > 0 ? Math.ceil(storeCredits).toLocaleString("en-IN") : "0", 
                 icon: Coins,
-                subtext: storeCredits > 0 ? `(₹${storeCredits.toLocaleString("en-IN")})` : undefined,
                 onClick: () => setShowCoinsModal(true)
               },
-            ].map(({ label, value, icon: Icon, subtext, onClick }, index) => (
+            ].map(({ label, value, icon: Icon, onClick }, index) => (
               <div
                 key={label}
                 onClick={onClick}
@@ -499,7 +505,6 @@ export default function ProfilePage() {
                 <Icon className="w-5 h-5 text-foreground mb-1.5" strokeWidth={1.25} />
                 <p className="text-[8px] font-bold text-foreground/40 tracking-wider mb-2">{label}</p>
                 <p className="text-[14px] font-black text-foreground leading-none">{value}</p>
-                {subtext && <p className="text-[8.5px] text-amber-500 font-medium mt-1">{subtext}</p>}
               </div>
             ))}
           </div>
@@ -563,7 +568,7 @@ export default function ProfilePage() {
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <p className="text-[10px] font-bold text-foreground/80">
-                              Return for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
+                              {req.displayId || req.summary?.displayId ? `${req.displayId || req.summary?.displayId} · ` : ''}Return for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
                             </p>
                             <p className="text-[8px] text-foreground/35 mt-0.5">
                               Requested {new Date(req.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
@@ -576,9 +581,22 @@ export default function ProfilePage() {
                                 ? 'bg-foreground/5 text-foreground/40 border border-foreground/10'
                                 : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
                           }`}>
-                            {req.status?.replace('_', ' ')}
+                            {req.summary?.stageLabel || req.status?.replace(/_/g, ' ')}
                           </span>
                         </div>
+
+                        {req.summary?.pickup && (
+                          <div className="mb-2 space-y-1 text-[8px] text-foreground/50">
+                            {req.summary.pickup.awb && (
+                              <p>AWB: <span className="font-mono text-foreground/70">{req.summary.pickup.awb}</span></p>
+                            )}
+                            {req.summary.pickup.location && <p>Location: {req.summary.pickup.location}</p>}
+                            {!req.summary.received && req.summary.pickup.expectedDate && (
+                              <p>Expected: {new Date(req.summary.pickup.expectedDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</p>
+                            )}
+                            <p>Received: {req.summary.received ? 'Yes' : 'Not yet'}</p>
+                          </div>
+                        )}
 
                         {/* Items */}
                         <div className="space-y-2 mt-2 pt-2 border-t border-foreground/5">
@@ -599,6 +617,22 @@ export default function ProfilePage() {
                           ))}
                         </div>
 
+                        {req.summary?.replacement?.displayId && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">Replacement order: {req.summary.replacement.displayId}</p>
+                        )}
+                        {req.summary?.refund && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">{req.summary.refund.methodLabel} · {req.summary.refund.stateLabel}</p>
+                        )}
+                        {req.summary?.isCod && req.summary?.kind === 'return' && req.summary?.codMessage && (
+                          <p className="mt-2 text-[9px] text-foreground/50">
+                            {req.summary.codMessage}{' '}
+                            <span
+                              role="link"
+                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.location.href = "/policies/refund-policy"; }}
+                              className="underline font-bold text-foreground/70 cursor-pointer"
+                            >Learn More</span>
+                          </p>
+                        )}
                         {req.reason && (
                           <div className="mt-3 text-[9px] text-foreground/45 italic bg-foreground/[0.02] p-2 rounded-lg border border-foreground/5">
                             Reason: {req.reason}
@@ -620,7 +654,7 @@ export default function ProfilePage() {
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <p className="text-[10px] font-bold text-foreground/80">
-                              Exchange for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
+                              {req.displayId || req.summary?.displayId ? `${req.displayId || req.summary?.displayId} · ` : ''}Exchange for {req.order?.orderNumber || `#${req.orderId.slice(-6)}`}
                             </p>
                             <p className="text-[8px] text-foreground/35 mt-0.5">
                               Requested {new Date(req.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
@@ -633,9 +667,22 @@ export default function ProfilePage() {
                                 ? 'bg-foreground/5 text-foreground/40 border border-foreground/10'
                                 : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
                           }`}>
-                            {req.status?.replace('_', ' ')}
+                            {req.summary?.stageLabel || req.status?.replace(/_/g, ' ')}
                           </span>
                         </div>
+
+                        {req.summary?.pickup && (
+                          <div className="mb-2 space-y-1 text-[8px] text-foreground/50">
+                            {req.summary.pickup.awb && (
+                              <p>AWB: <span className="font-mono text-foreground/70">{req.summary.pickup.awb}</span></p>
+                            )}
+                            {req.summary.pickup.location && <p>Location: {req.summary.pickup.location}</p>}
+                            {!req.summary.received && req.summary.pickup.expectedDate && (
+                              <p>Expected: {new Date(req.summary.pickup.expectedDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</p>
+                            )}
+                            <p>Received: {req.summary.received ? 'Yes' : 'Not yet'}</p>
+                          </div>
+                        )}
 
                         {/* Items */}
                         <div className="space-y-2 mt-2 pt-2 border-t border-foreground/5">
@@ -656,6 +703,18 @@ export default function ProfilePage() {
                           ))}
                         </div>
 
+                        {req.summary?.replacement?.displayId && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">Replacement order: {req.summary.replacement.displayId}</p>
+                        )}
+                        {req.summary?.refund && (
+                          <p className="mt-3 text-[9px] font-bold text-foreground/60">{req.summary.refund.methodLabel} · {req.summary.refund.stateLabel}</p>
+                        )}
+                        {req.summary?.isCod && req.summary?.kind === 'return' && req.summary?.codMessage && (
+                          <p className="mt-2 text-[9px] text-foreground/50">
+                            {req.summary.codMessage}{' '}
+                            <Link href="/policies/refund-policy" onClick={(e) => e.stopPropagation()} className="underline font-bold text-foreground/70">Learn More</Link>
+                          </p>
+                        )}
                         {req.reason && (
                           <div className="mt-3 text-[9px] text-foreground/45 italic bg-foreground/[0.02] p-2 rounded-lg border border-foreground/5">
                             Reason: {req.reason}
@@ -851,7 +910,7 @@ export default function ProfilePage() {
                             </button>
                           )}
                           <button
-                            onClick={() => handleDeleteAddress(addr.id)}
+                            onClick={() => setDeleteAddressId(addr.id)}
                             className="p-1.5 text-foreground/20 hover:text-red-500/70 transition-colors"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -1252,7 +1311,7 @@ export default function ProfilePage() {
               <div>
                 <h3 className="text-base font-bold text-foreground">Store Coins Wallet</h3>
                 <p className="text-xs text-amber-500 font-semibold mt-1">
-                  Balance: {storeCredits.toLocaleString("en-IN")} Coins (₹{storeCredits.toLocaleString("en-IN")})
+                  Balance: {Math.ceil(storeCredits).toLocaleString("en-IN")} Coins
                 </p>
                 <p className="text-xs text-foreground/70 mt-2 leading-relaxed">
                   Store Coins are redeemable exclusively on the Zica Bella mobile app (1 Coin = ₹1). Open or download the app to redeem your coins towards any order!
@@ -1280,6 +1339,17 @@ export default function ProfilePage() {
           </div>
         )}
       </AnimatePresence>
+
+      <AppDialog
+        open={!!deleteAddressId}
+        onClose={() => !deletingAddress && setDeleteAddressId(null)}
+        title="Delete Address"
+        tone="danger"
+        confirmLabel="Delete"
+        loading={deletingAddress}
+        onConfirm={handleDeleteAddress}
+        description="Are you sure you want to delete this address? This cannot be undone."
+      />
     </div>
   );
 }

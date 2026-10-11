@@ -100,6 +100,8 @@ export async function POST(req: Request) {
           description: description || "Manual adjustment",
           orderId,
           returnId,
+          // Only positive adjustments are spendable credit; negative ones are ledger debits.
+          remainingAmount: Math.max(0, parseFloat(amount)),
         },
       });
 
