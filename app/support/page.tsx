@@ -115,18 +115,20 @@ const ChatBubble = memo(function ChatBubble({ msg, index }: { msg: any; index: n
           )}
         </div>
         <div
-          className={`px-3.5 py-2.5 md:px-4 md:py-3 rounded-2xl ${
-            isUser
-              ? 'bg-foreground/[0.06] text-foreground border border-foreground/8 rounded-tr-md'
+          className={`px-3.5 py-2.5 md:px-4 md:py-3 rounded-2xl transition-colors duration-200 ${
+            msg._optimistic
+              ? 'bg-foreground/[0.08] text-foreground/55 border border-dashed border-foreground/15 rounded-tr-md'
+              : isUser
+              ? 'bg-foreground text-background rounded-tr-md font-medium'
               : isAi
               ? 'bg-purple-950/40 text-purple-100 border border-purple-500/20 rounded-tl-md font-medium'
               : 'bg-foreground text-background rounded-tl-md font-medium'
-          } ${msg._optimistic ? 'opacity-70' : ''}`}
+          }`}
         >
           <p className="text-[11px] md:text-xs leading-relaxed whitespace-pre-wrap break-words">{msg.content}</p>
         </div>
         <p className={`text-[8px] font-bold text-foreground/20 uppercase tracking-tighter ${isUser ? 'text-right' : 'text-left'}`}>
-          {msg._optimistic ? 'Sending...' : new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {msg._optimistic ? 'Sending…' : new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </p>
       </div>
     </div>
@@ -160,10 +162,31 @@ function SupportPageContent() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isNearBottomRef = useRef(true);
+  const forceScrollRef = useRef(true);
+  const prevMsgSigRef = useRef('');
+  const vvHeightRef = useRef<number | null>(null);
 
-  const scrollToBottom = useCallback(() => {
+  const messagesSignature = useCallback((list: any[]) => {
+    return list
+      .map((m) => `${m.id}:${m.senderType}:${String(m.content || '').length}`)
+      .join('|');
+  }, []);
+
+  const measureNearBottom = useCallback(() => {
+    const el = chatContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+  }, []);
+
+  const scrollToBottom = useCallback((force = true) => {
+    if (!force && !isNearBottomRef.current) return;
+    const container = chatContainerRef.current;
+    // Never use scrollIntoView — on mobile Safari it scrolls the page and causes the jump-down glitch.
+    if (!container) return;
     requestAnimationFrame(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      container.scrollTop = container.scrollHeight;
+      isNearBottomRef.current = true;
     });
   }, []);
 
@@ -228,7 +251,8 @@ function SupportPageContent() {
   useEffect(() => {
     if (activeTab !== 'chat' || !ticketId) return;
 
-    scrollToBottom();
+    forceScrollRef.current = true;
+    scrollToBottom(true);
 
     const poll = () => {
       if (!document.hidden) fetchMessages();
@@ -239,21 +263,44 @@ function SupportPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, ticketId]);
 
-  // Handle mobile keyboard — visualViewport resize
+  // Keep pin-to-bottom only when the soft keyboard opens/closes — ignore Safari URL-bar resizes.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const vv = window.visualViewport;
     if (!vv) return;
 
+    vvHeightRef.current = vv.height;
     const handleResize = () => {
-      if (activeTab === 'chat' && ticketId) {
-        scrollToBottom();
-      }
+      if (activeTab !== 'chat' || !ticketId) return;
+      const prev = vvHeightRef.current ?? vv.height;
+      const next = vv.height;
+      vvHeightRef.current = next;
+      // Keyboard open/close is a large height change; chrome show/hide is small.
+      if (Math.abs(prev - next) < 120) return;
+      scrollToBottom(false);
     };
 
     vv.addEventListener('resize', handleResize);
     return () => vv.removeEventListener('resize', handleResize);
   }, [activeTab, ticketId, scrollToBottom]);
+
+  // After message list updates: follow only if pinned or we just forced scroll (send / open).
+  useEffect(() => {
+    if (activeTab !== 'chat' || chatMessages.length === 0) return;
+    const sig = messagesSignature(chatMessages);
+    const changed = sig !== prevMsgSigRef.current;
+    prevMsgSigRef.current = sig;
+    if (!changed) return;
+
+    if (forceScrollRef.current) {
+      forceScrollRef.current = false;
+      scrollToBottom(true);
+      return;
+    }
+    if (isNearBottomRef.current) {
+      scrollToBottom(true);
+    }
+  }, [chatMessages, activeTab, messagesSignature, scrollToBottom]);
 
   const fetchTicketById = async (tId: string) => {
     setFetchingTicket(true);
@@ -326,7 +373,21 @@ function SupportPageContent() {
       const res = await fetch(`/api/support/tickets?ticketId=${ticketId}`);
       const data = await res.json();
       if (data.tickets && data.tickets[0]) {
-        setChatMessages(data.tickets[0].messages);
+        const next = data.tickets[0].messages || [];
+        setChatMessages((prev) => {
+          const pending = prev.filter((m) => m._optimistic);
+          const unresolved = pending.filter(
+            (p) =>
+              !next.some(
+                (n: any) =>
+                  n.senderType === 'USER' &&
+                  n.content === p.content
+              )
+          );
+          const merged = unresolved.length ? [...next, ...unresolved] : next;
+          if (messagesSignature(prev) === messagesSignature(merged)) return prev;
+          return merged;
+        });
       }
     } catch {
       console.error('Failed to fetch messages');
@@ -388,7 +449,8 @@ function SupportPageContent() {
       _optimistic: true
     };
     setChatMessages(prev => [...prev, optimisticMessage]);
-    scrollToBottom();
+    forceScrollRef.current = true;
+    scrollToBottom(true);
 
     try {
       const senderName = session?.user?.name || formData.name || 'User';
@@ -404,15 +466,27 @@ function SupportPageContent() {
         })
       });
 
-      if (res.ok) {
-        await fetchMessages();
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.message) {
+        // Promote grey pending bubble → confirmed solid bubble in place.
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === optimisticMessage.id
+              ? { ...data.message, _optimistic: false }
+              : m
+          )
+        );
+        // AI may have replied in the same request — refresh to append it without dropping ours.
+        if (data.aiReply?.replied) {
+          await fetchMessages();
+        }
       } else {
-        setChatMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
+        setChatMessages((prev) => prev.filter((m) => m.id !== optimisticMessage.id));
         setNewMessage(messageContent);
-        console.error('Failed to send message:', await res.text());
+        console.error('Failed to send message:', data.error || 'unknown');
       }
     } catch {
-      setChatMessages(prev => prev.filter(m => m.id !== optimisticMessage.id));
+      setChatMessages((prev) => prev.filter((m) => m.id !== optimisticMessage.id));
       setNewMessage(messageContent);
       console.error('Failed to send message');
     } finally {
@@ -463,7 +537,10 @@ function SupportPageContent() {
 
           {/* ──── Interaction Card Area ──── */}
           <div className={`lg:col-span-2 order-1 lg:order-2 ${enterClass}`} style={{ animationDelay: '60ms' }}>
-            <div className="support-glass-card h-full flex flex-col relative overflow-hidden" style={{ minHeight: 'min(520px, calc(100dvh - 220px))' }}>
+            <div
+              className="support-glass-card flex flex-col relative overflow-hidden support-live-chat-shell"
+              style={{ height: 'min(640px, calc(100dvh - 200px))', maxHeight: 'calc(100dvh - 160px)' }}
+            >
 
               {/* Tab Navigation */}
               <div className="flex border-b border-foreground/5 p-1.5 md:p-2 bg-foreground/[0.01] relative z-10 gap-1 md:gap-1.5 shrink-0">
@@ -662,7 +739,10 @@ function SupportPageContent() {
                         {/* Messages list — GPU-promoted scroll container */}
                         <div
                           ref={chatContainerRef}
-                          className="flex-1 space-y-3 md:space-y-4 overflow-y-auto pr-1 md:pr-2 custom-scrollbar ios-scroll min-h-0 support-chat-scroll"
+                          onScroll={() => {
+                            isNearBottomRef.current = measureNearBottom();
+                          }}
+                          className="flex-1 space-y-3 md:space-y-4 overflow-y-auto overscroll-contain pr-1 md:pr-2 custom-scrollbar ios-scroll min-h-0 support-chat-scroll"
                         >
                           {chatMessages.length === 0 ? (
                             <div className="flex flex-col items-center justify-center h-full min-h-[100px] text-center py-6 gap-2">

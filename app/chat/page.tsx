@@ -24,6 +24,8 @@ interface ChatMessage {
     emoji: string;
     customerId: string;
   }[];
+  /** Local-only: shown grey until the server confirms the send. */
+  pending?: boolean;
 }
 
 const REACTION_EMOJIS = ["❤️", "🔥", "👏", "✨", "💯", "😍"];
@@ -43,19 +45,61 @@ export default function ChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isNearBottomRef = useRef(true);
+  const forceScrollRef = useRef(true); // initial load + after send
+  const prevCountRef = useRef(0);
+  const [unreadWhileUp, setUnreadWhileUp] = useState(0);
 
   const customerId = (session as any)?.customer?.id;
   const userEmail = session?.user?.email || (session as any)?.customer?.email;
 
-  const scrollToBottom = useCallback((smooth = true) => {
-    chatEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "instant" });
+  const NEAR_BOTTOM_PX = 120;
+
+  const measureNearBottom = useCallback(() => {
+    const container = chatContainerRef.current;
+    if (!container) return true;
+    return container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
   }, []);
+
+  const scrollToBottom = useCallback((smooth = true) => {
+    const container = chatContainerRef.current;
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: smooth ? "smooth" : "auto",
+      });
+    } else {
+      chatEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+    }
+    isNearBottomRef.current = true;
+    setShowScrollBtn(false);
+    setUnreadWhileUp(0);
+  }, []);
+
+  const messagesFingerprint = (list: ChatMessage[]) =>
+    list
+      .map((m) => `${m.id}:${m.reactions.map((r) => r.id).join(",")}`)
+      .join("|");
 
   const fetchMessages = useCallback(async () => {
     try {
       const res = await fetch('/api/community/chat');
       const data = await res.json();
-      setMessages(data.messages || []);
+      const next: ChatMessage[] = data.messages || [];
+      setMessages((prev) => {
+        const pending = prev.filter((m) => m.pending);
+        const unresolved = pending.filter(
+          (p) =>
+            !next.some(
+              (n) =>
+                n.content === p.content &&
+                n.customer?.id === p.customer?.id
+            )
+        );
+        const merged = unresolved.length ? [...next, ...unresolved] : next;
+        if (messagesFingerprint(prev) === messagesFingerprint(merged)) return prev;
+        return merged;
+      });
     } catch (e) {
       console.error(e);
     } finally {
@@ -73,8 +117,31 @@ export default function ChatPage() {
     return () => clearInterval(interval);
   }, [fetchMessages]);
 
+  // Auto-scroll only on first load, after the user sends, or when already near the bottom.
+  // Polling must never yank the viewport while reading older messages.
   useEffect(() => {
-    scrollToBottom(true);
+    const prevCount = prevCountRef.current;
+    const grew = messages.length > prevCount;
+    prevCountRef.current = messages.length;
+
+    if (messages.length === 0) return;
+
+    if (forceScrollRef.current) {
+      forceScrollRef.current = false;
+      // Instant on first paint; smooth after send.
+      scrollToBottom(prevCount > 0);
+      return;
+    }
+
+    if (grew && isNearBottomRef.current) {
+      scrollToBottom(true);
+      return;
+    }
+
+    if (grew && !isNearBottomRef.current) {
+      setUnreadWhileUp((n) => n + (messages.length - prevCount));
+      setShowScrollBtn(true);
+    }
   }, [messages, scrollToBottom]);
 
   // Track scroll position for "scroll to bottom" button
@@ -82,23 +149,43 @@ export default function ChatPage() {
     const container = chatContainerRef.current;
     if (!container) return;
     const handleScroll = () => {
-      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
-      setShowScrollBtn(!isNearBottom);
+      const near = measureNearBottom();
+      isNearBottomRef.current = near;
+      setShowScrollBtn(!near);
+      if (near) setUnreadWhileUp(0);
     };
-    container.addEventListener("scroll", handleScroll);
+    container.addEventListener("scroll", handleScroll, { passive: true });
     return () => container.removeEventListener("scroll", handleScroll);
-  }, []);
+  }, [measureNearBottom, loading]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!input.trim() && !imageUrl) || !userEmail) return;
+    if ((!input.trim() && !imageUrl) || !userEmail || sending) return;
+
+    const content = input.trim();
+    const img = imageUrl;
+    const tempId = `pending-${Date.now()}`;
+    const optimistic: ChatMessage = {
+      id: tempId,
+      content,
+      imageUrl: img || undefined,
+      createdAt: new Date().toISOString(),
+      customer: {
+        id: customerId || "me",
+        name: session?.user?.name || "You",
+        image: session?.user?.image || undefined,
+      },
+      reactions: [],
+      pending: true,
+    };
 
     setSending(true);
-    const content = input;
-    const img = imageUrl;
     setInput("");
     setImageUrl("");
     setShowImageInput(false);
+    setMessages((prev) => [...prev, optimistic]);
+    forceScrollRef.current = true;
+    scrollToBottom(true);
 
     try {
       const res = await fetch('/api/community/chat', {
@@ -106,16 +193,34 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userEmail, content, imageUrl: img || undefined })
       });
-      
-      if (res.ok) {
-        fetchMessages();
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.message) {
+        // Swap grey pending bubble → confirmed message in place (no flicker).
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? { ...data.message, pending: false }
+              : m
+          )
+        );
+        forceScrollRef.current = true;
       } else {
-        const data = await res.json();
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
         setInput(content);
+        if (img) {
+          setImageUrl(img);
+          setShowImageInput(true);
+        }
         alert(data.error || "Failed to send");
       }
     } catch (e) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(content);
+      if (img) {
+        setImageUrl(img);
+        setShowImageInput(true);
+      }
     } finally {
       setSending(false);
     }
@@ -131,6 +236,7 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userEmail, messageId, emoji })
       });
+      // Keep reading position — reaction updates must not jump the thread.
       fetchMessages();
     } catch (e) {
       console.error(e);
@@ -164,9 +270,9 @@ export default function ChatPage() {
   });
 
   return (
-    <main className="min-h-screen bg-[#F2F2F7] dark:bg-black text-black dark:text-white flex flex-col">
+    <main className="fixed inset-0 z-[60] bg-[#F2F2F7] dark:bg-black text-black dark:text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="sticky top-0 z-30 pt-[env(safe-area-inset-top)] bg-white/80 dark:bg-black/80 backdrop-blur-xl border-b border-black/5 dark:border-white/5">
+      <div className="shrink-0 z-30 pt-[env(safe-area-inset-top)] bg-white/80 dark:bg-black/80 backdrop-blur-xl border-b border-black/5 dark:border-white/5">
         <div className="max-w-xl mx-auto flex items-center justify-between px-5 h-14">
           <div className="flex items-center gap-3">
             <Link href="/" className="p-1 -ml-1 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition-colors">
@@ -186,10 +292,10 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Messages Area */}
+      {/* Messages Area — must be the only scrollport so polls never yank the page */}
       <div 
         ref={chatContainerRef}
-        className="flex-1 overflow-y-auto px-4 pt-4 pb-36"
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 pt-4 pb-36"
         onClick={() => setActiveReactionMsg(null)}
       >
         <div className="max-w-xl mx-auto space-y-1">
@@ -262,17 +368,19 @@ export default function ChatPage() {
                           onDoubleClick={() => handleReaction(msg.id, '❤️')}
                           onContextMenu={(e) => { e.preventDefault(); setActiveReactionMsg(msg.id); }}
                         >
-                          <div className={`relative px-3.5 py-2.5 text-[15px] leading-relaxed shadow-sm ${
-                            isMe 
-                            ? 'bg-[#007AFF] text-white rounded-[20px] rounded-br-[6px]' 
-                            : 'bg-white dark:bg-[#1C1C1E] rounded-[20px] rounded-bl-[6px] border border-black/[0.04] dark:border-white/[0.06]'
+                          <div className={`relative px-3.5 py-2.5 text-[15px] leading-relaxed shadow-sm transition-colors duration-200 ${
+                            msg.pending
+                              ? 'bg-[#E5E5EA] dark:bg-[#3A3A3C] text-[#3A3A3C] dark:text-[#EBEBF5]/80 rounded-[20px] rounded-br-[6px]'
+                              : isMe
+                              ? 'bg-[#007AFF] text-white rounded-[20px] rounded-br-[6px]'
+                              : 'bg-white dark:bg-[#1C1C1E] rounded-[20px] rounded-bl-[6px] border border-black/[0.04] dark:border-white/[0.06]'
                           }`}>
                             {msg.content && <p>{msg.content}</p>}
                             {msg.imageUrl && (
                               <img 
                                 src={msg.imageUrl} 
                                 alt="Shared" 
-                                className="rounded-xl mt-1.5 max-w-full max-h-[240px] object-cover"
+                                className={`rounded-xl mt-1.5 max-w-full max-h-[240px] object-cover ${msg.pending ? 'opacity-70' : ''}`}
                               />
                             )}
                           </div>
@@ -330,7 +438,7 @@ export default function ChatPage() {
                         )}
 
                         <span className="text-[9px] text-[#8E8E93] font-medium px-2">
-                          {formatTime(msg.createdAt)}
+                          {msg.pending ? "Sending…" : formatTime(msg.createdAt)}
                         </span>
                       </div>
                     </motion.div>
@@ -350,10 +458,16 @@ export default function ChatPage() {
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.8 }}
-            onClick={() => scrollToBottom()}
-            className="fixed bottom-36 right-6 z-30 w-9 h-9 rounded-full bg-white dark:bg-[#2C2C2E] shadow-xl border border-black/10 dark:border-white/10 flex items-center justify-center"
+            onClick={() => scrollToBottom(true)}
+            aria-label={unreadWhileUp > 0 ? `${unreadWhileUp} new messages` : "Scroll to bottom"}
+            className="fixed bottom-36 right-6 z-30 min-w-9 h-9 px-2 rounded-full bg-white dark:bg-[#2C2C2E] shadow-xl border border-black/10 dark:border-white/10 flex items-center justify-center gap-1"
           >
             <ChevronDown className="w-4 h-4 text-[#8E8E93]" />
+            {unreadWhileUp > 0 && (
+              <span className="text-[10px] font-bold text-[#007AFF] tabular-nums">
+                {unreadWhileUp > 99 ? "99+" : unreadWhileUp}
+              </span>
+            )}
           </motion.button>
         )}
       </AnimatePresence>

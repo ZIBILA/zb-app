@@ -87,6 +87,9 @@ export default function WhatsAppChatPage() {
   const [aiAutoReply, setAiAutoReply] = useState<boolean>(true);
   const [globalWhatsappAiEnabled, setGlobalWhatsappAiEnabled] = useState<boolean>(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+  const forceScrollRef = useRef(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch global WhatsApp AI setting
@@ -364,9 +367,32 @@ export default function WhatsAppChatPage() {
     return () => clearInterval(interval);
   }, [activePhone]);
 
-  // Scroll to bottom of message thread
+  // Scroll to bottom only on conversation open / send / when already near bottom.
+  // Live polls must not yank the thread while an agent is reading older messages.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    forceScrollRef.current = true;
+    isNearBottomRef.current = true;
+  }, [activePhone]);
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    const scroll = (smooth: boolean) => {
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+      }
+      isNearBottomRef.current = true;
+    };
+
+    if (forceScrollRef.current) {
+      forceScrollRef.current = false;
+      scroll(false);
+      return;
+    }
+    if (isNearBottomRef.current) {
+      scroll(true);
+    }
   }, [messages]);
 
   // Calculate if the 24-hour service window is active for a timestamp
@@ -582,6 +608,7 @@ export default function WhatsAppChatPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        forceScrollRef.current = true;
         setMessages(prev => [...prev, data.message]);
         setShowTemplateModal(false);
         setSelectedTemplate(null);
@@ -643,6 +670,7 @@ export default function WhatsAppChatPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        forceScrollRef.current = true;
         setMessages(prev => [...prev, data.message]);
         setShowCatalogModal(false);
         setRefreshTrigger(p => p + 1);
@@ -683,6 +711,7 @@ export default function WhatsAppChatPage() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
+        forceScrollRef.current = true;
         setMessages(prev => [...prev, data.message]);
         setRefreshTrigger(p => p + 1);
       } else {
@@ -1438,6 +1467,13 @@ export default function WhatsAppChatPage() {
 
               {/* Chat Thread Messages */}
               <div 
+                ref={messagesContainerRef}
+                onScroll={() => {
+                  const el = messagesContainerRef.current;
+                  if (!el) return;
+                  isNearBottomRef.current =
+                    el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+                }}
                 className="flex-1 overflow-y-auto p-6 space-y-2.5 custom-scrollbar"
                 style={{
                   backgroundColor: "#0b141a",
