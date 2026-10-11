@@ -26,6 +26,7 @@ export default function RingCarouselSection({ title, itemsConfig }: RingCarousel
   const scrollRef = useRef<HTMLDivElement>(null);
   const [items, setItems] = useState<RingItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [collectionHandle, setCollectionHandle] = useState("accessories");
 
   useEffect(() => {
     const fetchRings = async () => {
@@ -40,13 +41,15 @@ export default function RingCarouselSection({ title, itemsConfig }: RingCarousel
               return;
             }
           } catch(e) {
-            handle = itemsConfig;
+            // Non-JSON config is treated as a Shopify collection handle.
+            handle = itemsConfig.trim();
           }
         }
-        let products = await fetchStorefrontProducts(`collection=${encodeURIComponent(handle)}&limit=12`);
-        if (products.length === 0) {
-          products = await fetchStorefrontProducts('limit=6');
-        }
+        setCollectionHandle(handle);
+        // Never substitute another collection — empty accessories must stay empty.
+        const products = await fetchStorefrontProducts(
+          `collection=${encodeURIComponent(handle)}&limit=12`
+        );
         if (products.length > 0) {
           const mapped: RingItem[] = products.map((p: any) => ({
             id: p.id?.toString() || `ring-${Math.random()}`,
@@ -65,6 +68,7 @@ export default function RingCarouselSection({ title, itemsConfig }: RingCarousel
       } catch (e) {
         console.error("Failed to fetch ring products:", e);
       }
+      setItems([]);
       setLoading(false);
     };
 
@@ -98,7 +102,7 @@ export default function RingCarouselSection({ title, itemsConfig }: RingCarousel
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
-            <Link href="/collections/accessories" className="flex items-center gap-1 text-[8px] uppercase tracking-widest text-foreground/25 hover:text-foreground/50 transition-all font-semibold">
+            <Link href={`/collections/${collectionHandle}`} className="flex items-center gap-1 text-[8px] uppercase tracking-widest text-foreground/25 hover:text-foreground/50 transition-all font-semibold">
               Explore All <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
