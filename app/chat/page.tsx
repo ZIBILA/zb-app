@@ -24,6 +24,8 @@ interface ChatMessage {
     emoji: string;
     customerId: string;
   }[];
+  /** Local-only: shown grey until the server confirms the send. */
+  pending?: boolean;
 }
 
 const REACTION_EMOJIS = ["❤️", "🔥", "👏", "✨", "💯", "😍"];
@@ -85,8 +87,18 @@ export default function ChatPage() {
       const data = await res.json();
       const next: ChatMessage[] = data.messages || [];
       setMessages((prev) => {
-        if (messagesFingerprint(prev) === messagesFingerprint(next)) return prev;
-        return next;
+        const pending = prev.filter((m) => m.pending);
+        const unresolved = pending.filter(
+          (p) =>
+            !next.some(
+              (n) =>
+                n.content === p.content &&
+                n.customer?.id === p.customer?.id
+            )
+        );
+        const merged = unresolved.length ? [...next, ...unresolved] : next;
+        if (messagesFingerprint(prev) === messagesFingerprint(merged)) return prev;
+        return merged;
       });
     } catch (e) {
       console.error(e);
@@ -148,14 +160,32 @@ export default function ChatPage() {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!input.trim() && !imageUrl) || !userEmail) return;
+    if ((!input.trim() && !imageUrl) || !userEmail || sending) return;
+
+    const content = input.trim();
+    const img = imageUrl;
+    const tempId = `pending-${Date.now()}`;
+    const optimistic: ChatMessage = {
+      id: tempId,
+      content,
+      imageUrl: img || undefined,
+      createdAt: new Date().toISOString(),
+      customer: {
+        id: customerId || "me",
+        name: session?.user?.name || "You",
+        image: session?.user?.image || undefined,
+      },
+      reactions: [],
+      pending: true,
+    };
 
     setSending(true);
-    const content = input;
-    const img = imageUrl;
     setInput("");
     setImageUrl("");
     setShowImageInput(false);
+    setMessages((prev) => [...prev, optimistic]);
+    forceScrollRef.current = true;
+    scrollToBottom(true);
 
     try {
       const res = await fetch('/api/community/chat', {
@@ -163,17 +193,34 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userEmail, content, imageUrl: img || undefined })
       });
-      
-      if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.message) {
+        // Swap grey pending bubble → confirmed message in place (no flicker).
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? { ...data.message, pending: false }
+              : m
+          )
+        );
         forceScrollRef.current = true;
-        fetchMessages();
       } else {
-        const data = await res.json();
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
         setInput(content);
+        if (img) {
+          setImageUrl(img);
+          setShowImageInput(true);
+        }
         alert(data.error || "Failed to send");
       }
     } catch (e) {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setInput(content);
+      if (img) {
+        setImageUrl(img);
+        setShowImageInput(true);
+      }
     } finally {
       setSending(false);
     }
@@ -321,17 +368,19 @@ export default function ChatPage() {
                           onDoubleClick={() => handleReaction(msg.id, '❤️')}
                           onContextMenu={(e) => { e.preventDefault(); setActiveReactionMsg(msg.id); }}
                         >
-                          <div className={`relative px-3.5 py-2.5 text-[15px] leading-relaxed shadow-sm ${
-                            isMe 
-                            ? 'bg-[#007AFF] text-white rounded-[20px] rounded-br-[6px]' 
-                            : 'bg-white dark:bg-[#1C1C1E] rounded-[20px] rounded-bl-[6px] border border-black/[0.04] dark:border-white/[0.06]'
+                          <div className={`relative px-3.5 py-2.5 text-[15px] leading-relaxed shadow-sm transition-colors duration-200 ${
+                            msg.pending
+                              ? 'bg-[#E5E5EA] dark:bg-[#3A3A3C] text-[#3A3A3C] dark:text-[#EBEBF5]/80 rounded-[20px] rounded-br-[6px]'
+                              : isMe
+                              ? 'bg-[#007AFF] text-white rounded-[20px] rounded-br-[6px]'
+                              : 'bg-white dark:bg-[#1C1C1E] rounded-[20px] rounded-bl-[6px] border border-black/[0.04] dark:border-white/[0.06]'
                           }`}>
                             {msg.content && <p>{msg.content}</p>}
                             {msg.imageUrl && (
                               <img 
                                 src={msg.imageUrl} 
                                 alt="Shared" 
-                                className="rounded-xl mt-1.5 max-w-full max-h-[240px] object-cover"
+                                className={`rounded-xl mt-1.5 max-w-full max-h-[240px] object-cover ${msg.pending ? 'opacity-70' : ''}`}
                               />
                             )}
                           </div>
@@ -389,7 +438,7 @@ export default function ChatPage() {
                         )}
 
                         <span className="text-[9px] text-[#8E8E93] font-medium px-2">
-                          {formatTime(msg.createdAt)}
+                          {msg.pending ? "Sending…" : formatTime(msg.createdAt)}
                         </span>
                       </div>
                     </motion.div>

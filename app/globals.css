@@ -1997,20 +1997,16 @@ body.gallery-open .fixed.z-50 {
   }
 }
 
-/* ── Chat scroll container — GPU layer promotion ── */
+/* ── Chat scroll container — fills the fixed-height live-chat shell ── */
 .support-chat-scroll {
-  will-change: scroll-position;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
-  max-height: calc(100dvh - 380px);
-  min-height: 120px;
+  touch-action: pan-y;
+  min-height: 0;
 }
 
-/* On very small mobile screens, allow more chat space */
-@media (max-width: 480px) {
-  .support-chat-scroll {
-    max-height: calc(100dvh - 340px);
-  }
+.support-live-chat-shell {
+  min-height: 0;
 }
 
 /* ── Quick action hover effect ── */
