@@ -295,7 +295,7 @@ const HomeScreen = React.memo(() => {
                  <RingCarouselSection 
                   title={ringTitle} 
                   handle={ringHandle}
-                  products={(accessories || []).length > 0 ? (accessories || []).slice(0, 15) : (displayHomepageProducts || []).slice(12, 20)} 
+                  products={(accessories || []).slice(0, 15)} 
                 />
               )}
 
