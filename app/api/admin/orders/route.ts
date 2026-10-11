@@ -5,7 +5,7 @@ import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { enrichItemsWithSize } from '@/lib/enrichSize';
 import { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
 import { parseLinkedId } from '@/lib/linkedIds';
-import { isLogisticsFilter, LOGISTICS_BUCKET_STATUSES, pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
+import { isLogisticsFilter, LOGISTICS_BUCKET_STATUSES, pickActiveOutboundShipment, shipmentAwb, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
 
 /** Same definition of "COD order" the rest of the app uses (see isCodOrder below). */
 const COD_ORDER_WHERE = {
@@ -42,29 +42,54 @@ export async function GET(req: Request) {
       (logisticsParam && logisticsParam !== 'any') ||
       Boolean(search);
 
-    if (!isExplicitQuery) {
+    // All / Unfulfilled (payment=any): only successful prepaid + COD-upfront.
+    // Unpaid tab sets paymentStatus=pending explicitly and skips this gate.
+    if (!paymentStatus || paymentStatus === 'any') {
+      conditions.push({
+        paymentStatus: {
+          in: [...COD_PAID_LIKE, ...REFUNDED_LIKE],
+        },
+      });
       conditions.push({
         NOT: {
           OR: [
-            // Exclude failed order numbers
             { internalOrderNumber: { startsWith: 'ZBPF' } },
-            // Exclude pending orders that never completed payment
+            {
+              AND: [
+                { internalOrderNumber: { startsWith: 'ZBPP' } },
+                { paymentStatus: { in: ['pending', 'payment_pending', 'failed', 'payment_failed'] } },
+              ],
+            },
+            {
+              AND: [
+                { orderType: 'MOBILE_APP' },
+                { status: 'awaiting_approval' },
+              ],
+            },
+            { status: 'cancelled' },
+            { status: 'payment_failed' },
+            { paymentStatus: { in: ['cancelled', 'CANCELLED', 'canceled', 'CANCELED', 'voided', 'VOIDED', 'failed', 'payment_failed', 'pending', 'payment_pending'] } },
+          ],
+        },
+      });
+    } else if (!isExplicitQuery) {
+      conditions.push({
+        NOT: {
+          OR: [
+            { internalOrderNumber: { startsWith: 'ZBPF' } },
             {
               AND: [
                 { internalOrderNumber: { startsWith: 'ZBPP' } },
                 { paymentStatus: { in: ['pending', 'payment_pending', 'failed', 'payment_failed'] } }
               ]
             },
-            // Exclude mobile app orders awaiting approval
             {
               AND: [
                 { orderType: 'MOBILE_APP' },
                 { status: 'awaiting_approval' }
               ]
             },
-            // Exclude cancelled Shopify orders (payment timed out, customer cancelled, etc.)
             { status: 'cancelled' },
-            // Exclude orders with voided/cancelled payment
             { paymentStatus: { in: ['cancelled', 'CANCELLED', 'canceled', 'CANCELED', 'voided', 'VOIDED'] } },
           ]
         }
@@ -122,6 +147,34 @@ export async function GET(req: Request) {
 
     if (fulfillmentStatus && fulfillmentStatus !== 'any') {
       conditions.push({ fulfillmentStatus });
+      // Unfulfilled tab: only orders that still need AWB generation
+      if (fulfillmentStatus === 'unfulfilled') {
+        conditions.push({
+          AND: [
+            { OR: [{ delhivery_awb: null }, { delhivery_awb: '' }] },
+            {
+              shipments: {
+                none: {
+                  AND: [
+                    { NOT: { type: { in: [...REVERSE_SHIPMENT_TYPES] } } },
+                    {
+                      OR: [
+                        { awb: { not: null } },
+                        {
+                          AND: [
+                            { trackingNumber: { not: null } },
+                            { NOT: { trackingNumber: { startsWith: 'MOCK' } } },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+        });
+      }
     }
 
     if (isLogisticsFilter(logisticsParam) && logisticsParam !== 'any') {

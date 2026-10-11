@@ -217,7 +217,9 @@ export const authOptions: AuthOptions = {
 
           const phoneDigits = providedPhone.replace(/\D/g, "");
           const normalizedPhone = phoneDigits.slice(-10);
-          const fullPhone = `+${phoneDigits}`;
+          // Canonical E.164 — upgrades legacy `+9830…` (missing 91) to `+919830…`
+          const { toE164, shouldUpgradeStoredPhone } = await import("@/lib/shopify-phone");
+          const fullPhone = toE164(providedPhone, "IN") || (phoneDigits ? `+${phoneDigits}` : "");
 
           let isVerified = false;
 
@@ -338,12 +340,14 @@ export const authOptions: AuthOptions = {
             // ── EXISTING USER: Return immediately, sync Shopify in background ──
             console.log(`[AUTH] Fast-path: existing customer ${customer.id}`);
 
-            // Ensure customer phone is populated if missing
-            if (!customer.phone) {
+            // Ensure customer phone is populated / upgraded to verified E.164
+            // (fixes May-era accounts stored as +10-digit without country code)
+            if (!customer.phone || shouldUpgradeStoredPhone(customer.phone, fullPhone)) {
               customer = await prisma.customer.update({
                 where: { id: customer.id },
                 data: { phone: fullPhone },
               });
+              console.log(`[AUTH] Upgraded customer phone to ${fullPhone}`);
             }
 
             // Update name if provided and missing

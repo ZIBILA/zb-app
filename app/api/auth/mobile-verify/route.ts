@@ -224,7 +224,8 @@ export async function POST(req: Request) {
       }
     }).catch(() => {});
 
-    const fullPhone = `+${phoneDigits}`;
+    const { toE164, shouldUpgradeStoredPhone } = await import("@/lib/shopify-phone");
+    const fullPhone = toE164(phone, "IN") || (phoneDigits ? `+${phoneDigits}` : "");
 
     // Get default shop
     let shop = await prisma.shop.findFirst();
@@ -259,13 +260,14 @@ export async function POST(req: Request) {
       // ── EXISTING USER: Return immediately ──
       console.log(`[Mobile Verify] Fast-path: existing customer ${customer.id}`);
 
-      // Ensure customer has phone populated if missing
-      if (!customer.phone) {
+      // Ensure customer phone is populated / upgraded to verified E.164
+      if (!customer.phone || shouldUpgradeStoredPhone(customer.phone, fullPhone)) {
         customer = await prisma.customer.update({
           where: { id: customer.id },
           data: { phone: fullPhone },
           include: { communityMember: true }
         });
+        console.log(`[Mobile Verify] Upgraded customer phone to ${fullPhone}`);
       }
 
       // Update name if provided and missing

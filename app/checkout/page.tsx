@@ -1085,17 +1085,19 @@ export default function CheckoutPage() {
     }
   }, [cartLoaded, items, isOrderPlaced, router, status]);
 
-  // Auto-fill address details from session once authenticated
+  // Auto-fill name/phone/email from signup profile (editable — never locked)
   useEffect(() => {
     if (status === "authenticated" && session?.user) {
       const initialName = session?.user?.name || "";
       const isPhoneName = /^\+?[0-9\s\-]{8,15}$/.test(initialName.trim());
       const cleanName = isPhoneName ? "" : initialName;
-      setAddress(prev => ({
+      const profilePhone =
+        (session as any)?.customer?.phone || (session?.user as any)?.phone || "";
+      setAddress((prev) => ({
         ...prev,
         name: prev.name || cleanName,
         email: prev.email || session?.user?.email || "",
-        phone: prev.phone || (session as any)?.customer?.phone || (session?.user as any)?.phone || "",
+        phone: prev.phone || profilePhone,
       }));
     }
   }, [session, status]);
@@ -1115,12 +1117,16 @@ export default function CheckoutPage() {
         if (selectDefault) {
           const def = data.addresses.find((a: DBAddress) => a.isDefault) || data.addresses[0];
           setSelectedSavedId(def.id);
-          // Parse saved address into new fields
+          // Parse saved address into new fields — fall back to signup profile for name/phone
           const parts = def.address1?.split(",").map((s: string) => s.trim()) || [];
+          const profileName = session?.user?.name || "";
+          const profilePhone =
+            (session as any)?.customer?.phone || (session?.user as any)?.phone || "";
+          const isPhoneName = /^\+?[0-9\s\-]{8,15}$/.test(profileName.trim());
           setAddress({
-            name: def.name || "",
-            email: def.email || "",
-            phone: def.phone || "",
+            name: def.name || (!isPhoneName ? profileName : "") || "",
+            email: def.email || session?.user?.email || "",
+            phone: def.phone || profilePhone || "",
             houseNo: parts[0] || def.address1 || "",
             street: parts.slice(1).join(", ") || def.address2 || "",
             landmark: def.address2 && !parts[1] ? def.address2 : "",
@@ -1143,7 +1149,7 @@ export default function CheckoutPage() {
     } finally {
       setAddressesLoaded(true);
     }
-  }, [status]);
+  }, [status, session]);
 
   useEffect(() => {
     fetchSavedAddresses(true);
@@ -1152,10 +1158,14 @@ export default function CheckoutPage() {
   const handleSelectSavedAddress = (addr: DBAddress) => {
     setSelectedSavedId(addr.id);
     const parts = addr.address1?.split(",").map((s: string) => s.trim()) || [];
+    const profileName = session?.user?.name || "";
+    const profilePhone =
+      (session as any)?.customer?.phone || (session?.user as any)?.phone || "";
+    const isPhoneName = /^\+?[0-9\s\-]{8,15}$/.test(profileName.trim());
     setAddress({
-      name: addr.name || "",
-      email: addr.email || "",
-      phone: addr.phone || "",
+      name: addr.name || (!isPhoneName ? profileName : "") || "",
+      email: addr.email || session?.user?.email || "",
+      phone: addr.phone || profilePhone || "",
       houseNo: parts[0] || addr.address1 || "",
       street: parts.slice(1).join(", ") || addr.address2 || "",
       landmark: addr.address2 && !parts[1] ? addr.address2 : "",
@@ -2664,7 +2674,9 @@ export default function CheckoutPage() {
                         </p>
                         <p className="text-[10px] text-foreground/50 font-bold uppercase tracking-wider flex items-center gap-1.5 pt-1 border-t border-foreground/5 mt-2">
                           <Smartphone className="w-3.5 h-3.5 text-foreground/35" />
-                          +91 {address.phone.replace("+91", "").replace("+91", "")}
+                          {address.phone.startsWith("+")
+                            ? address.phone
+                            : `+91 ${address.phone.replace(/^\+?91/, "")}`}
                         </p>
                       </div>
 

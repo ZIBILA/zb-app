@@ -10,6 +10,7 @@
 import prisma from '@/lib/db';
 import * as crypto from 'crypto';
 import { normalizeCarrierStatus, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
+import { toE164 } from '@/lib/shopify-phone';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -962,13 +963,31 @@ function buildShiprocketConsignee(args: {
   // Never send "." / "-" — Delhivery flags those as suspicious last names.
   const lastName = nameParts.slice(1).join(' ').trim() || firstName;
 
-  const phoneDigits = String(args.phone || '').replace(/\D/g, '');
-  const billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
-  if (!/^[6-9]\d{9}$/.test(billingPhone)) {
-    throw new Error(
-      `Cannot book Shiprocket: consignee needs a valid 10-digit Indian mobile (got "${args.phone || '(empty)'}"). ` +
-        `Update the order shipping phone, then cancel any pending Shiprocket shipment and rebook.`
-    );
+  const billingCountry = sanitizeShiprocketText(args.country || 'India', 50) || 'India';
+  const isIndiaCountry = /^india$/i.test(billingCountry) || billingCountry.toUpperCase() === 'IN';
+
+  // Prefer shipping-address phone (caller passes address.phone); normalize to E.164 first.
+  const e164 = toE164(args.phone, isIndiaCountry ? 'IN' : 'US');
+  const phoneDigits = (e164 || String(args.phone || '')).replace(/\D/g, '');
+
+  let billingPhone = '';
+  if (isIndiaCountry) {
+    billingPhone = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+    if (!/^[6-9]\d{9}$/.test(billingPhone)) {
+      throw new Error(
+        `Cannot book Shiprocket: consignee needs a valid 10-digit Indian mobile (got "${args.phone || '(empty)'}"). ` +
+          `Update the order shipping phone, then cancel any pending Shiprocket shipment and rebook.`
+      );
+    }
+  } else {
+    // International: Shiprocket expects digits including country code (no +)
+    billingPhone = phoneDigits;
+    if (billingPhone.length < 8 || billingPhone.length > 15) {
+      throw new Error(
+        `Cannot book Shiprocket: consignee needs a valid international phone (got "${args.phone || '(empty)'}"). ` +
+          `Update the order shipping phone, then rebook.`
+      );
+    }
   }
 
   const billingAddress = sanitizeShiprocketText(args.address1 || '', 190);
@@ -980,15 +999,23 @@ function buildShiprocketConsignee(args: {
     /^unknown$/i.test(billingState) ||
     billingState === '000000';
 
-  if (
-    !billingAddress ||
-    billingAddress.length < 5 ||
-    !billingCity ||
-    invalidState ||
-    !/^[1-9]\d{5}$/.test(String(billingPincode))
-  ) {
+  if (isIndiaCountry) {
+    if (
+      !billingAddress ||
+      billingAddress.length < 5 ||
+      !billingCity ||
+      invalidState ||
+      !/^[1-9]\d{5}$/.test(String(billingPincode))
+    ) {
+      throw new Error(
+        `Cannot book Shiprocket: incomplete or invalid shipping address ` +
+          `(address="${billingAddress || '(empty)'}", city="${billingCity || '(empty)'}", ` +
+          `state="${billingState || '(empty)'}", pincode=${billingPincode || 0}).`
+      );
+    }
+  } else if (!billingAddress || !billingCity || !billingState || !billingPincode) {
     throw new Error(
-      `Cannot book Shiprocket: incomplete or invalid shipping address ` +
+      `Cannot book Shiprocket: incomplete international shipping address ` +
         `(address="${billingAddress || '(empty)'}", city="${billingCity || '(empty)'}", ` +
         `state="${billingState || '(empty)'}", pincode=${billingPincode || 0}).`
     );
@@ -1002,7 +1029,7 @@ function buildShiprocketConsignee(args: {
     billing_city: billingCity,
     billing_state: billingState,
     billing_pincode: billingPincode,
-    billing_country: sanitizeShiprocketText(args.country || 'India', 50) || 'India',
+    billing_country: billingCountry,
     ...(email.includes('@') ? { billing_email: email } : {}),
     // Shiprocket accepts string; keep as string so leading digits are never coerced away.
     billing_phone: billingPhone,

@@ -250,6 +250,17 @@ export default function DeliveryAddressScreen() {
     fetchSavedAddresses();
   }, [fetchSavedAddresses]);
 
+  // Prefill signup name/phone into the editable address form when empty
+  useEffect(() => {
+    if (!user) return;
+    setAddress((prev) => ({
+      ...prev,
+      name: prev.name || user.name || '',
+      email: prev.email || user.email || '',
+      phone: prev.phone || user.phone || '',
+    }));
+  }, [user?.name, user?.email, user?.phone]);
+
   const fieldError = (field: keyof typeof address) => {
     if (!submitted) return null;
     if (!String(address[field] || '').trim()) return 'Required';
@@ -590,10 +601,23 @@ export default function DeliveryAddressScreen() {
 
           haptics.buttonTap();
           
+          // Normalize phone to E.164 (+91…) so Shiprocket / Shopify get the address number
+          const phoneDigits = String(address.phone || '').replace(/\D/g, '');
+          let formattedPhone = address.phone;
+          if (phoneDigits.length === 10 && /^[6-9]/.test(phoneDigits)) {
+            formattedPhone = `+91${phoneDigits}`;
+          } else if (phoneDigits.length === 12 && phoneDigits.startsWith('91')) {
+            formattedPhone = `+${phoneDigits}`;
+          } else if (phoneDigits.length === 11 && phoneDigits.startsWith('0')) {
+            formattedPhone = `+91${phoneDigits.slice(1)}`;
+          } else if (phoneDigits.length >= 10 && !String(address.phone).startsWith('+')) {
+            formattedPhone = `+${phoneDigits}`;
+          }
+
           const normalized = {
-            name: address.name,
-            email: address.email,
-            phone: address.phone,
+            name: address.name || user?.name || '',
+            email: address.email || user?.email || '',
+            phone: formattedPhone || user?.phone || '',
             line1: address.line1,
             line2: address.line2,
             city: address.city,

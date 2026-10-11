@@ -30,7 +30,8 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
       key_secret: creds.key_secret,
     });
 
-    // Build filter for pending orders
+    // Build filter for pending + recently-failed orders (late Razorpay captures
+    // after payment_timed_out must still be recoverable).
     const where: Record<string, unknown> = {
       razorpayOrderId: { not: null },
     };
@@ -38,7 +39,16 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
     if (orderIds && orderIds.length > 0) {
       where.id = { in: orderIds };
     } else {
-      where.paymentStatus = { in: ["pending", "payment_pending", "awaiting_confirmation"] };
+      const recoverySince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      where.OR = [
+        { paymentStatus: { in: ["pending", "payment_pending", "awaiting_confirmation"] } },
+        {
+          AND: [
+            { paymentStatus: { in: ["failed", "payment_failed"] } },
+            { createdAt: { gte: recoverySince } },
+          ],
+        },
+      ];
     }
 
     const pendingOrders = await prisma.webStoreOrder.findMany({
@@ -217,12 +227,17 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
           newStatus = "failed";
           failureReason = "Payment attempt failed or was cancelled by customer";
         } else if (!upfrontCaptured) {
-          // Order status is "created", check age
-          const ageMs = Date.now() - new Date(order.createdAt).getTime();
-          // Mark as failed if order is > 15 minutes old and uncaptured
-          if (ageMs > 15 * 60 * 1000) {
-            newStatus = "failed";
-            failureReason = "payment_timed_out";
+          // Already failed — leave as-is unless Razorpay later shows a capture (handled above)
+          const alreadyFailed =
+            order.paymentStatus === "failed" || order.paymentStatus === "payment_failed";
+          if (!alreadyFailed) {
+            // Order status is "created", check age
+            const ageMs = Date.now() - new Date(order.createdAt).getTime();
+            // Mark as failed if order is > 15 minutes old and uncaptured
+            if (ageMs > 15 * 60 * 1000) {
+              newStatus = "failed";
+              failureReason = "payment_timed_out";
+            }
           }
         }
 
