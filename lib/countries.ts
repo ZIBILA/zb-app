@@ -2,6 +2,8 @@
  * ISO Country list and helper functions for international address management.
  */
 
+import { toE164 } from "@/lib/shopify-phone";
+
 export interface CountryOption {
   name: string;
   code: string; // 2-letter ISO alpha-2 code
@@ -297,6 +299,7 @@ export function validatePostalCode(zip: string, country?: string, countryCode?: 
 
 /**
  * Validate phone number based on country.
+ * Formats via toE164 so legacy `+9830…` India numbers become `+919830…`.
  */
 export function validatePhoneNumber(phone: string, country?: string, countryCode?: string): {
   valid: boolean;
@@ -304,28 +307,24 @@ export function validatePhoneNumber(phone: string, country?: string, countryCode
   error: string;
 } {
   if (isIndia(country, countryCode)) {
-    const digits = phone.replace(/\D/g, "");
-    let baseNumber = digits;
-    if (digits.length === 12 && digits.startsWith("91")) {
-      baseNumber = digits.slice(2);
-    } else if (digits.length === 11 && digits.startsWith("0")) {
-      baseNumber = digits.slice(1);
-    }
-    const valid = baseNumber.length === 10;
+    const formatted = toE164(phone, "IN");
+    const digits = formatted ? formatted.replace(/\D/g, "") : "";
+    const national = digits.startsWith("91") && digits.length === 12 ? digits.slice(2) : digits;
+    const valid = Boolean(formatted) && /^[6-9]\d{9}$/.test(national);
     return {
       valid,
-      formattedPhone: `+91${baseNumber}`,
-      error: valid ? "" : "Enter a valid 10-digit mobile number"
+      formattedPhone: formatted || phone.trim(),
+      error: valid ? "" : "Enter a valid 10-digit mobile number",
     };
   }
 
-  // Non-India international format check
-  const phoneTrim = phone.trim();
-  const digits = phoneTrim.replace(/\D/g, "");
-  const valid = /^\+?[0-9\s\-]{7,20}$/.test(phoneTrim) && digits.length >= 7 && digits.length <= 15;
+  const iso = (countryCode || "").toUpperCase() || "US";
+  const formatted = toE164(phone, iso) || (phone.trim().startsWith("+") ? phone.trim() : phone.trim() ? `+${phone.replace(/\D/g, "")}` : "");
+  const digits = formatted.replace(/\D/g, "");
+  const valid = digits.length >= 7 && digits.length <= 15;
   return {
     valid,
-    formattedPhone: phoneTrim,
-    error: valid ? "" : "Enter a valid international phone number"
+    formattedPhone: formatted,
+    error: valid ? "" : "Enter a valid international phone number",
   };
 }
