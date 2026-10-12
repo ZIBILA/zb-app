@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface CustomerOrderItem {
   id: string;
@@ -60,8 +61,8 @@ export default function CustomersPage() {
   const [page, setPage] = useState(1);
   const limit = 50;
 
-  const fetchCustomers = useCallback(async () => {
-    setLoading(true);
+  const fetchCustomers = useCallback(async (silent = false) => {
+    if (!silent && customers.length === 0) setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams();
@@ -69,8 +70,10 @@ export default function CustomersPage() {
       params.set("limit", String(limit));
       if (search) params.set("search", search);
 
-      const res = await fetch(`/api/admin/customers?${params.toString()}`);
-      const data = await res.json();
+      const data = await cachedAdminFetch<any>(`/api/admin/customers?${params.toString()}`, {
+        skipCache: silent,
+        ttlMs: 30_000,
+      });
       setCustomers(data.customers || []);
       setTotal(data.total || 0);
       if (data.error) setError(data.error);
@@ -79,7 +82,7 @@ export default function CustomersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, search, customers.length]);
 
   useEffect(() => {
     fetchCustomers();
@@ -93,8 +96,9 @@ export default function CustomersPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync failed");
+      invalidateAdminCache("/api/admin/customers");
       toast.success(data.message || "Customers synced successfully");
-      fetchCustomers();
+      fetchCustomers(true);
     } catch (err: any) {
       toast.error(err.message || "Failed to sync customers");
     } finally {
@@ -167,7 +171,7 @@ export default function CustomersPage() {
             Export
           </a>
           <button
-            onClick={fetchCustomers}
+            onClick={() => fetchCustomers(true)}
             disabled={loading}
             className="flex items-center gap-2 px-4 py-2 bg-foreground text-background rounded-md text-[10px] font-medium uppercase tracking-[0.15em] hover:opacity-90 disabled:opacity-50 transition-opacity"
           >

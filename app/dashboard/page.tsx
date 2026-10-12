@@ -22,6 +22,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface DashboardStats {
   totalRevenue: number;
@@ -159,17 +160,11 @@ export default function DashboardOverview() {
       const productLimit = silent ? 50 : 100;
       const customerLimit = silent ? 20 : 50;
 
-      // Parallelize fetches to cut initial dashboard load delay from ~2s to ~500ms
-      const [ordersRes, productsRes, customersRes] = await Promise.all([
-        fetch(`/api/shopify/orders?limit=${orderLimit}`),
-        fetch(`/api/shopify/products?limit=${productLimit}`),
-        fetch(`/api/shopify/customers?limit=${customerLimit}`),
-      ]);
-
+      // Parallelize cached fetches to make dashboard load instantly
       const [ordersData, productsData, customersData] = await Promise.all([
-        ordersRes.json(),
-        productsRes.json(),
-        customersRes.json(),
+        cachedAdminFetch<any>(`/api/shopify/orders?limit=${orderLimit}`, { skipCache: silent }),
+        cachedAdminFetch<any>(`/api/shopify/products?limit=${productLimit}`, { skipCache: silent }),
+        cachedAdminFetch<any>(`/api/shopify/customers?limit=${customerLimit}`, { skipCache: silent }),
       ]);
 
       const orders = ordersData.orders || [];
@@ -214,8 +209,7 @@ export default function DashboardOverview() {
 
   const fetchStatsOnly = async () => {
     try {
-      const ordersRes = await fetch("/api/shopify/orders?limit=5");
-      const ordersData = await ordersRes.json();
+      const ordersData = await cachedAdminFetch<any>("/api/shopify/orders?limit=5");
       const orders = ordersData.orders || [];
       setStats(prev => ({
         totalRevenue: 0,
@@ -233,8 +227,7 @@ export default function DashboardOverview() {
 
   const fetchLowStockOnly = async () => {
     try {
-      const productsRes = await fetch("/api/shopify/products?limit=250");
-      const productsData = await productsRes.json();
+      const productsData = await cachedAdminFetch<any>("/api/shopify/products?limit=250");
       const products = productsData.products || [];
       const lowStockProducts: DashboardStats["lowStockProducts"] = [];
       for (const p of products) {
@@ -267,13 +260,9 @@ export default function DashboardOverview() {
   const fetchServiceSummary = async () => {
     try {
       // Small page size — counts come from statusCounts; avoid loading full history
-      const [returnsRes, exchangesRes] = await Promise.all([
-        fetch("/api/admin/returns?status=all&limit=10"),
-        fetch("/api/admin/exchanges?status=all&limit=10"),
-      ]);
       const [returnsData, exchangesData] = await Promise.all([
-        returnsRes.json(),
-        exchangesRes.json(),
+        cachedAdminFetch<any>("/api/admin/returns?status=all&limit=10"),
+        cachedAdminFetch<any>("/api/admin/exchanges?status=all&limit=10"),
       ]);
 
       const returns = returnsData.returns || [];
@@ -339,7 +328,8 @@ export default function DashboardOverview() {
       const res = await fetch("/api/shopify/sync", { method: "POST" });
       const data = await res.json();
       console.log("Sync result:", data);
-      await fetchStats();
+      invalidateAdminCache();
+      await fetchStats(true);
     } catch (err) {
       console.error("Sync error:", err);
     } finally {

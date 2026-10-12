@@ -9,15 +9,20 @@ import CollectionProductGrid from "@/components/CollectionProductGrid";
 import { CollectionJsonLd } from "@/components/seo/CollectionJsonLd";
 import { Breadcrumb } from "@/components/seo/Breadcrumb";
 import { CategorySEOContent } from "@/components/seo/CategorySEOContent";
+import { cache } from "react";
 
 export const revalidate = 120; // ISR: re-render at most every 2 minutes (also refreshed instantly by Shopify webhooks / CMS)
+
+const getCollection = cache(async (handle: string) => {
+  return await fetchCollectionByHandle(handle).catch(() => ({ collection: null, products: [] as ShopifyProduct[] }));
+});
 
 export async function generateMetadata({
   params,
 }: {
   params: { handle: string }
 }): Promise<Metadata> {
-  const { collection } = await fetchCollectionByHandle(params.handle).catch(() => ({ collection: null }));
+  const { collection } = await getCollection(params.handle);
 
   const titleMap: Record<string, string> = {
     'graphic-tees': 'Heavyweight Graphic Tees',
@@ -100,10 +105,11 @@ export default async function CollectionPage({
   params: { handle: string };
   searchParams: { sort?: string; min?: string; max?: string; size?: string; view?: string };
 }) {
-  // No limit: every eligible product, all Shopify pages, in the CMS order.
-  const { collection, products: rawProducts } = await fetchCollectionByHandle(params.handle);
-  
-  const allCollections = await fetchEnabledCollections('page');
+  // Concurrently fetch collection and enabled collections in parallel
+  const [{ collection, products: rawProducts }, allCollections] = await Promise.all([
+    getCollection(params.handle),
+    fetchEnabledCollections('page'),
+  ]);
 
   if (!collection) notFound();
  

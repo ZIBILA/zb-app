@@ -10,6 +10,7 @@ import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 import { parseLinkedId } from "@/lib/linkedIds";
 import { COD_STORE_CREDIT_MESSAGE } from "@/lib/returnPolicy";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 type ReturnRequest = {
   returnRequestId: string;
@@ -143,16 +144,14 @@ export default function ReturnsPage() {
       if (linkedSearch) params.set("search", linkedSearch);
 
       // Refund Pending card reuses Refunds Management's pending count — same source of truth.
-      const [res, refundsRes] = await Promise.all([
-        fetch(`/api/admin/returns?${params.toString()}`),
-        fetch("/api/admin/refunds?summaryOnly=true"),
+      const [data, refundSummary] = await Promise.all([
+        cachedAdminFetch<any>(`/api/admin/returns?${params.toString()}`, { skipCache: silent, ttlMs: 30_000 }),
+        cachedAdminFetch<any>("/api/admin/refunds?summaryOnly=true", { skipCache: silent, ttlMs: 30_000 }).catch(() => null),
       ]);
-      if (res.ok) {
-        const data = await res.json();
+      if (data) {
         setReturns(data.returns || []);
         
         const sc = data.statusCounts || {};
-        const refundSummary = refundsRes.ok ? await refundsRes.json() : null;
         setSummary({
           pending: sc.pending || sc.pending_approval || 0,
           pickup_scheduled: sc.pickup_scheduled || 0,

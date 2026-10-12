@@ -24,6 +24,7 @@ import {
   Package
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface RefundItem {
   id: string;
@@ -105,7 +106,7 @@ export default function RefundsPage() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const fetchRefunds = useCallback(async (silent = false) => {
+  const fetchRefunds = useCallback(async (silent = false, force = false) => {
     if (!silent && refunds.length === 0) setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -113,9 +114,8 @@ export default function RefundsPage() {
       if (methodFilter !== "all") params.set("method", methodFilter);
       if (search) params.set("search", search);
 
-      const res = await fetch(`/api/admin/refunds?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await cachedAdminFetch<any>(`/api/admin/refunds?${params.toString()}`, { skipCache: force || silent });
+      if (data) {
         setRefunds(data.refunds || []);
         setSummary(data.summary || {
           totalRequests: 0,
@@ -148,7 +148,7 @@ export default function RefundsPage() {
   }, [searchParams]);
 
   useEffect(() => {
-    const handleSync = () => fetchRefunds(true);
+    const handleSync = () => fetchRefunds(true, true);
     window.addEventListener("realtime-sync", handleSync);
     return () => window.removeEventListener("realtime-sync", handleSync);
   }, [fetchRefunds]);
@@ -174,9 +174,10 @@ export default function RefundsPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        invalidateAdminCache("/api/admin/refunds");
         showToast(data.message || "Refund successfully approved and processed!", "success");
         setSelectedRefund(null);
-        fetchRefunds(true);
+        fetchRefunds(true, true);
       } else {
         showToast(data.error || "Failed to process refund. Please try again.", "error");
       }
@@ -201,10 +202,11 @@ export default function RefundsPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        invalidateAdminCache("/api/admin/refunds");
         showToast("Refund request rejected successfully.", "success");
         setRejectingRefund(null);
         setRejectReason("");
-        fetchRefunds(true);
+        fetchRefunds(true, true);
       } else {
         showToast(data.error || "Failed to reject refund", "error");
       }

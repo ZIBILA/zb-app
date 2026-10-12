@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface ShopifyVariant {
   id: number;
@@ -83,12 +84,14 @@ export default function InventoryPage() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const fetchProducts = async () => {
-    setLoading(true);
+  const fetchProducts = async (silent = false) => {
+    if (!silent && products.length === 0) setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/shopify/products?limit=250");
-      const data = await res.json();
+      const data = await cachedAdminFetch<any>("/api/shopify/products?limit=250", {
+        skipCache: silent,
+        ttlMs: 60_000,
+      });
       setProducts(data.products || []);
       if (data.error) setError(`Shopify API: ${data.error}`);
     } catch (err) {
@@ -360,7 +363,7 @@ export default function InventoryPage() {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={fetchProducts}
+            onClick={() => fetchProducts(true)}
             disabled={loading}
             className="glass-button flex items-center gap-2 px-4 py-2 text-[11px] font-medium !rounded-lg disabled:opacity-50"
           >

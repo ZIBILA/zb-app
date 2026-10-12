@@ -137,8 +137,7 @@ export default function ProfilePage() {
     if (status === "unauthenticated") {
       router.push("/login?callbackUrl=/profile");
     } else if (status === "authenticated") {
-      fetchProfile();
-      fetchAddresses();
+      Promise.all([fetchProfile(), fetchAddresses()]);
     }
   }, [status, router]);
 

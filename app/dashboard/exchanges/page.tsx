@@ -9,6 +9,7 @@ import { formatDisplayOrderNumber } from "@/lib/formatOrderNumber";
 import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 import { parseLinkedId } from "@/lib/linkedIds";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 type ExchangeRequest = {
   exchangeRequestId: string;
@@ -123,24 +124,24 @@ export default function ExchangesPage() {
         const err = await res.json();
         throw new Error(err.error || "Failed to update size");
       }
+      invalidateAdminCache("/api/admin/exchanges");
       showToast("Size updated successfully");
-      fetchExchanges();
+      fetchExchanges(true);
     } catch (e: any) {
       showToast(e.message || "Failed to update size");
       throw e;
     }
   };
 
-  const fetchExchanges = useCallback(async () => {
-    setLoading(true);
+  const fetchExchanges = useCallback(async (force = false) => {
+    if (exchanges.length === 0) setLoading(true);
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (linkedSearch) params.set("search", linkedSearch);
 
-      const res = await fetch(`/api/admin/exchanges?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await cachedAdminFetch<any>(`/api/admin/exchanges?${params.toString()}`, { skipCache: force });
+      if (data) {
         setExchanges(data.exchanges || []);
         
         const sc = data.statusCounts || {};
@@ -158,7 +159,7 @@ export default function ExchangesPage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, linkedSearch]);
+  }, [statusFilter, linkedSearch, exchanges.length]);
 
   useEffect(() => {
     fetchExchanges();
@@ -205,8 +206,9 @@ export default function ExchangesPage() {
         body: JSON.stringify({ action, ...extra }),
       });
       if (res.ok) {
+        invalidateAdminCache("/api/admin/exchanges");
         showToast(`Exchange request ${action}d successfully`);
-        fetchExchanges();
+        fetchExchanges(true);
       } else {
         const err = await res.json();
         showToast(`Error: ${err.error}`);
@@ -240,12 +242,13 @@ export default function ExchangesPage() {
         })
       });
       if (res.ok) {
+        invalidateAdminCache("/api/admin/exchanges");
         showToast("Exchange created successfully");
         setCreateModal(false);
         setSelectedOrder(null);
         setOriginalItem(null);
         setReplacementItem(null);
-        fetchExchanges();
+        fetchExchanges(true);
       } else {
         const err = await res.json();
         showToast(`Error: ${err.error}`);
@@ -301,7 +304,7 @@ export default function ExchangesPage() {
             <ArrowLeftRight className="w-3 h-3" />
             New Exchange
           </button>
-          <button onClick={fetchExchanges} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-foreground text-background rounded-md text-[10px] font-medium uppercase tracking-[0.15em] hover:opacity-90 disabled:opacity-50 transition-opacity">
+          <button onClick={() => fetchExchanges(true)} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-foreground text-background rounded-md text-[10px] font-medium uppercase tracking-[0.15em] hover:opacity-90 disabled:opacity-50 transition-opacity">
             <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </button>

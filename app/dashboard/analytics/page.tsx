@@ -16,6 +16,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { cachedAdminFetch } from "@/lib/adminClientCache";
 
 // Dynamic Client-Only Import of Globe3D to prevent SSR hydration mismatches
 const Globe3D = dynamic(() => import("@/components/Globe3D"), {
@@ -313,20 +314,15 @@ export default function AnalyticsDashboard() {
 
     const handleSafeFetch = async (url: string) => {
       try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (res.status === 401) {
+        return await cachedAdminFetch(url, { signal: controller.signal, skipCache: silent, ttlMs: 45_000 });
+      } catch (e: any) {
+        if (e.name === "AbortError") throw e;
+        if (e.message?.includes("HTTP 401")) {
           if (typeof window !== "undefined") {
             window.location.href = "/dashboard/login?callbackUrl=" + encodeURIComponent(window.location.pathname);
           }
           return { error: "Unauthorized" };
         }
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          return { error: errJson.error || `HTTP ${res.status}: ${res.statusText}` };
-        }
-        return await res.json();
-      } catch (e: any) {
-        if (e.name === "AbortError") throw e;
         return { error: e.message || "Failed to load data" };
       }
     };

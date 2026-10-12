@@ -32,7 +32,7 @@ function resolveSocialImageUrl(candidate?: string | null): string {
   return `${siteUrl}/og-image.jpg`;
 }
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60; // ISR: revalidate in background every 60s, serving static cache in ~15ms
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getStoreSettings('homepage');
