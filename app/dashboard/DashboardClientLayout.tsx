@@ -75,8 +75,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // Poll DB health every 60s — lightweight check for the persistent banner
   useEffect(() => {
     let cancelled = false;
+    let lastChecked = 0;
     const checkDbHealth = async () => {
       if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastChecked < 45_000) return;
+      lastChecked = now;
       try {
         const res = await fetch('/api/admin/db-status', { cache: 'no-store' });
         if (!cancelled) {
@@ -121,8 +125,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   // Poll unread notification count (infrequent — not on every route change)
   useEffect(() => {
+    let lastChecked = 0;
     const fetchUnread = async () => {
       if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastChecked < 45_000) return;
+      lastChecked = now;
       try {
         const res = await fetch("/api/admin/notifications/unread-count");
         if (res.ok) {

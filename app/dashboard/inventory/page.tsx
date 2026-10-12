@@ -98,22 +98,8 @@ export default function InventoryPage() {
     }
   };
 
-  const fetchLocation = async () => {
-    try {
-      await fetch("/api/shopify/sync", { method: "HEAD" }).catch(() => null);
-      const locRes = await fetch("/api/shopify/products?limit=1");
-      const locData = await locRes.json();
-      if (locData.products?.[0]?.variants?.[0]) {
-        setLocationId("auto");
-      }
-    } catch {
-      // Ignore
-    }
-  };
-
   useEffect(() => {
     fetchProducts();
-    fetchLocation();
   }, []);
 
   const handleDelta = (variantId: number, change: number) => {
@@ -132,10 +118,6 @@ export default function InventoryPage() {
 
     setAdjusting((prev) => ({ ...prev, [variant.id]: 1 }));
     try {
-      if (!locationId || locationId === "auto") {
-        await fetch("/api/shopify/products?limit=1");
-      }
-
       const res = await fetch("/api/shopify/inventory/adjust", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

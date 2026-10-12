@@ -145,7 +145,7 @@ export default function ReturnsPage() {
       // Refund Pending card reuses Refunds Management's pending count — same source of truth.
       const [res, refundsRes] = await Promise.all([
         fetch(`/api/admin/returns?${params.toString()}`),
-        fetch("/api/admin/refunds"),
+        fetch("/api/admin/refunds?summaryOnly=true"),
       ]);
       if (res.ok) {
         const data = await res.json();

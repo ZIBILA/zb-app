@@ -9,18 +9,26 @@ import { useEffect } from 'react';
  */
 export function useRealtimeSync(intervalMs = 60_000) {
   useEffect(() => {
-    const triggerSync = () => {
+    let lastSyncTime = Date.now();
+
+    const triggerSync = (isVisibilityTrigger = false) => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
         return;
       }
+      const now = Date.now();
+      // On tab focus, enforce a 30s cooldown to prevent repeated sync stampedes
+      if (isVisibilityTrigger && (now - lastSyncTime < 30_000)) {
+        return;
+      }
+      lastSyncTime = now;
       window.dispatchEvent(new CustomEvent("realtime-sync"));
     };
 
-    const intervalId = setInterval(triggerSync, intervalMs);
+    const intervalId = setInterval(() => triggerSync(false), intervalMs);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        triggerSync();
+        triggerSync(true);
       }
     };
 
