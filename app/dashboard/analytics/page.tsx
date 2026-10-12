@@ -998,8 +998,8 @@ export default function AnalyticsDashboard() {
               ))}
             </div>
           </div>
-          <div className="h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-[280px] w-full min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
               <AreaChart data={charts.timeSeries}>
                 <defs>
                   <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">

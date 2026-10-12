@@ -141,6 +141,9 @@ export const metadata: Metadata = {
     title: 'Zica Bella®',
     statusBarStyle: 'black-translucent',
   },
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
   formatDetection: { telephone: false },
 };
 
@@ -232,6 +235,31 @@ export default async function RootLayout({
             })
           }}
         />
+      </head>
+      <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
+        {/* Google Tag Manager (noscript) */}
+        <noscript>
+          <iframe
+            src={`https://www.googletagmanager.com/ns.html?id=${storefrontGtmId}`}
+            height="0"
+            width="0"
+            style={{ display: 'none', visibility: 'hidden' }}
+          />
+        </noscript>
+        <OrganizationJsonLd />
+        <WebsiteJsonLd />
+        <NavigationProgress />
+        <Providers>
+          <MetaPixelRouteTracker />
+          <FacebookSDKInit />
+          <SnapPixelRouteTracker />
+          <OpenAiPixelRouteTracker />
+          <LayoutWrapper footerData={footerData}>
+            {children}
+          </LayoutWrapper>
+          <Toaster position="top-right" />
+        </Providers>
+        <Analytics />
         <Script
           id="fb-pixel"
           strategy="afterInteractive"
@@ -319,31 +347,6 @@ export default async function RootLayout({
             }}
           />
         )}
-      </head>
-      <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
-        {/* Google Tag Manager (noscript) */}
-        <noscript>
-          <iframe
-            src={`https://www.googletagmanager.com/ns.html?id=${storefrontGtmId}`}
-            height="0"
-            width="0"
-            style={{ display: 'none', visibility: 'hidden' }}
-          />
-        </noscript>
-        <OrganizationJsonLd />
-        <WebsiteJsonLd />
-        <NavigationProgress />
-        <Providers>
-          <MetaPixelRouteTracker />
-          <FacebookSDKInit />
-          <SnapPixelRouteTracker />
-          <OpenAiPixelRouteTracker />
-          <LayoutWrapper footerData={footerData}>
-            {children}
-          </LayoutWrapper>
-          <Toaster position="top-right" />
-        </Providers>
-        <Analytics />
       </body>
     </html>
   );

@@ -472,9 +472,16 @@ export default function OrdersPage() {
                 transition={{ delay: i * 0.015 }}
                 className="group"
               >
-                <Link 
-                  href={`/dashboard/orders/${order.id}`}
-                  className="grid grid-cols-12 gap-6 items-center px-8 py-6 rounded-[2rem] hover:bg-foreground/[0.02] border border-transparent hover:border-foreground/5 transition-all duration-500"
+                <div 
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => router.push(`/dashboard/orders/${order.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      router.push(`/dashboard/orders/${order.id}`);
+                    }
+                  }}
+                  className="grid grid-cols-12 gap-6 items-center px-8 py-6 rounded-[2rem] hover:bg-foreground/[0.02] border border-transparent hover:border-foreground/5 transition-all duration-500 cursor-pointer"
                 >
                   <div className="col-span-3 flex items-center gap-5">
                     <div className="w-12 h-12 rounded-2xl bg-foreground/5 flex items-center justify-center border border-foreground/5 shadow-inner transition-colors group-hover:bg-foreground/10 group-hover:border-foreground/10">
@@ -642,7 +649,7 @@ export default function OrdersPage() {
                         <ChevronRight className="w-5 h-5 text-foreground/30" strokeWidth={2.5} />
                      </div>
                   </div>
-                </Link>
+                </div>
               </motion.div>
             );
           })}

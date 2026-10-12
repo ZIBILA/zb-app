@@ -11,6 +11,7 @@ import {
   LogOut,
   User,
   ShoppingCart,
+  Loader2,
   ArrowLeftRight,
   Undo2,
   ScanLine,
@@ -49,7 +50,8 @@ import {
   ChevronLeft,
   ChevronRight,
   AlertTriangle,
-  Rss
+  Rss,
+  ImageIcon
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -67,6 +69,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const navScrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLAnchorElement>(null);
+  const [optimisticPath, setOptimisticPath] = useState<string | null>(null);
+
+  // Instantly clear optimistic path when route change completes
+  useEffect(() => {
+    setOptimisticPath(null);
+  }, [pathname]);
+
+  const currentPath = optimisticPath || pathname;
+  const isNavigating = Boolean(optimisticPath && optimisticPath !== pathname);
+
   // Keep infrequent — dashboard pages refetch Shopify/DB on this signal
   useRealtimeSync(60_000);
 
@@ -277,7 +289,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const whatsappEventsNav = [
     { name: "Overview", href: "/dashboard/whatsapp-events/overview", icon: BarChart3, module: 'MARKETING' },
     { name: "Live Chat", href: "/dashboard/whatsapp-events/chat", icon: MessageSquare, module: 'MARKETING' },
-    { name: "Chat Media", href: "/dashboard/whatsapp-events/media", icon: Image, module: 'MARKETING' },
+    { name: "Chat Media", href: "/dashboard/whatsapp-events/media", icon: ImageIcon, module: 'MARKETING' },
     { name: "Events Feed", href: "/dashboard/whatsapp-events/events", icon: Database, module: 'MARKETING' },
     { name: "Campaign Analytics", href: "/dashboard/whatsapp-events/campaign-analytics", icon: TrendingUp, module: 'MARKETING' },
     { name: "Templates Manager", href: "/dashboard/whatsapp-events/templates", icon: FileText, module: 'MARKETING' },
@@ -328,19 +340,29 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   ];
 
   const isActive = useCallback(
-    (href: string) =>
-      pathname === href || (href !== "/dashboard" && href !== "/web-store" && pathname.startsWith(href)),
-    [pathname]
+    (href: string) => {
+      const target = optimisticPath || pathname;
+      return target === href || (href !== "/dashboard" && href !== "/web-store" && target.startsWith(href));
+    },
+    [optimisticPath, pathname]
   );
 
   const NavLink = useCallback(
     ({ item }: { item: { name: string; href: string; icon: any } }) => {
       const active = isActive(item.href);
+      const isPending = optimisticPath === item.href && pathname !== item.href;
       const Icon = item.icon;
       return (
         <Link
           ref={active ? activeRef : undefined}
           href={item.href}
+          prefetch={true}
+          onClick={() => {
+            if (pathname !== item.href) {
+              setOptimisticPath(item.href);
+              if (isSidebarOpen) setIsSidebarOpen(false);
+            }
+          }}
           title={isCollapsed ? item.name : undefined}
           className={`group flex items-center transition-all duration-300 relative overflow-hidden ${
             isCollapsed
@@ -359,17 +381,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             strokeWidth={active ? 2 : 1.5}
           />
           <span className={`text-[12px] font-medium relative z-10 truncate ${isCollapsed ? "lg:hidden" : ""}`}>{item.name}</span>
+          {isPending && !isCollapsed && (
+            <Loader2 className="w-3 h-3 text-foreground/50 animate-spin ml-auto shrink-0 relative z-10" />
+          )}
           {active && (
             <motion.div
               layoutId="activeNav"
               className={`absolute inset-0 bg-gradient-to-r from-foreground/5 to-transparent -z-10 ${isCollapsed ? "lg:hidden" : ""}`}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              transition={{ type: "spring", stiffness: 350, damping: 30 }}
             />
           )}
         </Link>
       );
     },
-    [isActive, isCollapsed]
+    [isActive, isCollapsed, optimisticPath, pathname, isSidebarOpen]
   );
 
   const SectionLabel = ({ children: label }: { children: React.ReactNode }) => (
@@ -384,9 +409,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (isLoginPage) return <>{children}</>;
 
   const pageTitle =
-    pathname === "/dashboard"
+    currentPath === "/dashboard"
       ? "Overview"
-      : pathname
+      : currentPath
           .split("/")
           .filter(Boolean)
           .pop()
@@ -435,6 +460,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   width={30}
                   height={30}
                   priority
+                  unoptimized
                   className="dark:brightness-200 dark:grayscale dark:contrast-200"
                 />
               </div>
@@ -584,22 +610,29 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {hasPermission('SETTINGS') && (
             <div className="mt-4 pt-3 border-t border-foreground/[0.06]">
               <Link
-                ref={pathname === "/dashboard/settings" ? activeRef : undefined}
+                ref={(optimisticPath || pathname) === "/dashboard/settings" ? activeRef : undefined}
                 href="/dashboard/settings"
+                prefetch={true}
+                onClick={() => {
+                  if (pathname !== "/dashboard/settings") {
+                    setOptimisticPath("/dashboard/settings");
+                    if (isSidebarOpen) setIsSidebarOpen(false);
+                  }
+                }}
                 title={isCollapsed ? "Settings" : undefined}
                 className={`flex items-center transition-all duration-300 ${
                   isCollapsed
                     ? "lg:p-0 lg:justify-center lg:h-10 lg:w-10 lg:mx-auto lg:rounded-xl gap-3 px-5 py-2.5 rounded-xl w-full"
                     : "gap-3 px-5 py-2.5 rounded-xl w-full"
                 } ${
-                  pathname === "/dashboard/settings"
+                  (optimisticPath || pathname) === "/dashboard/settings"
                     ? "bg-foreground text-background shadow-lg shadow-black/10"
                     : "text-foreground/50 hover:text-foreground hover:bg-foreground/[0.04]"
                 }`}
               >
                 <Settings
                   className="w-4 h-4 shrink-0"
-                  strokeWidth={pathname === "/dashboard/settings" ? 2 : 1.5}
+                  strokeWidth={(optimisticPath || pathname) === "/dashboard/settings" ? 2 : 1.5}
                 />
                 <span className={`text-[12px] font-medium font-inter ${isCollapsed ? "lg:hidden" : ""}`}>Settings</span>
               </Link>
@@ -612,6 +645,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <main className={`flex-1 flex flex-col min-h-[100dvh] relative z-10 overflow-x-hidden transition-all duration-300 ${
         isCollapsed ? "lg:ml-28" : "lg:ml-80"
       }`}>
+        {/* Instant Route Transition Bar */}
+        {isNavigating && (
+          <div className="fixed top-0 left-0 right-0 z-[100] h-[3px] bg-foreground/10 overflow-hidden pointer-events-none">
+            <motion.div
+              initial={{ x: "-100%" }}
+              animate={{ x: "0%" }}
+              transition={{ duration: 0.5, ease: "easeOut" }}
+              className="h-full bg-gradient-to-r from-violet-500 via-indigo-500 to-sky-400 shadow-[0_0_10px_rgba(139,92,246,0.8)]"
+            />
+          </div>
+        )}
+
         {/* Header */}
         <header className="h-14 lg:h-16 flex items-center justify-between px-4 lg:px-8 m-2 lg:mx-8 lg:my-6 rounded-3xl glass shadow-2xl sticky top-2 lg:top-6 z-40 border border-foreground/5 shrink-0">
           <div className="flex items-center gap-3 lg:gap-6 min-w-0">
@@ -768,7 +813,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             </div>
           )}
-          <div className="max-w-[1400px] w-full mx-auto relative overflow-x-clip">{children}</div>
+          <div className={`max-w-[1400px] w-full mx-auto relative overflow-x-clip transition-opacity duration-200 ${isNavigating ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>{children}</div>
         </div>
       </main>
     </div>

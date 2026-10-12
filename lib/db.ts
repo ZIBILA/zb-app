@@ -31,7 +31,8 @@ const createMockPrismaClient = (reason: string) => {
       }
       const mockReturn = (targetProp: string) => {
         if (targetProp === 'count') return 0;
-        if (targetProp === 'findMany') return [];
+        if (targetProp === 'findMany' || targetProp === 'groupBy') return [];
+        if (targetProp === 'aggregate') return { _count: 0, _sum: {}, _avg: {}, _min: {}, _max: {} };
         return { 
           id: 'mock_id', 
           shopifyId: 'mock_shopify_id', 

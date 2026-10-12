@@ -441,11 +441,11 @@ export default function DashboardOverview() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {allowedModules.map((perm: any) => {
-                const modulePages = perm.pages ? perm.pages.split(',') : [];
+              {allowedModules.map((perm: any, idx: number) => {
+                const modulePages = perm.pages ? perm.pages.split(',').filter(Boolean) : [];
                 return (
                   <motion.div
-                    key={perm.module}
+                    key={perm.module ? `${perm.module}-${idx}` : `mod-${idx}`}
                     whileHover={{ scale: 1.01 }}
                     className="glass-card p-6 lg:p-8 rounded-[2rem] border border-foreground/5 relative overflow-hidden flex flex-col justify-between group"
                   >
@@ -470,9 +470,9 @@ export default function DashboardOverview() {
                           <span className="text-[10px] font-medium italic text-foreground/30">No specific pages mapped.</span>
                         ) : (
                           <div className="flex flex-col gap-1.5">
-                            {modulePages.map((pg: string) => (
+                            {modulePages.map((pg: string, pIdx: number) => (
                               <Link
-                                key={pg}
+                                key={`${pg}-${pIdx}`}
                                 href={pg}
                                 className="flex items-center justify-between text-[11px] font-medium text-foreground/60 hover:text-foreground bg-foreground/[0.02] hover:bg-foreground/5 px-3 py-2 rounded-xl transition-all duration-300 border border-foreground/5"
                               >
@@ -512,8 +512,8 @@ export default function DashboardOverview() {
                   {stats.recentOrders.length === 0 ? (
                     <p className="py-8 text-center text-[10px] text-foreground/30 uppercase tracking-widest">No recent orders</p>
                   ) : (
-                    stats.recentOrders.slice(0, 3).map((order) => (
-                      <div key={order.id} className="px-6 py-4 flex items-center justify-between text-[11px]">
+                    stats.recentOrders.slice(0, 3).map((order, idx) => (
+                      <div key={order.id ? String(order.id) : `ord-mini-${idx}`} className="px-6 py-4 flex items-center justify-between text-[11px]">
                         <div>
                           <p className="font-bold text-foreground uppercase">{order.name}</p>
                           <p className="text-[9px] text-foreground/40 mt-0.5">
@@ -545,8 +545,8 @@ export default function DashboardOverview() {
                   {serviceSummary.recentActivity.length === 0 ? (
                     <p className="py-8 text-center text-[10px] text-foreground/30 uppercase tracking-widest">No service activity</p>
                   ) : (
-                    serviceSummary.recentActivity.slice(0, 3).map((item) => (
-                      <div key={item.id} className="px-6 py-4 flex items-center justify-between text-[11px]">
+                    serviceSummary.recentActivity.slice(0, 3).map((item, idx) => (
+                      <div key={item.id ? `${item.type}-${item.id}` : `act-mini-${idx}`} className="px-6 py-4 flex items-center justify-between text-[11px]">
                         <div>
                           <p className="font-bold text-foreground truncate max-w-[180px]">{item.productTitle}</p>
                           <p className="text-[9px] text-foreground/40 mt-0.5">{item.customerName} • #{item.orderId}</p>
@@ -747,13 +747,13 @@ export default function DashboardOverview() {
               ) : (
                 <table className="w-full text-left whitespace-nowrap">
                    <tbody className="divide-y divide-foreground/[0.03]">
-                    {stats?.recentOrders.map((order) => {
+                    {stats?.recentOrders.map((order, idx) => {
                       const customerName = order.customer
                           ? `${order.customer.first_name || ""} ${order.customer.last_name || ""}`.trim()
                           : "Guest";
   
                       return (
-                        <tr key={order.id} className="hover:bg-foreground/[0.01] transition-all group duration-500">
+                        <tr key={order.id ? String(order.id) : `ord-row-${idx}`} className="hover:bg-foreground/[0.01] transition-all group duration-500">
                           <td className="px-6 lg:px-8 py-3 lg:py-4">
                             <p className="text-[12px] lg:text-[13px] font-bold text-foreground tracking-tight leading-none uppercase">{order.name}</p>
                           </td>
@@ -814,8 +814,8 @@ export default function DashboardOverview() {
               </div>
             ) : (
               <div className="divide-y divide-foreground/[0.03]">
-                {serviceSummary?.recentActivity.map((item) => (
-                  <div key={item.id} className="px-6 lg:px-10 py-4 lg:py-5 hover:bg-foreground/[0.01] transition-all group flex items-center gap-4">
+                {serviceSummary?.recentActivity.map((item, idx) => (
+                  <div key={item.id ? `${item.type}-${item.id}` : `act-row-${idx}`} className="px-6 lg:px-10 py-4 lg:py-5 hover:bg-foreground/[0.01] transition-all group flex items-center gap-4">
                     <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${item.type === "return" ? "bg-amber-500/10" : "bg-blue-500/10"}`}>
                       {item.type === "return" ? (
                         <Undo2 className="w-3.5 h-3.5 text-amber-500" />
@@ -870,7 +870,7 @@ export default function DashboardOverview() {
               <table className="w-full text-left whitespace-nowrap">
                  <tbody className="divide-y divide-foreground/[0.03]">
                   {stats?.lowStockProducts.map((item, i) => (
-                    <tr key={i} className="hover:bg-foreground/[0.01] transition-all group duration-500">
+                    <tr key={item.sku ? `${item.sku}-${i}` : `stock-${i}`} className="hover:bg-foreground/[0.01] transition-all group duration-500">
                       <td className="px-6 lg:px-10 py-4 lg:py-6 max-w-[200px] lg:max-w-[250px] truncate">
                          <p className="text-[13px] lg:text-[15px] font-bold text-foreground truncate leading-none uppercase">{item.title}</p>
                          <p className="text-[9px] text-foreground/20 font-bold uppercase tracking-[0.2em] mt-1.5 italic transition-colors group-hover:text-foreground/40">{item.variant || "Standard"}</p>
