@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSession, signOut } from "next-auth/react";
 import {
   BarChart3,
@@ -231,15 +231,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   ];
 
   const webStoreNav = [
-    { name: "Web Store Overview", href: "/web-store", icon: BarChart3, module: 'STOREFRONT' },
-    { name: "Web Store Orders", href: "/web-store/orders", icon: ShoppingBag, module: 'STOREFRONT' },
-    { name: "Web Store Customers", href: "/web-store/customers", icon: Users, module: 'STOREFRONT' },
-    { name: "Abandoned Carts", href: "/web-store/abandoned-carts", icon: ShoppingCart, module: 'STOREFRONT' },
-    { name: "Web Storefront", href: "/web-store/storefront", icon: Monitor, module: 'STOREFRONT' },
-    { name: "Products & Order", href: "/web-store/merchandising", icon: LayoutGrid, module: 'STOREFRONT' },
-    { name: "All Products", href: "/web-store/products", icon: Sparkles, module: 'STOREFRONT' },
-    { name: "Homepage Banners", href: "/web-store/banners", icon: Monitor, module: 'STOREFRONT' },
-    { name: "Gallery CMS", href: "/web-store/gallery", icon: Sparkles, module: 'STOREFRONT' },
+    { name: "Web Store Overview", href: "/dashboard/webstore", icon: BarChart3, module: 'STOREFRONT' },
+    { name: "Web Store Orders", href: "/dashboard/webstore/orders", icon: ShoppingBag, module: 'STOREFRONT' },
+    { name: "Web Store Customers", href: "/dashboard/webstore/customers", icon: Users, module: 'STOREFRONT' },
+    { name: "Abandoned Carts", href: "/dashboard/webstore/abandoned-carts", icon: ShoppingCart, module: 'STOREFRONT' },
+    { name: "Web Storefront", href: "/dashboard/webstore/storefront", icon: Monitor, module: 'STOREFRONT' },
+    { name: "Products & Order", href: "/dashboard/webstore/merchandising", icon: LayoutGrid, module: 'STOREFRONT' },
+    { name: "All Products", href: "/dashboard/webstore/products", icon: Sparkles, module: 'STOREFRONT' },
+    { name: "Homepage Banners", href: "/dashboard/webstore/banners", icon: Monitor, module: 'STOREFRONT' },
+    { name: "Gallery CMS", href: "/dashboard/webstore/gallery", icon: Sparkles, module: 'STOREFRONT' },
     { name: "Global Store", href: "/dashboard/global-store", icon: Globe, module: 'STOREFRONT' },
     { name: "Preferences", href: "/dashboard/webstore-settings/preferences", icon: Settings, module: 'STOREFRONT' },
   ];
@@ -341,8 +341,34 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const isActive = useCallback(
     (href: string) => {
-      const target = optimisticPath || pathname;
-      return target === href || (href !== "/dashboard" && href !== "/web-store" && target.startsWith(href));
+      const rawTarget = optimisticPath || pathname || "";
+      // Normalize /web-store to /dashboard/webstore so old and new paths match identically
+      const cleanTarget = rawTarget.replace(/^\/web-store(\/|$)/, "/dashboard/webstore$1");
+      const cleanHref = href.replace(/^\/web-store(\/|$)/, "/dashboard/webstore$1");
+
+      // 1. Strict exact match
+      if (cleanTarget === cleanHref) return true;
+
+      // 2. Only allow sub-path highlighting for specific dynamic detail pages with IDs:
+      // (e.g. /dashboard/orders/[id] -> highlights /dashboard/orders)
+      // All other pages, overview routes, and webstore tools MUST be strict matches only!
+      const idDetailParents = [
+        "/dashboard/orders",
+        "/dashboard/customers",
+        "/dashboard/products",
+        "/dashboard/collections",
+        "/dashboard/returns",
+        "/dashboard/exchanges",
+        "/dashboard/support",
+        "/dashboard/webstore/orders",
+        "/dashboard/webstore/customers",
+      ];
+
+      if (idDetailParents.includes(cleanHref)) {
+        return cleanTarget.startsWith(cleanHref + "/");
+      }
+
+      return false;
     },
     [optimisticPath, pathname]
   );

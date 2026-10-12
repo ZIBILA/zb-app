@@ -25,6 +25,18 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/dashboard/refunds"
   ],
   STOREFRONT: [
+    "/dashboard/webstore",
+    "/dashboard/webstore/orders",
+    "/dashboard/webstore/customers",
+    "/dashboard/webstore/abandoned-carts",
+    "/dashboard/webstore/storefront",
+    "/dashboard/webstore/merchandising",
+    "/dashboard/webstore/homepage",
+    "/dashboard/webstore/products",
+    "/dashboard/webstore/banners",
+    "/dashboard/webstore/gallery",
+    "/dashboard/webstore/coupons",
+    "/dashboard/webstore/logins",
     "/web-store",
     "/web-store/orders",
     "/web-store/customers",
@@ -295,6 +307,7 @@ export default withAuth(
       "/dashboard/audit-log": "AUDIT_LOG",
       
       // Web Store CMS mappings
+      "/dashboard/webstore": "STOREFRONT",
       "/web-store": "STOREFRONT",
       "/api/web-store": "STOREFRONT",
       "/dashboard/webstore-settings": "STOREFRONT",

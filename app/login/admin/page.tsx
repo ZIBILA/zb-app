@@ -1,14 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Lock, ShieldCheck } from "lucide-react";
 
 export default function LoginPage() {
+  const router = useRouter();
+
+  useEffect(() => {
+    router.replace("/dashboard/login");
+  }, [router]);
+
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
