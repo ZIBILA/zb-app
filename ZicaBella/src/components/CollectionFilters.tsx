@@ -61,6 +61,24 @@ const getColorHex = (colorName: string): string => {
   return map[name] || '#888888';
 };
 
+const getSortLabel = (sort: string): string => {
+  switch (sort) {
+    case 'newest': return 'NEWEST';
+    case 'price-asc': return 'PRICE ↑';
+    case 'price-desc': return 'PRICE ↓';
+    case 'featured':
+    default:
+      return 'FEATURED';
+  }
+};
+
+const SORT_OPTIONS = [
+  { label: 'FEATURED', value: 'featured' },
+  { label: 'NEWEST', value: 'newest' },
+  { label: 'PRICE: LOW TO HIGH (PRICE ↑)', value: 'price-asc' },
+  { label: 'PRICE: HIGH TO LOW (PRICE ↓)', value: 'price-desc' },
+];
+
 export default function CollectionFilters({
   allSizes,
   selectedSize,
@@ -82,39 +100,41 @@ export default function CollectionFilters({
   const colors = useColors();
   const theme = useThemeStore(state => state.theme);
   const isDark = theme === 'dark';
+  const [isSortOpen, setIsSortOpen] = React.useState(false);
 
   return (
     <View style={styles.container}>
       <View style={[styles.pillWrapper, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)' }]}>
         <GlassView intensity={isDark ? 30 : 45} tint={isDark ? 'dark' : 'light'} style={styles.pill}>
-          {/* Sort Button */}
+          {/* Sort Button (Dropdown) */}
           <TouchableOpacity 
             style={[styles.filterBtn, compact && styles.compactBtn]} 
             onPress={() => {
-              const sorts = ['featured', 'newest', 'price-asc', 'price-desc'];
-              const next = sorts[(sorts.indexOf(sortBy) + 1) % sorts.length];
-              onSelectSort(next);
+              setIsSortOpen(true);
+              setIsSizeOpen(false);
+              setIsColorOpen(false);
             }}
             accessibilityLabel={`Sort by: ${sortBy.replace('-', ' ')}`}
             accessibilityRole="button"
+            accessibilityState={{ expanded: isSortOpen }}
           >
-            <Ionicons name="swap-vertical" size={13} color={colors.text} />
-            {!compact && (
-              <Text style={[styles.filterText, { color: colors.text }]}>
-                {sortBy === 'featured' ? 'SORT' : sortBy.replace('-', ' ').toUpperCase()}
-              </Text>
-            )}
+            <Text style={[styles.filterText, { color: colors.text }]}>
+              {getSortLabel(sortBy)}
+            </Text>
+            <Ionicons name="chevron-down" size={9} color={colors.text} style={styles.chevron} />
           </TouchableOpacity>
           
+          <View style={[styles.divider, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]} />
+
           {/* Color Button — only rendered if color options actually exist on products */}
           {allColors.length > 0 && (
             <>
-              <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
               <TouchableOpacity 
                 style={[styles.filterBtn, compact && styles.compactBtn]}
                 onPress={() => {
                   setIsColorOpen(!isColorOpen);
                   setIsSizeOpen(false);
+                  setIsSortOpen(false);
                 }}
                 accessibilityLabel={`Filter by color${selectedColor ? ': ' + selectedColor : ''}`}
                 accessibilityRole="button"
@@ -123,42 +143,37 @@ export default function CollectionFilters({
                 <View style={styles.iconWrapper}>
                   {selectedColor ? (
                     <View style={[styles.colorSwatchInPill, { backgroundColor: getColorHex(selectedColor), borderColor: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.15)' }]} />
-                  ) : (
-                    <Ionicons name="color-palette-outline" size={13} color={colors.text} />
-                  )}
+                  ) : null}
                 </View>
-                {!compact && (
-                  <Text style={[styles.filterText, { color: colors.text }]}>
-                    {selectedColor || 'COLOR'}
-                  </Text>
-                )}
+                <Text style={[styles.filterText, { color: colors.text }]}>
+                  {selectedColor || 'COLOR'}
+                </Text>
+                <Ionicons name="chevron-down" size={9} color={colors.text} style={styles.chevron} />
               </TouchableOpacity>
+              <View style={[styles.divider, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]} />
             </>
           )}
 
-          {/* Size Button */}
+          {/* Size Button (Dropdown) */}
           <TouchableOpacity 
             style={[styles.filterBtn, compact && styles.compactBtn]}
             onPress={() => {
               setIsSizeOpen(!isSizeOpen);
               setIsColorOpen(false);
+              setIsSortOpen(false);
             }}
             accessibilityLabel={`Filter by size${selectedSize ? ': ' + selectedSize : ''}`}
             accessibilityRole="button"
             accessibilityState={{ expanded: isSizeOpen }}
           >
-            <View style={styles.iconWrapper}>
-              <Ionicons name="resize-outline" size={13} color={colors.text} />
-              {selectedSize && <View style={[styles.activeDot, { backgroundColor: colors.iosBlue || '#D4AF37' }]} />}
-            </View>
-            {!compact && (
-              <Text style={[styles.filterText, { color: colors.text }]}>
-                {selectedSize || 'SIZE'}
-              </Text>
-            )}
+            <Text style={[styles.filterText, { color: colors.text }]}>
+              {selectedSize || 'SIZE'}
+            </Text>
+            <Ionicons name="chevron-down" size={9} color={colors.text} style={styles.chevron} />
+            {selectedSize && <View style={[styles.activeDot, { backgroundColor: colors.iosBlue || '#D4AF37' }]} />}
           </TouchableOpacity>
 
-          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
+          <View style={[styles.divider, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]} />
 
           {/* View Toggle */}
           <TouchableOpacity 
@@ -179,6 +194,52 @@ export default function CollectionFilters({
           </TouchableOpacity>
         </GlassView>
       </View>
+
+      {/* Dropdown Modal for Sort */}
+      <Modal
+        visible={isSortOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsSortOpen(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setIsSortOpen(false)}
+        >
+          <View style={styles.modalContentWrapper}>
+            <View style={[styles.dropdownContainer, { borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]}>
+              <GlassView intensity={isDark ? 85 : 95} tint={isDark ? 'dark' : 'light'} style={styles.dropdownInner}>
+                <View style={styles.dropdownHeader}>
+                  <Text style={[styles.dropdownHeaderText, { color: colors.textExtraLight }]}>SORT BY</Text>
+                </View>
+                <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                  {SORT_OPTIONS.map(opt => {
+                    const isSelected = sortBy === opt.value;
+                    return (
+                      <TouchableOpacity 
+                        key={opt.value}
+                        style={styles.dropdownOption}
+                        onPress={() => {
+                          onSelectSort(opt.value);
+                          setIsSortOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.dropdownOptionText, { color: colors.text, fontWeight: isSelected ? '800' : '500', opacity: isSelected ? 1 : 0.6 }]}>
+                          {opt.label}
+                        </Text>
+                        {isSelected && (
+                          <Ionicons name="checkmark" size={14} color={colors.text} />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </GlassView>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Dropdown Modal for Sizes */}
       <Modal
@@ -324,14 +385,18 @@ const styles = StyleSheet.create({
   filterBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    height: 30,
+    gap: 4,
+    paddingHorizontal: 8,
+    height: 28,
   },
   compactBtn: {
-    paddingHorizontal: 8,
-    width: 36,
+    paddingHorizontal: 6,
+    width: 32,
     justifyContent: 'center',
+  },
+  chevron: {
+    opacity: 0.35,
+    marginLeft: 2,
   },
   iconWrapper: {
     flexDirection: 'row',
@@ -361,7 +426,7 @@ const styles = StyleSheet.create({
   divider: {
     width: 0.5,
     height: 12,
-    opacity: 0.08,
+    opacity: 0.25,
   },
   viewToggle: {
     width: 36,
