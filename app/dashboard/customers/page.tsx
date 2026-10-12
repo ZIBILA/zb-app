@@ -216,7 +216,28 @@ export default function CustomersPage() {
       )}
 
       <div className="space-y-3 relative z-10">
-        {customers.length === 0 ? (
+        {loading && customers.length === 0 ? (
+          <div className="space-y-3">
+            {[...Array(5)].map((_, i) => (
+              <div
+                key={`cust-skel-${i}`}
+                className="bg-background border border-foreground/[0.05] rounded-xl p-5 flex items-center justify-between gap-6 animate-pulse"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-full bg-foreground/10 shrink-0" />
+                  <div className="space-y-2">
+                    <div className="h-3.5 w-36 bg-foreground/10 rounded" />
+                    <div className="h-2.5 w-48 bg-foreground/5 rounded" />
+                  </div>
+                </div>
+                <div className="space-y-1.5 text-right hidden sm:block">
+                  <div className="h-3 w-16 bg-foreground/10 rounded ml-auto" />
+                  <div className="h-2.5 w-24 bg-foreground/5 rounded ml-auto" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : customers.length === 0 ? (
           <div className="bg-background border border-foreground/[0.05] rounded-xl p-12 text-center shadow-sm">
             <Users className="w-8 h-8 text-foreground/20 mx-auto mb-4" />
             <h3 className="text-[12px] font-medium text-foreground tracking-tight">

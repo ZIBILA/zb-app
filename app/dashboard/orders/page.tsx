@@ -150,7 +150,7 @@ export default function OrdersPage() {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const fetchOrders = useCallback(async (silent = false) => {
+  const fetchOrders = useCallback(async (silent = false, targetPage?: number) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -170,7 +170,8 @@ export default function OrdersPage() {
       if (tab === 'unpaid') finalPayment = 'pending';
       if (tab === 'open') finalStatus = 'active';
 
-      const offset = (page - 1) * LIMIT;
+      const currentPage = targetPage ?? page;
+      const offset = (currentPage - 1) * LIMIT;
       const url = `/api/admin/orders?limit=${LIMIT}&offset=${offset}&status=${finalStatus}&paymentStatus=${finalPayment}&fulfillmentStatus=${finalFulfillment}&logistics=${logisticsFilter}&search=${encodeURIComponent(search)}`;
       
       const data = await cachedAdminFetch<any>(url, {
@@ -214,14 +215,26 @@ export default function OrdersPage() {
     }
   };
 
+  const isFirstRender = useRef(true);
+
+  // Single consolidated effect for filter changes
   useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      fetchOrders(false, 1);
+      return;
+    }
+
     setPage(1);
+    const timer = setTimeout(() => fetchOrders(false, 1), 250);
+    return () => clearTimeout(timer);
   }, [statusFilter, paymentFilter, fulfillmentFilter, logisticsFilter, search, tab]);
 
+  // Handle explicit page changes (pagination buttons)
   useEffect(() => {
-    const timer = setTimeout(() => fetchOrders(false), 250);
-    return () => clearTimeout(timer);
-  }, [fetchOrders]);
+    if (isFirstRender.current) return;
+    fetchOrders(false, page);
+  }, [page]);
 
   // Background refresh — keep infrequent to avoid DB/Shopify stampedes
   useEffect(() => {

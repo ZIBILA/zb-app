@@ -147,7 +147,8 @@ export default function DashboardOverview() {
   const { data: session, status } = useSession();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [serviceSummary, setServiceSummary] = useState<ServiceSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [serviceLoading, setServiceLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
@@ -165,7 +166,7 @@ export default function DashboardOverview() {
   const lastRefreshAt = useRef(0);
 
   const fetchStats = async (silent = false) => {
-    if (!silent && !stats) setLoading(true);
+    if (!silent && !stats) setStatsLoading(true);
     try {
       const orderLimit = silent ? 10 : 50;
       const productLimit = silent ? 50 : 100;
@@ -212,9 +213,9 @@ export default function DashboardOverview() {
         lowStockProducts: lowStockProducts.slice(0, 6),
       });
     } catch (err) {
-      console.error("Dashboard fetch error");
+      console.error("Dashboard fetch error", err);
     } finally {
-      setLoading(false);
+      setStatsLoading(false);
     }
   };
 
@@ -268,12 +269,13 @@ export default function DashboardOverview() {
     }
   };
 
-  const fetchServiceSummary = async () => {
+  const fetchServiceSummary = async (silent = false) => {
+    if (!silent && !serviceSummary) setServiceLoading(true);
     try {
       // Small page size — counts come from statusCounts; avoid loading full history
       const [returnsData, exchangesData] = await Promise.all([
-        cachedAdminFetch<any>("/api/admin/returns?status=all&limit=10"),
-        cachedAdminFetch<any>("/api/admin/exchanges?status=all&limit=10"),
+        cachedAdminFetch<any>("/api/admin/returns?status=all&limit=10", { skipCache: silent }),
+        cachedAdminFetch<any>("/api/admin/exchanges?status=all&limit=10", { skipCache: silent }),
       ]);
 
       const returns = returnsData.returns || [];
@@ -322,6 +324,8 @@ export default function DashboardOverview() {
     } catch (err) {
       console.error("Service summary fetch error:", err);
       setServiceSummary({ pendingReturns: 0, pendingExchanges: 0, totalReturns: 0, totalExchanges: 0, recentActivity: [] });
+    } finally {
+      setServiceLoading(false);
     }
   };
 
@@ -340,7 +344,7 @@ export default function DashboardOverview() {
       const data = await res.json();
       console.log("Sync result:", data);
       invalidateAdminCache();
-      await fetchStats(true);
+      await Promise.all([fetchStats(true), fetchServiceSummary(true)]);
     } catch (err) {
       console.error("Sync error:", err);
     } finally {
@@ -352,23 +356,20 @@ export default function DashboardOverview() {
     if (!session) return;
 
     if (hasDashboardHome) {
-      Promise.all([fetchStats(), fetchServiceSummary()]);
+      // Independent parallel fetches — don't let one slow down the other
+      fetchStats();
+      fetchServiceSummary();
     } else {
       const allowedModules = permissions.filter((p: any) => p.canView).map((p: any) => p.module);
-      const fetches = [];
       if (allowedModules.includes("ORDERS")) {
-        fetches.push(fetchStatsOnly());
+        fetchStatsOnly();
       }
       if (allowedModules.includes("RETURNS_EXCHANGES")) {
-        fetches.push(fetchServiceSummaryOnly());
+        fetchServiceSummaryOnly();
       }
       if (allowedModules.includes("INVENTORY") || allowedModules.includes("PRODUCTS")) {
-        fetches.push(fetchLowStockOnly());
+        fetchLowStockOnly();
       }
-      
-      Promise.all(fetches).finally(() => {
-        setLoading(false);
-      });
     }
   }, [session, hasDashboardHome]);
 
@@ -381,7 +382,7 @@ export default function DashboardOverview() {
       refreshInFlight.current = true;
       lastRefreshAt.current = now;
       try {
-        await Promise.all([fetchStats(true), fetchServiceSummary()]);
+        await Promise.all([fetchStats(true), fetchServiceSummary(true)]);
       } finally {
         refreshInFlight.current = false;
       }
@@ -395,15 +396,6 @@ export default function DashboardOverview() {
       <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
         <Loader2 className="w-4 h-4 text-foreground/40 animate-spin" />
         <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-foreground/40">Authenticating session...</span>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
-        <Loader2 className="w-4 h-4 text-foreground/40 animate-spin" />
-        <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-foreground/40">Loading workspace...</span>
       </div>
     );
   }
@@ -649,11 +641,11 @@ export default function DashboardOverview() {
         </div>
         <div className="flex items-center gap-2 lg:gap-3">
           <button
-            onClick={() => fetchStats()}
-            disabled={loading}
+            onClick={() => { fetchStats(); fetchServiceSummary(); }}
+            disabled={statsLoading || serviceLoading}
             className="flex-1 lg:flex-none flex items-center justify-center gap-2 px-4 lg:px-5 py-2 lg:py-2.5 bg-background dark:bg-foreground/[0.03] border border-foreground/[0.08] rounded-xl text-[9px] lg:text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/60 hover:bg-foreground/[0.02] hover:text-foreground transition-all disabled:opacity-50 active:scale-95 shadow-sm"
           >
-            <RefreshCw className={`w-3 h-3 lg:w-3.5 lg:h-3.5 ${loading ? "animate-spin" : ""}`} strokeWidth={2} />
+            <RefreshCw className={`w-3 h-3 lg:w-3.5 lg:h-3.5 ${statsLoading || serviceLoading ? "animate-spin" : ""}`} strokeWidth={2} />
             Refresh
           </button>
           <button
@@ -668,70 +660,103 @@ export default function DashboardOverview() {
       </div>
 
        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6 relative z-10">
-        {statCards.map((stat, i) => {
-          const Icon = stat.icon;
-          return (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: i * 0.1, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-              key={stat.name}
-              className="glass-card p-6 lg:p-10 relative overflow-hidden group rounded-[2rem] lg:rounded-[3rem]"
+        {statsLoading && !stats ? (
+          [...Array(4)].map((_, i) => (
+            <div
+              key={`stat-skel-${i}`}
+              className="glass-card p-6 lg:p-10 relative overflow-hidden rounded-[2rem] lg:rounded-[3rem] animate-pulse"
             >
               <div className="flex justify-between items-start mb-4 lg:mb-6">
-                <p className="text-[10px] lg:text-[11px] font-bold text-foreground/20 uppercase tracking-[0.4em]">{stat.name}</p>
-                <div className="w-9 h-9 lg:w-10 lg:h-10 rounded-xl lg:rounded-[1.2rem] bg-foreground/5 text-foreground/40 flex items-center justify-center group-hover:bg-foreground group-hover:text-background transition-all duration-700 border border-foreground/5 shadow-inner">
-                  <Icon className="w-3.5 h-3.5 lg:w-4 lg:h-4" strokeWidth={1.5} />
-                </div>
+                <div className="h-3 w-16 bg-foreground/10 rounded" />
+                <div className="w-9 h-9 lg:w-10 lg:h-10 rounded-xl bg-foreground/5" />
               </div>
-              <div className="relative z-10">
-                <p className="text-2xl lg:text-4xl font-bold text-foreground tracking-tighter mb-1">{stat.value}</p>
-                <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[8px] lg:text-[9px] font-bold text-foreground/20 uppercase tracking-widest">Real-time sync</span>
+              <div className="h-8 lg:h-10 w-28 bg-foreground/10 rounded-lg mb-2" />
+              <div className="h-2.5 w-20 bg-foreground/5 rounded" />
+            </div>
+          ))
+        ) : (
+          statCards.map((stat, i) => {
+            const Icon = stat.icon;
+            return (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: i * 0.05, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                key={stat.name}
+                className="glass-card p-6 lg:p-10 relative overflow-hidden group rounded-[2rem] lg:rounded-[3rem]"
+              >
+                <div className="flex justify-between items-start mb-4 lg:mb-6">
+                  <p className="text-[10px] lg:text-[11px] font-bold text-foreground/20 uppercase tracking-[0.4em]">{stat.name}</p>
+                  <div className="w-9 h-9 lg:w-10 lg:h-10 rounded-xl lg:rounded-[1.2rem] bg-foreground/5 text-foreground/40 flex items-center justify-center group-hover:bg-foreground group-hover:text-background transition-all duration-700 border border-foreground/5 shadow-inner">
+                    <Icon className="w-3.5 h-3.5 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                  </div>
                 </div>
-              </div>
-              
-              {/* Vibrant Orb Effect */}
-              <div className="absolute -right-8 -bottom-8 w-24 lg:w-32 h-24 lg:h-32 bg-foreground/5 blur-3xl rounded-full group-hover:bg-foreground/10 transition-all duration-1000" />
-            </motion.div>
-          );
-        })}
+                <div className="relative z-10">
+                  <p className="text-2xl lg:text-4xl font-bold text-foreground tracking-tighter mb-1">{stat.value}</p>
+                  <div className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-[8px] lg:text-[9px] font-bold text-foreground/20 uppercase tracking-widest">Real-time sync</span>
+                  </div>
+                </div>
+                
+                {/* Vibrant Orb Effect */}
+                <div className="absolute -right-8 -bottom-8 w-24 lg:w-32 h-24 lg:h-32 bg-foreground/5 blur-3xl rounded-full group-hover:bg-foreground/10 transition-all duration-1000" />
+              </motion.div>
+            );
+          })
+        )}
       </div>
 
       {/* Service Summary Cards — Returns & Exchanges */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 lg:gap-6 relative z-10">
-        {serviceCards.map((card, i) => {
-          const Icon = card.icon;
-          return (
-            <motion.div
-              key={card.name}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 + i * 0.1, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+        {serviceLoading && !serviceSummary ? (
+          [...Array(2)].map((_, i) => (
+            <div
+              key={`srv-skel-${i}`}
+              className="glass-card p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] animate-pulse flex items-center justify-between"
             >
-              <Link
-                href={card.href}
-                className="glass-card p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] flex items-center justify-between group hover:scale-[1.01] transition-all duration-300 relative overflow-hidden block"
+              <div className="flex items-center gap-4 lg:gap-6">
+                <div className="w-12 h-12 lg:w-14 lg:h-14 rounded-2xl bg-foreground/5" />
+                <div className="space-y-2">
+                  <div className="h-3 w-24 bg-foreground/10 rounded" />
+                  <div className="h-6 w-16 bg-foreground/10 rounded-lg" />
+                </div>
+              </div>
+            </div>
+          ))
+        ) : (
+          serviceCards.map((card, i) => {
+            const Icon = card.icon;
+            return (
+              <motion.div
+                key={card.name}
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 + i * 0.05, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
               >
-                <div className="flex items-center gap-4 lg:gap-6">
-                  <div className={`w-12 h-12 lg:w-14 lg:h-14 rounded-2xl ${card.bg} flex items-center justify-center group-hover:scale-110 transition-transform duration-500`}>
-                    <Icon className={`w-5 h-5 lg:w-6 lg:h-6 ${card.color}`} strokeWidth={1.5} />
-                  </div>
-                  <div>
-                    <p className="text-[10px] lg:text-[11px] font-bold text-foreground/40 uppercase tracking-[0.3em]">{card.name}</p>
-                    <div className="flex items-baseline gap-2 mt-1">
-                      <span className="text-2xl lg:text-3xl font-bold text-foreground tracking-tighter">{card.value}</span>
-                      <span className="text-[9px] text-foreground/30 font-bold uppercase tracking-widest">of {card.total} total</span>
+                <Link
+                  href={card.href}
+                  className="glass-card p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] flex items-center justify-between group hover:scale-[1.01] transition-all duration-300 relative overflow-hidden block"
+                >
+                  <div className="flex items-center gap-4 lg:gap-6">
+                    <div className={`w-12 h-12 lg:w-14 lg:h-14 rounded-2xl ${card.bg} flex items-center justify-center group-hover:scale-110 transition-transform duration-500`}>
+                      <Icon className={`w-5 h-5 lg:w-6 lg:h-6 ${card.color}`} strokeWidth={1.5} />
+                    </div>
+                    <div>
+                      <p className="text-[10px] lg:text-[11px] font-bold text-foreground/40 uppercase tracking-[0.3em]">{card.name}</p>
+                      <div className="flex items-baseline gap-2 mt-1">
+                        <span className="text-2xl lg:text-3xl font-bold text-foreground tracking-tighter">{card.value}</span>
+                        <span className="text-[9px] text-foreground/30 font-bold uppercase tracking-widest">of {card.total} total</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <ArrowUpRight className="w-5 h-5 text-foreground/20 group-hover:text-foreground/60 transition-colors" />
-                <div className={`absolute -right-6 -bottom-6 w-24 h-24 ${card.bg} blur-3xl rounded-full opacity-30 group-hover:opacity-60 transition-opacity duration-500`} />
-              </Link>
-            </motion.div>
-          );
-        })}
+                  <ArrowUpRight className="w-5 h-5 text-foreground/20 group-hover:text-foreground/60 transition-colors" />
+                  <div className={`absolute -right-6 -bottom-6 w-24 h-24 ${card.bg} blur-3xl rounded-full opacity-30 group-hover:opacity-60 transition-opacity duration-500`} />
+                </Link>
+              </motion.div>
+            );
+          })
+        )}
       </div>
 
        <div className="grid lg:grid-cols-2 gap-4 lg:gap-6 relative z-10">
@@ -751,7 +776,19 @@ export default function DashboardOverview() {
 
           <div className="flex-1 overflow-x-auto custom-scrollbar">
             <div className="min-w-[600px] lg:min-w-0">
-              {(stats?.recentOrders || []).length === 0 ? (
+              {statsLoading && !stats ? (
+                <div className="p-6 space-y-4">
+                  {[...Array(3)].map((_, i) => (
+                    <div key={`ord-skel-${i}`} className="flex items-center justify-between animate-pulse">
+                      <div className="space-y-1.5">
+                        <div className="h-3.5 w-24 bg-foreground/10 rounded" />
+                        <div className="h-2.5 w-32 bg-foreground/5 rounded" />
+                      </div>
+                      <div className="h-4 w-16 bg-foreground/10 rounded" />
+                    </div>
+                  ))}
+                </div>
+              ) : (stats?.recentOrders || []).length === 0 ? (
                 <div className="py-16 lg:py-20 flex flex-col items-center justify-center text-center">
                    <p className="text-[10px] lg:text-[12px] font-bold text-foreground/20 uppercase tracking-[0.3em]">No recent orders</p>
                 </div>
@@ -817,7 +854,19 @@ export default function DashboardOverview() {
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {(serviceSummary?.recentActivity || []).length === 0 ? (
+            {serviceLoading && !serviceSummary ? (
+              <div className="p-6 space-y-4">
+                {[...Array(3)].map((_, i) => (
+                  <div key={`srv-act-skel-${i}`} className="flex items-center gap-4 animate-pulse">
+                    <div className="w-8 h-8 rounded-xl bg-foreground/5 shrink-0" />
+                    <div className="space-y-1.5 flex-1">
+                      <div className="h-3 w-36 bg-foreground/10 rounded" />
+                      <div className="h-2.5 w-24 bg-foreground/5 rounded" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (serviceSummary?.recentActivity || []).length === 0 ? (
                <div className="py-16 lg:py-20 flex flex-col items-center justify-center text-center">
                  <Undo2 className="w-8 h-8 text-foreground/5 mx-auto mb-3" />
                  <p className="text-[10px] lg:text-[12px] font-bold text-foreground/20 uppercase tracking-[0.3em]">No service activity</p>
@@ -873,7 +922,19 @@ export default function DashboardOverview() {
 
         <div className="flex-1 overflow-x-auto custom-scrollbar">
           <div className="min-w-[500px] lg:min-w-0">
-            {(stats?.lowStockProducts || []).length === 0 ? (
+            {statsLoading && !stats ? (
+              <div className="p-6 space-y-4">
+                {[...Array(3)].map((_, i) => (
+                  <div key={`inv-skel-${i}`} className="flex items-center justify-between animate-pulse">
+                    <div className="space-y-1.5">
+                      <div className="h-3.5 w-36 bg-foreground/10 rounded" />
+                      <div className="h-2.5 w-20 bg-foreground/5 rounded" />
+                    </div>
+                    <div className="h-4 w-24 bg-foreground/10 rounded" />
+                  </div>
+                ))}
+              </div>
+            ) : (stats?.lowStockProducts || []).length === 0 ? (
                <div className="py-16 lg:py-20 flex flex-col items-center justify-center text-center">
                  <p className="text-[10px] lg:text-[12px] font-bold text-foreground/20 uppercase tracking-[0.3em]">Inventory optimal</p>
               </div>
