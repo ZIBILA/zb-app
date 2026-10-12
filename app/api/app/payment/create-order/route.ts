@@ -1,7 +1,7 @@
 import Razorpay from 'razorpay';
 import { NextResponse } from 'next/server';
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
-import { requireAppAuth, handleAppAuthError, type AppAuthTokenPayload } from '@/lib/appAuth';
+import { requireAppAuth, handleAppAuthError, getAppAuthFromRequest, type AppAuthTokenPayload } from '@/lib/appAuth';
 import prisma from '@/lib/db';
 import { assignFailedOrderNumber } from '@/lib/orderNumber';
 
@@ -22,11 +22,11 @@ function razorpayErrMessage(err: unknown): string {
   return 'Order creation failed';
 }
 
-async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: AppAuthTokenPayload) {
+async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: AppAuthTokenPayload | null) {
   // Prefer auth customer so prepaid orders always stick to the logged-in account
   const bodyCustomerId = orderData?.customerId && orderData.customerId !== 'GUEST' ? orderData.customerId : null;
-  const customerId = userAuth.customerId || bodyCustomerId;
-  const customerEmail = orderData?.customerEmail || orderData?.shippingAddress?.email || userAuth.customerEmail;
+  const customerId = userAuth?.customerId || bodyCustomerId;
+  const customerEmail = orderData?.customerEmail || orderData?.shippingAddress?.email || userAuth?.customerEmail;
   const customerPhone = orderData?.customerPhone || orderData?.shippingAddress?.phone || '';
 
   let customer = customerId
@@ -61,7 +61,16 @@ async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: A
 export async function POST(req: Request) {
   const corsHeaders = getCorsHeaders(req);
   try {
-    const { auth: userAuth } = await requireAppAuth(req);
+    const authHeader = req.headers.get('authorization') || '';
+    const userAuth = getAppAuthFromRequest(req);
+
+    // If client supplied a Bearer token but it's expired/invalid, reject with clear session expired message
+    if (authHeader && !userAuth) {
+      return NextResponse.json(
+        { error: 'Session expired. Please log in again.' },
+        { status: 401, headers: corsHeaders }
+      );
+    }
 
     let { key_id, key_secret, source } = await resolveRazorpayCredentials();
     key_id = key_id.trim();
@@ -100,7 +109,7 @@ export async function POST(req: Request) {
       receipt,
       payment_capture: true,
       notes: {
-        customerId: userAuth.customerId || orderData?.customerId,
+        customerId: userAuth?.customerId || orderData?.customerId,
         source: 'mobile-app',
         ...(isCod ? { payment_type: 'cod_upfront', cod_upfront: String(chargeAmountRupees) } : {}),
       }

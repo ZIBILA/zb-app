@@ -28,6 +28,7 @@ import { SizeChartModal } from '../components/SizeChartModal';
 import { config } from '../constants/config';
 import QuickAddModal from '../components/QuickAddModal';
 import { FlatProduct } from '../api/types';
+import { requireValidAuth } from '../utils/tokenUtils';
 
 import { resolveImageUrl } from '../utils/imageUtils';
 
@@ -396,11 +397,7 @@ export default function ProductDetailScreen() {
 
     haptics.buttonTap();
     
-    if (!isAuthenticated) {
-      Alert.alert('Login Required', 'Please log in to proceed with checkout and payment.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Log In', onPress: () => navigation.navigate('Auth') }
-      ]);
+    if (!requireValidAuth(navigation, { promptMessage: 'Please log in to proceed with checkout and payment.' })) {
       return;
     }
     

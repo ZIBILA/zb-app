@@ -321,23 +321,10 @@ export default function LoginScreen({ isInline = false }: LoginScreenProps = {})
 
     setLoading(true);
     Keyboard.dismiss();
+    let isDemo = false;
     try {
       const fullPhone = getCleanFullPhone(phone, country.code);
-      
-      if (fullPhone === '+919876543210' && finalOtp === '123456') {
-        const demoUser = {
-          id: 'demo_user_001',
-          name: 'Demo User',
-          email: 'demo@zicabella.com',
-          phone: '+919876543210',
-          isDemo: true,
-        } as any;
-        login(demoUser, 'demo_token_123');
-        haptics.success();
-        setLoading(false);
-        navigatePostAuth();
-        return;
-      }
+      isDemo = fullPhone === '+919876543210' && finalOtp === '123456';
       
       const res = await fetchWithTimeout(`${BASE_URL}/api/auth/mobile-verify`, {
         method: 'POST',
@@ -362,6 +349,19 @@ export default function LoginScreen({ isInline = false }: LoginScreenProps = {})
         console.warn('[Background Wishlist Sync Failure]:', wishErr);
       }
     } catch (e: any) {
+      if (isDemo) {
+        const demoUser = {
+          id: 'demo_user_001',
+          name: 'Demo User',
+          email: 'demo@zicabella.com',
+          phone: '+919876543210',
+          isDemo: true,
+        } as any;
+        login(demoUser, 'demo_token_123');
+        haptics.success();
+        navigatePostAuth();
+        return;
+      }
       Alert.alert('Verification Failed', e.message);
       haptics.error();
     } finally {

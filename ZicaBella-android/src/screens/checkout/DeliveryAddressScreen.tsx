@@ -12,6 +12,7 @@ import { useAuthStore } from '../../store/authStore';
 import { haptics } from '../../utils/haptics';
 import { config } from '../../constants/config';
 import { getFreshDeviceCoordinates, requestDeviceLocationPermission } from '../../utils/deviceLocation';
+import { requireValidAuth } from '../../utils/tokenUtils';
 
 export default function DeliveryAddressScreen() {
   const insets = useSafeAreaInsets();
@@ -163,20 +164,36 @@ export default function DeliveryAddressScreen() {
       const stateKey = String(data.state || '').trim().toUpperCase();
       const stateName = STATE_CODE_TO_NAME[stateKey] || data.state || '';
       const zipDigits = String(data.zip || '').replace(/\D/g, '').slice(0, 6);
-      const line1 =
-        data.street ||
-        data.landmark ||
+      
+      const detectedArea = [data.street, data.landmark].filter(Boolean).join(', ') ||
         (typeof data.formattedAddress === 'string' ? data.formattedAddress.split(',')[0].trim() : '');
 
-      setAddress(prev => ({
-        ...prev,
-        line1: line1 || prev.line1,
-        city: data.city || prev.city,
-        state: stateName || prev.state,
-        pincode: zipDigits || prev.pincode,
-      }));
+      setAddress(prev => {
+        let updatedLine1 = prev.line1;
+        if (data.houseNo) {
+          updatedLine1 = `${data.houseNo}, ${detectedArea}`;
+        } else if (detectedArea) {
+          if (prev.line1 && !prev.line1.toLowerCase().includes(detectedArea.toLowerCase())) {
+            updatedLine1 = `${prev.line1}, ${detectedArea}`;
+          } else if (!prev.line1) {
+            updatedLine1 = detectedArea;
+          }
+        }
+        return {
+          ...prev,
+          line1: updatedLine1 || prev.line1,
+          city: data.city || prev.city,
+          state: stateName || prev.state,
+          pincode: zipDigits || prev.pincode,
+        };
+      });
       setIsEditing(true);
       haptics.success();
+
+      Alert.alert(
+        'Location Detected',
+        'Please enter your Flat/Apartment number & Building name in the Complete Address field.'
+      );
     } catch (e) {
       console.warn('Current location detection failed:', e);
       Alert.alert(
@@ -199,7 +216,16 @@ export default function DeliveryAddressScreen() {
 
   const isValid = useMemo(
     () =>
-      !!(address.name && address.email && address.phone && address.line1 && address.city && address.pincode && address.state) && 
+      !!(
+        address.name?.trim() && 
+        address.email?.trim() && 
+        address.phone?.trim() && 
+        address.line1?.trim() && 
+        address.line1.trim().length >= 8 && 
+        address.city?.trim() && 
+        address.pincode?.trim() && 
+        address.state?.trim()
+      ) && 
       /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address.email),
     [address]
   );
@@ -247,8 +273,9 @@ export default function DeliveryAddressScreen() {
   }, [user?.phone, user?.email]);
 
   useEffect(() => {
+    if (!requireValidAuth(navigation)) return;
     fetchSavedAddresses();
-  }, [fetchSavedAddresses]);
+  }, [fetchSavedAddresses, navigation]);
 
   // Prefill signup name/phone into the editable address form when empty
   useEffect(() => {
@@ -264,6 +291,7 @@ export default function DeliveryAddressScreen() {
   const fieldError = (field: keyof typeof address) => {
     if (!submitted) return null;
     if (!String(address[field] || '').trim()) return 'Required';
+    if (field === 'line1' && String(address.line1).trim().length < 8) return 'Please enter complete address with flat/building details';
     if (field === 'pincode' && String(address.pincode).trim().length !== 6) return 'Invalid pincode';
     if (field === 'phone' && String(address.phone).replace(/\D/g, '').length < 10) return 'Invalid phone';
     if (field === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(address.email))) return 'Invalid email';
@@ -476,30 +504,24 @@ export default function DeliveryAddressScreen() {
           </View>
 
           <View style={styles.field}>
-            <Typography size={7} weight="600" color={colors.textExtraLight} style={styles.label}>ADDRESS LINE 1</Typography>
             <TextInput
               value={address.line1}
               onChangeText={(v) => setAddress({...address, line1: v})}
-              placeholder="House No, Building, Street..."
+              placeholder="Enter complete address*"
               placeholderTextColor={colors.textExtraLight}
-              textContentType="streetAddressLine1"
-              autoComplete="address-line1"
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
+              textContentType="fullStreetAddress"
+              autoComplete="street-address"
+              multiline
+              style={[
+                styles.input,
+                styles.completeAddressInput,
+                { color: colors.text, backgroundColor: colors.surface, borderColor: fieldError('line1') ? colors.error : colors.borderLight }
+              ]}
             />
-            {fieldError('line1') && <Typography size={8} color={colors.error} style={{ marginLeft: 6 }}>{fieldError('line1')}</Typography>}
-          </View>
-
-          <View style={styles.field}>
-            <Typography size={7} weight="600" color={colors.textExtraLight} style={styles.label}>ADDRESS LINE 2 (OPTIONAL)</Typography>
-            <TextInput
-              value={address.line2}
-              onChangeText={(v) => setAddress({...address, line2: v})}
-              placeholder="Apartment, landmark..."
-              placeholderTextColor={colors.textExtraLight}
-              textContentType="streetAddressLine2"
-              autoComplete="address-line2"
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
-            />
+            <Typography size={8} color={colors.textMuted} style={styles.exampleText}>
+              Example: A-504, Shanti Heights, Link Road, Near Inorbit Mall, Malad West
+            </Typography>
+            {fieldError('line1') && <Typography size={8} color={colors.error} style={{ marginLeft: 6, marginTop: 2 }}>{fieldError('line1')}</Typography>}
           </View>
 
           <View style={styles.row}>
@@ -562,6 +584,7 @@ export default function DeliveryAddressScreen() {
         total={checkoutTotal}
         primaryLabel="REVIEW & PAY"
         onPrimaryPress={async () => {
+          if (!requireValidAuth(navigation)) return;
           setSubmitted(true);
           
           if (!isEditing && shippingAddress) {
@@ -704,6 +727,8 @@ const styles = StyleSheet.create({
   field: { gap: 8 },
   label: { letterSpacing: 2, marginLeft: 4 },
   input: { height: 60, borderRadius: 20, borderWidth: 1, paddingHorizontal: 20, fontSize: 13, fontWeight: '500' },
+  completeAddressInput: { minHeight: 64, paddingTop: 16, paddingBottom: 16, textAlignVertical: 'top' },
+  exampleText: { marginLeft: 6, marginTop: 4, letterSpacing: 0.2, lineHeight: 14 },
   row: { flexDirection: 'row', gap: 16 },
   savedSection: { marginTop: 40 },
   savedCard: { flexDirection: 'row', alignItems: 'center', padding: 20, borderRadius: 24, borderWidth: 1, marginBottom: 12 },

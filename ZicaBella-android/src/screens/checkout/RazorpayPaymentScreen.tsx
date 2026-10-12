@@ -17,6 +17,10 @@ import { useAuthStore } from '../../store/authStore';
 import { getPaymentApiBaseUrl } from '../../constants/config';
 import { TOP_BANKS } from '../../constants/bankCodes';
 import { WALLETS } from '../../constants/walletCodes';
+import { isRazorpayAvailable } from '../../utils/razorpayBridge';
+import RazorpayWebViewModal, { RazorpayWebViewSuccessPayload } from '../../components/RazorpayWebViewModal';
+import { getSnapDeviceContext } from '../../services/snapDeviceContext';
+import { requireValidAuth } from '../../utils/tokenUtils';
 
 const UPI_LOGOS: Record<string, string> = {
   'com.google.android.apps.nbu.paisa.user': 'https://cdn.razorpay.com/app/google_pay.png',
@@ -73,6 +77,7 @@ export default function RazorpayPaymentScreen() {
   const [bankSearch, setBankSearch] = useState('');
 
   const [selectedWallet, setSelectedWallet] = useState<string | null>(null);
+  const [showWebView, setShowWebView] = useState(false);
 
   const orderRecordedRef = useRef(false);
 
@@ -86,11 +91,15 @@ export default function RazorpayPaymentScreen() {
   const TAB_LABELS = ['UPI', 'Card', 'Bank', 'Wallets'];
   const tabWidth = (SW - 48) / 4;
 
-  // Fetch installed apps
+  // Fetch installed apps & ensure valid session
   useEffect(() => {
+    if (!requireValidAuth(nav)) return;
     fetchInstalledUPIApps();
     fetchInstalledWallets();
-  }, []);
+    if (orderId && razorpayKeyId) {
+      setShowWebView(true);
+    }
+  }, [nav, orderId, razorpayKeyId]);
 
   useEffect(() => {
     if (tab === 'upi') {
@@ -209,9 +218,46 @@ export default function RazorpayPaymentScreen() {
     }
   }, [status]);
 
+  // ── Handle Webview Checkout Success ──
+  const handleWebViewSuccess = useCallback(async (payload: RazorpayWebViewSuccessPayload) => {
+    setShowWebView(false);
+    haptics.success();
+
+    // 1. Verify signature on backend
+    try {
+      const apiBase = getPaymentApiBaseUrl();
+      const vRes = await fetch(`${apiBase}/api/app/payment/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          razorpay_order_id: payload.razorpay_order_id,
+          razorpay_payment_id: payload.razorpay_payment_id,
+          razorpay_signature: payload.razorpay_signature,
+          snapDevice: await getSnapDeviceContext(),
+        }),
+      });
+      const vJson = await vRes.json().catch(() => ({}));
+      if (vJson.orderId) setCreatedOrderId(vJson.orderId);
+      if (vJson.orderNumber) setCreatedOrderNumber(vJson.orderNumber);
+    } catch (e) {
+      console.warn('[RazorpayPayment] Backend verify call:', e);
+    }
+
+    // 2. Animate to success
+    Animated.parallel([
+      Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
+      Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+    ]).start();
+
+    // 3. Record order on backend
+    await recordOrderOnBackend(payload.razorpay_payment_id, payload.razorpay_order_id);
+  }, [recordOrderOnBackend, successScale, successOpacity]);
+
   const isPayReady = (): boolean => {
     if (!amount || Number(amount) <= 0) return false;
     if (!orderId || !razorpayKeyId) return false;
+    // Standard web checkout doesn't require pre-selecting an app or bank
+    if (!isRazorpayAvailable()) return true;
     if (tab === 'upi') return upiSubTab === 'apps' ? !!selectedUPIApp : upiId.includes('@');
     if (tab === 'card') return cardNum.replace(/\s/g, '').length === 16 && cardExpiry.length === 5 && cardCvv.length >= 3;
     if (tab === 'netbanking') return !!selectedBank;
@@ -222,6 +268,7 @@ export default function RazorpayPaymentScreen() {
   const payReadyHint = (): string => {
     if (!amount || Number(amount) <= 0) return 'Invalid amount — go back and retry';
     if (!orderId || !razorpayKeyId) return 'Payment session not ready — go back and retry';
+    if (!isRazorpayAvailable()) return '';
     if (tab === 'upi') {
       return upiSubTab === 'apps'
         ? (selectedUPIApp ? '' : 'Select a UPI app to continue')
@@ -235,7 +282,16 @@ export default function RazorpayPaymentScreen() {
 
   const payLockRef = useRef(false);
   const onPay = async () => {
-    if (!isPayReady() || payLockRef.current || isProcessing) return;
+    if (payLockRef.current || isProcessing) return;
+
+    // If native Razorpay Custom UI module is not found, launch official webview checkout
+    if (!isRazorpayAvailable()) {
+      haptics.buttonTap();
+      setShowWebView(true);
+      return;
+    }
+
+    if (!isPayReady()) return;
     payLockRef.current = true;
     haptics.success();
     
@@ -260,6 +316,10 @@ export default function RazorpayPaymentScreen() {
       await startPayment(tab, opts);
     } catch (e: any) {
       console.error('[RazorpayPayment] Payment failed:', e.message);
+      // If native SDK fails due to missing module, fall back to webview checkout immediately
+      if (String(e.message).includes('native module not found')) {
+        setShowWebView(true);
+      }
     } finally {
       payLockRef.current = false;
     }
@@ -349,10 +409,28 @@ export default function RazorpayPaymentScreen() {
           </Animated.View>
           <Typography size={22} weight="800" color={colors.text} style={{ marginTop: 32, letterSpacing: 2 }}>TRANSACTION FAILED</Typography>
           <Typography size={11} color={colors.textMuted} style={{ marginTop: 12, textAlign: 'center', paddingHorizontal: 40 }}>{error || 'The payment could not be completed.'}</Typography>
-          <TouchableOpacity style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]} onPress={() => reset()}>
+          <TouchableOpacity
+            style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]}
+            onPress={() => {
+              reset();
+              setShowWebView(true);
+            }}
+          >
             <Typography size={11} weight="800" color={colors.background} style={{ letterSpacing: 1 }}>RETRY PAYMENT</Typography>
           </TouchableOpacity>
         </View>
+        <RazorpayWebViewModal
+          visible={showWebView}
+          orderId={orderId}
+          razorpayKeyId={razorpayKeyId}
+          amount={amount}
+          prefill={prefill}
+          onSuccess={handleWebViewSuccess}
+          onDismiss={() => setShowWebView(false)}
+          onError={() => {
+            setShowWebView(false);
+          }}
+        />
       </View>
     );
   }
@@ -514,12 +592,23 @@ export default function RazorpayPaymentScreen() {
         )}
         <TouchableOpacity style={[s.payBtn, { backgroundColor: isPayReady() ? colors.foreground : colors.surface, opacity: isPayReady() ? 1 : 0.4 }]} onPress={onPay} disabled={isProcessing || !isPayReady()}>
           {isProcessing ? <ActivityIndicator color={colors.background} /> :
-            <Typography size={13} weight="800" color={isPayReady() ? colors.background : colors.textMuted} style={{ letterSpacing: 2 }}>PLACE ORDER</Typography>
+            <Typography size={13} weight="800" color={isPayReady() ? colors.background : colors.textMuted} style={{ letterSpacing: 2 }}>{`PAY ₹${(amount || 0).toLocaleString('en-IN')}`}</Typography>
           }
         </TouchableOpacity>
       </View>
 
-      {/* Remove custom processing overlay to let Razorpay's native UI handle feedback */}
+      <RazorpayWebViewModal
+        visible={showWebView}
+        orderId={orderId}
+        razorpayKeyId={razorpayKeyId}
+        amount={amount}
+        prefill={prefill}
+        onSuccess={handleWebViewSuccess}
+        onDismiss={() => setShowWebView(false)}
+        onError={() => {
+          setShowWebView(false);
+        }}
+      />
     </View>
   );
 }

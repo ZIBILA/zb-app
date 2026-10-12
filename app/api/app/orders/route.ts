@@ -603,7 +603,17 @@ export async function POST(req: Request) {
       financial_status: verifiedPaymentStatus === 'paid' ? 'paid' : isPaidLike ? 'partially_paid' : 'pending',
       tags: `AppOrder, ${isCod ? 'COD' : 'Prepaid, Razorpay'}${creditReduction > 0 ? `, Credit: ${creditReduction}` : ''}`,
       note: `Ordered via Zica Bella App. Method: ${pmUpper}. ${creditReduction > 0 ? `Used ${creditReduction} credits.` : ''}`,
-      shipping_address,
+      shipping_address: shipping_address ? {
+        first_name: shipping_address.first_name || (shipping_address.name ? shipping_address.name.split(' ')[0] : 'App'),
+        last_name: shipping_address.last_name || (shipping_address.name ? shipping_address.name.split(' ').slice(1).join(' ') : 'User'),
+        address1: shipping_address.address1 || shipping_address.line1 || shipping_address.street || 'Address not provided',
+        address2: shipping_address.address2 || shipping_address.line2 || '',
+        city: shipping_address.city || 'Delhi',
+        province: shipping_address.province || shipping_address.state || 'Delhi',
+        zip: shipping_address.zip || shipping_address.pincode || '110001',
+        country: shipping_address.country || 'India',
+        phone: shipping_address.phone || phone || '',
+      } : undefined,
       use_customer_default_address: !shipping_address,
     };
 
