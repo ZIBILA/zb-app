@@ -15,17 +15,28 @@ import { getCacheService } from '../services/cacheService';
 const LIST_FIELDS = 'id,title,handle,priceRange,featuredImage';
 const FULL_FIELDS = 'id,title,handle,description,descriptionHtml,availableForSale,featuredImage,images,priceRange,variants,media,details,care,sizeChart,productVideo';
 
-// Manual cache functions replaced by cacheService
 const apiCache = new Map<string, { data: any; timestamp: number }>();
+const inFlightRequests = new Map<string, Promise<any>>();
 
 async function cachedFetch<T>(key: string, fetchFn: () => Promise<T>, ttl = 300000): Promise<T> {
   const cached = apiCache.get(key);
   if (cached && Date.now() - cached.timestamp < ttl) {
     return cached.data;
   }
-  const data = await fetchFn();
-  apiCache.set(key, { data, timestamp: Date.now() });
-  return data;
+  if (inFlightRequests.has(key)) {
+    return inFlightRequests.get(key)!;
+  }
+  const promise = (async () => {
+    try {
+      const data = await fetchFn();
+      apiCache.set(key, { data, timestamp: Date.now() });
+      return data;
+    } finally {
+      inFlightRequests.delete(key);
+    }
+  })();
+  inFlightRequests.set(key, promise);
+  return promise;
 }
 
 function isShopifyProduct(product: any): product is Product {
@@ -221,7 +232,7 @@ export function useProducts(count = 24) {
   }, []);
 
   const fetchProducts = useCallback(async (isRefresh = false) => {
-    const cacheKey = `products_list_${count}`;
+    const cacheKey = count <= 50 ? 'products_list_catalog_50' : `products_list_${count}`;
     
     try {
       if (isMounted.current) {
@@ -250,7 +261,7 @@ export function useProducts(count = 24) {
       const normalizedProducts = extractProducts(data);
 
       if (normalizedProducts.length > 0) {
-        setProducts(normalizedProducts);
+        setProducts(normalizedProducts.slice(0, count));
         await getCacheService().set(cacheKey, normalizedProducts, 5);
         return;
       }
@@ -447,12 +458,20 @@ export function useCollections(count = 20, location?: 'header' | 'page' | 'menu'
   }, []);
 
   const fetchCollections = useCallback(async (isRefresh = false) => {
+    if (count <= 0) {
+      if (isMounted.current) {
+        setCollections([]);
+        setLoading(false);
+      }
+      return;
+    }
+
     const cacheKey = `collections_${count}_${location || 'default'}`;
 
     try {
       if (!isRefresh) {
         const cached = await getCacheService().get<FlatCollection[]>(cacheKey);
-        if (cached && !isMounted.current) {
+        if (cached && isMounted.current) {
           setCollections(cached);
           setLoading(false);
         }
@@ -507,6 +526,15 @@ export function useCollectionByHandle(handle: string) {
   }, []);
 
   const fetchCollection = useCallback(async (isRefresh = false) => {
+    if (!handle) {
+      if (isMounted.current) {
+        setCollection(null);
+        setProducts([]);
+        setLoading(false);
+      }
+      return;
+    }
+
     const cacheKey = `collection_products_${handle}`;
 
     try {

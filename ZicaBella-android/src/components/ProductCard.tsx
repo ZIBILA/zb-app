@@ -103,7 +103,7 @@ const ProductCard = React.memo(({ product, onQuickAdd, onRemove, style, compact,
 
       {/* Image area */}
       <View style={[styles.imageTapArea, { width: currentCardWidth }]}>
-        {images.length > 1 ? (
+        {(isLarge && images.length > 1) ? (
           <ScrollView
             ref={scrollViewRef}
             horizontal
@@ -160,7 +160,7 @@ const ProductCard = React.memo(({ product, onQuickAdd, onRemove, style, compact,
         ) : (
           <View style={[styles.image, styles.placeholderContainer, { backgroundColor: isDark ? '#1a1a1a' : '#f0f0f0' }]}>
             <OptimizedImage 
-              source={require('../../assets/load-image-1.jpg')} 
+              source={require('../../assets/zb-logo-220px.png')} 
               style={styles.image}
             />
           </View>

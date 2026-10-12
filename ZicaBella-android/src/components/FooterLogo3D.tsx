@@ -1,5 +1,5 @@
 import React, { Suspense, useRef, useState, useCallback, useMemo } from 'react';
-import { View, StyleSheet, PanResponder } from 'react-native';
+import { View, StyleSheet, PanResponder, Platform } from 'react-native';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, Bounds } from '@react-three/drei';
 import { useFocusEffect } from '@react-navigation/native';
@@ -81,11 +81,16 @@ function Model({
 type Props = {
   glbUrl?: string;
   size?: number;
+  active?: boolean;
 };
 
-export default function FooterLogo({ glbUrl, size = 56 }: Props) {
+export default function FooterLogo({ glbUrl, size = 56, active = false }: Props) {
   const theme = useThemeStore(s => s.theme);
   const isDark = theme === 'dark';
+
+  if (Platform.OS === 'android' || !active) {
+    return <FallbackLogo size={size} isDark={isDark} />;
+  }
 
   const rawUrl = (glbUrl || config.footerLogo3dGlb).trim();
   // Ensure we use the canonical silver 3D logo if raw URL is empty or generic

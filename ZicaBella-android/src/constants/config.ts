@@ -19,7 +19,11 @@ export const config = {
     'https://cdn.shopify.com/3d/models/e024b09e83a75c03/Zicabella-silver-logo.glb',
   /** Store / marketing contact page (matches web footer). */
   contactPage: 'https://zicabella.com/policies/contact-information',
-  heroVideoUrl: 'https://app.zicabella.com/zb-video-heroo.mp4',
+  /** Fallback hero media when /api/app/config is slow or unreachable */
+  heroVideoUrl:
+    'https://cdn.shopify.com/videos/c/o/v/7f976d2c622a4a0b80c43f8fc0fddd7e.mp4',
+  heroImageUrl:
+    'https://cdn.shopify.com/s/files/1/0955/5394/5881/files/Zica-bella-luxury-streetwear-brand_f9d3cad3-ed6a-48d0-b90e-3a1bdd26df5e.jpg?v=1785846857',
   razorpay: {
     keyId: process.env.EXPO_PUBLIC_RAZORPAY_KEY_ID || '',
   },

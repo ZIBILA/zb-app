@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Image, ImageProps } from 'expo-image';
 
@@ -8,23 +8,31 @@ interface OptimizedImageProps extends Omit<ImageProps, 'source'> {
   priority?: 'low' | 'normal' | 'high';
 }
 
-export default function OptimizedImage({ 
+const OptimizedImage = React.memo(function OptimizedImage({ 
   source, 
   style, 
   shopifyWidth,
   contentFit = 'cover',
-  transition = 100,
+  transition = 60,
   priority = 'normal',
   ...props 
 }: OptimizedImageProps) {
 
-  let finalSource = source;
-  if (typeof source === 'string' && source.includes('cdn.shopify.com') && shopifyWidth) {
-    const separator = source.includes('?') ? '&' : '?';
-    finalSource = `${source}${separator}width=${shopifyWidth}&format=webp`;
-  }
+  const finalSource = useMemo(() => {
+    if (typeof source === 'string' && source.includes('cdn.shopify.com') && shopifyWidth) {
+      const separator = source.includes('?') ? '&' : '?';
+      return `${source}${separator}width=${shopifyWidth}&format=webp`;
+    }
+    return source;
+  }, [source, shopifyWidth]);
 
-  const imageSource = typeof finalSource === 'string' ? { uri: finalSource } : finalSource;
+  const imageSource = useMemo(() => {
+    return typeof finalSource === 'string' ? { uri: finalSource } : finalSource;
+  }, [finalSource]);
+
+  const recyclingKey = useMemo(() => {
+    return typeof finalSource === 'string' ? finalSource : undefined;
+  }, [finalSource]);
 
   return (
     <View style={[styles.container, style]}>
@@ -35,12 +43,14 @@ export default function OptimizedImage({
         transition={transition}
         priority={priority}
         cachePolicy="memory-disk"
-        recyclingKey={typeof finalSource === 'string' ? finalSource : undefined}
+        recyclingKey={recyclingKey}
         {...props}
       />
     </View>
   );
-}
+});
+
+export default OptimizedImage;
 
 const styles = StyleSheet.create({
   container: {
@@ -48,3 +58,4 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.03)',
   },
 });
+

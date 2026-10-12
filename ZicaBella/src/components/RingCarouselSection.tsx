@@ -1,6 +1,5 @@
-import React from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Platform } from 'react-native';
-import { Image } from 'expo-image';
+import React, { useCallback, useMemo } from 'react';
+import { View, StyleSheet, TouchableOpacity, Platform, FlatList } from 'react-native';
 import { GlassBackdrop } from './GlassView';
 import { useNavigation } from '@react-navigation/native';
 import { FlatProduct } from '../api/types';
@@ -16,13 +15,87 @@ interface Props {
   products: FlatProduct[];
 }
 
-const RingCarouselSection = React.memo(({ title = "ACCESSORIES", handle = "accessories", products }: Props) => {
+const ITEM_SIZE = 110;
+const ITEM_GAP = 16;
+const SNAP_INTERVAL = ITEM_SIZE + ITEM_GAP;
+const PADDING_HORIZONTAL = 20;
+
+const RingItem = React.memo(function RingItem({ 
+  item, 
+  isDark, 
+  onPress 
+}: { 
+  item: FlatProduct; 
+  isDark: boolean; 
+  onPress: () => void;
+}) {
+  const rawImg = item.featuredImage || (item as any).image || (item.images && item.images[0]);
+  const imageUri = useMemo(() => resolveImageUrl(rawImg), [rawImg]);
+
+  return (
+    <TouchableOpacity 
+      style={[
+        styles.itemContainer,
+        { 
+          backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F5F5F7',
+          borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
+        }
+      ]}
+      onPress={onPress}
+      activeOpacity={0.8}
+    >
+      {imageUri ? (
+        <OptimizedImage 
+          source={imageUri} 
+          style={styles.image}
+          shopifyWidth={240}
+          contentFit="contain"
+          transition={60}
+        />
+      ) : (
+        <View style={styles.imagePlaceholder} />
+      )}
+    </TouchableOpacity>
+  );
+});
+
+const RingCarouselSection = React.memo(function RingCarouselSection({ 
+  title = "ACCESSORIES", 
+  handle = "accessories", 
+  products 
+}: Props) {
   const navigation = useNavigation<any>();
   const colors = useColors();
   const theme = useThemeStore(state => state.theme);
   const isDark = theme === 'dark';
 
-  const validProducts = (products || []).filter(p => p && (p.id || p.handle));
+  const validProducts = useMemo(() => {
+    return (products || []).filter(p => p && (p.id || p.handle));
+  }, [products]);
+
+  const handleViewAll = useCallback(() => {
+    navigation.navigate('Collection', { handle });
+  }, [navigation, handle]);
+
+  const renderItem = useCallback(({ item }: { item: FlatProduct }) => {
+    return (
+      <RingItem 
+        item={item} 
+        isDark={isDark} 
+        onPress={() => navigation.navigate('ProductDetail', { handle: item.handle })}
+      />
+    );
+  }, [navigation, isDark]);
+
+  const keyExtractor = useCallback((item: FlatProduct, index: number) => {
+    return item.id || item.handle || `ring-${index}`;
+  }, []);
+
+  const getItemLayout = useCallback((_: any, index: number) => ({
+    length: SNAP_INTERVAL,
+    offset: PADDING_HORIZONTAL + SNAP_INTERVAL * index,
+    index,
+  }), []);
 
   if (validProducts.length === 0) return null;
 
@@ -43,58 +116,37 @@ const RingCarouselSection = React.memo(({ title = "ACCESSORIES", handle = "acces
         <View style={styles.header}>
           <Typography size={7.5} color={colors.text} weight="500" style={styles.title}>{title}</Typography>
           <TouchableOpacity 
-            onPress={() => navigation.navigate('Collection', { handle })}
+            onPress={handleViewAll}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
             <Typography size={6.5} color={colors.textExtraLight} weight="400">VIEW ALL</Typography>
           </TouchableOpacity>
         </View>
 
-        {/* Horizontal Scroll */}
-        <ScrollView 
+        {/* Horizontal FlatList */}
+        <FlatList 
           horizontal 
+          data={validProducts}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          nestedScrollEnabled={true}
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
-          snapToInterval={126} // Item width 110 + Gap 16
+          snapToInterval={SNAP_INTERVAL}
           decelerationRate="fast"
-        >
-          {validProducts.map((item, idx) => {
-            const rawImg = item.featuredImage || (item as any).image || (item.images && item.images[0]);
-            const imageUri = resolveImageUrl(rawImg);
-
-            return (
-              <TouchableOpacity 
-                key={item.id || item.handle || `ring-${idx}`}
-                style={[
-                  styles.itemContainer,
-                  { 
-                    backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : '#F5F5F7',
-                    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
-                  }
-                ]}
-                onPress={() => navigation.navigate('ProductDetail', { handle: item.handle })}
-                activeOpacity={0.8}
-              >
-                {imageUri ? (
-                  <OptimizedImage 
-                    source={imageUri} 
-                    style={styles.image}
-                    shopifyWidth={300}
-                    contentFit="contain"
-                  />
-                ) : (
-                  <View style={styles.imagePlaceholder} />
-                )}
-              </TouchableOpacity>
-            );
-          })}
-          <View style={{ width: 10 }} />
-        </ScrollView>
+          getItemLayout={getItemLayout}
+          initialNumToRender={4}
+          maxToRenderPerBatch={3}
+          windowSize={3}
+          removeClippedSubviews={Platform.OS === 'android'}
+          scrollEventThrottle={16}
+        />
       </View>
     </View>
   );
 });
 
+export default RingCarouselSection;
 
 const styles = StyleSheet.create({
   container: {
@@ -113,9 +165,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 20,
       },
-      android: {
-        // No Android elevation on container to avoid polygon shadow artifacts
-      },
+      android: {},
     }),
   },
   header: {
@@ -132,12 +182,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    gap: 16,
+    paddingHorizontal: PADDING_HORIZONTAL,
+    gap: ITEM_GAP,
   },
   itemContainer: {
-    width: 110,
-    height: 110,
+    width: ITEM_SIZE,
+    height: ITEM_SIZE,
     borderRadius: 22,
     overflow: 'hidden',
     borderWidth: 0.5,
@@ -155,5 +205,3 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(150,150,150,0.05)',
   },
 });
-
-export default RingCarouselSection;
