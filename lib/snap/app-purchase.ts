@@ -288,6 +288,8 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
       let sends = 0;
       for (const cand of batch) {
         if (sends >= limit || outOfTime()) break;
+        // Rows of an app whose token was refused in this run wait (no Razorpay call for them).
+        if (await assetBlocked(cand.orderId)) { bump('pending_waiting_auth'); continue; }
         const order = details.get(cand.orderId);
         let hold: string | null = null;
         if (!order) hold = 'no_order';
@@ -299,7 +301,6 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
           await ledger.noteRecoveryCheck(PLATFORM, EVENT, cand.orderId, cand.rowId, `recovery: ${hold}`);
           continue;
         }
-        if (await assetBlocked(cand.orderId)) { bump('pending_waiting_auth'); continue; }
         const out = await emitSnapAppPurchase(cand.orderId, { paymentConfirmed: true });
         sends++;
         if (out.status === 'failed' && out.blocked) {

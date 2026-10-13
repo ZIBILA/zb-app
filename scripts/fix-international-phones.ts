@@ -12,11 +12,13 @@
  *   Apply the unambiguous repairs:       npx tsx scripts/fix-international-phones.ts --apply
  *   Also apply the ambiguous ones:       npx tsx scripts/fix-international-phones.ts --apply --include-ambiguous
  *
- * "Unambiguous" = the stored value is not a possible phone number as written, and
- * the digits make a possible number of the address's country. "Ambiguous" = the
- * stored value is also a possible number of another country (e.g. "+6045550199"
- * is a possible Malaysian number and the Vancouver number 604-555-0199); those
- * are listed for review and left alone unless --include-ambiguous is given.
+ * "Unambiguous" = the stored value is not a VALID phone number as written (of any
+ * country), and the digits make a number of the address's country. "Ambiguous" =
+ * the stored value is a valid number of another country as written AND a valid
+ * number of the address's country (e.g. "+6045550199" is a real Malaysian number
+ * and the Vancouver number 604-555-0199); those are listed for review and left
+ * alone unless --include-ambiguous is given — check them one by one first, since
+ * a customer may really have typed a foreign number with its country code.
  * Reads .env.production / .env.local for DATABASE_URL (scripts/load-env.ts), like the other maintenance scripts.
  */
 import './load-env';

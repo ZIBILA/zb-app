@@ -154,18 +154,23 @@ async function main() {
   eq('a number that cannot be a number of the selected country (or of any country) is refused with a usable message',
     [stored('12', 'United States', 'US'), stored('555', 'United Kingdom', 'GB'), stored('', 'Canada', 'CA')].map(r => [r.valid, /valid phone number for (United States|United Kingdom|Canada)/.test(r.error)]),
     [[false, true], [false, true], [false, true]]);
-  eq('a number typed with another country\'s code is kept as typed (the customer knows their number)',
-    [stored('+91 98111 22233', 'United States', 'US').formattedPhone, stored('+971 50 123 4567', 'United Kingdom', 'GB').formattedPhone], ['+919811122233', '+971501234567']);
+  eq('a number typed with another country\'s code is kept as typed (the customer knows their number) — also where the local numbering plan would accept the digits (DE, AT, PK, ID …)',
+    [stored('+91 98111 22233', 'United States', 'US'), stored('+971 50 123 4567', 'United Kingdom', 'GB'), stored('+91 98765 43210', 'Germany', 'DE'), stored('+919876543210', 'Austria', 'AT'),
+      stored('+1 415 555 2671', 'Germany', 'DE'), stored('+65 8123 4567', 'Canada', 'CA'), stored('+44 7911 123456', 'Pakistan', 'PK')].map(r => [r.valid, r.formattedPhone]),
+    [[true, '+919811122233'], [true, '+971501234567'], [true, '+919876543210'], [true, '+919876543210'], [true, '+14155552671'], [true, '+6581234567'], [true, '+447911123456']]);
   // Legacy stored shapes ("+" + national digits) read with the country of the order's address:
   eq('legacy "+<national digits>" numbers are read as numbers of the customer\'s own country', [
     norm.normalizePhone('+4155552671', 'US'),      // not a Swiss number (too short) → US
     norm.normalizePhone('+07700900123', 'GB'),     // "+0…" is nobody's code → GB
     norm.normalizePhone('+00447700900123', 'GB'),  // "+00…" → international prefix
-    norm.normalizePhone('+6045550199', 'CA'),      // a possible Malaysian number too: the address country wins the tie
+    norm.normalizePhone('+6505551234', 'US'),      // a possible Singapore number too, but not a valid one; valid in the US
     norm.normalizePhone('+2079460000', 'GB'),      // a possible Egyptian number too, but not a valid one; valid in GB
-    norm.normalizePhone('+5551234567', 'US'),
+    norm.normalizePhone('+5551234567', 'US'),      // neither reading is valid: the address country wins
     norm.normalizePhone('+501234567', 'AE'),
-  ], ['14155552671', '447700900123', '447700900123', '16045550199', '442079460000', '15551234567', '971501234567']);
+  ], ['14155552671', '447700900123', '447700900123', '16505551234', '442079460000', '15551234567', '971501234567']);
+  eq('…but a stored number that is VALID as written is kept as written (a real Malaysian number on a Canadian address is possible; the repair script lists it for review)',
+    [norm.normalizePhone('+6045550199', 'CA'), norm.normalizePhone('+919876543210', 'DE'), norm.normalizePhone('+919876543210', 'AT'), norm.normalizePhone('+14155552671', 'DE')],
+    ['6045550199', '919876543210', '919876543210', '14155552671']);
   eq('…while a real foreign number on the order keeps its own code', [
     norm.normalizePhone('+919811122233', 'US'), norm.normalizePhone('+919811122233', 'AE'), norm.normalizePhone('+447911123456', 'AE'),
     norm.normalizePhone('+14155552671', 'GB'), norm.normalizePhone('+60123456789', 'CA'), norm.normalizePhone('+14155552671', 'IN'),
@@ -181,9 +186,10 @@ async function main() {
   // ── Repairing numbers stored before the fix (scripts/fix-international-phones.ts) ──
   const phoneLib = await import('../lib/tracking/phone');
   eq('repairStoredPhone: what a stored number should become', [
-    phoneLib.repairStoredPhone('+4155552671', 'US'), phoneLib.repairStoredPhone('+07700900123', 'GB'), phoneLib.repairStoredPhone('+6045550199', 'CA'),
-    phoneLib.repairStoredPhone('+14155552671', 'US'), phoneLib.repairStoredPhone('+919811122233', 'GB'), phoneLib.repairStoredPhone('', 'US'), phoneLib.repairStoredPhone('+4155552671', ''),
-  ], [{ next: '+14155552671', ambiguous: false }, { next: '+447700900123', ambiguous: false }, { next: '+16045550199', ambiguous: true }, null, null, null, null]);
+    phoneLib.repairStoredPhone('+4155552671', 'US'), phoneLib.repairStoredPhone('+07700900123', 'GB'), phoneLib.repairStoredPhone('+6505551234', 'US'), phoneLib.repairStoredPhone('+6045550199', 'CA'),
+    phoneLib.repairStoredPhone('+14155552671', 'US'), phoneLib.repairStoredPhone('+919811122233', 'GB'), phoneLib.repairStoredPhone('+919876543210', 'DE'), phoneLib.repairStoredPhone('', 'US'), phoneLib.repairStoredPhone('+4155552671', ''),
+  ], [{ next: '+14155552671', ambiguous: false }, { next: '+447700900123', ambiguous: false }, { next: '+16505551234', ambiguous: false }, { next: '+16045550199', ambiguous: true },
+    null, null, { next: '+49919876543210', ambiguous: true }, null, null]);
   {
     // The script runs against the in-memory database (numbers chosen not to collide with the checkout fixtures below).
     const { default: mem } = await import('./payment-e2e/memory-prisma');
@@ -285,7 +291,8 @@ async function main() {
   // Orders whose customer + address carry the LEGACY stored shape ("+" + national digits):
   for (const [label, addr, customerPhone, wantPhone] of [
     ['US customer stored as "+4155552671"', { city: 'San Francisco', countryCode: 'US', phone: '+4155552671' }, '+4155552671', '14155552671'],
-    ['Canadian customer stored as "+6045550199" (also a possible Malaysian number)', { city: 'Vancouver', countryCode: 'CA', phone: '+6045550199' }, '+6045550199', '16045550199'],
+    ['Canadian customer stored as "+4165550199" (not a Swiss number: too short)', { city: 'Toronto', countryCode: 'CA', phone: '+4165550199' }, '+4165550199', '14165550199'],
+    ['German address, customer\'s verified Indian login number (Germany\'s numbering plan would accept the digits — the number is kept)', { city: 'Berlin', countryCode: 'DE', phone: '+919811122233' }, '+919811122233', '919811122233'],
     ['UK customer stored as "+07700900123"', { city: 'London', countryCode: 'GB', phone: '+07700900123' }, '+07700900123', '447700900123'],
     ['UK address, customer\'s verified Indian login number', { city: 'London', countryCode: 'GB', phone: '+07700900123' }, '+919811122233', '919811122233'],
     ['UAE address, customer stored as "+501234567"', { city: 'Dubai', countryCode: 'AE', phone: '+501234567' }, '+501234567', '971501234567'],
