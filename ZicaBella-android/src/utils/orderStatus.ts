@@ -133,11 +133,10 @@ export function resolveOrderDisplayStatus(order: any): string {
   if (!order) return "Processing";
   
   const mainStatus = String(order.status || order.rawStatus || '').toLowerCase();
-  const fulfillmentStatus = String(order.fulfillmentStatus || '').toLowerCase();
   const cancelledBy = String(order.cancelledBy || '').toLowerCase();
   
-  // 1. Real order cancel only — ignore shipment/delivery void (that is not order cancel)
-  if (cancelledBy || mainStatus.includes('cancel') || fulfillmentStatus.includes('cancel')) {
+  // 1. Real order cancel only — never treat fulfillment/shipment void as order cancelled
+  if (cancelledBy || mainStatus === 'cancelled' || mainStatus === 'canceled') {
     if (cancelledBy === 'admin') return 'Cancelled by Zica Bella';
     return 'Cancelled';
   }

@@ -1641,15 +1641,16 @@ export default function CheckoutPage() {
       const fullStreet = [address.houseNo, address.street, address.landmark].filter(Boolean).join(", ");
       const checkoutAddress = { ...address, street: fullStreet };
 
-      // Case 1: 100% Store Credit Payment (finalTotal === 0)
-      if (finalTotal === 0 && appliedStoreCredit > 0) {
-        console.log("[Checkout] Completing order with 100% Store Credit");
+      // Case 1: ₹0 payable — 100% store credit and/or 100% coupon (no Razorpay)
+      if (finalTotal === 0 && (appliedStoreCredit > 0 || (couponValid && couponDiscount > 0))) {
+        const zeroPayMethod = appliedStoreCredit > 0 ? "store_credit" : "coupon";
+        console.log(`[Checkout] Completing ₹0 order via ${zeroPayMethod}`);
         const completeRes = await fetch("/api/checkout/complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             address: checkoutAddress,
-            paymentMethod: "store_credit",
+            paymentMethod: zeroPayMethod,
             items,
             total: 0,
             subtotal,
@@ -1681,7 +1682,7 @@ export default function CheckoutPage() {
           router.push(`/orders/${completeData.orderId}/confirmation`);
           return;
         } else {
-          throw new Error(completeData.error || "Failed to complete order with store credit.");
+          throw new Error(completeData.error || "Failed to complete free/coupon order.");
         }
       }
 

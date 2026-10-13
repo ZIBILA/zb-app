@@ -239,7 +239,17 @@ export async function POST(req: Request) {
       }
     }
 
-    const isFullStoreCredit = paymentMethod === "store_credit" || paymentMethod === "STORE_CREDIT" || Number(total) === 0;
+    // ₹0 payable: store credit, validated 100% coupon, or explicit coupon/store_credit method.
+    // Do not treat a bare client total:0 with no credit/coupon as paid.
+    const isZeroPayableMethod =
+      paymentMethod === "store_credit" ||
+      paymentMethod === "STORE_CREDIT" ||
+      paymentMethod === "coupon" ||
+      paymentMethod === "COUPON";
+    const isFullStoreCredit =
+      isZeroPayableMethod ||
+      (Number(total) === 0 &&
+        (parsedStoreCredit > 0 || finalCouponDiscount > 0 || Boolean(finalCouponCode)));
 
 
     // 1. Verify Payment (Required for prepaid and COD upfront fee, unless 100% store credit)
@@ -629,7 +639,13 @@ export async function POST(req: Request) {
     }
 
     let localOrder: any = null;
-    const finalPaymentMethod = isFullStoreCredit ? "store_credit" : isCodOrder ? "cod" : "razorpay";
+    const finalPaymentMethod = isFullStoreCredit
+      ? (parsedStoreCredit > 0 || paymentMethod === "store_credit" || paymentMethod === "STORE_CREDIT"
+          ? "store_credit"
+          : "coupon")
+      : isCodOrder
+        ? "cod"
+        : "razorpay";
     const orderPaymentStatus = isFullStoreCredit
       ? "paid"
       : !captureConfirmed
@@ -677,7 +693,9 @@ export async function POST(req: Request) {
         note: awaitingCapture
           ? awaitingCaptureNote
           : isFullStoreCredit
-          ? `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`
+          ? (finalPaymentMethod === "coupon"
+              ? `Paid ₹0 via coupon ${finalCouponCode || ''} (discount ₹${finalCouponDiscount}) from Web Store`
+              : `Paid 100% via Store Credit (₹${parsedStoreCredit}) from Web Store`)
           : isCodOrder
           ? `COD Order from Web Store ${parsedStoreCredit > 0 ? `(₹${parsedStoreCredit} Store Credit applied)` : ''} - ₹${resolvedCodFee} upfront fee paid via Razorpay${underpayNote}`
           : `Paid via Razorpay ${parsedStoreCredit > 0 ? `+ ₹${parsedStoreCredit} Store Credit` : ''} from Web Store (Payment ID: ${razorpay?.razorpay_payment_id || 'N/A'})${underpayNote}`,

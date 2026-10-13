@@ -24,6 +24,13 @@ export type OrderCancelFields = {
   }> | null;
 };
 
+const PAID_LIKE_PAYMENT_STATUSES = new Set([
+  'paid',
+  'cod_upfront_paid',
+  'partially_paid',
+  'partially-paid',
+]);
+
 /**
  * Customer-facing "order cancelled" — NOT the same as a voided courier shipment.
  * Shipment / fulfillment cancel alone must not paint the whole order as Cancelled
@@ -41,6 +48,65 @@ export function isOrderCancelledForCustomer(order: {
   // from a voided AWB, which left many delivered orders looking cancelled.
   if (status === 'cancelled' || status === 'canceled') return true;
   return false;
+}
+
+/**
+ * Decide whether a Shopify `orders/cancelled` (or cancelled_at) webhook should
+ * overwrite the local customer-facing order status.
+ *
+ * Paid local orders — especially ₹0 100% coupon orders — must not flip to
+ * CANCELLED when Shopify auto-cancels an unpaid/voided mirror.
+ */
+export function shouldHonorShopifyOrderCancel(
+  local:
+    | {
+        paymentStatus?: string | null;
+        status?: string | null;
+        cancelledBy?: string | null;
+        totalPrice?: number | null;
+        discountAmount?: number | null;
+        discountCode?: string | null;
+      }
+    | null
+    | undefined,
+  shopify: {
+    financial_status?: string | null;
+    cancelled_at?: string | null;
+    cancel_reason?: string | null;
+  }
+): { honor: boolean; reason: string } {
+  if (!local) return { honor: true, reason: 'no_local_order' };
+
+  if (local.cancelledBy) return { honor: true, reason: 'local_cancelled_by' };
+
+  const localStatus = String(local.status || '').toLowerCase();
+  if (localStatus === 'cancelled' || localStatus === 'canceled') {
+    return { honor: true, reason: 'already_cancelled_locally' };
+  }
+
+  const pay = String(local.paymentStatus || '').toLowerCase();
+  const isPaidLocally = PAID_LIKE_PAYMENT_STATUSES.has(pay);
+  if (!isPaidLocally) return { honor: true, reason: 'local_unpaid' };
+
+  const shopPay = String(shopify.financial_status || '').toLowerCase();
+  const total = Number(local.totalPrice || 0);
+  const discount = Number(local.discountAmount || 0);
+  const isZeroPaidOrder =
+    total <= 0.009 && (discount > 0 || Boolean(local.discountCode));
+
+  // Shopify never captured / voided an unpaid mirror — keep customer order alive.
+  const unpaidLikeShopify = ['pending', 'authorized', 'voided', 'expired', ''].includes(
+    shopPay
+  );
+  if (isZeroPaidOrder) {
+    return { honor: false, reason: 'protect_zero_paid_local' };
+  }
+  if (unpaidLikeShopify) {
+    return { honor: false, reason: 'protect_paid_vs_unpaid_shopify' };
+  }
+
+  // Local paid and Shopify shows paid/refunded cancel — honor (real cancel/refund).
+  return { honor: true, reason: 'shopify_paid_then_cancelled' };
 }
 
 export function getCustomerCancelLabel(order: {
