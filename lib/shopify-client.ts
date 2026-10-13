@@ -200,33 +200,86 @@ export async function headers(): Promise<HeadersInit> {
 // In-memory cache for GET requests to prevent rate limiting (429)
 // especially during dashboard polling.
 const requestCache = new Map<string, { data: any; timestamp: number }>();
+const inflightGets = new Map<string, Promise<any>>();
 const CACHE_TTL = 3 * 60 * 1000; // 3 minutes cache
 
-export async function shopifyFetch<T>(endpoint: string, params?: Record<string, string>): Promise<T> {
-  const url = new URL(await adminUrl(endpoint));
-  if (params) {
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+/** Tag used with Next.js Data Cache + revalidateTag('shopify-catalog') on product webhooks. */
+export const SHOPIFY_CATALOG_CACHE_TAG = 'shopify-catalog';
+
+/**
+ * live    — no-store (checkout, inventory, customers, single-product ops). Default.
+ * catalog — ISR-friendly revalidate (sitemap, collections, product lists). Still
+ *           invalidated immediately via refreshStorefront / revalidateTag.
+ */
+export type ShopifyGetCacheMode = 'live' | 'catalog';
+
+export interface ShopifyFetchOptions {
+  cacheMode?: ShopifyGetCacheMode;
+  /** Override in-memory TTL (ms). */
+  ttlMs?: number;
+}
+
+const CATALOG_REVALIDATE_SECONDS = 300;
+
+/** Cap concurrent Admin GETs so metafield/list stampedes cannot exhaust the Shopify bucket. */
+const MAX_ADMIN_GET_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, parseInt(process.env.SHOPIFY_ADMIN_GET_CONCURRENCY || '4', 10) || 4)
+);
+let adminGetActive = 0;
+const adminGetWaiters: Array<() => void> = [];
+
+async function withAdminGetSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (adminGetActive >= MAX_ADMIN_GET_CONCURRENCY) {
+    await new Promise<void>((resolve) => adminGetWaiters.push(resolve));
   }
-
-  const cacheKey = url.toString();
-  const now = Date.now();
-  const cached = requestCache.get(cacheKey);
-
-  if (cached && (now - cached.timestamp < CACHE_TTL)) {
-    return cached.data as T;
+  adminGetActive++;
+  try {
+    return await fn();
+  } finally {
+    adminGetActive--;
+    const next = adminGetWaiters.shift();
+    if (next) next();
   }
+}
 
+/** Build fetch init for Admin GETs without forcing Dynamic Server Usage on catalog routes. */
+export function shopifyGetFetchInit(cacheMode: ShopifyGetCacheMode = 'live'): RequestInit {
+  const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
+  if (isBuild) {
+    return { cache: 'force-cache' };
+  }
+  if (cacheMode === 'catalog') {
+    return {
+      next: {
+        revalidate: CATALOG_REVALIDATE_SECONDS,
+        tags: [SHOPIFY_CATALOG_CACHE_TAG],
+      },
+    } as RequestInit;
+  }
+  return { cache: 'no-store' };
+}
+
+async function shopifyFetchOnce<T>(
+  cacheKey: string,
+  endpoint: string,
+  opts: ShopifyFetchOptions,
+  cached: { data: any; timestamp: number } | undefined
+): Promise<T> {
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
   let didForceTokenRefresh = false;
+  const cacheMode = opts.cacheMode || 'live';
+  const ttlMs = opts.ttlMs ?? CACHE_TTL;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
-    const res = await fetch(url.toString(), {
-      method: 'GET',
-      headers: await headers(),
-      cache: isBuild ? 'force-cache' : 'no-store',
-    });
+    const res = await withAdminGetSlot(async () =>
+      fetch(cacheKey, {
+        method: 'GET',
+        headers: await headers(),
+        ...shopifyGetFetchInit(cacheMode),
+      })
+    );
 
     if (res.ok) {
       const data = await res.json();
@@ -275,7 +328,46 @@ export async function shopifyFetch<T>(endpoint: string, params?: Record<string, 
     throw new Error(`Shopify API ${res.status}: ${text}`);
   }
 
+  // Prefer stale over hard failure after exhausting retries (same as previous 429 stale path).
+  if (cached && Date.now() - cached.timestamp < Math.max(ttlMs * 10, 30 * 60 * 1000)) {
+    const { shouldLogThrottled } = await import('@/lib/log-throttle');
+    if (shouldLogThrottled(`shopify:stale-after-retries:${endpoint}`, 60_000)) {
+      console.warn(`[Shopify Client] Exhausted retries; serving stale cache for ${endpoint}`);
+    }
+    return cached.data as T;
+  }
+
   throw lastError || new Error(`Shopify API: Max retries exceeded for ${endpoint}`);
+}
+
+export async function shopifyFetch<T>(
+  endpoint: string,
+  params?: Record<string, string>,
+  opts: ShopifyFetchOptions = {}
+): Promise<T> {
+  const url = new URL(await adminUrl(endpoint));
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  }
+
+  const cacheKey = url.toString();
+  const now = Date.now();
+  const ttlMs = opts.ttlMs ?? CACHE_TTL;
+  const cached = requestCache.get(cacheKey);
+
+  if (cached && now - cached.timestamp < ttlMs) {
+    return cached.data as T;
+  }
+
+  // Coalesce identical in-flight GETs (layout + sitemap + list stampede).
+  const existing = inflightGets.get(cacheKey);
+  if (existing) return existing as Promise<T>;
+
+  const promise = shopifyFetchOnce<T>(cacheKey, endpoint, opts, cached).finally(() => {
+    inflightGets.delete(cacheKey);
+  });
+  inflightGets.set(cacheKey, promise);
+  return promise;
 }
 
 export function clearShopConfigCache() {
@@ -283,4 +375,5 @@ export function clearShopConfigCache() {
   global._shopifyClientCredToken = undefined;
   global._shopifyClientCredInflight = undefined;
   requestCache.clear();
+  inflightGets.clear();
 }

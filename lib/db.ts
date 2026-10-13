@@ -110,8 +110,26 @@ const prismaClientSingleton = () => {
     // Connection Pool Configuration:
     // Sized for Supabase pooler — keep modest so concurrent dashboard polls don't starve.
     const poolMax = process.env.PG_POOL_MAX ? parseInt(process.env.PG_POOL_MAX) : 8;
+
+    // Apply statement_timeout via connection options (not pool.on('connect') SET).
+    // A fire-and-forget SET raced with Prisma's first query on the same client and
+    // triggered: "Calling client.query() when the client is already executing a query".
+    const withStatementTimeout = (url: string): string => {
+      if (/statement_timeout/i.test(url)) return url;
+      const setting = '-c statement_timeout=12000';
+      // Prefer %20 over URLSearchParams'+' so libpq option parsing stays reliable.
+      const sep = url.includes('?') ? '&' : '?';
+      if (/[?&]options=/.test(url)) {
+        return url.replace(/([?&]options=)([^&]*)/, (_m, prefix: string, value: string) => {
+          const decoded = decodeURIComponent(value.replace(/\+/g, ' '));
+          return `${prefix}${encodeURIComponent(`${decoded} ${setting}`.trim())}`;
+        });
+      }
+      return `${url}${sep}options=${encodeURIComponent(setting)}`;
+    };
+
     const pool = new Pool({
-      connectionString: pgUrl,
+      connectionString: withStatementTimeout(pgUrl),
       ssl: { 
         rejectUnauthorized: false 
       },
@@ -119,11 +137,6 @@ const prismaClientSingleton = () => {
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 8_000,
       allowExitOnIdle: true,
-    });
-
-    // Set statement_timeout on every new connection (12s cap)
-    pool.on('connect', (client) => {
-      client.query('SET statement_timeout = 12000').catch(() => {});
     });
 
     pool.on('error', (err) => {
