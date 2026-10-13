@@ -25,7 +25,8 @@ export type LedgerContext = Record<string, string | number | boolean>;
 export type DeliveryResult =
   | { status: 'sent' }
   | { status: 'skipped'; reason: string }
-  | { status: 'failed'; reason: string; blocked?: string };
+  /** `blocked` names a setup problem (see SendResult); `asset` the Snap asset it concerns (app jobs). */
+  | { status: 'failed'; reason: string; blocked?: string; asset?: string };
 
 /**
  * What a sender reports back. `blocked` (any non-empty string naming the cause)
@@ -125,6 +126,7 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
       if (row.status === 'sent' || row.status === 'skipped') return { status: 'skipped', reason: `already ${row.status}` };
 
       const now = new Date();
+      const leaseUntil = new Date(now.getTime() + LEASE_MS);
       const claimed = await db.adConversionDelivery.updateMany({
         where: {
           id: row.id,
@@ -134,7 +136,7 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
             { status: 'sending', leaseUntil: { lt: now } },
           ],
         },
-        data: { status: 'sending', leaseUntil: new Date(now.getTime() + LEASE_MS), attempts: { increment: 1 } },
+        data: { status: 'sending', leaseUntil, attempts: { increment: 1 } },
       });
       if (claimed.count !== 1) return { status: 'skipped', reason: 'claimed by another process or max attempts' };
 
@@ -162,9 +164,11 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
       if (res.blocked) {
         // Our setup stopped the send (no token, token refused, validation-only
         // mode): keep the conversion retryable and return the attempt, so an
-        // outage on our side can never exhaust the row.
+        // outage on our side can never exhaust the row. Only OUR lease is given
+        // back: if it had expired and another process re-claimed the row, that
+        // process's attempt must stay counted.
         await db.adConversionDelivery.updateMany({
-          where: { id: row.id, status: 'sending' },
+          where: { id: row.id, status: 'sending', leaseUntil },
           data: { status: 'failed', leaseUntil: null, lastError: reason.slice(0, 500), attempts: { increment: -1 } },
         });
         return { status: 'failed', reason, blocked: res.blocked };
@@ -196,6 +200,36 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
   /** Order ids whose delivery failed or whose lease expired (for the retry cron). */
   async function retryable(platform: string, eventName: string, limit: number): Promise<string[]> {
     return (await retryableRows(platform, eventName, limit)).map((r: any) => r.orderId);
+  }
+
+  /**
+   * Rows that used up MAX_ATTEMPTS and can never be claimed again: failed ones,
+   * and "sending" ones whose lease expired because the process died mid-send.
+   */
+  async function exhaustedRows(platform: string, eventName: string, limit: number): Promise<LedgerRowSummary[]> {
+    return db.adConversionDelivery.findMany({
+      where: {
+        platform, eventName, attempts: { gte: MAX_ATTEMPTS },
+        OR: [{ status: 'failed' }, { status: 'sending', leaseUntil: { lt: new Date() } }],
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: limit,
+      select: { id: true, orderId: true, status: true, attempts: true, createdAt: true, updatedAt: true, eventTime: true, lastError: true },
+    });
+  }
+
+  /** Close a row that can never be sent (status → skipped, lastError kept). Never throws; true when it was closed. */
+  async function closeRow(id: string, lastError: string): Promise<boolean> {
+    try {
+      const res = await db.adConversionDelivery.updateMany({
+        where: { id, status: { in: ['failed', 'sending'] } },
+        data: { status: 'skipped', leaseUntil: null, lastError: lastError.slice(0, 500) },
+      });
+      return (res?.count || 0) > 0;
+    } catch (err: any) {
+      console.warn(`${logTag} could not close row ${id}:`, isMissingTable(err) ? 'ledger table missing' : err?.message);
+      return false;
+    }
   }
 
   /** Ledger rows of the given orders (looked up through the unique index, in chunks). */
@@ -252,5 +286,5 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
     return res?.count || 0;
   }
 
-  return { recordContext, deliver, retryable, retryableRows, rowsForOrders, firstRowCreatedAt, noteRecoveryCheck, expireStalePending };
+  return { recordContext, deliver, retryable, retryableRows, exhaustedRows, closeRow, rowsForOrders, firstRowCreatedAt, noteRecoveryCheck, expireStalePending };
 }

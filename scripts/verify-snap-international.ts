@@ -135,6 +135,92 @@ async function main() {
   ];
   for (const [label, raw, want] of CASES) eq(`normalize: ${label}`, norm.normalizeIdentity(raw), want);
   eq('a "+"-prefixed number is read by its own country code whatever the address says', norm.normalizePhone('+14155552671', 'IN'), '14155552671');
+
+  // ── Phone numbers exactly as the checkout STORES them ──
+  // lib/countries.ts validatePhoneNumber is what app/checkout/page.tsx and the profile
+  // page write to the customer / address record. For every non-Indian country the old
+  // version put a "+" in front of the typed digits ("+4155552671"): such numbers exist
+  // in the database and must still be matched to the right person.
+  const countryLib = await import('../lib/countries');
+  const stored = (typed: string, name: string, code: string) => countryLib.validatePhoneNumber(typed, name, code);
+  eq('checkout now stores a real E.164 number for the selected country', [
+    stored('415 555 2671', 'United States', 'US'), stored('(415) 555-2671', 'United States', 'US'), stored('07700 900123', 'United Kingdom', 'GB'),
+    stored('0044 7700 900123', 'United Kingdom', 'GB'), stored('+1 415 555 2671', 'United Kingdom', 'GB'), stored('050 123 4567', 'United Arab Emirates', 'AE'),
+    stored('0151 23456789', 'Germany', 'DE'), stored('604-555-0199', 'Canada', 'CA'), stored('312 345', 'Andorra', 'AD'), stored('98111 22233', 'India', 'IN'),
+  ].map(r => [r.valid, r.formattedPhone]), [
+    [true, '+14155552671'], [true, '+14155552671'], [true, '+447700900123'], [true, '+447700900123'], [true, '+14155552671'], [true, '+971501234567'],
+    [true, '+4915123456789'], [true, '+16045550199'], [true, '+376312345'], [true, '+919811122233'],
+  ]);
+  eq('a number that cannot be a number of the selected country (or of any country) is refused with a usable message',
+    [stored('12', 'United States', 'US'), stored('555', 'United Kingdom', 'GB'), stored('', 'Canada', 'CA')].map(r => [r.valid, /valid phone number for (United States|United Kingdom|Canada)/.test(r.error)]),
+    [[false, true], [false, true], [false, true]]);
+  eq('a number typed with another country\'s code is kept as typed (the customer knows their number)',
+    [stored('+91 98111 22233', 'United States', 'US').formattedPhone, stored('+971 50 123 4567', 'United Kingdom', 'GB').formattedPhone], ['+919811122233', '+971501234567']);
+  // Legacy stored shapes ("+" + national digits) read with the country of the order's address:
+  eq('legacy "+<national digits>" numbers are read as numbers of the customer\'s own country', [
+    norm.normalizePhone('+4155552671', 'US'),      // not a Swiss number (too short) → US
+    norm.normalizePhone('+07700900123', 'GB'),     // "+0…" is nobody's code → GB
+    norm.normalizePhone('+00447700900123', 'GB'),  // "+00…" → international prefix
+    norm.normalizePhone('+6045550199', 'CA'),      // a possible Malaysian number too: the address country wins the tie
+    norm.normalizePhone('+2079460000', 'GB'),      // a possible Egyptian number too, but not a valid one; valid in GB
+    norm.normalizePhone('+5551234567', 'US'),
+    norm.normalizePhone('+501234567', 'AE'),
+  ], ['14155552671', '447700900123', '447700900123', '16045550199', '442079460000', '15551234567', '971501234567']);
+  eq('…while a real foreign number on the order keeps its own code', [
+    norm.normalizePhone('+919811122233', 'US'), norm.normalizePhone('+919811122233', 'AE'), norm.normalizePhone('+447911123456', 'AE'),
+    norm.normalizePhone('+14155552671', 'GB'), norm.normalizePhone('+60123456789', 'CA'), norm.normalizePhone('+14155552671', 'IN'),
+  ], ['919811122233', '919811122233', '447911123456', '14155552671', '60123456789', '14155552671']);
+  eq('bare digits that already carry the country\'s own code are not given it twice', [
+    norm.normalizePhone('4915123456789', 'DE'), norm.normalizePhone('919811122233', 'IN'), norm.normalizePhone('14155552671', 'US'), norm.normalizePhone('6281234567890', 'ID'),
+  ], ['4915123456789', '919811122233', '14155552671', '6281234567890']);
+  eq('no country at all: only a number that carries its code, or a bare Indian mobile number (home market), is accepted', [
+    norm.normalizePhone('+14155552671', ''), norm.normalizePhone('0044 7700 900123', undefined), norm.normalizePhone('919811122233', null),
+    norm.normalizePhone('98111 22233', ''), norm.normalizePhone('098111 22233', ''), norm.normalizePhone('4155552671', ''), norm.normalizePhone('2125551234', ''),
+  ], ['14155552671', '447700900123', '919811122233', '919811122233', '919811122233', '', '']);
+
+  // ── Repairing numbers stored before the fix (scripts/fix-international-phones.ts) ──
+  const phoneLib = await import('../lib/tracking/phone');
+  eq('repairStoredPhone: what a stored number should become', [
+    phoneLib.repairStoredPhone('+4155552671', 'US'), phoneLib.repairStoredPhone('+07700900123', 'GB'), phoneLib.repairStoredPhone('+6045550199', 'CA'),
+    phoneLib.repairStoredPhone('+14155552671', 'US'), phoneLib.repairStoredPhone('+919811122233', 'GB'), phoneLib.repairStoredPhone('', 'US'), phoneLib.repairStoredPhone('+4155552671', ''),
+  ], [{ next: '+14155552671', ambiguous: false }, { next: '+447700900123', ambiguous: false }, { next: '+16045550199', ambiguous: true }, null, null, null, null]);
+  {
+    // The script runs against the in-memory database (numbers chosen not to collide with the checkout fixtures below).
+    const { default: mem } = await import('./payment-e2e/memory-prisma');
+    const addr = (id: string, phone: string, country: string) => mem.address.create({ data: { id, customerId: `cust_${id}`, name: 'A B', email: `${id}@example.com`, phone, phoneLast10: phone.replace(/\D/g, '').slice(-10), address1: '1 Street', city: 'City', state: 'State', zip: '00000', country, isDefault: true } });
+    await mem.customer.create({ data: { id: 'cust_fix_us', name: 'A B', email: 'fix_us@example.com', phone: '+2125550147' } });
+    await mem.customer.create({ data: { id: 'cust_fix_in', name: 'C D', email: 'fix_in@example.com', phone: '+919898989898' } });
+    await addr('fix_us', '+2125550147', 'United States');
+    await addr('fix_gb', '+07400123456', 'United Kingdom');
+    await addr('fix_ca', '+6045550199', 'Canada');
+    await addr('fix_ok', '+13105550123', 'United States');
+    await addr('fix_in', '+919898989898', 'India');
+    const argv = process.argv; process.argv = [argv[0], argv[1], '--apply'];
+    const exit = process.exit; const logs: string[] = []; const log = console.log; console.log = (...a: any[]) => { logs.push(a.join(' ')); };
+    const finished = new Promise<number>(resolve => { (process as any).exit = (code?: number) => resolve(code ?? 0); });
+    let code = -1;
+    try {
+      await import('./fix-international-phones');
+      code = await finished;
+    } finally {
+      process.argv = argv; (process as any).exit = exit; console.log = log;
+    }
+    const rows = await mem.address.findMany({ where: { id: { in: ['fix_us', 'fix_gb', 'fix_ca', 'fix_ok', 'fix_in'] } }, orderBy: { id: 'asc' }, select: { id: true, phone: true, phoneLast10: true } });
+    const customers = await mem.customer.findMany({ where: { id: { in: ['cust_fix_us', 'cust_fix_in'] } }, orderBy: { id: 'asc' }, select: { id: true, phone: true } });
+    eq('repair script (--apply): unambiguous numbers are rewritten for their country, ambiguous / correct / Indian ones are left alone',
+      [code, rows.map((r: any) => [r.id, r.phone, r.phoneLast10]), customers.map((c: any) => [c.id, c.phone])],
+      [0, [['fix_ca', '+6045550199', '6045550199'], ['fix_gb', '+447400123456', '7400123456'], ['fix_in', '+919898989898', '9898989898'], ['fix_ok', '+13105550123', '3105550123'], ['fix_us', '+12125550147', '2125550147']],
+        [['cust_fix_in', '+919898989898'], ['cust_fix_us', '+12125550147']]]);
+    check('repair script lists the ambiguous number for review and reports what it wrote',
+      logs.some(l => /REVIEW\s+address fix_ca \(CA\): \+6045550199 → \+16045550199/.test(l)) && logs.some(l => /done: 2 address\(es\) and 1 customer record\(s\) repaired/.test(l)), logs);
+  }
+
+  // ── Postal codes ──
+  eq('postcodes: punctuation and dashes of every kind are formatting; US territories use ZIP; Crown dependencies use UK postcodes', [
+    norm.normalizeZip('94105–1234', 'US'), norm.normalizeZip('94105-1234', 'US'), norm.normalizeZip('SW1A 1AA.', 'GB'), norm.normalizeZip('GIR 0AA', 'GB'),
+    norm.normalizeZip('00901', 'PR'), norm.normalizeZip('96910-1234', 'GU'), norm.normalizeZip('JE2 3AB', 'JE'), norm.normalizeZip('GY1 1AA', 'GG'), norm.normalizeZip('IM1 1AA', 'IM'),
+    norm.normalizeZip('1012 AB', 'NL'), norm.normalizeZip('100-0001', 'JP'), norm.normalizeZip('N/A', 'AE'), norm.normalizeZip('00000', 'AE'),
+  ], ['94105', '94105', 'sw1a1', 'gir0', '00901', '96910', 'je23', 'gy11', 'im11', '1012ab', '1000001', '', '']);
   eq('unusable values are dropped, never guessed', norm.normalizeIdentity({ em: 'not-an-email', ph: '12', ct: '!!!', st: '--', zp: 'N/A', country: 'Narnia' }),
     { em: '', ph: '', fn: '', ln: '', ct: '', st: '', zp: '', country: '' });
   const iso = 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split(' ');
@@ -196,6 +282,23 @@ async function main() {
   }, { userAgent: 'UA' }, Date.now()) as any);
   eq('a customer whose saved number is from another country: the UK number typed at this checkout is hashed (+44), not the old one read as British',
     movedCustomer.user_data.ph, [h('447700900123')]);
+  // Orders whose customer + address carry the LEGACY stored shape ("+" + national digits):
+  for (const [label, addr, customerPhone, wantPhone] of [
+    ['US customer stored as "+4155552671"', { city: 'San Francisco', countryCode: 'US', phone: '+4155552671' }, '+4155552671', '14155552671'],
+    ['Canadian customer stored as "+6045550199" (also a possible Malaysian number)', { city: 'Vancouver', countryCode: 'CA', phone: '+6045550199' }, '+6045550199', '16045550199'],
+    ['UK customer stored as "+07700900123"', { city: 'London', countryCode: 'GB', phone: '+07700900123' }, '+07700900123', '447700900123'],
+    ['UK address, customer\'s verified Indian login number', { city: 'London', countryCode: 'GB', phone: '+07700900123' }, '+919811122233', '919811122233'],
+    ['UAE address, customer stored as "+501234567"', { city: 'Dubai', countryCode: 'AE', phone: '+501234567' }, '+501234567', '971501234567'],
+  ] as const) {
+    const ev = capi.buildSnapCapiEvent(purchase.buildPurchaseFromOrder(
+      intlOrder('USD', 10, 10, addr, { email: 'x@example.com', phone: customerPhone, name: 'X Y' }), { userAgent: 'UA' }, Date.now()) as any);
+    eq(`legacy stored phone: ${label} → ph hashed as ${wantPhone}`, ev.user_data.ph, [h(wantPhone)]);
+  }
+  eq('snapPurchasePhone trusts a "+" only when the number really carries a country code', [
+    identity.snapPurchasePhone('+4155552671', '+4155552671'),   // "+" + national digits is not a code → the address number (same here)
+    identity.snapPurchasePhone('919811122233', '07700 900123'), // bare digits with the code → the login number
+    identity.snapPurchasePhone('+919811122233', '07700 900123'),
+  ], ['+4155552671', '919811122233', '+919811122233']);
 
   const appEvent = appPurchase.buildAppPurchaseInput(intlOrder('GBP', 71.2, 35.6, { city: 'London', countryCode: 'GB' }, { email: 'jane@example.co.uk', phone: '07700 900123', name: 'Jane Doe' }), { platform: 'ios' } as any, {}, 'app', Date.now());
   eq('native-app Purchase uses the order currency too', [appEvent.customData?.value, appEvent.customData?.currency], [71.2, 'GBP']);

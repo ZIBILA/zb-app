@@ -67,6 +67,7 @@ g.snaptr = g.window.snaptr; g.fbq = g.window.fbq;
 type CompleteScript = Array<{ status: number; body: any }>;
 let completeScript: CompleteScript = [];
 let factsDown = false;
+let factsDelayMs = 0;
 let confirmationRoute: any;
 g.fetch = async (url: string, opt: any = {}) => {
   const u = String(url);
@@ -82,6 +83,7 @@ g.fetch = async (url: string, opt: any = {}) => {
   const m = u.match(/^\/api\/orders\/([^/?]+)\/confirmation(\?.*)?$/);
   if (m) {
     if (factsDown) return json(500, { error: 'temporarily unavailable' });
+    if (factsDelayMs) await new Promise(r => setTimeout(r, factsDelayMs));
     // The REAL route handler of this tree, against the in-memory database.
     const res = await confirmationRoute.GET(new Request(`https://zicabella.com${u}`), { params: { id: decodeURIComponent(m[1]) } });
     const payload = await res.json();
@@ -232,6 +234,26 @@ async function main() {
   factsDown = false;
   await visit(o2);
   eq('refresh: facts are fetched in the background and the Purchase fires once', [called(/view=tracking/).length, snapPurchases().length, snapPurchases()[0]?.[2]?.price, snapPurchases()[0]?.[2]?.currency], [1, 1, 113.91, 'USD']);
+
+  // ══ 2b. The shopper refreshes WHILE the facts are still being read ══
+  // /api/checkout/complete is not idempotent (coupon usage, cashback, e-mails), so the
+  // hand-off must be recorded the moment the order is registered, before any wait.
+  console.log('\n— 2b. Refresh during the facts wait');
+  clearBrowser();
+  const o2b = await mkOrder();
+  seedCheckoutHandoff(o2b);
+  completeScript = [{ status: 200, body: { orderId: o2b } }];
+  factsDelayMs = 1500;
+  await visit(o2b); // returns while the facts request is still pending
+  eq('the order is registered and the pending payload removed BEFORE the facts answer', [
+    called(/^\/api\/checkout\/complete$/, 'POST').length, called(/view=tracking/).length,
+    sessionStorage.getItem(`zb_complete_pending_${o2b}`), JSON.parse(sessionStorage.getItem(`zb_confirmation_${o2b}`) || '{}').registrationStatus, snapPurchases().length,
+  ], [1, 1, null, 'confirmed', 0]);
+  factsDelayMs = 0;
+  await visit(o2b); // refresh in that window
+  eq('refresh: the completion is NOT posted again; the facts are read and the Purchase fires once', [called(/^\/api\/checkout\/complete$/, 'POST').length, called(/view=tracking/).length, snapPurchases().length, fbqPurchases().length], [0, 1, 1, 1]);
+  await settle(1600); // let the first page's delayed answer arrive (it is unmounted: nothing may happen)
+  eq('the late answer of the first page changes nothing', [snapPurchases().length, fbqPurchases().length], [1, 1]);
 
   // ══ 3. Refresh / shared link without any cached copy ══
   console.log('\n— 3. No cached copy');

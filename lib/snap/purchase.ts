@@ -219,13 +219,71 @@ export function bySnapEventAge(a: { eventTime?: Date | string | null; createdAt:
 /**
  * One retry run must answer well inside the caller's 60 s HTTP timeout (the
  * workflow would otherwise re-run it): no new send is started after this long.
- * Whatever is left is picked up by the next run.
+ * Whatever is left is picked up by the next run. The cron route passes one
+ * shared deadline for the website and app jobs (see `RetryRunOptions`).
  */
-export const SNAP_RETRY_RUN_BUDGET_MS = 35_000;
+export const SNAP_RETRY_RUN_BUDGET_MS = 25_000;
 
-/** Text the pre-fix sender stored when the access token was missing on the server. */
-export const SNAP_LEGACY_CONFIG_ERROR = 'not configured';
+/** How long a retry run may go on; `deadlineMs` (absolute, Date.now() based) wins over `budgetMs`. */
+export interface RetryRunOptions {
+  budgetMs?: number;
+  deadlineMs?: number;
+}
+
+/**
+ * Text the pre-fix website sender stored when the access token was missing on the
+ * server ("Snap Pixel ID or CAPI Access Token not configured"); the current
+ * sender's blocked message starts with "snap_config_missing". Rows whose last
+ * error is one of these were never sent.
+ */
+export const SNAP_LEGACY_CONFIG_ERROR = 'Access Token not configured';
+export const SNAP_NEVER_SENT_RE = /Access Token not configured|^snap_config_missing/i;
+/** What the retry job writes when it gives such a row its attempts back (must not match the pattern above). */
+export const SNAP_REQUEUED_NOTE = 'requeued: the Snap access token is set now; earlier attempts had none';
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Close the rows that used up MAX_ATTEMPTS. Rows that were never really tried —
+ * every attempt failed for lack of an access token, and they are now past Snap's
+ * 7-day window (younger ones were re-queued first) — are closed as expired, not
+ * reported as delivery failures. Returns what was closed.
+ */
+export async function closeExhaustedRows(
+  ledger: { exhaustedRows: (platform: string, eventName: string, limit: number) => Promise<LedgerRowSummary[]>; closeRow: (id: string, lastError: string) => Promise<boolean> },
+  platform: string,
+  eventName: string,
+  logTag: string,
+): Promise<{ exhausted: LedgerRowSummary[]; expiredUnsent: number }> {
+  const rows = await ledger.exhaustedRows(platform, eventName, 100);
+  const exhausted: LedgerRowSummary[] = [];
+  let expiredUnsent = 0;
+  for (const r of rows) {
+    const neverSent = SNAP_NEVER_SENT_RE.test(String(r.lastError || ''));
+    if (neverSent) {
+      if (await ledger.closeRow(r.id, 'expired: never sent (no Snap access token on the server at the time) and now older than Snap\'s 7-day window')) expiredUnsent++;
+      continue;
+    }
+    if (await ledger.closeRow(r.id, `exhausted after ${MAX_ATTEMPTS} attempts: ${r.lastError || ''}`)) exhausted.push(r);
+  }
+  if (expiredUnsent) {
+    console.warn(`${logTag} ${expiredUnsent} Purchase(s) were never sent while the access token was missing and are now too old for Snapchat — closed`);
+  }
+  if (exhausted.length) {
+    console.error(`${logTag}[ALERT] attempts_exhausted`, JSON.stringify({
+      count: exhausted.length,
+      orderIds: exhausted.slice(0, 20).map(r => r.orderId),
+      lastError: String(exhausted[0]?.lastError || '').slice(0, 300),
+      hint: `closed as skipped; to resend set status='failed', attempts=0 on ad_conversion_deliveries (platform=${platform}, eventName=${eventName})`,
+    }));
+  }
+  return { exhausted, expiredUnsent };
+}
+
+/** Absolute deadline of a retry run. */
+export function retryDeadline(opts: RetryRunOptions, defaultBudgetMs: number): number {
+  if (Number.isFinite(opts.deadlineMs)) return Number(opts.deadlineMs);
+  return Date.now() + (opts.budgetMs ?? defaultBudgetMs);
+}
 
 export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, configError }: SnapPurchaseDeps) {
   const ledger = createDeliveryLedger(prisma, '[Snap Purchase]');
@@ -322,15 +380,17 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
    *   retry_sent / _failed / _skipped / retry_closed   failed rows retried (with backoff)
    *   blocked_auth           Snap refused the token — the job stops, attempts are kept
    *   exhausted              rows closed after MAX_ATTEMPTS real failures (alerted once)
+   *   expired_unsent         rows that only ever failed for lack of a token and are
+   *                          now past Snap's window: closed, not alerted
    *   recovered_sent / …     paid orders no live path delivered (see lib/snap/recovery.ts)
    *   pending_<why>          paid orders looked at but not sendable yet
    *   time_budget_reached    the run stopped early to stay inside its time budget
    *   scan_truncated, ledger_error, ledger_table_missing
    */
-  async function retryPendingSnapPurchases(limit = 25, opts: { budgetMs?: number } = {}): Promise<Record<string, number>> {
+  async function retryPendingSnapPurchases(limit = 25, opts: RetryRunOptions = {}): Promise<Record<string, number>> {
     const tally: Record<string, number> = {};
     const bump = (k: string, n = 1) => { tally[k] = (tally[k] || 0) + n; };
-    const deadline = Date.now() + (opts.budgetMs ?? SNAP_RETRY_RUN_BUDGET_MS);
+    const deadline = retryDeadline(opts, SNAP_RETRY_RUN_BUDGET_MS);
     const outOfTime = () => { if (Date.now() < deadline) return false; tally.time_budget_reached = 1; return true; };
     try {
       const expired = await ledger.expireStalePending(PLATFORM, EVENT);
@@ -344,13 +404,14 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
 
       // Purchases that used up their attempts while the token was missing are
       // not lost as long as Snap still accepts their (unchanged) event time.
+      const windowStart = new Date(Date.now() - SEVEN_DAYS_MS);
       const requeued = await prisma.adConversionDelivery.updateMany({
         where: {
           platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS },
           lastError: { contains: SNAP_LEGACY_CONFIG_ERROR },
-          eventTime: { gt: new Date(Date.now() - SEVEN_DAYS_MS) },
+          OR: [{ eventTime: { gt: windowStart } }, { eventTime: null, createdAt: { gt: windowStart } }],
         },
-        data: { attempts: 0, lastError: 'requeued: Snap access token is configured now (was: not configured)' },
+        data: { attempts: 0, lastError: SNAP_REQUEUED_NOTE },
       });
       if (requeued?.count) tally.requeued = requeued.count;
 
@@ -394,26 +455,9 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
 
       // Rows that really failed MAX_ATTEMPTS times: close them (lastError kept) and
       // report them once. To resend one: status='failed', attempts=0.
-      const exhausted: Array<{ id: string; orderId: string; lastError: string | null }> = await prisma.adConversionDelivery.findMany({
-        where: { platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS } },
-        select: { id: true, orderId: true, lastError: true },
-        take: 100,
-      });
-      for (const r of exhausted) {
-        await prisma.adConversionDelivery.updateMany({
-          where: { id: r.id, status: 'failed' },
-          data: { status: 'skipped', lastError: `exhausted after ${MAX_ATTEMPTS} attempts: ${r.lastError || ''}`.slice(0, 500) },
-        });
-      }
-      if (exhausted.length) {
-        tally.exhausted = exhausted.length;
-        console.error('[Snap Purchase][ALERT] attempts_exhausted', JSON.stringify({
-          count: exhausted.length,
-          orderIds: exhausted.slice(0, 20).map(r => r.orderId),
-          lastError: String(exhausted[0]?.lastError || '').slice(0, 300),
-          hint: "closed as skipped; to resend set status='failed', attempts=0 on ad_conversion_deliveries (platform=snap, eventName=PURCHASE)",
-        }));
-      }
+      const closed = await closeExhaustedRows(ledger, PLATFORM, EVENT, '[Snap Purchase]');
+      if (closed.exhausted.length) tally.exhausted = closed.exhausted.length;
+      if (closed.expiredUnsent) tally.expired_unsent = closed.expiredUnsent;
 
       if (!verifyCapture || blocked || outOfTime()) return tally;
 

@@ -3,7 +3,7 @@ import prisma from '@/lib/db';
 import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 import { getClientIP, isPrivateIP } from '@/lib/ip-geo';
 import {
-  describeSnapToken, isSnapValidateMode, probeSnapCapi, redactSnapSecrets, snapCapiConfigError,
+  describeSnapToken, isExposedSnapToken, isSnapValidateMode, probeSnapCapi, redactSnapSecrets, snapCapiConfigError,
 } from '@/lib/snap-capi';
 import { cleanEnvValue, resolveSnapPixelId, snapPixelIdProblem } from '@/lib/snap/config';
 import { isSnapSupportedCurrency } from '@/lib/snap/currency';
@@ -172,12 +172,15 @@ export async function GET(req: NextRequest) {
   // 7. Native app (MOBILE_APP) events
   const ios = !!snapAppConfig('ios');
   const android = !!snapAppConfig('android');
+  const appTokenExposed = isExposedSnapToken(cleanEnvValue(process.env.SNAP_APP_CAPI_ACCESS_TOKEN));
   checks.push({
     name: 'Native app events',
-    status: ios && android ? 'pass' : 'warn',
-    message: ios && android
-      ? 'iOS and Android app Purchases are configured'
-      : `App Purchases are NOT sent for: ${[!ios && 'iOS', !android && 'Android'].filter(Boolean).join(', ')} (set SNAP_APP_ID_IOS + SNAP_IOS_APP_STORE_ID / SNAP_APP_ID_ANDROID — see docs/snap-native-app-setup.md). Website tracking is not affected.`,
+    status: appTokenExposed ? 'fail' : ios && android ? 'pass' : 'warn',
+    message: appTokenExposed
+      ? 'SNAP_APP_CAPI_ACCESS_TOKEN is the token that was published in the Git history. Delete it in Snapchat and set a newly generated one.'
+      : ios && android
+        ? 'iOS and Android app Purchases are configured'
+        : `App Purchases are NOT sent for: ${[!ios && 'iOS', !android && 'Android'].filter(Boolean).join(', ')} (set SNAP_APP_ID_IOS + SNAP_IOS_APP_STORE_ID / SNAP_APP_ID_ANDROID — see docs/snap-native-app-setup.md). Website tracking is not affected.`,
   });
 
   const overall: Check['status'] = checks.some(c => c.status === 'fail') ? 'fail' : checks.some(c => c.status === 'warn') ? 'warn' : 'pass';

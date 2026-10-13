@@ -36,6 +36,7 @@ import {
 } from "@/lib/meta/browser-purchase";
 import { snapPurchaseCurrency } from "@/lib/snap/currency";
 import { snapPurchasePhone } from "@/lib/snap/identity";
+import { SNAP_PIXEL_ID } from "@/lib/snapPixel";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -266,6 +267,7 @@ export default function OrderConfirmationPage() {
   // Conversions API Purchase reports): the charged total in the charged currency.
   useEffect(() => {
     if (!order?.id || registrationStatus !== "confirmed") return;
+    if (!SNAP_PIXEL_ID) return; // Snap tracking is off on this deployment: nothing to wait for
     if (
       decideSnapBrowserPurchase(trackingOrder, {
         alreadySent: hasSnapBrowserPurchaseBeenSent(order.id),
@@ -434,14 +436,6 @@ export default function OrderConfirmationPage() {
             if (raw) baseOptimistic = JSON.parse(raw);
           } catch {}
           const confirmedId = String(verifyData.order?.id || verifyData.orderId || orderId);
-          // The order is registered: read what the server stored (payment state,
-          // charged total + currency, items) BEFORE the page turns "confirmed", so
-          // the Snap / Meta browser Purchase can fire on that first confirmed
-          // render. Bounded wait; without an answer the page behaves as before
-          // (the server-side Purchase does not depend on this).
-          const serverFacts = hasPaymentFacts(verifyData.order)
-            ? null
-            : await fetchOrderServerFacts(confirmedId);
           const confirmed = verifyData.order
             ? { ...verifyData.order, registrationStatus: "confirmed" }
             : {
@@ -449,19 +443,36 @@ export default function OrderConfirmationPage() {
                 id: verifyData.orderId || orderId,
                 registrationStatus: "confirmed",
               };
-          if (serverFacts) confirmed.serverFacts = serverFacts;
+          // The order is registered: record that FIRST, so a refresh from here on
+          // repaints the confirmation instead of re-posting the completion.
+          const cacheConfirmed = () => {
+            try {
+              sessionStorage.setItem(`zb_confirmation_${orderId}`, JSON.stringify(confirmed));
+              if (verifyData.orderId && verifyData.orderId !== orderId) {
+                sessionStorage.setItem(`zb_confirmation_${verifyData.orderId}`, JSON.stringify(confirmed));
+                sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
+              }
+              sessionStorage.removeItem(`zb_complete_pending_${orderId}`);
+              sessionStorage.removeItem("zb_pending_checkout");
+            } catch {}
+          };
+          cacheConfirmed();
+          // Then read what the server stored (payment state, charged total +
+          // currency, items) BEFORE the page turns "confirmed", so the Snap / Meta
+          // browser Purchase can fire on that first confirmed render. Bounded wait;
+          // without an answer the page behaves as before (the server-side Purchase
+          // does not depend on this). A refresh meanwhile repaints from the cache
+          // and fetches these facts in the background.
+          const serverFacts = hasPaymentFacts(verifyData.order)
+            ? null
+            : await fetchOrderServerFacts(confirmedId, { timeoutMs: 2500 });
+          if (serverFacts) {
+            confirmed.serverFacts = serverFacts;
+            cacheConfirmed();
+          }
           setOrder(confirmed);
           setRegistrationStatus("confirmed");
           setRegistrationError(null);
-          try {
-            sessionStorage.setItem(`zb_confirmation_${orderId}`, JSON.stringify(confirmed));
-            if (verifyData.orderId && verifyData.orderId !== orderId) {
-              sessionStorage.setItem(`zb_confirmation_${verifyData.orderId}`, JSON.stringify(confirmed));
-              sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
-            }
-            sessionStorage.removeItem(`zb_complete_pending_${orderId}`);
-            sessionStorage.removeItem("zb_pending_checkout");
-          } catch {}
           return true;
         }
 

@@ -7,8 +7,8 @@ How the Snap Pixel and the Snap Conversions API (CAPI) are configured on zicabel
 | Variable | Where | Required | What it is |
 | --- | --- | --- | --- |
 | `SNAP_CAPI_ACCESS_TOKEN` | DigitalOcean → App-Level Environment Variables (encrypted) | Yes | Conversions API token of the Snap Pixel. Without it no server event reaches Snapchat, Purchase included. |
-| `NEXT_PUBLIC_SNAP_PIXEL_ID` | Same place, available at build time | No | The Pixel ID. When unset, a production build uses the store's pixel (`lib/snap/config.ts`); development and test builds send nothing. Set it to `off` to switch Snap tracking off for a deployment. |
-| `SNAP_CAPI_VALIDATE=1` | Staging only | No | Sends every event to Snapchat's `/events/validate` endpoint, which checks the payload and records nothing. Ignored on `zicabella.com`, `www.zicabella.com` and `app.zicabella.com`. |
+| `NEXT_PUBLIC_SNAP_PIXEL_ID` | Same place, available at build time | No | The Pixel ID. When unset, a production build of the live site uses the store's pixel (`lib/snap/config.ts`) — "live site" meaning `NEXT_PUBLIC_SITE_URL` is unset or points at `zicabella.com`, `www.zicabella.com` or `app.zicabella.com`. Development and test builds, and a build whose `NEXT_PUBLIC_SITE_URL` is another host (staging), send nothing. Set it to `off` to switch Snap tracking off for a deployment. |
+| `SNAP_CAPI_VALIDATE=1` | Staging only | No | Sends every event to Snapchat's `/events/validate` endpoint, which checks the payload and records nothing. Honoured only when `NEXT_PUBLIC_SITE_URL` names a host other than `zicabella.com`, `www.zicabella.com` or `app.zicabella.com`; when that variable is unset, unreadable or one of those hosts, validation mode is ignored and events are sent normally (a live store can never be silenced by it). |
 | `SNAP_APP_ID_IOS`, `SNAP_APP_ID_ANDROID`, `SNAP_IOS_APP_STORE_ID`, `SNAP_ANDROID_PACKAGE`, `SNAP_APP_CAPI_ACCESS_TOKEN` | DigitalOcean | No | Native app Purchases. See `docs/snap-native-app-setup.md`. |
 
 The retry job is called by the GitHub workflow `.github/workflows/snap-conversions.yml` with the repository secret `CRON_SECRET`. The Snap token is not needed in GitHub.
@@ -33,7 +33,7 @@ Never put a token in the repository, a commit message, a pull request or a chat.
 - the currencies recent orders were charged in, and whether Snapchat accepts them
 - whether native app events are configured
 
-**From GitHub:** Actions → Snap Conversions Retry → Run workflow. A manual run also performs the live test and prints the result on the run page.
+**From GitHub:** Actions → Snap Conversions Retry → Run workflow. A manual run also performs the live test and prints its result on the run page, whether the run passes or fails.
 
 **Every 15 minutes, automatically:** the same workflow calls `/api/cron/snap-conversions`. The run fails, and GitHub notifies, when the endpoint reports an alert:
 
@@ -42,7 +42,8 @@ Never put a token in the repository, a commit message, a pull request or a chat.
 | `snap_config_missing` | The token (or Pixel ID) is not set on the server. | Set `SNAP_CAPI_ACCESS_TOKEN` in DigitalOcean. Purchases made meanwhile are kept and sent once it is set. |
 | `snap_auth_rejected` | Snapchat refused the token (HTTP 401 or 403). | Generate a new token for this pixel and replace the variable. Unsent Purchases are kept. |
 | `snap_token_exposed` | The configured token is the one that was published in the Git history. | Delete it in Snapchat and set a new one. |
-| `attempts_exhausted` | Some Purchases failed 5 times and were closed. Reported once. | The reason is in `ad_conversion_deliveries.lastError` and the server log. |
+| `snap_app_token_exposed` | The separate native-app token (`SNAP_APP_CAPI_ACCESS_TOKEN`) is that published token. | Delete it in Snapchat and set a new one. |
+| `attempts_exhausted` | Snapchat refused some Purchases 5 times (or the server died on their last attempt), so they were closed. Reported once. Purchases that were never sent because the token was missing and are now older than 7 days are closed quietly instead (`expired_unsent` in the run result) — Snapchat never refused them. | The reason is in `ad_conversion_deliveries.lastError` and the server log. To resend one: `status='failed', attempts=0`. |
 | `ledger_table_missing`, `ledger_error` | The delivery ledger cannot be read or written. | Apply migration `20261009010000_snap_delivery_and_newsletter`; check the database. |
 
 ## 3. How a Purchase reaches Snapchat
@@ -57,10 +58,11 @@ A Purchase is reported twice with one shared id, and Snapchat keeps one:
 The retry job (`/api/cron/snap-conversions`):
 
 1. retries failed deliveries: the next run, then after 30 minutes, 2 hours and 6 hours, with the original event time
-2. keeps Purchases untouched while the token is missing or refused, so a setup problem never uses up their attempts
+2. keeps Purchases untouched while the token is missing or refused, so a setup problem never uses up their attempts (only HTTP 401 / 403 count as "refused"; a rejected event is an ordinary failure). For native-app events a refusal is kept to the Snap App ID it concerns, so the other app's Purchases still go out
 3. re-queues Purchases that ran out of attempts while the token was missing, if they are less than 7 days old
 4. finds paid orders that no path delivered, however many abandoned checkouts exist, and sends them after checking the capture with Razorpay
-5. never changes an event's time; Snapchat refuses events older than 7 days, so those are closed and reported
+5. never changes an event's time; Snapchat refuses events older than 7 days, so those are closed — reported when Snapchat had refused them, quietly when they were simply never sent
+6. stops starting new sends after about 36 seconds (website and app jobs together), well inside the workflow's 60-second limit; whatever is left is picked up by the next run
 
 ## 4. International orders
 
@@ -68,7 +70,7 @@ The retry job (`/api/cron/snap-conversions`):
 - **Stored currency.** `/api/checkout/razorpay` writes the currency of the Razorpay order on every request, including when a pending order is reused after the shopper's country changed.
 - **Browsing events** (view content, add to cart, start checkout, add billing) report the INR catalogue price with `INR`, the same price the product feed publishes.
 - **Customer matching data** is normalized to Snapchat's rules before hashing (`lib/tracking/identity-normalize.ts`): e-mail trimmed and lower-cased; phone as digits with the country calling code; names and city lower-case without punctuation; US states as 2-letter codes; US ZIP as 5 digits; UK postcodes as area, district and sector; country as ISO 3166-1 alpha-2. Every ISO country code is accepted, not only the countries offered in the address form.
-- **Phone numbers** are read with the country they were written for: a customer's number that includes its country code, otherwise the number typed with the order's address (`lib/snap/identity.ts`).
+- **Phone numbers** are read with the country they were written for: a customer's number that really carries its country code, otherwise the number typed with the order's address (`lib/snap/identity.ts`, `lib/tracking/phone.ts`). The checkout and profile pages now store every number in E.164 with the selected country's code (`lib/countries.ts`): "415 555 2671" with United States is saved as `+14155552671`. Before this fix, numbers of customers outside India were saved as `+` followed by the typed digits (`+4155552671`), which is nobody's number. Such stored numbers are still matched correctly (the digits are read as a number of the address's country), and `scripts/fix-international-phones.ts` repairs the saved addresses and customer records — dry run by default, `--apply` to write; it lists ambiguous cases for review instead of changing them.
 - **event_source_url** is the confirmation page on the storefront host the shopper used. Only the store's own hosts are accepted.
 - **Identity cookies** (hashed e-mail, phone, name, address) are sent only for the visitor they were written for.
 
@@ -86,4 +88,11 @@ export NODE_OPTIONS="--require $PWD/scripts/payment-e2e/redirect-db.cjs"
 npx tsx --tsconfig scripts/snap-e2e/tsconfig.json scripts/verify-snap-delivery.ts        # token, retries, recovery, alerts
 npx tsx --tsconfig scripts/snap-e2e/tsconfig.json scripts/verify-snap-international.ts   # currency, normalization, URLs
 npx tsx --tsconfig scripts/snap-e2e/tsconfig.json scripts/verify-snap-confirmation.tsx   # confirmation page in jsdom
+```
+
+Repairing phone numbers stored before the fix (section 4), against the real database:
+
+```bash
+npx tsx scripts/fix-international-phones.ts            # dry run: lists what would change
+npx tsx scripts/fix-international-phones.ts --apply    # writes the unambiguous repairs
 ```

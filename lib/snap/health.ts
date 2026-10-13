@@ -8,7 +8,8 @@
  * unnoticed. Messages name the variable to fix and never contain a secret.
  */
 import { MAX_ATTEMPTS } from '@/lib/snap/ledger';
-import { describeSnapToken, snapCapiConfigError, type SnapProbeResult } from '@/lib/snap-capi';
+import { describeSnapToken, isExposedSnapToken, snapCapiConfigError, type SnapProbeResult } from '@/lib/snap-capi';
+import { cleanEnvValue } from '@/lib/snap/config';
 
 export type SnapTally = Record<string, number>;
 
@@ -17,10 +18,16 @@ export interface SnapHealthState {
   configError: string | null;
   /** The configured token is the one that was published in the Git history. */
   exposedToken: boolean;
+  /** The separate native-app token (SNAP_APP_CAPI_ACCESS_TOKEN), when set, is that exposed token. */
+  exposedAppToken?: boolean;
 }
 
-export function currentSnapHealthState(): SnapHealthState {
-  return { configError: snapCapiConfigError(), exposedToken: describeSnapToken().exposed };
+export function currentSnapHealthState(env: NodeJS.ProcessEnv = process.env): SnapHealthState {
+  return {
+    configError: snapCapiConfigError(),
+    exposedToken: describeSnapToken().exposed,
+    exposedAppToken: isExposedSnapToken(cleanEnvValue(env.SNAP_APP_CAPI_ACCESS_TOKEN)),
+  };
 }
 
 export function snapDeliveryAlerts(
@@ -36,6 +43,9 @@ export function snapDeliveryAlerts(
   }
   if (state.exposedToken) {
     alerts.push('snap_token_exposed: SNAP_CAPI_ACCESS_TOKEN is the token that was published in the Git history — delete it in Snapchat (Business Details → Conversions API Tokens) and set a new one');
+  }
+  if (state.exposedAppToken) {
+    alerts.push('snap_app_token_exposed: SNAP_APP_CAPI_ACCESS_TOKEN is the token that was published in the Git history — delete it in Snapchat and set a new one');
   }
   if (web.blocked_auth || run.probe?.state === 'auth_rejected') {
     alerts.push('snap_auth_rejected: Snapchat refused SNAP_CAPI_ACCESS_TOKEN — create a new Conversions API token for the pixel and update the server variable (unsent Purchases are kept and retried)');

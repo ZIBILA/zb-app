@@ -589,7 +589,12 @@ async function main() {
     && !/decide(Snap|Meta)BrowserPurchase\(order\b/.test(confirmationPage)
     && /PAID = new Set\(\['paid', 'cod_upfront_paid'\]\)/.test(read('lib/meta/browser-purchase.ts')));
   check('confirmation page reads the server facts before it turns "confirmed"',
-    /await fetchOrderServerFacts\(confirmedId\)[\s\S]{0,600}setRegistrationStatus\("confirmed"\)/.test(confirmationPage));
+    /await fetchOrderServerFacts\(confirmedId, \{ timeoutMs: \d+ \}\)[\s\S]{0,600}setRegistrationStatus\("confirmed"\)/.test(confirmationPage));
+  // The completion hand-off is recorded (cache written, pending payload removed) BEFORE
+  // the facts wait, so a refresh in that window repaints instead of re-posting /complete.
+  check('confirmation page records the completion before waiting for the server facts',
+    /cacheConfirmed\(\);[\s\S]{0,900}await fetchOrderServerFacts\(confirmedId/.test(confirmationPage)
+    && /removeItem\(`zb_complete_pending_\$\{orderId\}`\)[\s\S]{0,400}cacheConfirmed\(\);/.test(confirmationPage));
   check('browser PURCHASE uses the stored order currency (no INR default)',
     /snapPurchaseCurrency\(trackingOrder\)/.test(confirmationPage)
     && /currency: string,/.test(read('hooks/useSnapEvents.ts')) && !/snapTrackPurchase\([^)]*currency = 'INR'/.test(read('hooks/useSnapEvents.ts')));

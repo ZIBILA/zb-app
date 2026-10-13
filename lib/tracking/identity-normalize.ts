@@ -8,21 +8,22 @@
  *   fn/ln – lowercase, no punctuation (UTF‑8 letters such as "ë" are kept)
  *   ct  – lowercase, no punctuation, no spaces
  *   st  – US: 2-letter ANSI code lowercase; elsewhere lowercase, no punctuation/spaces
- *   zp  – lowercase, no spaces/dashes; US: first 5 digits; UK: area+district+sector
+ *   zp  – lowercase, no spaces/punctuation; US (and its territories): first 5
+ *         digits; UK (and the Crown dependencies): area+district+sector
  *   country – ISO‑3166 alpha‑2, lowercase
  *
  * The store sells worldwide, so NOTHING here may assume India except as the
- * last-resort default when a phone number arrives with no country at all.
+ * last-resort default for a bare 10-digit mobile number with no country at all.
  *
  * No hashing happens here — see sha256Hex (server) / sha256 (browser).
  */
-import { parsePhoneNumberFromString, type CountryCode } from 'libphonenumber-js/min';
 import {
   isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash, isPlaceholderZipHash,
 } from './placeholder-identity';
+import { parsePhoneForCountry } from './phone';
 import { COUNTRIES } from '@/lib/countries';
 
-/** Store's home market — used ONLY when a phone has no "+" and no known country. */
+/** Store's home market — used ONLY for a bare 10-digit mobile number with no country at all. */
 export const DEFAULT_COUNTRY_ISO = 'IN';
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
@@ -137,43 +138,27 @@ export function normalizeEmail(email: string | undefined | null): string {
 
 /**
  * Returns digits-only E.164 without "+" (e.g. "447700900123", "919876543210",
- * "14155552671"), or "" if the number cannot be parsed as a possible number.
+ * "14155552671"), or "" if the number cannot be read as a possible number.
  *
- * countryIso is the CUSTOMER's country (shipping/billing), NOT the store's.
- * "+44…" / "0044…" numbers are parsed by their own prefix regardless of countryIso.
+ * countryIso is the CUSTOMER's country (shipping/billing), NOT the store's; it
+ * decides how a national number ("07700 900123", "(415) 555-2671") and a stored
+ * "+<national digits>" number are read (lib/tracking/phone.ts). "+44…" / "0044…"
+ * numbers are read by their own code whatever the country says. Without any
+ * country, only a number that carries its code is accepted — plus the store's
+ * one home-market shape, a bare 10-digit Indian mobile number.
  */
 export function normalizePhone(phone: string | undefined | null, countryIso?: string | null): string {
   if (!phone) return '';
-  let p = phone.trim();
+  const p = phone.trim();
   if (!p || isSha256Hash(p)) return '';
-  if (p.startsWith('00')) p = '+' + p.slice(2);
-
-  const iso = (toCountryIso(countryIso || '') || DEFAULT_COUNTRY_ISO) as CountryCode;
-
-  // Bare digits that already START with the country's calling code, e.g. "919876543210".
-  // Try "+<digits>" first when the digit count is long enough to contain a calling code.
-  const digitsOnly = p.replace(/\D/g, '');
-  const candidates: string[] = [];
-  if (p.startsWith('+')) {
-    candidates.push(p);
-  } else {
-    candidates.push(p); // national format for the customer's country
-    if (digitsOnly.length >= 11) candidates.push('+' + digitsOnly);
+  const iso = toCountryIso(countryIso || '');
+  let parsed = parsePhoneForCountry(p, iso || undefined);
+  if (!parsed && !iso && !p.startsWith('+')) {
+    const digits = p.replace(/\D/g, '');
+    const national = digits.length === 11 && digits.startsWith('0') ? digits.slice(1) : digits;
+    if (/^[6-9]\d{9}$/.test(national)) parsed = parsePhoneForCountry(national, DEFAULT_COUNTRY_ISO);
   }
-
-  for (const c of candidates) {
-    try {
-      const parsed = c.startsWith('+')
-        ? parsePhoneNumberFromString(c)
-        : parsePhoneNumberFromString(c, iso);
-      if (parsed && parsed.isPossible()) {
-        return parsed.number.replace(/^\+/, '');
-      }
-    } catch {
-      /* try next candidate */
-    }
-  }
-  return '';
+  return parsed ? parsed.number.replace(/^\+/, '') : '';
 }
 
 // ─── Names / City ───────────────────────────────────────────────────────────
@@ -237,24 +222,32 @@ export function normalizeState(state: string | undefined | null, countryIso?: st
 
 // ─── Postal code ────────────────────────────────────────────────────────────
 
+/** Countries whose postal codes are 5-digit US ZIP codes. */
+const US_ZIP_COUNTRIES = new Set(['US', 'PR', 'GU', 'VI', 'AS', 'MP', 'UM']);
+/** Countries whose postcodes follow the UK format (Crown dependencies included). */
+const UK_POSTCODE_COUNTRIES = new Set(['GB', 'JE', 'GG', 'IM']);
+
 export function normalizeZip(zip: string | undefined | null, countryIso?: string | null): string {
   if (!zip || isSha256Hash(zip)) return '';
   const iso = toCountryIso(countryIso || '');
-  const compact = zip.trim().toLowerCase().replace(/[\s-]/g, '');
+  // Lower-case, and nothing but letters and digits: spaces, hyphens, en dashes,
+  // dots and a stray trailing comma are all formatting.
+  const compact = zip.trim().toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
   if (!compact) return '';
   // Placeholder values typed where the form demands a postcode the country does
   // not have (UAE, Hong Kong, Ireland …): "00000", "0", "NA", "none" — shared by
   // many customers, never an address.
-  if (/^0+$/.test(compact) || ['na', 'n/a', 'none', 'null', 'nil', 'xxx', 'xxxx', 'xxxxx'].includes(compact)) return '';
+  if (/^0+$/.test(compact) || ['na', 'none', 'null', 'nil', 'xxx', 'xxxx', 'xxxxx'].includes(compact)) return '';
 
-  if (iso === 'US') {
+  if (US_ZIP_COUNTRIES.has(iso)) {
     const m = compact.match(/^(\d{5})/);
     return m ? m[1] : '';
   }
-  if (iso === 'GB') {
+  if (UK_POSTCODE_COUNTRIES.has(iso)) {
     // Full UK postcode = outward (2–4 chars) + inward (digit + 2 letters).
     // Spec wants "area, district and sector" = outward + first digit of inward.
-    const m = compact.match(/^([a-z]{1,2}\d[a-z\d]?)(\d)[a-z]{2}$/);
+    // "GIR 0AA" (the Girobank code) is the one outward code without a digit.
+    const m = compact.match(/^([a-z]{1,2}\d[a-z\d]?|gir)(\d)[a-z]{2}$/);
     if (m) return `${m[1]}${m[2]}`;
     return compact; // already outward-only / partial — keep as given
   }

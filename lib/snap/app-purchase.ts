@@ -15,7 +15,7 @@
 import { pickRealEmail, pickRealName } from '@/lib/tracking/placeholder-identity';
 import { snapPurchasePhone } from '@/lib/snap/identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
-import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
+import { createDeliveryLedger, isMissingTable, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
 import { findRecoveryCandidates } from '@/lib/snap/recovery';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { snapPurchaseCurrency } from '@/lib/snap/currency';
@@ -23,7 +23,13 @@ import {
   parseSnapDeviceContext, snapAppConfig,
   type SnapAppEventInput, type SnapDeviceContext,
 } from '@/lib/snap/app-capi';
-import { NATIVE_APP_ORDER_TYPES, SNAP_PURCHASE_PAYMENT_STATUSES, bySnapEventAge, isSnapRetryDue, snapPurchaseValue } from '@/lib/snap/purchase';
+import {
+  NATIVE_APP_ORDER_TYPES, SNAP_PURCHASE_PAYMENT_STATUSES, bySnapEventAge, closeExhaustedRows, isSnapRetryDue, retryDeadline,
+  snapPurchaseValue, type RetryRunOptions,
+} from '@/lib/snap/purchase';
+
+/** Default share of the cron request for the app job (it runs after the website job). */
+export const SNAP_APP_RETRY_RUN_BUDGET_MS = 12_000;
 
 const PLATFORM = 'snap_app';
 const EVENT = 'PURCHASE';
@@ -163,7 +169,7 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
     const cfg = snapAppConfig(device.platform, env);
     if (!cfg) return { status: 'skipped', reason: `Snap app not configured for ${device.platform}` };
 
-    return ledger.deliver({
+    const out = await ledger.deliver({
       platform: PLATFORM,
       eventName: EVENT,
       orderId,
@@ -174,25 +180,47 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
       },
       send: (input) => send(input, cfg),
     });
+    // A refused token can be specific to one Snap App ID (iOS vs Android): name it,
+    // so the retry job can keep sending the other app's Purchases.
+    return out.status === 'failed' && out.blocked ? { ...out, asset: cfg.snapAppId } : out;
+  }
+
+  /** The Snap App ID an order's Purchase goes to (from the device context the app stored), or null. */
+  async function snapAssetOfOrder(orderId: string): Promise<string | null> {
+    try {
+      const row = await db.adConversionDelivery.findUnique({
+        where: { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } },
+        select: { context: true },
+      });
+      const { device } = splitContext(row?.context || {});
+      return device ? snapAppConfig(device.platform, env)?.snapAppId || null : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
    * Retry + recovery job (cron). Same steps and tally keys as the website job
    * (lib/snap/purchase.ts retryPendingSnapPurchases):
    *  - expire pending rows past Snap's 7-day window;
-   *  - resend failed / lease-expired rows, with backoff; stop when Snap refuses the
-   *    token (the rows keep their attempts);
+   *  - resend failed / lease-expired rows, with backoff; when Snap refuses the
+   *    token for one Snap App ID, only that app's rows wait (attempts kept) and
+   *    the other app's Purchases are still sent;
    *  - close rows that really failed MAX_ATTEMPTS times and report them once;
    *  - recover paid app orders whose row is still PENDING (> 15 min) once the
    *    capture is independently verified. Found from the orders side, so abandoned
    *    checkouts can no longer keep a paid order waiting.
    */
-  async function retryPendingSnapAppPurchases(limit = 25, opts: { budgetMs?: number } = {}): Promise<Record<string, number>> {
+  async function retryPendingSnapAppPurchases(limit = 25, opts: RetryRunOptions = {}): Promise<Record<string, number>> {
     const tally: Record<string, number> = {};
     const bump = (k: string) => { tally[k] = (tally[k] || 0) + 1; };
     // Runs after the website job in the same request: a smaller share of the 60 s.
-    const deadline = Date.now() + (opts.budgetMs ?? 12_000);
+    const deadline = retryDeadline(opts, SNAP_APP_RETRY_RUN_BUDGET_MS);
     const outOfTime = () => { if (Date.now() < deadline) return false; tally.time_budget_reached = 1; return true; };
+    // Snap App IDs whose token was refused in this run: their rows are left alone.
+    const blockedAssets = new Set<string>();
+    const assetBlocked = async (orderId: string) =>
+      blockedAssets.size > 0 && blockedAssets.has((await snapAssetOfOrder(orderId)) || '');
     try {
       const expired = await ledger.expireStalePending(PLATFORM, EVENT);
       if (expired) tally.expired = expired;
@@ -206,10 +234,12 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
       for (const row of due) {
         if (outOfTime()) break;
         const orderId = row.orderId;
+        if (await assetBlocked(orderId)) { bump('retry_waiting_auth'); continue; }
         const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
         if (out.status === 'failed' && out.blocked) {
-          blocked = out.blocked;
           bump(`blocked_${out.blocked}`);
+          if (out.blocked === 'auth' && out.asset) { blockedAssets.add(out.asset); continue; }
+          blocked = out.blocked; // validation-only mode: nothing can be recorded in this run
           break;
         }
         bump(`retry_${out.status}`);
@@ -232,25 +262,9 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
         }
       }
 
-      const exhausted: Array<{ id: string; orderId: string; lastError: string | null }> = await db.adConversionDelivery.findMany({
-        where: { platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS } },
-        select: { id: true, orderId: true, lastError: true },
-        take: 100,
-      });
-      for (const r of exhausted) {
-        await db.adConversionDelivery.updateMany({
-          where: { id: r.id, status: 'failed' },
-          data: { status: 'skipped', lastError: `exhausted after ${MAX_ATTEMPTS} attempts: ${r.lastError || ''}`.slice(0, 500) },
-        });
-      }
-      if (exhausted.length) {
-        tally.exhausted = exhausted.length;
-        console.error('[Snap App Purchase][ALERT] attempts_exhausted', JSON.stringify({
-          count: exhausted.length,
-          orderIds: exhausted.slice(0, 20).map(r => r.orderId),
-          lastError: String(exhausted[0]?.lastError || '').slice(0, 300),
-        }));
-      }
+      const closed = await closeExhaustedRows(ledger, PLATFORM, EVENT, '[Snap App Purchase]');
+      if (closed.exhausted.length) tally.exhausted = closed.exhausted.length;
+      if (closed.expiredUnsent) tally.expired_unsent = closed.expiredUnsent;
 
       if (!verifyCapture || blocked || outOfTime()) return tally;
 
@@ -285,10 +299,12 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
           await ledger.noteRecoveryCheck(PLATFORM, EVENT, cand.orderId, cand.rowId, `recovery: ${hold}`);
           continue;
         }
+        if (await assetBlocked(cand.orderId)) { bump('pending_waiting_auth'); continue; }
         const out = await emitSnapAppPurchase(cand.orderId, { paymentConfirmed: true });
         sends++;
         if (out.status === 'failed' && out.blocked) {
           bump(`blocked_${out.blocked}`);
+          if (out.blocked === 'auth' && out.asset) { blockedAssets.add(out.asset); continue; }
           break;
         }
         bump(`recovered_${out.status}`);

@@ -8,9 +8,11 @@
  * Environment variables
  *   NEXT_PUBLIC_SNAP_PIXEL_ID   optional. The pixel id (a UUID). "off" disables
  *                               Snap tracking for that deployment. When unset, a
- *                               PRODUCTION build uses the store's own pixel
- *                               (below); development / test builds stay silent,
- *                               so local work never feeds the live pixel.
+ *                               PRODUCTION build of the live site uses the
+ *                               store's own pixel (below); development / test
+ *                               builds, and a build whose NEXT_PUBLIC_SITE_URL
+ *                               is another host (staging), stay silent, so no
+ *                               other deployment ever feeds the live pixel.
  *   NEXT_PUBLIC_SITE_URL        canonical storefront URL (already used app-wide).
  */
 
@@ -36,29 +38,42 @@ export function cleanEnvValue(v: unknown): string {
 export function resolveSnapPixelId(
   raw: string | undefined = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID,
   nodeEnv: string | undefined = process.env.NODE_ENV,
+  siteUrl: string | undefined = process.env.NEXT_PUBLIC_SITE_URL,
 ): string {
   const v = cleanEnvValue(raw);
   if (OFF_VALUES.has(v.toLowerCase())) return '';
   if (PIXEL_ID_RE.test(v) && v !== PLACEHOLDER_PIXEL_ID) return v.toLowerCase();
-  // Not set, or not a pixel id (e.g. the all-zero placeholder): production keeps
-  // tracking with the store's pixel; every other environment sends nothing.
-  return nodeEnv === 'production' ? SNAP_PRODUCTION_PIXEL_ID : '';
+  // Not set, or not a pixel id (e.g. the all-zero placeholder): a production
+  // build of the live site keeps tracking with the store's pixel; every other
+  // environment (dev, test, a staging host) sends nothing.
+  return usesBuiltInPixel(nodeEnv, siteUrl) ? SNAP_PRODUCTION_PIXEL_ID : '';
 }
 
 /** A human-readable problem with NEXT_PUBLIC_SNAP_PIXEL_ID, or null. For diagnostics only. */
 export function snapPixelIdProblem(
   raw: string | undefined = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID,
   nodeEnv: string | undefined = process.env.NODE_ENV,
+  siteUrl: string | undefined = process.env.NEXT_PUBLIC_SITE_URL,
 ): string | null {
   const v = cleanEnvValue(raw);
-  if (!v) return nodeEnv === 'production' ? null : 'NEXT_PUBLIC_SNAP_PIXEL_ID is not set (Snap tracking is off outside production builds)';
+  const builtIn = usesBuiltInPixel(nodeEnv, siteUrl);
+  if (!v) {
+    return builtIn ? null : nodeEnv === 'production'
+      ? `NEXT_PUBLIC_SNAP_PIXEL_ID is not set and NEXT_PUBLIC_SITE_URL (${cleanEnvValue(siteUrl)}) is not a live storefront host — Snap tracking is off on this deployment`
+      : 'NEXT_PUBLIC_SNAP_PIXEL_ID is not set (Snap tracking is off outside production builds)';
+  }
   if (OFF_VALUES.has(v.toLowerCase())) return 'Snap tracking is switched off (NEXT_PUBLIC_SNAP_PIXEL_ID=off)';
   if (!PIXEL_ID_RE.test(v) || v === PLACEHOLDER_PIXEL_ID) {
-    return nodeEnv === 'production'
+    return builtIn
       ? 'NEXT_PUBLIC_SNAP_PIXEL_ID is not a valid pixel id — the built-in store pixel is used instead'
       : 'NEXT_PUBLIC_SNAP_PIXEL_ID is not a valid pixel id';
   }
   return null;
+}
+
+/** The built-in pixel applies to production builds of the live site only. */
+function usesBuiltInPixel(nodeEnv: string | undefined, siteUrl: string | undefined): boolean {
+  return nodeEnv === 'production' && isSnapProductionSite(siteUrl);
 }
 
 // ── Storefront hosts ────────────────────────────────────────────────────────

@@ -22,7 +22,16 @@ export const dynamic = 'force-dynamic';
  *
  * `?probe=1` additionally checks the pixel id + access token live against Snap's
  * VALIDATE endpoint (records nothing). Used by manual workflow runs.
+ *
+ * Timing: the workflow's curl gives up after 60 s. Everything in one run — the
+ * probe (≤ 8 s), the website job and the app job — shares ONE deadline, after
+ * which no new send is started; a send already in flight can still take up to
+ * one Razorpay capture check (10 s) plus one Snap call (5 s). 36 + 15 < 60.
  */
+const RUN_BUDGET_MS = 36_000;
+/** The website job gets this share; the app job runs in whatever is left. */
+const WEB_SHARE = 0.7;
+
 function authorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
@@ -38,15 +47,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {
-    const web = await retryPendingSnapPurchases(25);
-    const app = await retryPendingSnapAppPurchases(25);
+    const started = Date.now();
     let probe;
     if (req.nextUrl.searchParams.get('probe') === '1') {
       const ip = getClientIP(req);
       probe = await probeSnapCapi({ ipAddress: ip && !isPrivateIP(ip) ? ip : undefined });
     }
+    const web = await retryPendingSnapPurchases(25, { deadlineMs: started + RUN_BUDGET_MS * WEB_SHARE });
+    const app = await retryPendingSnapAppPurchases(25, { deadlineMs: started + RUN_BUDGET_MS });
     const alerts = snapDeliveryAlerts({ web, app, probe });
-    return NextResponse.json({ ok: alerts.length === 0, result: { alerts, web, app, ...(probe ? { probe } : {}) } });
+    return NextResponse.json({
+      ok: alerts.length === 0,
+      result: { alerts, web, app, ...(probe ? { probe } : {}), durationMs: Date.now() - started },
+    });
   } catch (err: any) {
     console.error('[Cron snap-conversions]', err?.message);
     return NextResponse.json({ ok: false }, { status: 500 });

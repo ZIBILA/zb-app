@@ -75,7 +75,8 @@ async function main() {
   const { db, default: prisma } = await import('./payment-e2e/memory-prisma');
   const config = await import('../lib/snap/config');
   const capi = await import('../lib/snap-capi');
-  const { createSnapPurchaseDelivery, isSnapRetryDue } = await import('../lib/snap/purchase');
+  const purchase = await import('../lib/snap/purchase');
+  const { createSnapPurchaseDelivery, isSnapRetryDue } = purchase;
   const { MAX_ATTEMPTS } = await import('../lib/snap/ledger');
   const health = await import('../lib/snap/health');
 
@@ -112,6 +113,12 @@ async function main() {
   eq('pixel id: all-zero placeholder is not a pixel id', [config.resolveSnapPixelId('00000000-0000-0000-0000-000000000000', 'production'), config.resolveSnapPixelId('00000000-0000-0000-0000-000000000000', 'development')], [config.SNAP_PRODUCTION_PIXEL_ID, '']);
   check('pixel id: a typo is reported, not silently accepted', /not a valid pixel id/.test(config.snapPixelIdProblem('7d2481be-4ccf', 'production') || ''));
   eq('the built-in pixel id is the store pixel', config.SNAP_PRODUCTION_PIXEL_ID, PIXEL);
+  eq('pixel id: the built-in pixel applies to production builds of the LIVE site only (a staging host sends nothing)', [
+    config.resolveSnapPixelId('', 'production', 'https://zicabella.com'), config.resolveSnapPixelId('', 'production', 'https://app.zicabella.com/'),
+    config.resolveSnapPixelId('', 'production', undefined), config.resolveSnapPixelId('', 'production', 'https://staging.example.com'),
+    config.resolveSnapPixelId(PIXEL, 'production', 'https://staging.example.com'),
+  ], [PIXEL, PIXEL, PIXEL, '', PIXEL]);
+  check('pixel id: a staging build without a pixel id says so', /NEXT_PUBLIC_SITE_URL \(https:\/\/staging\.example\.com\) is not a live storefront host/.test(config.snapPixelIdProblem('', 'production', 'https://staging.example.com') || ''));
 
   eq('token: configured → no config error', capi.snapCapiConfigError(), null);
   process.env.SNAP_CAPI_ACCESS_TOKEN = `  "${TOKEN}"\n`;
@@ -161,9 +168,9 @@ async function main() {
     check(`HTTP ${status} → blocked:"auth" (setup problem, not the event's)`, r.success === false && r.blocked === 'auth' && /^snap_auth_rejected/.test(r.error), r);
     check(`HTTP ${status}: the token is not in the result`, !JSON.stringify(r).includes(TOKEN));
   }
-  snapAnswer = () => ({ status: 400, body: { status: 'INVALID', reason: 'Invalid access token provided' } });
+  snapAnswer = () => ({ status: 400, body: { status: 'INVALID', reason: 'Unauthorized value for custom_data.currency; token-like strings are forbidden' } });
   r = await quiet(() => capi.sendSnapEvent(ev()));
-  check('HTTP 400 whose message says the token is invalid → blocked:"auth"', r.blocked === 'auth', r);
+  check('HTTP 400 is a rejected EVENT even when its text says "unauthorized" / "forbidden" (only 401 / 403 block the run)', r.success === false && !r.blocked && /^snap_rejected: HTTP 400/.test(r.error), r);
   snapAnswer = () => ({ status: 400, body: { status: 'INVALID', reason: 'custom_data.currency is not supported' } });
   r = await quiet(() => capi.sendSnapEvent(ev()));
   check('HTTP 400 INVALID payload → ordinary failure (counts as an attempt)', r.success === false && !r.blocked && /^snap_rejected: HTTP 400 INVALID/.test(r.error), r);
@@ -254,10 +261,29 @@ async function main() {
   tally = await quiet(() => delivery.retryPendingSnapPurchases(25));
   check('token added: the 2-day-old Purchase is re-queued and delivered', tally.requeued === 1 && tally.retry_sent === 1 && rowOf(l1).status === 'sent', tally);
   eq('…with its original event time and click id', [snapCalls[0]?.event.event_time, snapCalls[0]?.event.user_data.sc_click_id], [l1Time.getTime(), 'click-legacy']);
-  check('the 9-day-old one is past Snap\'s 7-day limit: closed and REPORTED, never re-dated',
-    rowOf(l2).status === 'skipped' && /^exhausted after 5 attempts/.test(rowOf(l2).lastError) && tally.exhausted === 1 && snapCalls.length === 1, { row: rowOf(l2), tally });
+  check('the 9-day-old one is past Snap\'s 7-day limit: closed as "expired, never sent", never re-dated, never sent',
+    rowOf(l2).status === 'skipped' && /^expired: never sent/.test(rowOf(l2).lastError) && tally.expired_unsent === 1 && !tally.exhausted && snapCalls.length === 1, { row: rowOf(l2), tally });
+  const unsentAlerts = health.snapDeliveryAlerts({ web: tally, app: {} }, { configError: null, exposedToken: false });
+  check('…and NOT reported as a delivery failure (Snap never refused it — there was no token)', unsentAlerts.length === 0, unsentAlerts);
+  tally = await delivery.retryPendingSnapPurchases(25);
+  check('…closed once only (next run is healthy)', !tally.exhausted && !tally.expired_unsent && health.snapDeliveryAlerts({ web: tally, app: {} }, { configError: null, exposedToken: false }).length === 0, tally);
+  check('the re-queue note itself cannot be mistaken for the old "not configured" error',
+    !purchase.SNAP_REQUEUED_NOTE.includes(purchase.SNAP_LEGACY_CONFIG_ERROR) && !purchase.SNAP_NEVER_SENT_RE.test(purchase.SNAP_REQUEUED_NOTE) && rowOf(l1).lastError === null);
+  check('"never sent" means the token was missing — an app whose Snap App ID is not configured is a different message',
+    purchase.SNAP_NEVER_SENT_RE.test(LEGACY) && purchase.SNAP_NEVER_SENT_RE.test('snap_config_missing: SNAP_CAPI_ACCESS_TOKEN is not set on the server') && !purchase.SNAP_NEVER_SENT_RE.test('retry skipped: Snap app not configured for ios'));
+
+  // A Purchase that Snap really rejected MAX_ATTEMPTS times IS reported, once.
+  resetLedger();
+  const x1 = await mkOrder();
+  await prisma.adConversionDelivery.create({ data: { platform: 'snap', eventName: 'PURCHASE', orderId: x1, eventId: x1, status: 'failed', attempts: MAX_ATTEMPTS, lastError: 'snap_rejected: HTTP 400 INVALID {"reason":"bad"}', eventTime: new Date() } });
+  const x2 = await mkOrder(); // a process died mid-send with the last attempt: "sending", lease long expired
+  await prisma.adConversionDelivery.create({ data: { platform: 'snap', eventName: 'PURCHASE', orderId: x2, eventId: x2, status: 'sending', attempts: MAX_ATTEMPTS, leaseUntil: new Date(Date.now() - DAY), lastError: 'snap_rejected: HTTP 500', eventTime: new Date() } });
+  tally = await quiet(() => delivery.retryPendingSnapPurchases(25));
+  eq('rows that Snap refused 5 times (failed, or stuck "sending" with a dead lease) are closed and reported once',
+    [tally.exhausted, rowOf(x1).status, rowOf(x2).status, /^exhausted after 5 attempts: snap_rejected: HTTP 400/.test(rowOf(x1).lastError), /^exhausted after 5 attempts: snap_rejected: HTTP 500/.test(rowOf(x2).lastError)],
+    [2, 'skipped', 'skipped', true, true]);
   const exhaustedAlerts = health.snapDeliveryAlerts({ web: tally, app: {} }, { configError: null, exposedToken: false });
-  check('…as an attempts_exhausted alert', exhaustedAlerts.length === 1 && /^attempts_exhausted: 1 Purchase/.test(exhaustedAlerts[0]), exhaustedAlerts);
+  check('…as an attempts_exhausted alert', exhaustedAlerts.length === 1 && /^attempts_exhausted: 2 Purchase/.test(exhaustedAlerts[0]), exhaustedAlerts);
   tally = await delivery.retryPendingSnapPurchases(25);
   check('…once only (next run is healthy)', !tally.exhausted && health.snapDeliveryAlerts({ web: tally, app: {} }, { configError: null, exposedToken: false }).length === 0, tally);
 

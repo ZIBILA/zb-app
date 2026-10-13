@@ -281,19 +281,16 @@ export function snapEventsEndpoint(assetId: string, token: string, validate: boo
   return `https://tr.snapchat.com/v3/${encodeURIComponent(assetId)}/${validate ? 'events/validate' : 'events'}?access_token=${encodeURIComponent(token)}`;
 }
 
-const AUTH_TEXT_RE = /\b(unauthori[sz]ed|unauthenticated|forbidden|invalid (access[ _-]?)?token|(access[ _-]?)?token (is |has )?(invalid|expired|revoked|missing)|expired (access[ _-]?)?token)\b/i;
-
 /**
  * Read Snap's answer. `auth: true` means Snap refused the credentials themselves
- * (HTTP 401 / 403, or a 4xx whose message says so) — a setup problem, not a
- * problem with the event.
+ * (HTTP 401 Unauthorized / 403 Forbidden) — a setup problem, not a problem with
+ * the event. Only the status code counts: a 400 whose text happens to contain
+ * "unauthorized" is a rejected event, and must not stop the whole retry run.
  */
 export function classifySnapResponse(httpStatus: number, httpOk: boolean, body: any): { ok: boolean; auth: boolean; summary: string } {
   const status = String(body?.status || '').toUpperCase();
   const ok = httpOk && status !== 'INVALID' && status !== 'FAILED';
-  const text = [body?.reason, body?.error_message, body?.message, body?.error, body?.display_message]
-    .filter((v): v is string => typeof v === 'string').join(' ');
-  const auth = !ok && (httpStatus === 401 || httpStatus === 403 || (httpStatus >= 400 && httpStatus < 500 && AUTH_TEXT_RE.test(text)));
+  const auth = !ok && (httpStatus === 401 || httpStatus === 403);
   let raw = '';
   try { raw = JSON.stringify(body ?? {}); } catch { raw = ''; }
   return { ok, auth, summary: redactSnapSecrets(`HTTP ${httpStatus}${status ? ` ${status}` : ''} ${raw === '{}' ? '' : raw}`.trim()).slice(0, 480) };

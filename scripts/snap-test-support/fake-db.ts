@@ -34,12 +34,14 @@ const matchWhere = (row: any, w: any): boolean => {
   if (w.createdAt?.gt && !(new Date(row.createdAt) > new Date(w.createdAt.gt))) return false;
   if (w.updatedAt?.lt && !(new Date(row.updatedAt) < new Date(w.updatedAt.lt))) return false;
   if (w.updatedAt?.gt && !(new Date(row.updatedAt) > new Date(w.updatedAt.gt))) return false;
+  if (w.eventTime === null && row.eventTime !== null && row.eventTime !== undefined) return false;
   if (w.eventTime?.gt && !(row.eventTime && new Date(row.eventTime) > new Date(w.eventTime.gt))) return false;
   if (w.lastError?.contains !== undefined && !String(row.lastError || '').includes(w.lastError.contains)) return false;
   if (w.status !== undefined) {
     if (typeof w.status === 'string' && row.status !== w.status) return false;
     if (w.status?.in && !w.status.in.includes(row.status)) return false;
   }
+  if (w.leaseUntil instanceof Date && !(row.leaseUntil && new Date(row.leaseUntil).getTime() === w.leaseUntil.getTime())) return false;
   if (w.leaseUntil?.lt && !(row.leaseUntil && row.leaseUntil < w.leaseUntil.lt)) return false;
   if (w.OR && !w.OR.some((o: any) => matchWhere(row, o))) return false;
   return true;
