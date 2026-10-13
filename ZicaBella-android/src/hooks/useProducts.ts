@@ -272,8 +272,8 @@ export function useProducts(count = 24) {
       
       setIsError(true);
       if (products.length === 0) {
-        setProducts(fallbackProducts.slice(0, count));
-        setError('Showing bundled products while the catalog reconnects.');
+        setProducts([]);
+        setError(err?.message || 'Unable to load products.');
       }
     } finally {
       if (isMounted.current) {
@@ -336,9 +336,8 @@ export function useProductByHandle(handle: string) {
       } catch (err: any) {
         if (cancelled) return;
         if (!hasDataRef.current) {
-          const fallbackProduct = fallbackProducts.find((item) => item.handle === handle) || null;
-          setProduct(fallbackProduct);
-          setError(err.message);
+          setProduct(null);
+          setError(err.message || 'Product not found');
         }
       } finally {
         if (!cancelled) {
@@ -427,16 +426,7 @@ export function useSearchProducts() {
       throw new Error('Search unavailable');
     } catch (err) {
       if (!isMounted.current) return;
-      const source = fallbackProducts;
-      const filtered = source
-        .filter((product) =>
-          product.title.toLowerCase().includes(normalizedQuery)
-          || product.handle.toLowerCase().includes(normalizedQuery)
-          || product.productType.toLowerCase().includes(normalizedQuery)
-        )
-        .sort((a, b) => relevancyScore(b, normalizedQuery) - relevancyScore(a, normalizedQuery));
-
-      setResults(filtered);
+      setResults([]);
     } finally {
       if (isMounted.current) {
         setLoading(false);
@@ -498,7 +488,7 @@ export function useCollections(count = 20, location?: 'header' | 'page' | 'menu'
     } catch (err) {
       if (!isMounted.current) return;
       if (collections.length === 0) {
-        setCollections(fallbackCollections);
+        setCollections([]);
       }
     } finally {
       if (isMounted.current) {
@@ -591,8 +581,8 @@ export function useCollectionByHandle(handle: string) {
     } catch (err) {
       if (!isMounted.current) return;
       if (products.length === 0) {
-        setCollection(fallbackCollections.find((c) => c.handle === handle) || null);
-        setProducts(handle === 'accessories' ? fallbackProducts : []);
+        setCollection(null);
+        setProducts([]);
       }
     } finally {
       if (isMounted.current) {

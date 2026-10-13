@@ -428,7 +428,19 @@ export default function ProductDetailScreen() {
 
   const images = product ? (product.images.length > 0 ? product.images : [product.featuredImage]) : [];
 
-  const renderHeroItem = useCallback(({ item, index }: any) => (
+  // Prefetch adjacent gallery images for lag-free swiping
+  useEffect(() => {
+    if (images && images.length > 0) {
+      images.slice(0, 6).forEach((img: any) => {
+        const url = typeof img === 'string' ? img : img?.url;
+        if (url) {
+          Image.prefetch(url);
+        }
+      });
+    }
+  }, [images]);
+
+  const renderHeroItem = useCallback(({ item }: any) => (
     <TouchableOpacity 
       activeOpacity={0.9} 
       onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
@@ -438,19 +450,13 @@ export default function ProductDetailScreen() {
         source={String(item)} 
         style={styles.heroImage} 
         shopifyWidth={800}
+        priority="high"
       />
       <View style={styles.zoomPulse}>
         <Ionicons name="expand-outline" size={12} color="#FFF" />
       </View>
-      
-      {/* Background preloading of adjacent image */}
-      {index === activeImageIndex && images[index + 1] && (
-        <View style={{ width: 0, height: 0, opacity: 0 }}>
-          <OptimizedImage source={String(images[index + 1])} shopifyWidth={800} />
-        </View>
-      )}
     </TouchableOpacity>
-  ), [activeImageIndex, images]);
+  ), []);
 
   if (loading || !product) {
     return (

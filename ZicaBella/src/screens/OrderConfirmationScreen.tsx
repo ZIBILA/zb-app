@@ -38,7 +38,7 @@ export default function OrderConfirmationScreen() {
         </View>
 
         <Typography heading weight="700" size={24} color={colors.text} style={styles.title}>
-          ORDER CONFIRMED!
+          {paymentMethod === 'COD' ? 'ORDER PLACED!' : paymentMethod === 'PREPAID' ? 'PAYMENT CONFIRMED!' : 'ORDER PLACED!'}
         </Typography>
         <Typography weight="400" size={10} color={colors.textMuted} style={styles.orderId}>
           {orderNumber ? `ORDER: ${orderNumber}` : orderId ? `ORDER ID: ${String(orderId).toUpperCase()}` : 'ORDER PLACED'}
@@ -46,14 +46,28 @@ export default function OrderConfirmationScreen() {
         
         <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
 
-        <Typography size={12} color={colors.textSecondary} style={styles.message}>
-          {paymentMethod === 'COD'
-            ? `Your order ${orderNumber || ''} has been confirmed! Our team will contact you before dispatch.`
-            : `Payment confirmed! Your order ${orderNumber || ''} will be processed shortly.`}
-        </Typography>
-        <View style={[styles.pill, { backgroundColor: 'rgba(52,199,89,0.12)', borderColor: 'rgba(52,199,89,0.25)' }]}>
-          <Typography heading weight="700" size={9} color={colors.success}>ORDER CONFIRMED</Typography>
-        </View>
+        {paymentMethod === 'COD' ? (
+          <>
+            <Typography size={12} color={colors.textSecondary} style={styles.message}>
+              Your order {orderNumber || ''} is awaiting approval. We'll notify you as soon as it's confirmed.
+            </Typography>
+            <View style={[styles.pill, { backgroundColor: 'rgba(255,159,10,0.12)', borderColor: 'rgba(255,159,10,0.25)' }]}>
+              <Typography heading weight="700" size={9} color="#FF9F0A">AWAITING APPROVAL</Typography>
+            </View>
+          </>
+        ) : (
+          <>
+            <Typography size={12} color={colors.textSecondary} style={styles.message}>
+              Payment confirmed! Your order {orderNumber || ''} will be processed shortly.
+            </Typography>
+            <View style={[styles.pill, { backgroundColor: 'rgba(52,199,89,0.12)', borderColor: 'rgba(52,199,89,0.25)' }]}>
+              <Typography heading weight="700" size={9} color={colors.success}>PAYMENT CONFIRMED</Typography>
+            </View>
+            <Typography size={10} color={colors.textMuted} style={[styles.note, { marginTop: 14 }]}>
+              Shipping will begin once your order is approved (within 24 hours).
+            </Typography>
+          </>
+        )}
 
         <View style={[styles.emailNotice, { backgroundColor: isDark ? 'rgba(201,169,110,0.06)' : 'rgba(201,169,110,0.03)', borderColor: 'rgba(201,169,110,0.15)' }]}>
           <Typography size={10} color="#C9A96E" weight="600" style={{ letterSpacing: 0.5, textAlign: 'center' }}>

@@ -382,7 +382,7 @@ const HomeScreen = React.memo(() => {
               )}
 
               {/* ═══ RING COLLECTION CAROUSEL ═══ */}
-              {settings?.ringCarousel?.show !== false && (
+              {settings?.ringCarousel?.show !== false && accessoriesItems.length > 0 && (
                  <RingCarouselSection 
                   title={ringTitle} 
                   handle={ringHandle}

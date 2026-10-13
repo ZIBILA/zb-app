@@ -15,6 +15,7 @@ import { useAuthStore } from '../../store/authStore';
 import { Image } from 'expo-image';
 import { getSnapDeviceContext } from '../../services/snapDeviceContext';
 import { requireValidAuth, handleAuthError, isUnauthorizedError } from '../../utils/tokenUtils';
+import RazorpayWebViewModal, { RazorpayWebViewSuccessPayload } from '../../components/RazorpayWebViewModal';
 
 const { width } = Dimensions.get('window');
 
@@ -56,9 +57,6 @@ export default function OrderReviewScreen() {
     value: number;
     discountAmount: number;
   } | null>(null);
-
-  // ─── Auto-apply PREPAID10 for Razorpay (prepaid) orders ──────────────
-  const hasAutoAppliedPrepaid10 = useRef(false);
 
   const subtotal = checkoutTotal;
   const shipping = 0;
@@ -115,33 +113,6 @@ export default function OrderReviewScreen() {
     };
     fetchCredits();
   }, [user]);
-
-  // ─── Auto-apply PREPAID10 when Razorpay (prepaid) is selected ────────
-  React.useEffect(() => {
-    if (selectedPaymentMethod !== 'razorpay') return;
-    if (hasAutoAppliedPrepaid10.current) return;
-    if (appliedDiscount) return; // don't override manually applied codes
-    hasAutoAppliedPrepaid10.current = true;
-    const autoApply = async () => {
-      try {
-        const res = await fetch(`${config.appUrl}/api/app/discounts/validate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: 'PREPAID10', orderAmount: subtotal }),
-        });
-        const data = await res.json();
-        if (data.success) {
-          setAppliedDiscount(data.discount);
-          setPromoCode('PREPAID10');
-          haptics.success();
-        }
-      } catch (e) {
-        // silently skip if backend unavailable
-        console.warn('[OrderReview] PREPAID10 auto-apply failed:', e);
-      }
-    };
-    autoApply();
-  }, [selectedPaymentMethod]);
 
   // ─── Promo Code Handlers ─────────────────────────────────────────────
   const handleApplyPromo = async () => {
@@ -376,8 +347,7 @@ export default function OrderReviewScreen() {
         const payAmount = Number(orderJson.codFee || grandTotal);
         setLoading(false);
 
-        // Navigate to custom payment screen for COD upfront — UPI apps open directly
-        navigation.navigate('RazorpayPayment', {
+        setRazorpayModalData({
           amount: payAmount,
           orderId: orderJson.order_id,
           razorpayKeyId: orderJson.key_id,
@@ -388,6 +358,7 @@ export default function OrderReviewScreen() {
           },
           orderData: orderData,
         });
+        setRazorpayModalVisible(true);
       } catch (e: any) {
         haptics.error();
         console.error('[OrderReview] COD Razorpay initiation error:', e.message);
@@ -441,8 +412,7 @@ export default function OrderReviewScreen() {
       
       setLoading(false);
       
-      // Navigate to custom payment screen — UPI apps open directly without Razorpay popup
-      navigation.navigate('RazorpayPayment', {
+      setRazorpayModalData({
         amount: grandTotal,
         orderId: orderJson.order_id,
         razorpayKeyId: orderJson.key_id,
@@ -453,6 +423,7 @@ export default function OrderReviewScreen() {
         },
         orderData: orderData,
       });
+      setRazorpayModalVisible(true);
     } catch (e: any) {
       haptics.error();
       console.error('[OrderReview] Razorpay initiation error:', e.message);
@@ -466,8 +437,95 @@ export default function OrderReviewScreen() {
     }
   };
 
+  const handleRazorpaySuccess = async (payload: RazorpayWebViewSuccessPayload) => {
+    setRazorpayModalVisible(false);
+    setLoading(true);
+    try {
+      haptics.success();
+      const token = useAuthStore.getState().token || '';
+      const apiBase = getPaymentApiBaseUrl();
+      let confirmedOrderId = '';
+      let confirmedOrderNumber = '';
 
+      // 1. Verify payment signature on backend
+      try {
+        const vRes = await fetch(`${apiBase}/api/app/payment/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            razorpay_order_id: payload.razorpay_order_id,
+            razorpay_payment_id: payload.razorpay_payment_id,
+            razorpay_signature: payload.razorpay_signature,
+            snapDevice: await getSnapDeviceContext(),
+          }),
+        });
+        const vJson = await vRes.json().catch(() => ({}));
+        if (vJson.orderId) confirmedOrderId = vJson.orderId;
+        if (vJson.orderNumber) confirmedOrderNumber = vJson.orderNumber;
+      } catch (e) {
+        console.warn('[OrderReview] Backend verify call error:', e);
+      }
 
+      // 2. Sync/record order in database
+      const currentOrderData = razorpayModalData?.orderData || buildOrderData();
+      const orderPayload = {
+        ...currentOrderData,
+        paymentId: payload.razorpay_payment_id,
+        razorpayOrderId: payload.razorpay_order_id,
+        razorpay_order_id: payload.razorpay_order_id,
+        paymentStatus: 'paid',
+        paymentMethod: selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID',
+      };
+
+      const oRes = await fetch(`${apiBase}/api/app/orders/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify(orderPayload),
+      });
+
+      const oJson = await oRes.json().catch(() => ({}));
+      const finalOrderId = confirmedOrderId || oJson.orderId || oJson.id || payload.razorpay_order_id;
+      const finalOrderNumber = confirmedOrderNumber || oJson.orderNumber || undefined;
+
+      buyNowItem ? setBuyNowItem(null) : clearCart();
+
+      navigation.getParent()?.reset({
+        index: 1,
+        routes: [
+          { name: 'Main' },
+          {
+            name: 'OrderConfirmation',
+            params: {
+              orderId: finalOrderId,
+              orderNumber: finalOrderNumber,
+              paymentMethod: selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID',
+              estimatedDelivery: '3-5 Business Days',
+            },
+          },
+        ],
+      });
+    } catch (err: any) {
+      console.error('[OrderReview] Post-payment sync error:', err);
+      Alert.alert('Payment Succeeded', 'Your payment was received. Please check your order history.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRazorpayDismiss = () => {
+    setRazorpayModalVisible(false);
+    setLoading(false);
+  };
+
+  const handleRazorpayError = (errMsg: string) => {
+    setRazorpayModalVisible(false);
+    setLoading(false);
+    Alert.alert('Payment Incomplete', errMsg || 'Payment was not completed. Please try again.');
+  };
 
 
 
@@ -734,16 +792,6 @@ export default function OrderReviewScreen() {
                <Typography size={12} weight="700" color={colors.text}>Grand Total</Typography>
                <Typography size={18} weight="800" color={colors.text}>{formatPrice(grandTotal)}</Typography>
              </View>
-             {/* 10% Store Credits cashback earned on this order */}
-             {selectedPaymentMethod === 'razorpay' && grandTotal > 0 && (
-               <View style={[styles.row, { marginTop: 4, opacity: 0.75 }]}>
-                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                   <Ionicons name="gift-outline" size={12} color="#C9A96E" />
-                   <Typography size={9} color="#C9A96E" weight="600">Store Credits Cashback (10%)</Typography>
-                 </View>
-                 <Typography size={9} color="#C9A96E" weight="700">+{formatPrice(Math.round(grandTotal * 0.10))}</Typography>
-               </View>
-             )}
           </View>
         </View>
 
@@ -763,6 +811,18 @@ export default function OrderReviewScreen() {
         loading={loading}
       />
 
+      {razorpayModalData && (
+        <RazorpayWebViewModal
+          visible={razorpayModalVisible}
+          orderId={razorpayModalData.orderId}
+          razorpayKeyId={razorpayModalData.razorpayKeyId}
+          amount={razorpayModalData.amount}
+          prefill={razorpayModalData.prefill}
+          onSuccess={handleRazorpaySuccess}
+          onDismiss={handleRazorpayDismiss}
+          onError={handleRazorpayError}
+        />
+      )}
     </View>
   );
 }

@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,9 +30,6 @@ export default function DeliveryAddressScreen() {
   const [savedAddresses, setSavedAddresses] = useState<any[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
   const [detectingLocation, setDetectingLocation] = useState(false);
-  const [addressFieldHighlighted, setAddressFieldHighlighted] = useState(false);
-  const scrollViewRef = useRef<ScrollView>(null);
-  const addressFieldRef = useRef<TextInput>(null);
   const [address, setAddress] = useState({
     name: shippingAddress?.name || user?.name || '',
     email: shippingAddress?.email || user?.email || '',
@@ -145,6 +142,10 @@ export default function DeliveryAddressScreen() {
     try {
       const permission = await requestDeviceLocationPermission();
       if (permission !== 'granted') {
+        Alert.alert(
+          'Location permission needed',
+          'Allow location access so we can fill your delivery address from your current position.'
+        );
         haptics.error();
         return;
       }
@@ -155,11 +156,8 @@ export default function DeliveryAddressScreen() {
       );
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
+        Alert.alert('Could not detect address', 'Please enter your delivery address manually.');
         haptics.error();
-        // Still open the form so user can type manually
-        setIsEditing(true);
-        setAddressFieldHighlighted(true);
-        setTimeout(() => addressFieldRef.current?.focus(), 400);
         return;
       }
 
@@ -191,16 +189,18 @@ export default function DeliveryAddressScreen() {
       });
       setIsEditing(true);
       haptics.success();
-      // Highlight the address field so user knows to complete their flat/building details
-      setAddressFieldHighlighted(true);
-      setTimeout(() => addressFieldRef.current?.focus(), 400);
+
+      Alert.alert(
+        'Location Detected',
+        'Please enter your Flat/Apartment number & Building name in the Complete Address field.'
+      );
     } catch (e) {
       console.warn('Current location detection failed:', e);
+      Alert.alert(
+        'Location unavailable',
+        'We could not get a fresh GPS fix. Please enter your address manually or try again outdoors.'
+      );
       haptics.error();
-      // Show empty form highlighted for manual entry
-      setIsEditing(true);
-      setAddressFieldHighlighted(true);
-      setTimeout(() => addressFieldRef.current?.focus(), 400);
     } finally {
       setDetectingLocation(false);
     }
@@ -317,7 +317,6 @@ export default function DeliveryAddressScreen() {
       </View>
 
       <ScrollView 
-        ref={scrollViewRef}
         contentContainerStyle={[styles.scroll, { paddingBottom: 120 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
@@ -506,30 +505,19 @@ export default function DeliveryAddressScreen() {
 
           <View style={styles.field}>
             <TextInput
-              ref={addressFieldRef}
               value={address.line1}
-              onChangeText={(v) => { setAddress({...address, line1: v}); if (v.trim()) setAddressFieldHighlighted(false); }}
-              placeholder="Enter complete address (Flat, Building, Street)*"
-              placeholderTextColor={addressFieldHighlighted ? 'rgba(255,59,48,0.6)' : colors.textExtraLight}
+              onChangeText={(v) => setAddress({...address, line1: v})}
+              placeholder="Enter complete address*"
+              placeholderTextColor={colors.textExtraLight}
               textContentType="fullStreetAddress"
               autoComplete="street-address"
               multiline
               style={[
                 styles.input,
                 styles.completeAddressInput,
-                { 
-                  color: colors.text, 
-                  backgroundColor: addressFieldHighlighted ? (colors.background === '#000000' ? 'rgba(255,59,48,0.06)' : 'rgba(255,59,48,0.04)') : colors.surface, 
-                  borderColor: (fieldError('line1') || addressFieldHighlighted) ? colors.error : colors.borderLight,
-                  borderWidth: addressFieldHighlighted ? 1.5 : 1,
-                }
+                { color: colors.text, backgroundColor: colors.surface, borderColor: fieldError('line1') ? colors.error : colors.borderLight }
               ]}
             />
-            {addressFieldHighlighted && !address.line1.trim() && (
-              <Typography size={8} color={colors.error} style={{ marginLeft: 6, marginTop: 4, fontWeight: '600' }}>
-                Please enter your complete address (Flat/Apartment no. & Building name required)
-              </Typography>
-            )}
             <Typography size={8} color={colors.textMuted} style={styles.exampleText}>
               Example: A-504, Shanti Heights, Link Road, Near Inorbit Mall, Malad West
             </Typography>

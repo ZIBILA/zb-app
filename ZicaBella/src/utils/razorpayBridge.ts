@@ -27,30 +27,21 @@ export interface PaymentResult {
 
 // Check if native module is available BEFORE importing the JS wrapper
 function isNativeModuleAvailable(): boolean {
-  console.log('[RazorpayBridge] Checking native modules:', {
-    platform: Platform.OS,
-    hasCustomui: !!NativeModules.RazorpayCustomui,
-    hasEmitter: !!NativeModules.RazorpayEventEmitterCustom,
-    allNativeKeys: Object.keys(NativeModules).filter(k => k.toLowerCase().includes('razor')),
-  });
-  if (Platform.OS === 'ios') {
-    return !!(
-      NativeModules.RazorpayCustomui &&
-      NativeModules.RazorpayEventEmitterCustom
-    );
-  }
-  return !!NativeModules.RazorpayCustomui;
+  return !!(
+    NativeModules.RazorpayCustomui &&
+    NativeModules.RazorpayEventEmitterCustom
+  );
 }
 
 let _razorpay: any = null;
 let _loadError: string | null = null;
 
 const preferredUPIApps: UPIApp[] = [
-  { app_name: 'AmazonPay', app_icon: 'https://cdn.razorpay.com/app/amazon_pay.png', package_name: 'com.amazon.mShop.android.shopping', is_available: true },
-  { app_name: 'Google Pay', app_icon: 'https://cdn.razorpay.com/app/google_pay.png', package_name: 'com.google.android.apps.nbu.paisa.user', is_available: true },
-  { app_name: 'Paytm', app_icon: 'https://cdn.razorpay.com/app/paytm.png', package_name: 'net.one97.paytm', is_available: true },
-  { app_name: 'PhonePe', app_icon: 'https://cdn.razorpay.com/app/phonepe.png', package_name: 'com.phonepe.app', is_available: true },
-  { app_name: 'WhatsApp', app_icon: 'https://cdn.razorpay.com/app/whatsapp.png', package_name: 'com.whatsapp', is_available: true },
+  { app_name: 'Google Pay', app_icon: 'https://cdn.razorpay.com/app/google_pay.png', package_name: 'google_pay', is_available: false },
+  { app_name: 'PhonePe', app_icon: 'https://cdn.razorpay.com/app/phonepe.png', package_name: 'phonepe', is_available: false },
+  { app_name: 'Paytm', app_icon: 'https://cdn.razorpay.com/app/paytm.png', package_name: 'paytm', is_available: false },
+  { app_name: 'MobiKwik', app_icon: 'https://cdn.razorpay.com/app/mobikwik.png', package_name: 'mobikwik', is_available: false },
+  { app_name: 'BHIM UPI', app_icon: 'https://cdn.razorpay.com/app/bhim.png', package_name: 'bhim', is_available: false },
 ];
 
 export const WALLET_APPS = [
@@ -78,12 +69,6 @@ export function inferUPIPackageName(value: string): string {
 
   const slug = normalized.replace(/[^a-z0-9]/g, '');
 
-  if (slug.includes('amazon')) {
-    return 'com.amazon.mShop.android.shopping';
-  }
-  if (slug.includes('whatsapp')) {
-    return 'com.whatsapp';
-  }
   if (slug.includes('google') || slug.includes('gpay') || slug.includes('tez')) {
     return 'com.google.android.apps.nbu.paisa.user';
   }
@@ -105,8 +90,6 @@ export function inferUPIPackageName(value: string): string {
 
 function formatUPIAppName(value: string): string {
   const pkg = inferUPIPackageName(value);
-  if (pkg.includes('amazon')) return 'AmazonPay';
-  if (pkg.includes('whatsapp')) return 'WhatsApp';
   if (pkg.includes('google')) return 'Google Pay';
   if (pkg.includes('phonepe')) return 'PhonePe';
   if (pkg.includes('paytm')) return 'Paytm';
@@ -124,8 +107,6 @@ function normalizeIcon(icon: unknown, packageName: string): string {
   }
   // Fallback to high-quality hosted icons if SDK doesn't provide one
   const slug = packageName.toLowerCase();
-  if (slug.includes('amazon')) return 'https://cdn.razorpay.com/app/amazon_pay.png';
-  if (slug.includes('whatsapp')) return 'https://cdn.razorpay.com/app/whatsapp.png';
   if (slug.includes('google') || slug.includes('tez')) return 'https://cdn.razorpay.com/app/google_pay.png';
   if (slug.includes('phonepe')) return 'https://cdn.razorpay.com/app/phonepe.png';
   if (slug.includes('paytm')) return 'https://cdn.razorpay.com/app/paytm.png';

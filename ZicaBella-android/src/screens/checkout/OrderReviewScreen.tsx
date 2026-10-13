@@ -12,6 +12,7 @@ import { haptics } from '../../utils/haptics';
 import { config, getPaymentApiBaseUrl } from '../../constants/config';
 import { useAuth } from '../../hooks/useAuth';
 import { useAuthStore } from '../../store/authStore';
+import { useThemeStore } from '../../store/themeStore';
 import { Image } from 'expo-image';
 import { getSnapDeviceContext } from '../../services/snapDeviceContext';
 import { requireValidAuth, handleAuthError, isUnauthorizedError } from '../../utils/tokenUtils';
@@ -22,6 +23,7 @@ export default function OrderReviewScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const colors = useColors();
+  const isDark = useThemeStore(s => s.theme) === 'dark';
   const { total, items, clearCart, shippingAddress, buyNowItem, setBuyNowItem } = useCartStore();
   const checkoutItems = buyNowItem ? [buyNowItem] : items;
   const checkoutTotal = buyNowItem ? parseFloat(buyNowItem.price) * buyNowItem.quantity : total();
@@ -116,32 +118,50 @@ export default function OrderReviewScreen() {
     fetchCredits();
   }, [user]);
 
-  // ─── Auto-apply PREPAID10 when Razorpay (prepaid) is selected ────────
+  // ─── Auto-apply PREPAID10 for Razorpay (prepaid) orders ──────────────
   React.useEffect(() => {
-    if (selectedPaymentMethod !== 'razorpay') return;
-    if (hasAutoAppliedPrepaid10.current) return;
-    if (appliedDiscount) return; // don't override manually applied codes
-    hasAutoAppliedPrepaid10.current = true;
-    const autoApply = async () => {
-      try {
-        const res = await fetch(`${config.appUrl}/api/app/discounts/validate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: 'PREPAID10', orderAmount: subtotal }),
-        });
-        const data = await res.json();
-        if (data.success) {
-          setAppliedDiscount(data.discount);
-          setPromoCode('PREPAID10');
-          haptics.success();
-        }
-      } catch (e) {
-        // silently skip if backend unavailable
-        console.warn('[OrderReview] PREPAID10 auto-apply failed:', e);
+    // If COD is selected, remove PREPAID10 auto discount
+    if (selectedPaymentMethod === 'cod') {
+      if (appliedDiscount?.code === 'PREPAID10') {
+        setAppliedDiscount(null);
+        setPromoCode('');
       }
-    };
-    autoApply();
-  }, [selectedPaymentMethod]);
+      return;
+    }
+
+    // If Razorpay (prepaid) is selected and cart has subtotal:
+    if (selectedPaymentMethod === 'razorpay' && subtotal > 0) {
+      if (appliedDiscount && appliedDiscount.code !== 'PREPAID10') {
+        return; // Don't override user's manual promo code
+      }
+      if (appliedDiscount?.code === 'PREPAID10') {
+        return; // Already applied
+      }
+
+      let isCancelled = false;
+      const autoApply = async () => {
+        try {
+          const res = await fetch(`${config.appUrl}/api/app/discounts/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: 'PREPAID10', orderAmount: subtotal }),
+          });
+          const data = await res.json();
+          if (!isCancelled && data.success) {
+            setAppliedDiscount(data.discount);
+            setPromoCode('PREPAID10');
+          }
+        } catch (e) {
+          console.warn('[OrderReview] PREPAID10 auto-apply failed:', e);
+        }
+      };
+      autoApply();
+
+      return () => {
+        isCancelled = true;
+      };
+    }
+  }, [selectedPaymentMethod, subtotal, appliedDiscount?.code]);
 
   // ─── Promo Code Handlers ─────────────────────────────────────────────
   const handleApplyPromo = async () => {
@@ -735,13 +755,16 @@ export default function OrderReviewScreen() {
                <Typography size={18} weight="800" color={colors.text}>{formatPrice(grandTotal)}</Typography>
              </View>
              {/* 10% Store Credits cashback earned on this order */}
-             {selectedPaymentMethod === 'razorpay' && grandTotal > 0 && (
-               <View style={[styles.row, { marginTop: 4, opacity: 0.75 }]}>
-                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                   <Ionicons name="gift-outline" size={12} color="#C9A96E" />
-                   <Typography size={9} color="#C9A96E" weight="600">Store Credits Cashback (10%)</Typography>
+             {grandTotal > 0 && (
+               <View style={[styles.cashbackBox, { backgroundColor: isDark ? 'rgba(201, 169, 110, 0.12)' : 'rgba(201, 169, 110, 0.08)', borderColor: 'rgba(201, 169, 110, 0.3)' }]}>
+                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                   <Ionicons name="gift-outline" size={15} color="#C9A96E" />
+                   <View>
+                     <Typography size={9} color="#C9A96E" weight="800">10% STORE CREDITS CASHBACK</Typography>
+                     <Typography size={7.5} color={colors.textSecondary} weight="500">Credited to wallet after delivery</Typography>
+                   </View>
                  </View>
-                 <Typography size={9} color="#C9A96E" weight="700">+{formatPrice(Math.round(grandTotal * 0.10))}</Typography>
+                 <Typography size={11} color="#C9A96E" weight="800">+{formatPrice(Math.round(grandTotal * 0.10))}</Typography>
                </View>
              )}
           </View>
@@ -827,4 +850,13 @@ const styles = StyleSheet.create({
   },
   removeBtn: { padding: 4 },
   promoErrorRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingLeft: 2 },
+  cashbackBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 12,
+  },
 });
