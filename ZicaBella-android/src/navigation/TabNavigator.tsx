@@ -283,7 +283,7 @@ export const TabNavigator = () => {
 const styles = StyleSheet.create({
   tabBarContainer: {
     position: 'absolute',
-    bottom: Platform.OS === 'android' ? 20 : 34,
+    bottom: Platform.OS === 'android' ? 28 : 34,
     left: 20,
     right: 20,
     height: Platform.OS === 'android' ? 60 : 64,

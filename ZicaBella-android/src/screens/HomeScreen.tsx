@@ -262,7 +262,6 @@ const HomeScreen = React.memo(() => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <GlassHeader 
         onPressMenu={handleOpenMenu}
-        onPressCenter={toggleHeroMute}
       />
       <Animated.ScrollView
         showsVerticalScrollIndicator={false}
@@ -301,6 +300,20 @@ const HomeScreen = React.memo(() => {
               imageFallback={heroImageSrc}
               active={isVideoActive('hero')}
             />
+            {/* Floating audio control at bottom of hero */}
+            <TouchableOpacity
+              onPress={toggleHeroMute}
+              activeOpacity={0.8}
+              style={styles.heroAudioBtn}
+              accessibilityLabel={isHeroMuted ? 'Unmute video' : 'Mute video'}
+              accessibilityRole="button"
+            >
+              <Ionicons
+                name={isHeroMuted ? 'volume-mute-outline' : 'volume-medium-outline'}
+                size={20}
+                color="#FFFFFF"
+              />
+            </TouchableOpacity>
           </View>
         ) : null}
 
@@ -600,5 +613,19 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.6)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 4,
+  },
+  heroAudioBtn: {
+    position: 'absolute',
+    bottom: 80,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.25)',
+    zIndex: 10,
   },
 });

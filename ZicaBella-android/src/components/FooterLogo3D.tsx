@@ -84,18 +84,11 @@ type Props = {
   active?: boolean;
 };
 
-export default function FooterLogo({ glbUrl, size = 56, active = false }: Props) {
+export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) {
   const theme = useThemeStore(s => s.theme);
   const isDark = theme === 'dark';
 
-  if (Platform.OS === 'android' || !active) {
-    return <FallbackLogo size={size} isDark={isDark} />;
-  }
-
-  const rawUrl = (glbUrl || config.footerLogo3dGlb).trim();
-  // Ensure we use the canonical silver 3D logo if raw URL is empty or generic
-  const url = (rawUrl.length > 10 && rawUrl.startsWith('http')) ? rawUrl : CANONICAL_SILVER_GLB;
-
+  // All hooks must be called unconditionally before any early return (Rules of Hooks)
   const touchRotation = useRef({ x: 0, y: 0 });
   const lastGesture = useRef({ dx: 0, dy: 0 });
   const [renderKey, setRenderKey] = useState(0);
@@ -111,7 +104,10 @@ export default function FooterLogo({ glbUrl, size = 56, active = false }: Props)
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
         lastGesture.current = { dx: 0, dy: 0 };
       },
@@ -130,6 +126,15 @@ export default function FooterLogo({ glbUrl, size = 56, active = false }: Props)
       }
     })
   ).current;
+
+  // Show flat fallback when not in viewport or 3D not ready
+  if (!active) {
+    return <FallbackLogo size={size} isDark={isDark} />;
+  }
+
+  const rawUrl = (glbUrl || config.footerLogo3dGlb).trim();
+  // Ensure we use the canonical silver 3D logo if raw URL is empty or generic
+  const url = (rawUrl.length > 10 && rawUrl.startsWith('http')) ? rawUrl : CANONICAL_SILVER_GLB;
 
   return (
     <View style={[styles.container, { width: size, height: size }]} {...panResponder.panHandlers}>
@@ -164,3 +169,4 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
 });
+

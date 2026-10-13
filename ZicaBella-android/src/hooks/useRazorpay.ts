@@ -17,6 +17,7 @@ import {
   razorpayInit,
   isRazorpayAvailable,
   getRazorpayLoadError,
+  normalizeUPIApps,
 } from '../utils/razorpayBridge';
 import type { UPIApp as BridgeUPIApp } from '../utils/razorpayBridge';
 import { getPaymentApiBaseUrl } from '../constants/config';
@@ -255,23 +256,16 @@ export function useRazorpay(): UseRazorpayReturn {
   // Only works on real devices. Returns empty on emulators/simulators.
   const fetchInstalledUPIApps = useCallback(() => {
     setIsLoadingApps(true);
-    if (!isRazorpayAvailable()) {
-      console.warn('[useRazorpay] SDK not available:', getRazorpayLoadError());
-      setUpiApps([]);
-      setIsLoadingApps(false);
-      return;
-    }
     try {
       razorpayGetAppsWhichSupportUPI((data: BridgeUPIApp[]) => {
-        const apps = Array.isArray(data) ? data : [];
-        const availableCount = apps.filter(app => app.is_available !== false).length;
-        console.log('[useRazorpay] Installed UPI apps:', availableCount);
+        const apps = Array.isArray(data) && data.length > 0 ? data : normalizeUPIApps([]);
+        console.log('[useRazorpay] Installed UPI apps:', apps.length);
         setUpiApps(apps);
         setIsLoadingApps(false);
       });
     } catch (e) {
       console.warn('[useRazorpay] getAppsWhichSupportUPI error:', e);
-      setUpiApps([]);
+      setUpiApps(normalizeUPIApps([]));
       setIsLoadingApps(false);
     }
   }, []);
