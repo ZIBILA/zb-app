@@ -32,32 +32,92 @@ export function isSha256Hash(val: string | undefined | null): boolean {
 
 // ─── Country ────────────────────────────────────────────────────────────────
 
+/**
+ * Every ISO 3166-1 alpha-2 country code. The store's own list (lib/countries —
+ * the address form's dropdown) is only a subset of it: Brazil, Puerto Rico,
+ * Gibraltar, Jersey … are real countries a visitor's IP or a Google-completed
+ * address can carry. A valid code must never be thrown away just because the
+ * dropdown does not offer it — the country would be missing from the event and
+ * the customer's phone number would be read as an Indian one.
+ */
+const ISO_ALPHA2 = new Set((
+  'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ ' +
+  'CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR ' +
+  'GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP ' +
+  'KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT ' +
+  'MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW ' +
+  'SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ ' +
+  'UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'
+).split(' '));
+
+/** Lower-case, accents removed, every run of punctuation / spaces → one space ("Côte d'Ivoire" → "cote d ivoire"). */
+function countryKey(raw: string): string {
+  return raw
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** Other names people and address services use, and names of countries the store list does not carry. */
 const COUNTRY_ALIASES: Record<string, string> = {
-  uk: 'GB', 'great britain': 'GB', england: 'GB', scotland: 'GB', wales: 'GB',
-  'northern ireland': 'GB', britain: 'GB',
+  uk: 'GB', 'u k': 'GB', 'great britain': 'GB', england: 'GB', scotland: 'GB', wales: 'GB',
+  'northern ireland': 'GB', britain: 'GB', 'united kingdom of great britain and northern ireland': 'GB', gbr: 'GB',
   usa: 'US', 'united states of america': 'US', america: 'US', 'u s a': 'US', 'u s': 'US',
-  uae: 'AE', emirates: 'AE', ind: 'IN', bharat: 'IN', ksa: 'SA',
-  holland: 'NL', 'south korea': 'KR', korea: 'KR', russia: 'RU',
+  uae: 'AE', emirates: 'AE', are: 'AE', ind: 'IN', bharat: 'IN', ksa: 'SA', sau: 'SA',
+  holland: 'NL', 'the netherlands': 'NL', 'south korea': 'KR', korea: 'KR', 'republic of korea': 'KR', 'korea republic of': 'KR',
+  russia: 'RU', 'russian federation': 'RU', aus: 'AU', deu: 'DE', deutschland: 'DE', fra: 'FR', sgp: 'SG', nzl: 'NZ',
+  turkiye: 'TR', 'viet nam': 'VN', czechia: 'CZ', 'cote d ivoire': 'CI', 'cote divoire': 'CI', macao: 'MO',
+  'north macedonia': 'MK', burma: 'MM', 'myanmar burma': 'MM', 'republic of ireland': 'IE', 'cabo verde': 'CV',
+  'brunei darussalam': 'BN', 'hong kong sar': 'HK', 'hong kong sar china': 'HK', 'bosnia herzegovina': 'BA',
+  'trinidad tobago': 'TT', 'palestinian territories': 'PS', espana: 'ES', mexico: 'MX', italia: 'IT',
+  // ISO countries missing from the store's dropdown list
+  'antigua and barbuda': 'AG', anguilla: 'AI', antarctica: 'AQ', 'american samoa': 'AS', aruba: 'AW',
+  'aland islands': 'AX', 'saint barthelemy': 'BL', 'st barthelemy': 'BL', bermuda: 'BM',
+  'caribbean netherlands': 'BQ', 'bonaire sint eustatius and saba': 'BQ', bonaire: 'BQ',
+  brazil: 'BR', brasil: 'BR', 'bouvet island': 'BV', 'cocos islands': 'CC', 'cocos keeling islands': 'CC',
+  'democratic republic of the congo': 'CD', 'democratic republic of congo': 'CD', 'dr congo': 'CD', drc: 'CD', 'congo kinshasa': 'CD',
+  'central african republic': 'CF', 'republic of the congo': 'CG', 'republic of congo': 'CG', congo: 'CG', 'congo brazzaville': 'CG',
+  'cook islands': 'CK', curacao: 'CW', 'christmas island': 'CX', dominica: 'DM', 'western sahara': 'EH', eritrea: 'ER',
+  'falkland islands': 'FK', micronesia: 'FM', 'federated states of micronesia': 'FM', 'faroe islands': 'FO',
+  gabon: 'GA', grenada: 'GD', 'french guiana': 'GF', guernsey: 'GG', gibraltar: 'GI', greenland: 'GL',
+  gambia: 'GM', 'the gambia': 'GM', guinea: 'GN', guadeloupe: 'GP', 'equatorial guinea': 'GQ',
+  'south georgia and the south sandwich islands': 'GS', guam: 'GU', 'guinea bissau': 'GW',
+  'heard island and mcdonald islands': 'HM', 'isle of man': 'IM', 'british indian ocean territory': 'IO', jersey: 'JE',
+  kiribati: 'KI', comoros: 'KM', 'saint kitts and nevis': 'KN', 'st kitts and nevis': 'KN', 'north korea': 'KP',
+  'cayman islands': 'KY', 'saint lucia': 'LC', 'st lucia': 'LC', lesotho: 'LS', 'saint martin': 'MF', 'st martin': 'MF',
+  'marshall islands': 'MH', 'northern mariana islands': 'MP', martinique: 'MQ', mauritania: 'MR', montserrat: 'MS',
+  'new caledonia': 'NC', 'norfolk island': 'NF', nauru: 'NR', niue: 'NU', 'french polynesia': 'PF',
+  'saint pierre and miquelon': 'PM', 'st pierre and miquelon': 'PM', 'pitcairn islands': 'PN', pitcairn: 'PN',
+  'puerto rico': 'PR', palau: 'PW', reunion: 'RE', 'solomon islands': 'SB', 'saint helena': 'SH', 'st helena': 'SH',
+  'svalbard and jan mayen': 'SJ', 'san marino': 'SM', 'south sudan': 'SS', 'sao tome and principe': 'ST',
+  'sint maarten': 'SX', eswatini: 'SZ', swaziland: 'SZ', 'turks and caicos islands': 'TC', chad: 'TD',
+  'french southern territories': 'TF', tokelau: 'TK', 'timor leste': 'TL', 'east timor': 'TL', tonga: 'TO', tuvalu: 'TV',
+  'united states minor outlying islands': 'UM', 'u s outlying islands': 'UM', 'vatican city': 'VA', 'holy see': 'VA',
+  'saint vincent and the grenadines': 'VC', 'st vincent and the grenadines': 'VC', 'british virgin islands': 'VG',
+  'u s virgin islands': 'VI', 'us virgin islands': 'VI', 'united states virgin islands': 'VI',
+  vanuatu: 'VU', 'wallis and futuna': 'WF', samoa: 'WS', mayotte: 'YT',
 };
 
+/** Store country names (lib/countries) by the same key. */
+const COUNTRY_NAMES: Map<string, string> = new Map(COUNTRIES.map(c => [countryKey(c.name), c.code]));
+
 /**
- * "United Kingdom" → "GB", "uk" → "GB", "IN" → "IN", "Deutschland"? → "" (unknown).
+ * "United Kingdom" → "GB", "uk" → "GB", "IN" → "IN", "br" → "BR", "Narnia" → "" (unknown).
  * Returns UPPERCASE ISO alpha-2, or "" if it cannot be resolved with confidence.
  */
 export function toCountryIso(nameOrCode: string | undefined | null): string {
   if (!nameOrCode) return '';
   const raw = nameOrCode.trim();
   if (!raw || isSha256Hash(raw)) return '';
-  const key = raw.toLowerCase().replace(/[.\-_]/g, ' ').replace(/\s+/g, ' ').trim();
+  const key = countryKey(raw);
 
   if (/^[a-z]{2}$/.test(key)) {
     const up = key.toUpperCase();
     if (up === 'UK') return 'GB';
-    if (COUNTRIES.some(c => c.code === up)) return up;
+    if (ISO_ALPHA2.has(up)) return up;
   }
-  if (COUNTRY_ALIASES[key]) return COUNTRY_ALIASES[key];
-  const byName = COUNTRIES.find(c => c.name.toLowerCase() === key);
-  return byName ? byName.code : '';
+  return COUNTRY_ALIASES[key] || COUNTRY_NAMES.get(key) || '';
 }
 
 /** ISO alpha-2 lowercase, as the ad platforms expect before hashing. */

@@ -4,7 +4,12 @@
  *
  *   pending ──claim──▶ sending (leased) ──Snap OK──▶ sent      (sentAt set only here)
  *                                     └──Snap error─▶ failed    (retryable, same event_id/time)
+ *                                     └──blocked────▶ failed    (retryable, attempt NOT counted)
  *                                     └──too old────▶ skipped   (never re-dated)
+ *
+ * "blocked" = the sender could not even try (access token missing or refused,
+ * validation-only mode). That is a problem with our setup, not with the
+ * conversion, so it never uses up the row's retry attempts.
  *
  * The claim is a single conditional UPDATE, so two processes can never both send.
  * No database import: the Prisma client (or a fake in tests) is injected.
@@ -20,9 +25,27 @@ export type LedgerContext = Record<string, string | number | boolean>;
 export type DeliveryResult =
   | { status: 'sent' }
   | { status: 'skipped'; reason: string }
-  | { status: 'failed'; reason: string };
+  | { status: 'failed'; reason: string; blocked?: string };
 
-export type SendResult = { success: boolean; error?: any; skipped?: boolean };
+/**
+ * What a sender reports back. `blocked` (any non-empty string naming the cause)
+ * means nothing could be attempted with the current setup: the row stays
+ * retryable and the attempt is given back.
+ */
+export type SendResult = { success: boolean; error?: any; skipped?: boolean; blocked?: string };
+
+/** A ledger row as the retry / recovery jobs see it. */
+export interface LedgerRowSummary {
+  id: string;
+  orderId: string;
+  status: string;
+  attempts: number;
+  createdAt: Date;
+  updatedAt: Date;
+  /** The conversion's own time, pinned at the first delivery attempt (null before that). */
+  eventTime?: Date | null;
+  lastError: string | null;
+}
 
 export function cleanContext(ctx: unknown): LedgerContext {
   const out: LedgerContext = {};
@@ -136,6 +159,16 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
         return { status: 'sent' };
       }
       const reason = typeof res.error === 'string' ? res.error : JSON.stringify(res.error ?? 'unknown').slice(0, 500);
+      if (res.blocked) {
+        // Our setup stopped the send (no token, token refused, validation-only
+        // mode): keep the conversion retryable and return the attempt, so an
+        // outage on our side can never exhaust the row.
+        await db.adConversionDelivery.updateMany({
+          where: { id: row.id, status: 'sending' },
+          data: { status: 'failed', leaseUntil: null, lastError: reason.slice(0, 500), attempts: { increment: -1 } },
+        });
+        return { status: 'failed', reason, blocked: res.blocked };
+      }
       await db.adConversionDelivery.update({
         where: key, data: { status: res.skipped ? 'skipped' : 'failed', leaseUntil: null, lastError: reason },
       });
@@ -146,9 +179,9 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
     }
   }
 
-  /** Order ids whose delivery failed or whose lease expired (for the retry cron). */
-  async function retryable(platform: string, eventName: string, limit: number): Promise<string[]> {
-    const rows = await db.adConversionDelivery.findMany({
+  /** Rows whose delivery failed or whose lease expired, least recently touched first. */
+  async function retryableRows(platform: string, eventName: string, limit: number): Promise<LedgerRowSummary[]> {
+    return db.adConversionDelivery.findMany({
       where: {
         platform, eventName, attempts: { lt: MAX_ATTEMPTS },
         // "pending" rows only become sendable through the payment paths themselves.
@@ -156,29 +189,58 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
       },
       orderBy: { updatedAt: 'asc' },
       take: limit,
-      select: { orderId: true },
+      select: { id: true, orderId: true, status: true, attempts: true, createdAt: true, updatedAt: true, eventTime: true, lastError: true },
     });
-    return rows.map((r: any) => r.orderId);
+  }
+
+  /** Order ids whose delivery failed or whose lease expired (for the retry cron). */
+  async function retryable(platform: string, eventName: string, limit: number): Promise<string[]> {
+    return (await retryableRows(platform, eventName, limit)).map((r: any) => r.orderId);
+  }
+
+  /** Ledger rows of the given orders (looked up through the unique index, in chunks). */
+  async function rowsForOrders(platform: string, eventName: string, orderIds: string[]): Promise<Map<string, LedgerRowSummary>> {
+    const out = new Map<string, LedgerRowSummary>();
+    for (let i = 0; i < orderIds.length; i += 1000) {
+      const rows: LedgerRowSummary[] = await db.adConversionDelivery.findMany({
+        where: { platform, eventName, orderId: { in: orderIds.slice(i, i + 1000) } },
+        select: { id: true, orderId: true, status: true, attempts: true, createdAt: true, updatedAt: true, lastError: true },
+      });
+      for (const r of rows) out.set(r.orderId, r);
+    }
+    return out;
+  }
+
+  /** When the first row of this platform was written (rows are never deleted), or null. */
+  async function firstRowCreatedAt(platform: string, eventName: string): Promise<Date | null> {
+    const first = await db.adConversionDelivery.findFirst({
+      where: { platform, eventName },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true },
+    });
+    return first?.createdAt ? new Date(first.createdAt) : null;
   }
 
   /**
-   * PENDING rows whose order may have completed without any path sending it
-   * (e.g. capture unconfirmed at checkout AND the captured webhook was missed).
-   * Only rows older than `minAgeMs` (live paths get first go) and younger than
-   * Snap's 7-day window are returned. The caller MUST verify payment before sending.
+   * Record that the recovery job looked at an order and could not send it yet
+   * (capture not verified, order not reportable …). Touching the row moves it to
+   * the back of the recovery queue, so orders that can never be sent cannot keep
+   * newer ones waiting. The row stays "pending": the live payment paths can still
+   * deliver it. Never throws.
    */
-  async function recoverablePending(platform: string, eventName: string, limit: number, minAgeMs = 15 * 60_000): Promise<string[]> {
-    const now = Date.now();
-    const rows = await db.adConversionDelivery.findMany({
-      where: {
-        platform, eventName, status: 'pending', attempts: { lt: MAX_ATTEMPTS },
-        createdAt: { lt: new Date(now - minAgeMs), gt: new Date(now - PENDING_MAX_AGE_MS) },
-      },
-      orderBy: { createdAt: 'asc' },
-      take: limit,
-      select: { orderId: true },
-    });
-    return rows.map((r: any) => r.orderId);
+  async function noteRecoveryCheck(platform: string, eventName: string, orderId: string, rowId: string | undefined, note: string): Promise<void> {
+    const lastError = note.slice(0, 500);
+    try {
+      if (rowId) {
+        await db.adConversionDelivery.updateMany({ where: { id: rowId, status: 'pending' }, data: { lastError } });
+        return;
+      }
+      await db.adConversionDelivery.create({
+        data: { platform, eventName, orderId, eventId: orderId, lastError },
+      }).catch((e: any) => { if (e?.code !== 'P2002') throw e; });
+    } catch (err: any) {
+      console.warn(`${logTag} could not note recovery check:`, isMissingTable(err) ? 'ledger table missing' : err?.message);
+    }
   }
 
   /** Pending rows past Snap's window can never be sent: mark them so they stop being scanned. */
@@ -190,5 +252,5 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
     return res?.count || 0;
   }
 
-  return { recordContext, deliver, retryable, recoverablePending, expireStalePending };
+  return { recordContext, deliver, retryable, retryableRows, rowsForOrders, firstRowCreatedAt, noteRecoveryCheck, expireStalePending };
 }

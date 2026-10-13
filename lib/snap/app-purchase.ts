@@ -12,15 +12,18 @@
  *  - If the device context or Snap app config is missing, nothing is sent —
  *    there is never a fallback to the web pixel.
  */
-import { pickRealEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
+import { pickRealEmail, pickRealName } from '@/lib/tracking/placeholder-identity';
+import { snapPurchasePhone } from '@/lib/snap/identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
-import { createDeliveryLedger, type DeliveryResult } from '@/lib/snap/ledger';
+import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
+import { findRecoveryCandidates } from '@/lib/snap/recovery';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
+import { snapPurchaseCurrency } from '@/lib/snap/currency';
 import {
   parseSnapDeviceContext, snapAppConfig,
   type SnapAppEventInput, type SnapDeviceContext,
 } from '@/lib/snap/app-capi';
-import { NATIVE_APP_ORDER_TYPES, SNAP_PURCHASE_PAYMENT_STATUSES, snapPurchaseValue } from '@/lib/snap/purchase';
+import { NATIVE_APP_ORDER_TYPES, SNAP_PURCHASE_PAYMENT_STATUSES, bySnapEventAge, isSnapRetryDue, snapPurchaseValue } from '@/lib/snap/purchase';
 
 const PLATFORM = 'snap_app';
 const EVENT = 'PURCHASE';
@@ -33,7 +36,7 @@ export interface AppRequestContext {
 
 export interface SnapAppPurchaseDeps {
   db: any;
-  send: (input: SnapAppEventInput, cfg: { snapAppId: string; token: string }) => Promise<{ success: boolean; error?: any; skipped?: boolean }>;
+  send: (input: SnapAppEventInput, cfg: { snapAppId: string; token: string }) => Promise<{ success: boolean; error?: any; skipped?: boolean; blocked?: string; validateOnly?: boolean }>;
   env?: NodeJS.ProcessEnv;
   /** Independent capture proof (Razorpay captured, not refunded) for stranded pending rows. */
   verifyCapture?: (order: { id: string; paymentMethod?: string | null; razorpayPaymentId?: string | null }) => Promise<boolean>;
@@ -82,7 +85,7 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
       // Placeholder emails (guest@zicabella.com, guest_<ts>@…), dummy phones and
       // names are skipped for the next real value; never sent.
       em: pickRealEmail(order.customer?.email, addr.email),
-      ph: pickRealPhone(order.customer?.phone, addr.phone),
+      ph: snapPurchasePhone(order.customer?.phone, addr.phone),
       fn: name[0],
       ln: name.slice(1).join(' ') || undefined,
       ct: addr.city,
@@ -92,7 +95,8 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
     },
     customData: {
       value: snapPurchaseValue(order) ?? 0,
-      currency: String(order.currency || 'INR').toUpperCase(),
+      // The currency the order was charged in (lib/snap/currency.ts) — never a fixed one.
+      currency: snapPurchaseCurrency(order),
       content_ids: Array.from(new Set(contents.map(c => c.id))),
       content_type: 'product',
       contents,
@@ -105,8 +109,17 @@ export function buildAppPurchaseInput(order: any, device: SnapDeviceContext, req
 /** Skip reasons that mean a failed delivery can never be sent: close the row. */
 const SNAP_TERMINAL_RETRY_SKIP = /^(order not found|not a native app order|native app order|webhook-recovered order|paymentStatus=|order value missing|no device context)/;
 
-export function createSnapAppPurchaseDelivery({ db, send, env = process.env, verifyCapture }: SnapAppPurchaseDeps) {
+export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process.env, verifyCapture }: SnapAppPurchaseDeps) {
   const ledger = createDeliveryLedger(db, '[Snap App Purchase]');
+
+  /** A validation-only answer recorded nothing at Snap: never mark the Purchase as delivered. */
+  const send: SnapAppPurchaseDeps['send'] = async (input, cfg) => {
+    const res = await rawSend(input, cfg);
+    if (res.success && res.validateOnly) {
+      return { success: false, blocked: 'validate', error: 'snap_validate_only: payload accepted by /events/validate, nothing recorded' };
+    }
+    return res;
+  };
 
   /** Called at payment start with the app's device context. Never throws. */
   async function recordSnapAppContext(orderId: string, device: unknown, req: AppRequestContext): Promise<void> {
@@ -164,48 +177,129 @@ export function createSnapAppPurchaseDelivery({ db, send, env = process.env, ver
   }
 
   /**
-   * Retry job: expire pending rows past Snap's window, resend failed / lease-expired
-   * rows, and recover PENDING rows (>15 min) only when the DB order is paid /
-   * cod_upfront_paid AND the capture is independently verified.
+   * Retry + recovery job (cron). Same steps and tally keys as the website job
+   * (lib/snap/purchase.ts retryPendingSnapPurchases):
+   *  - expire pending rows past Snap's 7-day window;
+   *  - resend failed / lease-expired rows, with backoff; stop when Snap refuses the
+   *    token (the rows keep their attempts);
+   *  - close rows that really failed MAX_ATTEMPTS times and report them once;
+   *  - recover paid app orders whose row is still PENDING (> 15 min) once the
+   *    capture is independently verified. Found from the orders side, so abandoned
+   *    checkouts can no longer keep a paid order waiting.
    */
-  async function retryPendingSnapAppPurchases(limit = 25): Promise<Record<string, number>> {
+  async function retryPendingSnapAppPurchases(limit = 25, opts: { budgetMs?: number } = {}): Promise<Record<string, number>> {
     const tally: Record<string, number> = {};
     const bump = (k: string) => { tally[k] = (tally[k] || 0) + 1; };
-    const expired = await ledger.expireStalePending(PLATFORM, EVENT);
-    if (expired) tally.expired = expired;
-    for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
-      const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
-      bump(`retry_${out.status}`);
-      // A retry that can never succeed (order refunded / deleted / not reportable)
-      // is closed, so it cannot sit at the head of the retry queue forever. Other
-      // skips (e.g. app not configured) stay retryable but move to the back of the
-      // queue (updatedAt), so they cannot starve the rest.
-      if (out.status === 'skipped' && !/^(already |claimed by another)/.test(out.reason)) {
-        const terminal = SNAP_TERMINAL_RETRY_SKIP.test(out.reason);
-        await db.adConversionDelivery.updateMany({
-          where: {
-            platform: PLATFORM, eventName: EVENT, orderId,
-            OR: [{ status: 'failed' }, { status: 'sending', leaseUntil: { lt: new Date() } }],
-          },
-          data: terminal
-            ? { status: 'skipped', leaseUntil: null, lastError: `closed on retry: ${out.reason}`.slice(0, 500) }
-            : { lastError: `retry skipped: ${out.reason}`.slice(0, 500) },
-        }).catch(() => null);
-        if (terminal) bump('retry_closed');
+    // Runs after the website job in the same request: a smaller share of the 60 s.
+    const deadline = Date.now() + (opts.budgetMs ?? 12_000);
+    const outOfTime = () => { if (Date.now() < deadline) return false; tally.time_budget_reached = 1; return true; };
+    try {
+      const expired = await ledger.expireStalePending(PLATFORM, EVENT);
+      if (expired) tally.expired = expired;
+
+      let blocked: string | null = null;
+      const now = Date.now();
+      const due = (await ledger.retryableRows(PLATFORM, EVENT, Math.max(limit * 20, 500)))
+        .filter((r: LedgerRowSummary) => isSnapRetryDue(r, now))
+        .sort(bySnapEventAge)
+        .slice(0, limit);
+      for (const row of due) {
+        if (outOfTime()) break;
+        const orderId = row.orderId;
+        const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
+        if (out.status === 'failed' && out.blocked) {
+          blocked = out.blocked;
+          bump(`blocked_${out.blocked}`);
+          break;
+        }
+        bump(`retry_${out.status}`);
+        // A retry that can never succeed (order refunded / deleted / not reportable)
+        // is closed, so it cannot sit at the head of the retry queue forever. Other
+        // skips (e.g. app not configured) stay retryable but move to the back of the
+        // queue (updatedAt), so they cannot starve the rest.
+        if (out.status === 'skipped' && !/^(already |claimed by another)/.test(out.reason)) {
+          const terminal = SNAP_TERMINAL_RETRY_SKIP.test(out.reason);
+          await db.adConversionDelivery.updateMany({
+            where: {
+              platform: PLATFORM, eventName: EVENT, orderId,
+              OR: [{ status: 'failed' }, { status: 'sending', leaseUntil: { lt: new Date() } }],
+            },
+            data: terminal
+              ? { status: 'skipped', leaseUntil: null, lastError: `closed on retry: ${out.reason}`.slice(0, 500) }
+              : { lastError: `retry skipped: ${out.reason}`.slice(0, 500) },
+          }).catch(() => null);
+          if (terminal) bump('retry_closed');
+        }
       }
-    }
-    if (!verifyCapture) return tally;
-    for (const orderId of await ledger.recoverablePending(PLATFORM, EVENT, limit)) {
-      const order: any = await db.order.findUnique({
-        where: { id: orderId },
+
+      const exhausted: Array<{ id: string; orderId: string; lastError: string | null }> = await db.adConversionDelivery.findMany({
+        where: { platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS } },
+        select: { id: true, orderId: true, lastError: true },
+        take: 100,
+      });
+      for (const r of exhausted) {
+        await db.adConversionDelivery.updateMany({
+          where: { id: r.id, status: 'failed' },
+          data: { status: 'skipped', lastError: `exhausted after ${MAX_ATTEMPTS} attempts: ${r.lastError || ''}`.slice(0, 500) },
+        });
+      }
+      if (exhausted.length) {
+        tally.exhausted = exhausted.length;
+        console.error('[Snap App Purchase][ALERT] attempts_exhausted', JSON.stringify({
+          count: exhausted.length,
+          orderIds: exhausted.slice(0, 20).map(r => r.orderId),
+          lastError: String(exhausted[0]?.lastError || '').slice(0, 300),
+        }));
+      }
+
+      if (!verifyCapture || blocked || outOfTime()) return tally;
+
+      // Only orders that already have a (pending) row: the row holds the device
+      // context the app sent, without which no MOBILE_APP event can be built.
+      const { candidates, truncated } = await findRecoveryCandidates(db, ledger, {
+        platform: PLATFORM,
+        eventName: EVENT,
+        paidStatuses: Array.from(SNAP_PURCHASE_PAYMENT_STATUSES),
+        acceptsOrderType: (t) => NATIVE_APP_ORDER_TYPES.has(t),
+      });
+      if (truncated) tally.scan_truncated = 1;
+      const batch = candidates.slice(0, limit * 4);
+      if (!batch.length) return tally;
+
+      const details = new Map<string, any>((await db.order.findMany({
+        where: { id: { in: batch.map(c => c.orderId) } },
         select: { id: true, paymentStatus: true, paymentMethod: true, razorpayPaymentId: true, orderType: true },
-      }).catch(() => null);
-      if (!order) { bump('pending_no_order'); continue; }
-      if (!NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) { bump('pending_not_app'); continue; }
-      if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(String(order.paymentStatus || '').toLowerCase())) { bump('pending_unpaid'); continue; }
-      if (!(await verifyCapture(order).catch(() => false))) { bump('pending_capture_unverified'); continue; }
-      const out = await emitSnapAppPurchase(orderId, { paymentConfirmed: true });
-      bump(`recovered_${out.status}`);
+      })).map((o: any) => [o.id, o]));
+
+      let sends = 0;
+      for (const cand of batch) {
+        if (sends >= limit || outOfTime()) break;
+        const order = details.get(cand.orderId);
+        let hold: string | null = null;
+        if (!order) hold = 'no_order';
+        else if (!NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) hold = 'not_app';
+        else if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(String(order.paymentStatus || '').toLowerCase())) hold = 'unpaid';
+        else if (!(await verifyCapture(order).catch(() => false))) hold = 'capture_unverified';
+        if (hold) {
+          bump(`pending_${hold}`);
+          await ledger.noteRecoveryCheck(PLATFORM, EVENT, cand.orderId, cand.rowId, `recovery: ${hold}`);
+          continue;
+        }
+        const out = await emitSnapAppPurchase(cand.orderId, { paymentConfirmed: true });
+        sends++;
+        if (out.status === 'failed' && out.blocked) {
+          bump(`blocked_${out.blocked}`);
+          break;
+        }
+        bump(`recovered_${out.status}`);
+        if (out.status === 'skipped' && !/^already /.test(out.reason)) {
+          await ledger.noteRecoveryCheck(PLATFORM, EVENT, cand.orderId, cand.rowId, `recovery skipped: ${out.reason}`);
+        }
+      }
+    } catch (err: any) {
+      const code = isMissingTable(err) ? 'ledger_table_missing' : 'ledger_error';
+      tally[code] = 1;
+      console.error(`[Snap App Purchase][ALERT] ${code}`, JSON.stringify({ error: String(err?.message || err).slice(0, 300) }));
     }
     return tally;
   }

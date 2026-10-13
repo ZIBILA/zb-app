@@ -21,7 +21,10 @@
  */
 import crypto from 'crypto';
 import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
-import { isEventTimeSendable, toEventTimeMs } from '@/lib/snap-capi';
+import {
+  classifySnapResponse, isEventTimeSendable, isSnapValidateMode, redactSnapSecrets, snapEventsEndpoint, toEventTimeMs,
+} from '@/lib/snap-capi';
+import { cleanEnvValue } from '@/lib/snap/config';
 
 export type AppPlatform = 'ios' | 'android';
 export type AttStatus = 'authorized' | 'denied' | 'restricted' | 'not_determined' | 'unavailable';
@@ -87,7 +90,8 @@ export function parseSnapDeviceContext(raw: unknown): SnapDeviceContext | null {
 
 /** Snap app config for a platform, or null when not configured. */
 export function snapAppConfig(platform: AppPlatform, env = process.env) {
-  const token = env.SNAP_APP_CAPI_ACCESS_TOKEN || env.SNAP_CAPI_ACCESS_TOKEN || '';
+  // Trimmed, wrapping quotes removed — same hygiene as the website token.
+  const token = cleanEnvValue(env.SNAP_APP_CAPI_ACCESS_TOKEN) || cleanEnvValue(env.SNAP_CAPI_ACCESS_TOKEN);
   if (platform === 'ios') {
     const snapAppId = env.SNAP_APP_ID_IOS || '';
     const appId = env.SNAP_IOS_APP_STORE_ID || '';
@@ -178,30 +182,38 @@ export function buildSnapAppEvent(input: SnapAppEventInput): Record<string, any>
   return event;
 }
 
-const PRODUCTION_SITE = /^https?:\/\/(www\.)?zicabella\.com\/?$/i;
-
+/**
+ * Send one MOBILE_APP event. Never throws.
+ *  - blocked: 'auth'  Snap refused the access token (HTTP 401 / 403): a setup
+ *                     problem, so the ledger keeps the row retryable without
+ *                     counting the attempt.
+ *  - validateOnly     SNAP_CAPI_VALIDATE=1 on a non-production deploy: the payload
+ *                     was checked by /events/validate and NOT recorded.
+ */
 export async function sendSnapAppEvent(
   input: SnapAppEventInput,
   cfg: { snapAppId: string; token: string },
-): Promise<{ success: boolean; error?: any; skipped?: boolean }> {
+): Promise<{ success: boolean; error?: any; skipped?: boolean; blocked?: 'auth'; validateOnly?: boolean }> {
   try {
     if (!isEventTimeSendable(input.eventTime)) {
       return { success: false, skipped: true, error: 'event_time outside accepted window' };
     }
-    const validate = process.env.SNAP_CAPI_VALIDATE === '1'
-      && !PRODUCTION_SITE.test(process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com');
+    const validate = isSnapValidateMode();
     const event = buildSnapAppEvent(input);
     const res = await fetch(
-      `https://tr.snapchat.com/v3/${encodeURIComponent(cfg.snapAppId)}/${validate ? 'events/validate' : 'events'}?access_token=${cfg.token}`,
+      snapEventsEndpoint(cfg.snapAppId, cfg.token, validate),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: [event] }), signal: AbortSignal.timeout(5000) },
     );
     const body: any = await res.json().catch(() => ({}));
-    const ok = res.ok && body?.status !== 'INVALID' && body?.status !== 'FAILED';
-    if (!ok || validate) {
-      console[ok ? 'log' : 'warn'](`[Snap App CAPI${validate ? ' VALIDATE' : ''}] ${input.device.platform} ${event.event_name} HTTP ${res.status}`, JSON.stringify(body).slice(0, 800));
+    const verdict = classifySnapResponse(res.status, res.ok, body);
+    if (verdict.ok) {
+      if (validate) console.log(`[Snap App CAPI VALIDATE] ${input.device.platform} ${event.event_name} ${verdict.summary}`);
+      return { success: true, ...(validate ? { validateOnly: true } : {}) };
     }
-    return ok ? { success: true } : { success: false, error: body };
+    console.warn(`[Snap App CAPI${validate ? ' VALIDATE' : ''}] ${input.device.platform} ${event.event_name} ${verdict.summary}`);
+    if (verdict.auth) return { success: false, blocked: 'auth', error: `snap_auth_rejected: ${verdict.summary}` };
+    return { success: false, error: `snap_rejected: ${verdict.summary}`, ...(validate ? { validateOnly: true } : {}) };
   } catch (err: any) {
-    return { success: false, error: err?.message || 'network error' };
+    return { success: false, error: redactSnapSecrets(err?.message || 'network error') };
   }
 }

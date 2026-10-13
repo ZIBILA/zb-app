@@ -1,8 +1,10 @@
 import { isPlaceholderEmailHash, isPlaceholderPhoneHash } from '@/lib/tracking/placeholder-identity';
 import { DEMO_PHONE_HASHES } from '@/lib/buildMetaUserData';
 import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
+import { resolveSnapPixelId } from '@/lib/snap/config';
 
-export const SNAP_PIXEL_ID = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd';
+/** The pixel id in use ('' = Snap tracking is off on this deployment). See lib/snap/config.ts. */
+export const SNAP_PIXEL_ID = resolveSnapPixelId();
 
 /**
  * Defensive helper: ensures window.snaptr exists before calling the callback.
@@ -88,20 +90,31 @@ export function captureSnapClickId(): string | null {
 /**
  * Read Snapchat identity cookies (_scid / ScCid) + first-party PII cookies.
  * NOTE: zb_guest_* cookies hold SHA-256 hashes (written by lib/metaPixel.ts).
+ *
+ * The hashed PII cookies are returned only when they belong to THIS visitor:
+ * lib/metaPixel.ts binds them to the external_id that was current when they were
+ * written (zb_pii_owner). A different external_id (next shopper on a shared
+ * device, expired id cookie) or no binding at all means the details are someone
+ * else's, so they are left out — the same rule getMetaIdentityCookies() and the
+ * server relays apply. Snap's own ids (ScCid, _scid) are never PII and always pass.
  */
 export function getSnapIdentityCookies(): Record<string, string | undefined> {
+  const externalId = getClientCookie('zb_external_id') || undefined;
+  const piiOwner = getClientCookie('zb_pii_owner') || undefined;
+  const bound = !!(piiOwner && externalId && piiOwner === externalId);
+  const own = (name: string) => (bound ? getClientCookie(name) || undefined : undefined);
   return {
     sc_click_id: getClientCookie('ScCid') || undefined,
     sc_cookie1: getClientCookie('_scid') || undefined,
-    external_id: getClientCookie('zb_external_id') || undefined,
-    em: getClientCookie('zb_guest_email') || undefined,
-    ph: getClientCookie('zb_guest_phone') || undefined,
-    fn: getClientCookie('zb_guest_fn') || undefined,
-    ln: getClientCookie('zb_guest_ln') || undefined,
-    country: getClientCookie('zb_guest_country') || undefined,
-    st: getClientCookie('zb_guest_st') || undefined,
-    ct: getClientCookie('zb_guest_ct') || undefined,
-    zp: getClientCookie('zb_guest_zp') || undefined,
+    external_id: externalId,
+    em: own('zb_guest_email'),
+    ph: own('zb_guest_phone'),
+    fn: own('zb_guest_fn'),
+    ln: own('zb_guest_ln'),
+    country: own('zb_guest_country'),
+    st: own('zb_guest_st'),
+    ct: own('zb_guest_ct'),
+    zp: own('zb_guest_zp'),
   };
 }
 
