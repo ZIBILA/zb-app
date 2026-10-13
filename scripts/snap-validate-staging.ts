@@ -14,13 +14,14 @@
  * staging with SNAP_CAPI_VALIDATE=1 (ignored automatically on zicabella.com),
  * click through the storefront and read the "[Snap CAPI VALIDATE]" log lines.
  */
-import { buildSnapCapiEvent, type SnapCapiEventPayload } from '../lib/snap-capi';
+import { buildSnapCapiEvent, snapEventsEndpoint, type SnapCapiEventPayload } from '../lib/snap-capi';
+import { cleanEnvValue, resolveSnapPixelId, SNAP_PRODUCTION_PIXEL_ID } from '../lib/snap/config';
 import { buildPurchaseFromOrder } from '../lib/snap/purchase';
 import { buildSnapAppEvent, snapAppConfig, parseSnapDeviceContext } from '../lib/snap/app-capi';
 import { buildAppPurchaseInput } from '../lib/snap/app-purchase';
 
-const token = process.env.SNAP_CAPI_ACCESS_TOKEN;
-const pixel = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd';
+const token = cleanEnvValue(process.env.SNAP_CAPI_ACCESS_TOKEN);
+const pixel = resolveSnapPixelId() || SNAP_PRODUCTION_PIXEL_ID;
 if (!token) {
   console.error('SNAP_CAPI_ACCESS_TOKEN is required');
   process.exit(2);
@@ -66,11 +67,36 @@ events.push({
   eventSourceUrl: `${site}/orders/${order.id}/confirmation`,
 });
 
+// International PURCHASE: one per currency the store can charge in, with that
+// market's address + phone formats, to confirm Snap accepts each currency and
+// the normalized customer data. (Order values are INR price × the store's
+// international multiplier × exchange rate; here they are just sample amounts.)
+const INTERNATIONAL: Array<[string, number, number, Record<string, string>, string]> = [
+  ['USD', 113.91, 44.97, { city: 'San Francisco', state: 'California', zip: '94105-1234', countryCode: 'US' }, '(415) 555-2671'],
+  ['GBP', 90.18, 35.6, { city: 'London', state: 'Greater London', zip: 'SW1A 1AA', countryCode: 'GB' }, '07700 900123'],
+  ['AED', 418.62, 165.26, { city: 'Dubai', state: 'Dubai', zip: '00000', countryCode: 'AE' }, '050 123 4567'],
+  ['EUR', 104.42, 41.22, { city: 'München', state: 'Bayern', zip: '80331', countryCode: 'DE' }, '0151 23456789'],
+  ['CAD', 155.68, 61.46, { city: 'Toronto', state: 'Ontario', zip: 'M5V 3L9', countryCode: 'CA' }, '(416) 555-0199'],
+  ['AUD', 172.76, 68.2, { city: 'Sydney', state: 'New South Wales', zip: '2000', countryCode: 'AU' }, '0412 345 678'],
+];
+for (const [currency, total, unit, address, phone] of INTERNATIONAL) {
+  const intl = {
+    id: `validate_order_${currency.toLowerCase()}_${now}`, customerId: 'cust_validate', totalPrice: total, currency,
+    customer: { email: 'validate@example.com', phone, name: 'Val Idate' },
+    shippingAddress: JSON.stringify(address),
+    items: [{ variantId: variant[0], quantity: 2, price: unit }, { variantId: variant[1], quantity: 1, price: Math.round((total - 2 * unit) * 100) / 100 }],
+  };
+  events.push({
+    ...buildPurchaseFromOrder(intl, { scCookie1: 'validate-scid', ipAddress: '81.2.69.142', userAgent: 'Mozilla/5.0' }, now),
+    eventSourceUrl: `${site}/orders/${intl.id}/confirmation`,
+  });
+}
+
 async function main() {
   let bad = 0;
   for (const e of events) {
     const event = buildSnapCapiEvent(e);
-    const res = await fetch(`https://tr.snapchat.com/v3/${pixel}/events/validate?access_token=${token}`, {
+    const res = await fetch(snapEventsEndpoint(pixel, token, true), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: [event] }),
@@ -78,7 +104,8 @@ async function main() {
     const body: any = await res.json().catch(() => ({}));
     const ok = res.ok && body?.status === 'VALID';
     if (!ok) bad++;
-    console.log(`${ok ? 'VALID  ' : 'INVALID'}  ${event.event_name.padEnd(16)} HTTP ${res.status}  ${JSON.stringify(body).slice(0, 400)}`);
+    const label = event.event_name === 'PURCHASE' ? `PURCHASE ${event.custom_data?.currency || ''}` : event.event_name;
+    console.log(`${ok ? 'VALID  ' : 'INVALID'}  ${label.padEnd(16)} HTTP ${res.status}  ${JSON.stringify(body).slice(0, 400)}`);
   }
   // Native app PURCHASE (MOBILE_APP) — validated against each Snap App ID that is configured.
   const devices = {
@@ -91,7 +118,7 @@ async function main() {
     const device = parseSnapDeviceContext(devices[platform])!;
     const event = buildSnapAppEvent(buildAppPurchaseInput({ ...order, id: `validate_app_${platform}_${now}` }, device,
       { ipAddress: '49.36.10.20', userAgent: 'ZicaBella', externalId: 'cust_validate' }, cfg.appId, now));
-    const res = await fetch(`https://tr.snapchat.com/v3/${cfg.snapAppId}/events/validate?access_token=${cfg.token}`, {
+    const res = await fetch(snapEventsEndpoint(cfg.snapAppId, cfg.token, true), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: [event] }),
     });
     const body: any = await res.json().catch(() => ({}));

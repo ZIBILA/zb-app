@@ -11,6 +11,7 @@ import crypto from 'crypto';
 
 process.env.RAZORPAY_WEBHOOK_SECRET = 'whsec_test';
 process.env.SNAP_CAPI_ACCESS_TOKEN = 'test-token';
+process.env.NEXT_PUBLIC_SNAP_PIXEL_ID = '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd'; // no built-in pixel outside production builds
 process.env.NEXT_PUBLIC_SITE_URL = 'https://zicabella.com';
 process.env.SNAP_APP_ID_IOS = 'snap-app-ios-uuid';
 process.env.SNAP_IOS_APP_STORE_ID = '6740012345';
@@ -129,7 +130,17 @@ async function main() {
   check('cron: wrong secret → 401', (await call({ authorization: 'Bearer nope' })).status === 401);
   check('cron: ?secret= query param not accepted → 401', (await call({}, '?secret=cron_test_secret')).status === 401);
   const ok = await call({ authorization: 'Bearer cron_test_secret' });
-  check('cron: correct Bearer → 200 with tally', ok.status === 200 && (await ok.json()).ok === true, ok.status);
+  const okJson = await ok.json();
+  check('cron: correct Bearer → 200, healthy, tally for web + app', ok.status === 200 && okJson.ok === true
+    && Array.isArray(okJson.result?.alerts) && okJson.result.alerts.length === 0 && !!okJson.result.web && !!okJson.result.app, okJson);
+  // The run now REPORTS a broken setup instead of always answering ok:true.
+  const savedToken = process.env.SNAP_CAPI_ACCESS_TOKEN;
+  delete process.env.SNAP_CAPI_ACCESS_TOKEN;
+  const noToken = await (await call({ authorization: 'Bearer cron_test_secret' })).json();
+  check('cron: access token missing → 200 with ok:false and a snap_config_missing alert',
+    noToken.ok === false && /snap_config_missing/.test(noToken.result?.alerts?.[0] || '') && noToken.result.web.blocked_config === 1, noToken);
+  check('cron: the alert names the variable and leaks nothing', /SNAP_CAPI_ACCESS_TOKEN is not set/.test(JSON.stringify(noToken)) && !JSON.stringify(noToken).includes('test-token'));
+  process.env.SNAP_CAPI_ACCESS_TOKEN = savedToken;
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

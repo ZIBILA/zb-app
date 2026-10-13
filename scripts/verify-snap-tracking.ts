@@ -203,6 +203,9 @@ async function main() {
   const ukGuestCookies = {
     ScCid: 'snap-click-123', _scid: 'scid-cookie-456', zb_external_id: 'zb.ext-789',
     zb_guest_email: h('jane.doe@example.com'), zb_guest_phone: h('447700900123'), zb_guest_country: h('gb'),
+    // lib/metaPixel.ts binds the hashed cookies to the visitor that wrote them; Snap
+    // (like Meta) only uses them while that binding matches the current external_id.
+    zb_pii_owner: 'zb.ext-789',
   };
   const cookieHeader = Object.entries(ukGuestCookies).map(([k, v]) => `${k}=${v}`).join('; ');
   async function runWebEvent(label: string, fire: () => void, opts: { pixelOnly?: boolean } = {}) {
@@ -305,6 +308,9 @@ async function main() {
     if (w.platform && row.platform !== w.platform) return false;
     if (w.eventName && row.eventName !== w.eventName) return false;
     if (w.attempts?.lt !== undefined && !(row.attempts < w.attempts.lt)) return false;
+    if (w.attempts?.gte !== undefined && !(row.attempts >= w.attempts.gte)) return false;
+    if (typeof w.orderId === 'string' && row.orderId !== w.orderId) return false;
+    if (w.orderId?.in && !w.orderId.in.includes(row.orderId)) return false;
     if (w.status !== undefined) {
       if (typeof w.status === 'string' && row.status !== w.status) return false;
       if (w.status?.in && !w.status.in.includes(row.status)) return false;
@@ -312,13 +318,27 @@ async function main() {
     if (w.leaseUntil?.lt && !(row.leaseUntil && row.leaseUntil < w.leaseUntil.lt)) return false;
     if (w.createdAt?.lt && !(row.createdAt < w.createdAt.lt)) return false;
     if (w.createdAt?.gt && !(row.createdAt > w.createdAt.gt)) return false;
+    if (w.eventTime?.gt && !(row.eventTime && row.eventTime > w.eventTime.gt)) return false;
+    if (w.lastError?.contains !== undefined && !String(row.lastError || '').includes(w.lastError.contains)) return false;
     if (w.OR && !w.OR.some((o: any) => matchWhere(row, o))) return false;
     return true;
   };
   const tick = () => new Promise(res => setImmediate(res));
   const fakeDb = {
-    order: { findUnique: async ({ where }: any) => { await tick(); return orders.get(where.id) || null; } },
+    order: {
+      findUnique: async ({ where }: any) => { await tick(); return orders.get(where.id) || null; },
+      // Recovery scan (lib/snap/recovery.ts): paid orders in the window / details by id.
+      findMany: async ({ where = {}, take }: any) => {
+        await tick();
+        return [...orders.values()].filter(o =>
+          (!where.id?.in || where.id.in.includes(o.id)) &&
+          (!where.paymentStatus?.in || where.paymentStatus.in.includes(o.paymentStatus)) &&
+          (!where.createdAt?.gt || o.createdAt > where.createdAt.gt),
+        ).sort((a, b) => a.createdAt - b.createdAt).slice(0, take ?? Infinity);
+      },
+    },
     adConversionDelivery: {
+      findFirst: async ({ where }: any) => { await tick(); return [...rows.values()].filter(r0 => matchWhere(r0, where)).sort((a, b) => a.createdAt - b.createdAt)[0] || null; },
       findUnique: async ({ where }: any) => { await tick(); const r0 = rows.get(keyOf(where)); return r0 ? { ...r0 } : null; },
       create: async ({ data }: any) => {
         await tick();
@@ -561,9 +581,18 @@ async function main() {
   check('app payment verify no longer calls sendSnapEvent', !/sendSnapEvent\s*\(/.test(read('app/api/app/payment/verify/route.ts')));
   check('checkout/complete has no inline sendSnapEvent', !/sendSnapEvent\s*\(/.test(read('app/api/checkout/complete/route.ts')));
   // Gate lives in lib/meta/browser-purchase.ts (decideSnapBrowserPurchase: paid / cod_upfront_paid only, fires after pending → paid).
+  // The decision runs on the order as the SERVER stores it (trackingOrder = displayed copy + serverFacts),
+  // never on the optimistic checkout copy alone (it has no payment status → the Purchase could never fire).
+  const confirmationPage = read('app/orders/[id]/confirmation/page.tsx');
   check('confirmation page gates Snap purchase on payment status',
-    /decideSnapBrowserPurchase\(order/.test(read('app/orders/[id]/confirmation/page.tsx'))
+    /decideSnapBrowserPurchase\(trackingOrder/.test(confirmationPage)
+    && !/decide(Snap|Meta)BrowserPurchase\(order\b/.test(confirmationPage)
     && /PAID = new Set\(\['paid', 'cod_upfront_paid'\]\)/.test(read('lib/meta/browser-purchase.ts')));
+  check('confirmation page reads the server facts before it turns "confirmed"',
+    /await fetchOrderServerFacts\(confirmedId\)[\s\S]{0,600}setRegistrationStatus\("confirmed"\)/.test(confirmationPage));
+  check('browser PURCHASE uses the stored order currency (no INR default)',
+    /snapPurchaseCurrency\(trackingOrder\)/.test(confirmationPage)
+    && /currency: string,/.test(read('hooks/useSnapEvents.ts')) && !/snapTrackPurchase\([^)]*currency = 'INR'/.test(read('hooks/useSnapEvents.ts')));
   for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx', 'components/CompleteCollectionButton.tsx']) {
     const src = read(f);
     const adds = (src.match(/\baddToCart\(\{/g) || []).length;

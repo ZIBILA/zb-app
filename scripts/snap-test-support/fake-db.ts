@@ -32,6 +32,10 @@ const matchWhere = (row: any, w: any): boolean => {
   if (w.orderId?.in && !w.orderId.in.includes(row.orderId)) return false;
   if (w.createdAt?.lt && !(new Date(row.createdAt) < new Date(w.createdAt.lt))) return false;
   if (w.createdAt?.gt && !(new Date(row.createdAt) > new Date(w.createdAt.gt))) return false;
+  if (w.updatedAt?.lt && !(new Date(row.updatedAt) < new Date(w.updatedAt.lt))) return false;
+  if (w.updatedAt?.gt && !(new Date(row.updatedAt) > new Date(w.updatedAt.gt))) return false;
+  if (w.eventTime?.gt && !(row.eventTime && new Date(row.eventTime) > new Date(w.eventTime.gt))) return false;
+  if (w.lastError?.contains !== undefined && !String(row.lastError || '').includes(w.lastError.contains)) return false;
   if (w.status !== undefined) {
     if (typeof w.status === 'string' && row.status !== w.status) return false;
     if (w.status?.in && !w.status.in.includes(row.status)) return false;
@@ -98,6 +102,7 @@ const models: Record<string, any> = {
       for (const row of store.ledger.values()) {
         if (!matchWhere(row, where)) continue;
         for (const [k, v] of Object.entries<any>(data)) row[k] = v && typeof v === 'object' && 'increment' in v ? row[k] + v.increment : v;
+        row.updatedAt = new Date(); // Prisma @updatedAt
         count++;
       }
       return { count };

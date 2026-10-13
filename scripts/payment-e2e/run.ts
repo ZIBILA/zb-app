@@ -17,6 +17,7 @@ import fs from 'fs';
 Object.assign(process.env, {
   NODE_ENV: 'test',
   SNAP_CAPI_ACCESS_TOKEN: 'snap-token',
+  NEXT_PUBLIC_SNAP_PIXEL_ID: '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd', // no built-in pixel outside production builds
   SNAP_APP_ID_IOS: 'snap-app-ios', SNAP_APP_ID_ANDROID: 'snap-app-android', SNAP_IOS_APP_STORE_ID: '6740012345',
   SHOPIFY_ADMIN_ACCESS_TOKEN: 'shpat_test', SHOPIFY_STORE_DOMAIN: 'test-shop.myshopify.com',
   RAZORPAY_WEBHOOK_SECRET: 'whsec_test',

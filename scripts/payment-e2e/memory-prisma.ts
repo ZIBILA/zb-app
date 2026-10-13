@@ -169,7 +169,20 @@ function modelApi(model: string) {
     delete: async (a: any) => { await tick(); const i = table(model).findIndex(r => match(model, r, a.where)); const [r] = table(model).splice(i, 1); return r; },
     deleteMany: async (a: any = {}) => { await tick(); const before = table(model).length; db[model] = table(model).filter(r => !match(model, r, a.where)); return { count: before - db[model].length }; },
     aggregate: async (a: any) => { await tick(); const rows = table(model).filter(r => match(model, r, a.where)); const out: any = {}; if (a._sum) { out._sum = {}; for (const k of Object.keys(a._sum)) out._sum[k] = rows.reduce((s, r) => s + (Number(r[k]) || 0), 0); } if (a._count) out._count = rows.length; return out; },
-    groupBy: async () => [],
+    // Minimal groupBy: `by` + `where` + `_count` (enough for count-per-group diagnostics).
+    groupBy: async (a: any = {}) => {
+      await tick();
+      if (!a.by || !a._count) return [];
+      const by: string[] = Array.isArray(a.by) ? a.by : [a.by];
+      const groups = new Map<string, { key: Row; n: number }>();
+      for (const r of table(model).filter(x => match(model, x, a.where))) {
+        const key = Object.fromEntries(by.map(k => [k, r[k]]));
+        const id = JSON.stringify(key);
+        const g = groups.get(id) || { key, n: 0 };
+        g.n++; groups.set(id, g);
+      }
+      return [...groups.values()].map(g => ({ ...g.key, _count: a._count === true ? g.n : { _all: g.n } }));
+    },
   };
 }
 function sort(rows: Row[], orderBy: any) {
