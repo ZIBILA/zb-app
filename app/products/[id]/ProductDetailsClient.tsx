@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useMemo, startTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight } from "lucide-react";
+import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight, Volume2, VolumeX } from "lucide-react";
 import { useMetaEvents, ga4AddToWishlist } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
@@ -666,9 +666,23 @@ export default function ProductDetailsClient({
             {(shopSettings?.showProductVideo ?? true) && productVideoUrl && (
               <div className="space-y-2">
                 <span className="text-[7.5px] font-bold uppercase tracking-[0.3em] text-foreground/40 block">Experimental Reference</span>
-                <div className="relative aspect-[9/16] max-w-[200px] mx-auto rounded-2xl overflow-hidden border border-foreground/5 shadow-inner cursor-pointer" onClick={() => setIsMuted(!isMuted)}>
-                  <video src={productVideoUrl} autoPlay loop muted={isMuted} playsInline className="w-full h-full object-cover" />
-                  <div className="absolute bottom-4 right-4 z-10">{isMuted ? <X className="w-3 h-3 text-white/50" /> : <div className="flex items-center gap-0.5 opacity-80"><div className="w-[1px] h-1.5 bg-white animate-pulse" /><div className="w-[1px] h-2 bg-white animate-pulse" style={{ animationDelay: '0.1s' }} /></div>}</div>
+                <div className="relative aspect-[9/16] max-w-[200px] mx-auto rounded-2xl overflow-hidden border border-foreground/5 shadow-inner">
+                  <video src={productVideoUrl} autoPlay loop muted={isMuted} playsInline className="w-full h-full object-cover pointer-events-none" />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMuted(!isMuted);
+                    }}
+                    aria-label={isMuted ? "Unmute video" : "Mute video"}
+                    className="absolute bottom-3 right-3 z-10 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
+                  >
+                    {isMuted ? (
+                      <VolumeX className="w-3.5 h-3.5 text-white/70" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5 text-white" />
+                    )}
+                  </button>
                 </div>
               </div>
             )}
@@ -1067,8 +1081,7 @@ export default function ProductDetailsClient({
                   <div className="mt-1 -mx-0.5">
                     <span className="text-[7.5px] font-bold uppercase tracking-[0.4em] text-foreground/40 dark:text-foreground/20 ml-1 mb-1.5 block">Experimental Reference</span>
                     <div 
-                      className="relative aspect-[9/16] rounded-[2.2rem] overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-inner cursor-pointer"
-                      onClick={() => setIsMuted(!isMuted)}
+                      className="relative aspect-[9/16] rounded-[2.2rem] overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-inner"
                     >
                       <video 
                         key={productVideoUrl} 
@@ -1080,17 +1093,22 @@ export default function ProductDetailsClient({
                       >
                         <source src={productVideoUrl} type="video/mp4" />
                       </video>
-                      {/* Premium Minimal Audio Indicator */}
-                      <div className="absolute bottom-4 right-4 z-10">
+                      {/* Premium Audio Button */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsMuted(!isMuted);
+                        }}
+                        aria-label={isMuted ? "Unmute video" : "Mute video"}
+                        className="absolute bottom-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
+                      >
                         {isMuted ? (
-                          <X className="w-2.5 h-2.5 text-white/50" />
+                          <VolumeX className="w-3.5 h-3.5 text-white/70" />
                         ) : (
-                          <div className="flex items-center gap-0.5 opacity-80">
-                            <div className="w-[1.5px] h-2 bg-white animate-pulse" />
-                            <div className="w-[1.5px] h-2.5 bg-white animate-pulse" style={{ animationDelay: '0.1s' }} />
-                          </div>
+                          <Volume2 className="w-3.5 h-3.5 text-white" />
                         )}
-                      </div>
+                      </button>
                     </div>
                   </div>
                 )}

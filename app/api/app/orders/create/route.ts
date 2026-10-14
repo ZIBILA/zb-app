@@ -77,6 +77,8 @@ export async function POST(req: Request) {
     const subtotal = Number(body.subtotal || body.subtotal_price || 0);
     const total = Number(body.total || body.total_price || 0);
     const appliedStoreCredits = Number(body.appliedStoreCredits || 0);
+    const rawDiscountCode = body.discountCode || body.discount_code || null;
+    const rawDiscountAmount = Number(body.discountAmount || body.discount_amount || 0);
 
     const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
     const configuredCodFee = paymentMethod === 'COD' ? await getConfiguredCodUpfrontAmount() : 0;
@@ -329,13 +331,15 @@ export async function POST(req: Request) {
       'mobile-app',
       `zb-order-${orderNumber}`,
       paymentMethod === 'COD' ? 'cod' : 'prepaid',
-      appliedStoreCredits > 0 ? 'store-credit-used' : null
+      appliedStoreCredits > 0 ? 'store-credit-used' : null,
+      rawDiscountCode ? `discount:${rawDiscountCode}` : null,
     ].filter(Boolean).join(', ');
 
     const note = [
       `Mobile app order`,
       `InternalOrderId: ${orderNumber}`,
       `PaymentMethod: ${paymentMethod}`,
+      rawDiscountCode ? `Discount Code: ${rawDiscountCode} (₹${rawDiscountAmount})` : null,
       appliedStoreCredits > 0 ? `Store Credits Used: ₹${appliedStoreCredits}` : null,
       paymentId ? `PaymentId: ${paymentId}` : null,
     ]
@@ -427,8 +431,8 @@ export async function POST(req: Request) {
               totalPrice: total,
               subtotalPrice: subtotal,
               totalTax: 0,
-              discountAmount: appliedStoreCredits,
-              discountCode: appliedStoreCredits > 0 ? 'STORE_CREDIT' : null,
+              discountAmount: rawDiscountAmount + appliedStoreCredits,
+              discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
               currency: 'INR',
               fulfillmentStatus: 'unfulfilled',
               deliveryStatus: 'pending',
@@ -526,6 +530,9 @@ export async function POST(req: Request) {
             paymentCapturedAt: isPaidLike ? now : existingOrder!.paymentCapturedAt,
             totalPrice: total,
             subtotalPrice: subtotal,
+            discountAmount: rawDiscountAmount,
+            storeCreditAmount: appliedStoreCredits,
+            discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
             tags: finalTags,
             note: note,
             shippingAddress: typeof shippingAddress === 'string' ? shippingAddress : JSON.stringify({
@@ -631,6 +638,9 @@ export async function POST(req: Request) {
           totalPrice: total,
           subtotalPrice: subtotal,
           totalTax: 0,
+          discountAmount: rawDiscountAmount,
+          storeCreditAmount: appliedStoreCredits,
+          discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
           currency: 'INR',
           paymentStatus,
           razorpayOrderId: rzpOrderId,
@@ -754,8 +764,8 @@ export async function POST(req: Request) {
           totalPrice: total,
           subtotalPrice: subtotal,
           totalTax: 0,
-          discountAmount: appliedStoreCredits,
-          discountCode: appliedStoreCredits > 0 ? 'STORE_CREDIT' : null,
+          discountAmount: rawDiscountAmount + appliedStoreCredits,
+          discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
           currency: 'INR',
           fulfillmentStatus: 'unfulfilled',
           deliveryStatus: 'pending',

@@ -687,6 +687,8 @@ export async function POST(req: Request) {
         discountCode: finalCouponCode || null,
         discountAmount: Number(finalCouponDiscount) || 0,
         paymentFailureReason: null,
+        cancelledBy: null,
+        cancelledAt: null,
         codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
         codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
         tags: orderTags,

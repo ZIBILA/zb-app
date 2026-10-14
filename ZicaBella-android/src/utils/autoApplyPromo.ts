@@ -35,7 +35,7 @@ function rankStorefrontCoupon(coupon: any, subtotal: number, paymentMethod: stri
   const prepaidNamed =
     applicability === 'PREPAID_ONLY' || code.includes('PREPAID') || /^PREPAID/i.test(code);
 
-  if (prepaidNamed && cod) return null;
+  if (prepaidNamed && cod && code !== 'PREPAID10' && !coupon.autoApply) return null;
   if (applicability === 'COD_ONLY' && !cod) return null;
 
   let type = coupon.discountType || 'percentage';
@@ -143,26 +143,31 @@ export async function fetchBestAutoApplyPromo(opts: {
     // fall through
   }
 
-  // 3) Legacy prepaid fallback — PREPAID10 via validate (old Android behavior)
-  if (paymentMethod === 'PREPAID') {
-    try {
-      const res = await fetch(`${appUrl}/api/app/discounts/validate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: 'PREPAID10',
-          orderAmount: subtotal,
-          paymentMethod: 'PREPAID',
-        }),
-      });
-      const data = await res.json();
-      if (data?.success && data.discount) {
-        return { ...data.discount, autoApply: true };
-      }
-    } catch {
-      // ignore
+  // 3) Auto-apply fallback — PREPAID10 (10% discount calculated on total subtotal)
+  try {
+    const res = await fetch(`${appUrl}/api/app/discounts/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: 'PREPAID10',
+        orderAmount: subtotal,
+        paymentMethod,
+      }),
+    });
+    const data = await res.json();
+    if (data?.success && data.discount) {
+      return { ...data.discount, autoApply: true };
     }
+  } catch {
+    // ignore
   }
 
-  return null;
+  // Fallback 10% auto-applied discount calculated from total subtotal
+  return {
+    code: 'PREPAID10',
+    type: 'percentage',
+    value: 10,
+    discountAmount: Math.round((subtotal * 10) / 100),
+    autoApply: true,
+  };
 }

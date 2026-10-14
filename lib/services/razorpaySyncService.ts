@@ -324,6 +324,8 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                     status: "open",
                     razorpayPaymentId: newPaymentId || undefined,
                     paymentFailureReason: null,
+                    cancelledBy: null,
+                    cancelledAt: null,
                     tags: cleanedTags,
                   },
                 });
@@ -355,6 +357,8 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                     status: "open",
                     razorpayPaymentId: newPaymentId || undefined,
                     paymentFailureReason: null,
+                    cancelledBy: null,
+                    cancelledAt: null,
                     tags: cleanedTags,
                   },
                 });

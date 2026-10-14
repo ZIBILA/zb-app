@@ -55,8 +55,8 @@ export default function OrderConfirmationScreen() {
           <Typography heading weight="700" size={9} color={colors.success}>ORDER CONFIRMED</Typography>
         </View>
 
-        <View style={[styles.emailNotice, { backgroundColor: isDark ? 'rgba(201,169,110,0.06)' : 'rgba(201,169,110,0.03)', borderColor: 'rgba(201,169,110,0.15)' }]}>
-          <Typography size={10} color="#C9A96E" weight="600" style={{ letterSpacing: 0.5, textAlign: 'center' }}>
+        <View style={[styles.emailNotice, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)', borderColor: colors.borderLight }]}>
+          <Typography size={10} color={colors.textSecondary} weight="500" style={{ letterSpacing: 0.5, textAlign: 'center' }}>
             ✉ A confirmation email has been sent to your registered email address.
           </Typography>
         </View>

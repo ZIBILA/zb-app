@@ -126,7 +126,10 @@ export async function POST(req: Request) {
               paymentStatus: targetPaymentStatus,
               razorpayPaymentId,
               paymentCapturedAt: new Date(),
-              status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending') ? 'OPEN' : order.status,
+              status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending' || order.status === 'cancelled' || order.status === 'canceled') ? (isCOD ? 'open' : 'approved') : order.status,
+              cancelledBy: null,
+              cancelledAt: null,
+              paymentFailureReason: null,
               tags: cleanedTags,
               note: isCOD ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
               ...(isCOD ? {

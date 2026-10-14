@@ -87,8 +87,7 @@ export default function HeroVideo({
 
   return (
     <div 
-      className="absolute inset-0 w-full h-full cursor-pointer group/hero"
-      onClick={toggle}
+      className="absolute inset-0 w-full h-full group/hero"
       suppressHydrationWarning
     >
       {!showControlOnly && (
@@ -101,7 +100,7 @@ export default function HeroVideo({
           playsInline
           preload={mounted ? "auto" : "metadata"}
           poster={poster || undefined}
-          className="w-full h-full object-cover transition-all duration-700"
+          className="w-full h-full object-cover transition-all duration-700 pointer-events-none"
           suppressHydrationWarning
         >
           {sources.map((url) => {
@@ -117,22 +116,21 @@ export default function HeroVideo({
       
       {/* Absolute minimal mute icon */}
       <button
-        className="absolute bottom-6 right-6 z-50 flex items-center justify-center p-2 text-white/40 hover:text-white active:scale-90 transition-all drop-shadow-lg"
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          toggle();
+        }}
+        className="absolute bottom-6 right-6 z-50 flex items-center justify-center p-2.5 rounded-full bg-black/40 backdrop-blur-md text-white/70 hover:text-white hover:scale-105 active:scale-90 transition-all drop-shadow-lg border border-white/10"
         aria-label={isMuted ? "Unmute" : "Mute"}
       >
         {isMuted ? (
-          <VolumeX className="w-3 h-3" />
+          <VolumeX className="w-3.5 h-3.5" />
         ) : (
-          <Volume2 className="w-3 h-3" />
+          <Volume2 className="w-3.5 h-3.5" />
         )}
       </button>
 
-      {/* Visual Indicator Overlay */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-active/hero:opacity-100 transition-opacity">
-        <div className="p-4 rounded-full bg-black/10 backdrop-blur-sm border border-white/5">
-          {isMuted ? <VolumeX className="w-4 h-4 text-white/40" /> : <Volume2 className="w-4 h-4 text-white/70" />}
-        </div>
-      </div>
     </div>
   );
 }

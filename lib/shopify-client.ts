@@ -313,7 +313,7 @@ async function shopifyFetchOnce<T>(
         return cached.data as T;
       }
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
-      const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
+      const delay = (retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000)) + Math.floor(Math.random() * 500);
       if (shouldLogThrottled(`shopify:${res.status}:${endpoint}`, 30_000)) {
         console.warn(
           `[Shopify Client] ${endpoint} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`

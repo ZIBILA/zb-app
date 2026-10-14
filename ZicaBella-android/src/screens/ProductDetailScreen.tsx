@@ -729,9 +729,8 @@ export default function ProductDetailScreen() {
            {product.productVideo && (
              <View style={styles.videoSection}>
                 <Typography size={7} color={colors.textExtraLight} weight="700" style={styles.sectionTag}>EXPERIMENTAL REFERENCE</Typography>
-                <Pressable 
+                <View 
                   style={[styles.videoWrapper, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }]}
-                  onPress={() => { haptics.buttonTap(); setIsMuted(!isMuted); }}
                 >
                   <VideoView
                     player={player}
@@ -739,14 +738,22 @@ export default function ProductDetailScreen() {
                     nativeControls={false}
                     contentFit="cover"
                   />
-                  <View style={styles.videoOverlay} />
-                  <Ionicons 
-                    name={isMuted ? "volume-mute-outline" : "volume-medium-outline"} 
-                    size={20} 
-                    color="#FFF" 
-                    style={{ position: 'absolute', bottom: 12, right: 12, opacity: 0.8 }} 
-                  />
-                </Pressable>
+                  <View style={styles.videoOverlay} pointerEvents="none" />
+                  <Pressable 
+                    onPress={() => { haptics.buttonTap(); setIsMuted(!isMuted); }}
+                    hitSlop={12}
+                    style={({ pressed }) => [
+                      styles.soundButton,
+                      { opacity: pressed ? 0.6 : 1 }
+                    ]}
+                  >
+                    <Ionicons 
+                      name={isMuted ? "volume-mute-outline" : "volume-medium-outline"} 
+                      size={20} 
+                      color="#FFF" 
+                    />
+                  </Pressable>
+                </View>
              </View>
            )}
 
@@ -1223,6 +1230,18 @@ const styles = StyleSheet.create({
   videoOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.02)',
+  },
+  soundButton: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
   },
   viewerHeader: {
     position: 'absolute',

@@ -39,9 +39,15 @@ const pageCache = new Map<string, { data: any, nextPageUrl?: string, timestamp: 
 const pageInflight = new Map<string, Promise<{ data: any; nextPageUrl?: string }>>();
 const PAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+const gqlCache = new Map<string, { data: any; timestamp: number }>();
+const gqlInflight = new Map<string, Promise<any>>();
+const GQL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 export function clearShopifyCache() {
   pageCache.clear();
   pageInflight.clear();
+  gqlCache.clear();
+  gqlInflight.clear();
   clearShopConfigCache();
 }
 
@@ -78,7 +84,7 @@ async function shopifyFetchPageOnce<T>(
       }
       // No cache — wait with exponential backoff and retry
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
-      const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
+      const delay = (retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000)) + Math.floor(Math.random() * 500);
       if (shouldLogThrottled('shopify:page:429:retry', 30_000)) {
         console.warn(`[Shopify Admin] Rate limited on page fetch, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
       }
@@ -152,46 +158,98 @@ async function shopifyFetchPage<T>(
 /**
  * Execute a Shopify GraphQL API request (with 429/5xx retry).
  */
-export async function shopifyGraphqlFetch<T>(query: string, variables?: any): Promise<T> {
-  const { domain } = await getShopConfig();
-  const url = `https://${domain}/admin/api/${API_VERSION}/graphql.json`;
-  const MAX = 4;
-  let lastError: Error | null = null;
+export async function shopifyGraphqlFetch<T>(
+  query: string,
+  variables?: any,
+  opts?: { cacheMode?: ShopifyGetCacheMode; ttlMs?: number }
+): Promise<T> {
+  const cacheMode = opts?.cacheMode || 'live';
+  const ttlMs = opts?.ttlMs ?? GQL_CACHE_TTL;
+  const cacheKey = JSON.stringify({ query, variables });
 
-  for (let attempt = 0; attempt < MAX; attempt++) {
-    const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: await headers(),
-      body: JSON.stringify({ query, variables }),
-      cache: isBuild ? 'force-cache' : 'no-store',
-    });
-
-    if (res.ok) {
-      const result = await res.json();
-      if (result.errors) {
-        throw new Error(`Shopify GraphQL Error: ${JSON.stringify(result.errors)}`);
-      }
-      return result.data as T;
+  if (cacheMode === 'catalog') {
+    const cached = gqlCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < ttlMs) {
+      return cached.data as T;
     }
-
-    if ((res.status === 429 || res.status >= 500) && attempt < MAX - 1) {
-      const ra = parseInt(res.headers.get('Retry-After') || '0', 10);
-      const delay = ra > 0 ? ra * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
-      const { shouldLogThrottled } = await import('@/lib/log-throttle');
-      if (shouldLogThrottled(`shopify:gql:${res.status}`, 30_000)) {
-        console.warn(`[Shopify Admin] GraphQL returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX})`);
-      }
-      await new Promise((r) => setTimeout(r, delay));
-      lastError = new Error(`Shopify GraphQL Error [${res.status}]`);
-      continue;
-    }
-
-    const text = await res.text();
-    throw new Error(`Shopify GraphQL Error [${res.status}]: ${text}`);
+    const inflight = gqlInflight.get(cacheKey);
+    if (inflight) return inflight as Promise<T>;
   }
 
-  throw lastError || new Error('Shopify GraphQL: exhausted retries');
+  const runFetch = async (): Promise<T> => {
+    const { domain } = await getShopConfig();
+    const url = `https://${domain}/admin/api/${API_VERSION}/graphql.json`;
+    const MAX = 4;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
+      const fetchInit: RequestInit = {
+        method: 'POST',
+        headers: await headers(),
+        body: JSON.stringify({ query, variables }),
+      };
+      if (cacheMode !== 'catalog') {
+        fetchInit.cache = isBuild ? 'force-cache' : 'no-store';
+      }
+
+      let res: Response;
+      try {
+        res = await fetch(url, fetchInit);
+      } catch (networkErr) {
+        if (cacheMode === 'catalog') {
+          const cached = gqlCache.get(cacheKey);
+          if (cached) return cached.data as T;
+        }
+        throw networkErr;
+      }
+
+      if (res.ok) {
+        const result = await res.json();
+        if (result.errors) {
+          throw new Error(`Shopify GraphQL Error: ${JSON.stringify(result.errors)}`);
+        }
+        if (cacheMode === 'catalog') {
+          gqlCache.set(cacheKey, { data: result.data, timestamp: Date.now() });
+        }
+        return result.data as T;
+      }
+
+      if (res.status === 429) {
+        if (cacheMode === 'catalog') {
+          const cached = gqlCache.get(cacheKey);
+          if (cached) return cached.data as T;
+        }
+      }
+
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX - 1) {
+        const ra = parseInt(res.headers.get('Retry-After') || '0', 10);
+        const delay = (ra > 0 ? ra * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000)) + Math.floor(Math.random() * 500);
+        const { shouldLogThrottled } = await import('@/lib/log-throttle');
+        if (shouldLogThrottled(`shopify:gql:${res.status}`, 30_000)) {
+          console.warn(`[Shopify Admin] GraphQL returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX})`);
+        }
+        await new Promise((r) => setTimeout(r, delay));
+        lastError = new Error(`Shopify GraphQL Error [${res.status}]`);
+        continue;
+      }
+
+      const text = await res.text();
+      throw new Error(`Shopify GraphQL Error [${res.status}]: ${text}`);
+    }
+
+    throw lastError || new Error('Shopify GraphQL: exhausted retries');
+  };
+
+  if (cacheMode === 'catalog') {
+    const promise = runFetch().finally(() => {
+      gqlInflight.delete(cacheKey);
+    });
+    gqlInflight.set(cacheKey, promise);
+    return promise;
+  }
+
+  return runFetch();
 }
 
 async function shopifyFetchAll<T>(
@@ -793,9 +851,11 @@ export async function loadOrderConfig() {
 }
 
 export async function fetchProductsByCollectionId(collectionId: string | number, limit = 250): Promise<ShopifyProduct[]> {
-  const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`collections/${collectionId}/products.json`, {
-    limit: String(limit),
-  });
+  const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
+    `collections/${collectionId}/products.json`,
+    { limit: String(limit) },
+    CATALOG_FETCH_OPTS
+  );
   return data.products;
 }
 
@@ -1585,9 +1645,11 @@ export const FALLBACK_PRODUCTS: ShopifyProduct[] = [
 
 export async function fetchProducts(limit = 250): Promise<ShopifyProduct[]> {
   try {
-    const data = await shopifyFetch<{ products: ShopifyProduct[] }>('products.json', {
-      limit: String(limit),
-    });
+    const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
+      'products.json',
+      { limit: String(limit) },
+      CATALOG_FETCH_OPTS
+    );
     if (data && Array.isArray(data.products) && data.products.length > 0) {
       return data.products;
     }
@@ -1603,9 +1665,13 @@ export async function fetchAllProducts(
 ): Promise<ShopifyProduct[]> {
   const allowFallback = opts?.allowFallback ?? true;
   try {
-    const products = await shopifyFetchAll<ShopifyProduct>('products.json', {
-      limit: String(limit),
-    }, 'products');
+    const products = await shopifyFetchAll<ShopifyProduct>(
+      'products.json',
+      { limit: String(limit) },
+      'products',
+      undefined,
+      'catalog'
+    );
     if (products && Array.isArray(products) && products.length > 0) {
       return products;
     }
@@ -1770,7 +1836,11 @@ export async function updateVariant(
  * Fetch a single product by Shopify product ID.
  */
 export async function fetchProductById(productId: string, includeMetafields = false): Promise<ShopifyProduct> {
-  const data = await shopifyFetch<{ product: ShopifyProduct }>(`products/${productId}.json`);
+  const data = await shopifyFetch<{ product: ShopifyProduct }>(
+    `products/${productId}.json`,
+    undefined,
+    CATALOG_FETCH_OPTS
+  );
   if (!includeMetafields) return data.product;
   const metafields = await fetchProductMetafields(productId).catch(() => []);
   return { ...data.product, metafields };
@@ -1809,7 +1879,9 @@ export async function fetchProductByHandle(handle: string): Promise<ShopifyProdu
     }
 
     const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
-      `products.json?handle=${encodeURIComponent(normalized)}`
+      `products.json?handle=${encodeURIComponent(normalized)}`,
+      undefined,
+      CATALOG_FETCH_OPTS
     );
     if (data?.products?.length) {
       const product = data.products[0];
@@ -1832,7 +1904,9 @@ export async function fetchProductByHandle(handle: string): Promise<ShopifyProdu
  */
 export async function fetchProductMetafields(productId: string): Promise<ShopifyMetafield[]> {
   const data = await shopifyFetch<{ metafields: ShopifyMetafield[] }>(
-    `products/${productId}/metafields.json`
+    `products/${productId}/metafields.json`,
+    undefined,
+    CATALOG_FETCH_OPTS
   );
   return data.metafields || [];
 }
@@ -2610,7 +2684,7 @@ export async function fetchMenus(): Promise<any[]> {
         }
       }
     `;
-    const data = await shopifyGraphqlFetch<any>(query);
+    const data = await shopifyGraphqlFetch<any>(query, undefined, { cacheMode: 'catalog' });
     const menus = data.menus?.edges.map((e: any) => e.node) || [];
     return menus;
   } catch (e) {

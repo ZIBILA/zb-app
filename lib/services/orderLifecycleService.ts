@@ -38,15 +38,28 @@ const PAID_LIKE_PAYMENT_STATUSES = new Set([
  */
 export function isOrderCancelledForCustomer(order: {
   status?: string | null;
+  paymentStatus?: string | null;
   fulfillmentStatus?: string | null;
   cancelledBy?: string | null;
   deliveryStatus?: string | null;
 }): boolean {
-  if (order.cancelledBy) return true;
   const status = String(order.status || '').toLowerCase();
-  // Only treat explicit order-level cancel — not fulfillmentStatus "cancelled"
-  // from a voided AWB, which left many delivered orders looking cancelled.
+  const payment = String(order.paymentStatus || '').toLowerCase();
+  const isPaidLike = PAID_LIKE_PAYMENT_STATUSES.has(payment) || payment === 'success';
+  const delivery = String(order.deliveryStatus || '').toLowerCase();
+  const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(delivery);
+
+  // If order is paid or shipped/delivered, never treat it as cancelled unless explicitly cancelled/refunded
+  if (isPaidLike || isDeliveredOrShipped) {
+    if (status === 'cancelled' || status === 'canceled' || payment === 'cancelled' || payment === 'refunded') {
+      return true;
+    }
+    return false;
+  }
+
+  if (order.cancelledBy) return true;
   if (status === 'cancelled' || status === 'canceled') return true;
+  if (payment === 'cancelled' || payment === 'voided') return true;
   return false;
 }
 
@@ -77,8 +90,6 @@ export function shouldHonorShopifyOrderCancel(
 ): { honor: boolean; reason: string } {
   if (!local) return { honor: true, reason: 'no_local_order' };
 
-  if (local.cancelledBy) return { honor: true, reason: 'local_cancelled_by' };
-
   const localStatus = String(local.status || '').toLowerCase();
   if (localStatus === 'cancelled' || localStatus === 'canceled') {
     return { honor: true, reason: 'already_cancelled_locally' };
@@ -86,6 +97,11 @@ export function shouldHonorShopifyOrderCancel(
 
   const pay = String(local.paymentStatus || '').toLowerCase();
   const isPaidLocally = PAID_LIKE_PAYMENT_STATUSES.has(pay);
+
+  // Stale cancelledBy from pre-checkout dismiss must NOT cancel a locally paid order
+  if (local.cancelledBy && (!isPaidLocally || localStatus === 'cancelled')) {
+    return { honor: true, reason: 'local_cancelled_by' };
+  }
   if (!isPaidLocally) return { honor: true, reason: 'local_unpaid' };
 
   const shopPay = String(shopify.financial_status || '').toLowerCase();

@@ -135,8 +135,19 @@ export function resolveOrderDisplayStatus(order: any): string {
   const mainStatus = String(order.status || order.rawStatus || '').toLowerCase();
   const cancelledBy = String(order.cancelledBy || '').toLowerCase();
   
-  // 1. Real order cancel only — never treat fulfillment/shipment void as order cancelled
-  if (cancelledBy || mainStatus === 'cancelled' || mainStatus === 'canceled') {
+  // 1. Real order cancel only — never treat paid or delivered orders as cancelled
+  const payLower = String(order.paymentStatus || '').toLowerCase();
+  const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
+  const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
+
+  const isRealCancel =
+    mainStatus === 'cancelled' ||
+    mainStatus === 'canceled' ||
+    payLower === 'cancelled' ||
+    payLower === 'voided' ||
+    (Boolean(cancelledBy) && !isPaidLike && !isDeliveredOrShipped);
+
+  if (isRealCancel) {
     if (cancelledBy === 'admin') return 'Cancelled by Zica Bella';
     return 'Cancelled';
   }

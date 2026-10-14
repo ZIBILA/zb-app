@@ -214,12 +214,17 @@ export default function OrdersPage() {
         ) : (
           <div className="space-y-4 max-w-4xl mx-auto">
             {orders.map((order, idx) => {
-              // Order cancel only — ignore shipment/fulfillment void (was painting delivered RMAs as CANCELLED)
+              // Order cancel only — never paint paid or delivered orders as CANCELLED due to stale pre-checkout flags
               const statusLower = String(order.status || '').toLowerCase();
+              const paymentLower = String(order.paymentStatus || '').toLowerCase();
+              const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(paymentLower);
+              const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
               const isCancelled =
-                Boolean(order.cancelledBy) ||
                 statusLower === 'cancelled' ||
-                statusLower === 'canceled';
+                statusLower === 'canceled' ||
+                paymentLower === 'cancelled' ||
+                paymentLower === 'voided' ||
+                (Boolean(order.cancelledBy) && !isPaidLike && !isDeliveredOrShipped);
               const statusKey = isCancelled
                 ? 'cancelled'
                 : (order.deliveryStatus || order.status || 'pending');

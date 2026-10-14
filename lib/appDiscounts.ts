@@ -95,7 +95,7 @@ export async function validateAppDiscount(opts: {
         status: 400,
       };
     }
-    if (prepaidNamed(code) && isCOD) {
+    if (prepaidNamed(code) && isCOD && code !== 'PREPAID10' && !discount.autoApply) {
       return {
         ok: false,
         error: 'This coupon is only valid for prepaid orders',
@@ -151,7 +151,7 @@ export async function validateAppDiscount(opts: {
     };
   }
 
-  if (prepaidNamed(code, coupon.applicability) && isCOD) {
+  if (prepaidNamed(code, coupon.applicability) && !coupon.autoApply && code !== 'PREPAID10' && isCOD) {
     return {
       ok: false,
       error: 'This coupon is only valid for prepaid orders',

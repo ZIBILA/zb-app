@@ -168,7 +168,7 @@ function LiveBrandVideo({
   };
 
   return (
-    <TouchableOpacity activeOpacity={0.95} onPress={handlePress} style={containerStyle}>
+    <View style={containerStyle}>
       <VideoView
         player={player}
         style={[styles.video, { backgroundColor: colors.background, borderRadius }]}
@@ -189,22 +189,19 @@ function LiveBrandVideo({
         />
       ) : null}
 
-      {showIcon && (
-        <View style={styles.muteIconWrapper}>
-          <Ionicons
-            name={localMuted ? 'volume-mute-outline' : 'volume-medium-outline'}
-            size={16}
-            color="#FFF"
-            style={{
-              opacity: 0.9,
-              textShadowColor: 'rgba(0,0,0,0.4)',
-              textShadowRadius: 4,
-              textShadowOffset: { width: 0, height: 1 },
-            }}
-          />
-        </View>
-      )}
-    </TouchableOpacity>
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onPress={handlePress}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        style={styles.muteButton}
+      >
+        <Ionicons
+          name={localMuted ? 'volume-mute-outline' : 'volume-medium-outline'}
+          size={18}
+          color="#FFF"
+        />
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -216,14 +213,16 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  muteIconWrapper: {
+  muteButton: {
     position: 'absolute',
     bottom: 24,
     right: 24,
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 2,
+    zIndex: 10,
   },
 });

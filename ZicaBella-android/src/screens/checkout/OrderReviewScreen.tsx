@@ -142,10 +142,6 @@ export default function OrderReviewScreen() {
           setAppliedDiscount(best);
           setPromoCode(best.code);
           setPromoError(null);
-        } else {
-          // Clear previous auto promo that is no longer eligible (e.g. PREPAID10 on COD)
-          setAppliedDiscount((prev) => (prev && !manualPromoRef.current ? null : prev));
-          setPromoCode((prev) => (manualPromoRef.current ? prev : ''));
         }
       } catch (e) {
         console.warn('[OrderReview] auto-apply failed:', e);
@@ -717,22 +713,6 @@ export default function OrderReviewScreen() {
                <Typography size={10} color={colors.textSecondary}>Subtotal</Typography>
                <Typography size={10} weight="600" color={colors.text}>{formatPrice(subtotal)}</Typography>
              </View>
-             {codFee > 0 && (
-               <View style={styles.row}>
-                 <Typography size={10} color={colors.textSecondary}>COD Upfront (pay now)</Typography>
-                 <Typography size={10} weight="600" color={colors.text}>{formatPrice(codFee)}</Typography>
-               </View>
-             )}
-             {balanceDue > 0 && (
-               <View style={styles.row}>
-                 <Typography size={10} color={colors.textSecondary}>Balance due at delivery</Typography>
-                 <Typography size={10} weight="600" color={colors.text}>{formatPrice(balanceDue)}</Typography>
-               </View>
-             )}
-             <View style={styles.row}>
-               <Typography size={10} color={colors.textSecondary}>Shipping</Typography>
-               <Typography size={10} weight="600" color={colors.success}>FREE</Typography>
-             </View>
              {discountAmount > 0 && (
                <View style={styles.row}>
                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -751,22 +731,49 @@ export default function OrderReviewScreen() {
                  <Typography size={10} color="#34C759" weight="700">−{formatPrice(creditToApply)}</Typography>
                </View>
              )}
+             <View style={styles.row}>
+               <Typography size={10} color={colors.textSecondary}>Shipping</Typography>
+               <Typography size={10} weight="600" color={colors.success}>FREE</Typography>
+             </View>
+             {selectedPaymentMethod === 'cod' && (
+               <>
+                 <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
+                 <View style={styles.row}>
+                   <Typography size={10} color={colors.textSecondary}>Total Order Cost</Typography>
+                   <Typography size={10} weight="700" color={colors.text}>{formatPrice(netOrderTotal)}</Typography>
+                 </View>
+                 {codFee > 0 && (
+                   <View style={styles.row}>
+                     <Typography size={10} color={colors.textSecondary}>COD Upfront (pay now)</Typography>
+                     <Typography size={10} weight="600" color={colors.text}>{formatPrice(codFee)}</Typography>
+                   </View>
+                 )}
+                 {balanceDue > 0 && (
+                   <View style={styles.row}>
+                     <Typography size={10} color={colors.textSecondary}>Balance due at delivery</Typography>
+                     <Typography size={10} weight="600" color={colors.text}>{formatPrice(balanceDue)}</Typography>
+                   </View>
+                 )}
+               </>
+             )}
              <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
              <View style={styles.row}>
-               <Typography size={12} weight="700" color={colors.text}>Grand Total</Typography>
+               <Typography size={12} weight="700" color={colors.text}>
+                 {selectedPaymentMethod === 'cod' ? 'Pay Now' : 'Grand Total'}
+               </Typography>
                <Typography size={18} weight="800" color={colors.text}>{formatPrice(grandTotal)}</Typography>
              </View>
-             {/* 10% Store Credits cashback earned on this order */}
-             {grandTotal > 0 && (
-               <View style={[styles.cashbackBox, { backgroundColor: isDark ? 'rgba(201, 169, 110, 0.12)' : 'rgba(201, 169, 110, 0.08)', borderColor: 'rgba(201, 169, 110, 0.3)' }]}>
+             {/* 10% Store Credits cashback earned on this order — calculated from total order cost */}
+             {netOrderTotal > 0 && (
+               <View style={[styles.cashbackBox, { backgroundColor: isDark ? 'rgba(52, 199, 89, 0.08)' : 'rgba(52, 199, 89, 0.05)', borderColor: 'rgba(52, 199, 89, 0.25)' }]}>
                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                   <Ionicons name="gift-outline" size={15} color="#C9A96E" />
+                   <Ionicons name="gift-outline" size={15} color="#34C759" />
                    <View>
-                     <Typography size={9} color="#C9A96E" weight="800">10% STORE CREDITS CASHBACK</Typography>
+                     <Typography size={9} color="#34C759" weight="800">10% STORE CREDITS CASHBACK</Typography>
                      <Typography size={7.5} color={colors.textSecondary} weight="500">Credited to wallet after delivery</Typography>
                    </View>
                  </View>
-                 <Typography size={11} color="#C9A96E" weight="800">+{formatPrice(Math.round(grandTotal * 0.10))}</Typography>
+                 <Typography size={11} color="#34C759" weight="800">+{formatPrice(Math.round((netOrderTotal > 0 ? netOrderTotal : orderTotal) * 0.10))}</Typography>
                </View>
              )}
           </View>
