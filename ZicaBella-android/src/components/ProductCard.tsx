@@ -67,9 +67,9 @@ const ProductCard = React.memo(({ product, onQuickAdd, onRemove, style, compact,
 
   const handlePress = useCallback(() => {
     if (product?.handle) {
-      navigation.navigate('ProductDetail', { handle: product.handle });
+      navigation.navigate('ProductDetail', { handle: product.handle, initialProduct: product });
     }
-  }, [navigation, product?.handle]);
+  }, [navigation, product]);
 
   const handleQuickAdd = useCallback(async () => {
     if (!onQuickAdd) return;

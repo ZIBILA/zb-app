@@ -289,34 +289,45 @@ export function useProducts(count = 24) {
   return { products, loading, error, isError, refetch: () => fetchProducts(true) };
 }
 
-export function useProductByHandle(handle: string) {
-  const [product, setProduct] = useState<FlatProduct | null>(null);
-  const [loading, setLoading] = useState(true);
+export function useProductByHandle(handle: string, initialProduct?: FlatProduct | null) {
+  const cacheKey = `product_detail_${handle}`;
+  const initial = (handle ? apiCache.get(cacheKey)?.data : null) || initialProduct || null;
+  const [product, setProduct] = useState<FlatProduct | null>(initial);
+  const [loading, setLoading] = useState(!initial);
   const [error, setError] = useState<string | null>(null);
-  const hasDataRef = useRef(false);
+  const hasDataRef = useRef(Boolean(initial));
 
   useEffect(() => {
     if (!handle) return;
-    // Reset state when handle changes
-    hasDataRef.current = false;
-    setProduct(null);
-    setLoading(true);
+    const currentKey = `product_detail_${handle}`;
+    const memCached = apiCache.get(currentKey)?.data || initialProduct || null;
+
+    if (memCached) {
+      setProduct(memCached);
+      hasDataRef.current = true;
+      setLoading(false);
+    } else {
+      hasDataRef.current = false;
+      setProduct(null);
+      setLoading(true);
+    }
     setError(null);
 
     let cancelled = false;
 
     (async () => {
-      const cacheKey = `product_detail_${handle}`;
       try {
-        // Try cache first for instant display
-        const cached = await getCacheService().get<FlatProduct>(cacheKey);
-        if (cached && !cancelled) {
-          setProduct(cached);
-          hasDataRef.current = true;
-          setLoading(false);
+        if (!memCached) {
+          // Try disk cache if not in memory
+          const cached = await getCacheService().get<FlatProduct>(currentKey);
+          if (cached && !cancelled) {
+            setProduct(cached);
+            hasDataRef.current = true;
+            setLoading(false);
+          }
         }
 
-        const data = await cachedFetch(cacheKey, () => apiGet<{ product: FlatProduct | null }>(
+        const data = await cachedFetch(currentKey, () => apiGet<{ product: FlatProduct | null }>(
           ENDPOINTS.productByHandle(handle),
           { fields: FULL_FIELDS }
         ));
@@ -328,11 +339,13 @@ export function useProductByHandle(handle: string) {
         if (normalizedProduct) {
           setProduct(normalizedProduct);
           hasDataRef.current = true;
-          await getCacheService().set(cacheKey, normalizedProduct, 10);
+          await getCacheService().set(currentKey, normalizedProduct, 10);
           return;
         }
 
-        throw new Error('Product not found');
+        if (!hasDataRef.current) {
+          throw new Error('Product not found');
+        }
       } catch (err: any) {
         if (cancelled) return;
         if (!hasDataRef.current) {
@@ -347,7 +360,7 @@ export function useProductByHandle(handle: string) {
     })();
 
     return () => { cancelled = true; };
-  }, [handle]);
+  }, [handle, initialProduct]);
 
   return { product, loading, error };
 }

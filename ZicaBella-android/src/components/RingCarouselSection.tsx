@@ -82,7 +82,7 @@ const RingCarouselSection = React.memo(function RingCarouselSection({
       <RingItem 
         item={item} 
         isDark={isDark} 
-        onPress={() => navigation.navigate('ProductDetail', { handle: item.handle })}
+        onPress={() => navigation.navigate('ProductDetail', { handle: item.handle, initialProduct: item })}
       />
     );
   }, [navigation, isDark]);

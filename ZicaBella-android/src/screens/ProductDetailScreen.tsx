@@ -156,12 +156,12 @@ export default function ProductDetailScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const route = useRoute<RouteProp<RootStackParamList, 'ProductDetail'>>();
-  const { handle } = route.params || { handle: '' };
+  const { handle, initialProduct } = route.params || { handle: '', initialProduct: undefined };
   const colors = useColors();
   const theme = useThemeStore((state) => state.theme);
   const isDark = theme === 'dark';
 
-  const { product, loading } = useProductByHandle(handle);
+  const { product, loading } = useProductByHandle(handle, initialProduct);
   const { products: allProducts, loading: recommendedLoading } = useProducts(24);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   
@@ -805,7 +805,7 @@ export default function ProductDetailScreen() {
                       key={p.id}
                       product={p}
                       colors={colors}
-                      onPress={() => navigation.push('ProductDetail', { handle: p.handle })}
+                      onPress={() => navigation.push('ProductDetail', { handle: p.handle, initialProduct: p })}
                       onQuickAdd={() => {
                         setSelectedProduct(p);
                         setQuickAddVisible(true);

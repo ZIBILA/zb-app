@@ -152,7 +152,7 @@ const SpotlightSection = React.memo(({
           <TouchableOpacity 
             key={product?.id || idx}
             style={styles.item}
-            onPress={() => product && navigation.navigate('ProductDetail', { handle: product.handle })}
+            onPress={() => product && navigation.navigate('ProductDetail', { handle: product.handle, initialProduct: product })}
             activeOpacity={0.8}
           >
             <View style={[

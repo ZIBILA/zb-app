@@ -41,7 +41,7 @@ export type ServiceStackParamList = {
 export type RootStackParamList = {
   Auth: undefined;
   Main: undefined;
-  ProductDetail: { handle: string };
+  ProductDetail: { handle: string; initialProduct?: any };
   Collection: { handle: string; title?: string };
   CheckoutFlow: undefined;
   ServiceFlow: undefined;
