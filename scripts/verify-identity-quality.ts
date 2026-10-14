@@ -108,6 +108,9 @@ const check = (name: string, cond: boolean, detail?: unknown) => {
   const key = (w: any) => { const k = w.platform_eventName_orderId; return `${k.platform}|${k.eventName}|${k.orderId}`; };
   const match = (r: any, w: any): boolean => (!w.id || r.id === w.id) && (!w.platform || r.platform === w.platform) && (!w.eventName || r.eventName === w.eventName)
     && (!w.orderId || typeof w.orderId !== 'string' || r.orderId === w.orderId) && (w.attempts?.lt === undefined || r.attempts < w.attempts.lt)
+    && (w.attempts?.gte === undefined || r.attempts >= w.attempts.gte)
+    && (w.lastError?.contains === undefined || String(r.lastError || '').includes(w.lastError.contains))
+    && (!w.eventTime?.gt || (r.eventTime && r.eventTime > w.eventTime.gt))
     && (w.status === undefined || (typeof w.status === 'string' ? r.status === w.status : !w.status.in || w.status.in.includes(r.status)))
     && (!w.leaseUntil?.lt || (r.leaseUntil && r.leaseUntil < w.leaseUntil.lt)) && (!w.OR || w.OR.some((o: any) => match(r, o)));
   let seq = 0;

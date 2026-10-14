@@ -1,6 +1,7 @@
 import { trackSnapClientEvent, getSnapIdentityCookies, getClientCookie } from '@/lib/snapPixel';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { snapPurchaseCurrency } from '@/lib/snap/currency';
 
 /**
  * Snap Pixel + Conversions API dual tracking.
@@ -247,11 +248,16 @@ export function snapTrackAddBilling(
  *
  * client_dedup_id = transaction_id = order id = server event_id = order_id.
  * Call this only for orders whose payment is confirmed.
+ *
+ * `value` and `currency` are the STORED order's total and the currency it was
+ * charged in (USD, GBP, INR, …) — the same pair the server event reports. The
+ * currency is required: there is no default, so an international order can never
+ * be reported in the wrong currency by omission.
  */
 export function snapTrackPurchase(
   orderId: string,
   value: number,
-  currency = 'INR',
+  currency: string,
   contentIds: string[] = [],
   userData?: RawIdentity,
   contentCategory?: string,
@@ -265,7 +271,8 @@ export function snapTrackPurchase(
     : (typeof contents === 'number' ? contents : idList.length) || 1;
 
   trackSnapClientEvent('PURCHASE', {
-    price: num(value), currency, item_ids: idList, item_category: contentCategory,
+    // Same normalization as the server event (lib/snap/currency.ts).
+    price: num(value), currency: snapPurchaseCurrency({ currency }), item_ids: idList, item_category: contentCategory,
     number_items: numItems, transaction_id: orderId,
   }, orderId, userData);
 }

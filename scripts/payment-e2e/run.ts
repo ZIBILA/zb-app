@@ -17,6 +17,7 @@ import fs from 'fs';
 Object.assign(process.env, {
   NODE_ENV: 'test',
   SNAP_CAPI_ACCESS_TOKEN: 'snap-token',
+  NEXT_PUBLIC_SNAP_PIXEL_ID: '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd', // no built-in pixel outside production builds
   SNAP_APP_ID_IOS: 'snap-app-ios', SNAP_APP_ID_ANDROID: 'snap-app-android', SNAP_IOS_APP_STORE_ID: '6740012345',
   SHOPIFY_ADMIN_ACCESS_TOKEN: 'shpat_test', SHOPIFY_STORE_DOMAIN: 'test-shop.myshopify.com',
   RAZORPAY_WEBHOOK_SECRET: 'whsec_test',
@@ -398,6 +399,11 @@ async function main() {
     eq('A4: internal payment method is store_credit (not Razorpay)', [o?.paymentMethod, (db.mobileOrder || []).find(m => m.orderNumber === o?.internalOrderNumber)?.paymentMethod], ['store_credit', 'STORE_CREDIT']);
     verifyPurchase('A4 (store credit = discount → value 0)', snapApp, o.id, { value: 0, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'MOBILE_APP' });
     verifyShopify('A4', o, { financial: 'paid', variants: [[+V.DENIM, 2], [+V.TEE, 1]] });
+    // A client claiming "fully covered" while applying less credit than its own items cost is refused;
+    // nothing is debited and no order is written.
+    const b1 = balance(); const before = (db.order || []).length;
+    const short = await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', { ...body, appliedStoreCredits: 1000, checkoutId: 'sc_short_000001' });
+    eq('A4b: store credit short of the items total → refused, nothing debited, no order', [short.status, b1 - balance(), (db.order || []).length - before], [400, 0, 0]);
   }
 
   // A5 coupon + store credit: ₹5,000 − ₹500 − ₹1,000 = ₹3,500

@@ -3,7 +3,7 @@
  * See lib/snap/purchase.ts for the logic.
  */
 import prisma from '@/lib/db';
-import { sendSnapEvent } from '@/lib/snap-capi';
+import { sendSnapEvent, snapCapiConfigError } from '@/lib/snap-capi';
 import { createSnapPurchaseDelivery } from '@/lib/snap/purchase';
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
 import { fetchCapturedPayment } from '@/lib/razorpay-payment';
@@ -28,7 +28,7 @@ export async function verifyCapture(order: { paymentMethod?: string | null; razo
   }
 }
 
-const delivery = createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, verifyCapture });
+const delivery = createSnapPurchaseDelivery({ db: prisma, send: sendSnapEvent, verifyCapture, configError: snapCapiConfigError });
 
 export const emitSnapPurchase = delivery.emitSnapPurchase;
 export const recordSnapPurchaseContext = delivery.recordSnapPurchaseContext;

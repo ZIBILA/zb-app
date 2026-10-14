@@ -266,6 +266,14 @@ export async function POST(req: Request) {
                 data: {
                   totalPrice: calculatedTotal,
                   subtotalPrice: rawSubtotal,
+                  // The total above is in THIS request's currency, and the Razorpay
+                  // order it now points to was created in it. A reused pending order
+                  // may have been opened in another currency (the shopper's country
+                  // resolved, or was changed, after the first request), so the stored
+                  // currency must follow — otherwise the order would read e.g.
+                  // "49 INR" for a 49 USD charge (admin, reports, ad conversions).
+                  currency: currencyCode,
+                  displayCountry: displayCountry || "IN",
                   shippingAddress: JSON.stringify(checkoutAddress),
                   billingAddress: JSON.stringify(checkoutAddress),
                   razorpayOrderId: rzpOrder.id,

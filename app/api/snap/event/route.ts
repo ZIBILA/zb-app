@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { sendSnapEvent } from '@/lib/snap-capi';
+import { isSnapExcludedPath, snapStorefrontHosts } from '@/lib/snap/config';
 import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
 
 /**
@@ -62,16 +63,8 @@ const bodySchema = z.strictObject({
   customData: customDataSchema.optional(),
 });
 
-// ── Storefront host allowlist for event_source_url ──
-function allowedHosts(): Set<string> {
-  const hosts = new Set(['zicabella.com', 'www.zicabella.com', 'app.zicabella.com']);
-  try {
-    if (process.env.NEXT_PUBLIC_SITE_URL) hosts.add(new URL(process.env.NEXT_PUBLIC_SITE_URL).hostname);
-  } catch { /* ignore */ }
-  if (process.env.NODE_ENV !== 'production') hosts.add('localhost');
-  return hosts;
-}
-const HOSTS = allowedHosts();
+// ── Storefront host allowlist for event_source_url (lib/snap/config.ts) ──
+const HOSTS = snapStorefrontHosts();
 
 // ── Per-IP sliding-window rate limit (in-memory on purpose: this route is hit on
 //    every page view, and a DB-backed limiter would add a write per event to an
@@ -114,8 +107,7 @@ export async function POST(req: NextRequest) {
     let url: URL;
     try { url = new URL(body.eventSourceUrl); } catch { return reject(400, 'invalid_event'); }
     if (!HOSTS.has(url.hostname) || !/^https?:$/.test(url.protocol)) return reject(400, 'invalid_source');
-    const path = url.pathname.toLowerCase();
-    if (path.startsWith('/dashboard') || path.startsWith('/admin') || path.startsWith('/web-store')) {
+    if (isSnapExcludedPath(url.pathname)) {
       return NextResponse.json({ success: false, skipped: true });
     }
 
@@ -131,16 +123,27 @@ export async function POST(req: NextRequest) {
       ? trustedIp
       : (cookieIp && !isPrivateIP(cookieIp) ? cookieIp : undefined);
 
+    // The hashed zb_guest_* cookies describe the visitor whose external_id they
+    // were bound to when written (zb_pii_owner — set by lib/metaPixel.ts). If the
+    // browser now carries a different external_id (next shopper on a shared
+    // device, expired id cookie) or no binding at all, they are NOT this
+    // visitor's details and must not be sent as theirs. Same rule as
+    // /api/meta/event and the browser pixel (lib/snapPixel.ts).
+    const piiOwner = c('zb_pii_owner');
+    const cookieExternalId = c('zb_external_id');
+    const cookiePiiBound = !!piiOwner && !!cookieExternalId && piiOwner === cookieExternalId;
+    const own = (name: string) => (cookiePiiBound ? c(name) : undefined);
+
     const u = body.userData || {};
     const userData = {
-      em: u.em || c('zb_guest_email'),
-      ph: u.ph || c('zb_guest_phone'),
-      fn: u.fn || c('zb_guest_fn'),
-      ln: u.ln || c('zb_guest_ln'),
-      ct: u.ct || c('zb_guest_ct'),
-      st: u.st || c('zb_guest_st'),
-      zp: u.zp || c('zb_guest_zp'),
-      country: u.country || c('zb_guest_country'),
+      em: u.em || own('zb_guest_email'),
+      ph: u.ph || own('zb_guest_phone'),
+      fn: u.fn || own('zb_guest_fn'),
+      ln: u.ln || own('zb_guest_ln'),
+      ct: u.ct || own('zb_guest_ct'),
+      st: u.st || own('zb_guest_st'),
+      zp: u.zp || own('zb_guest_zp'),
+      country: u.country || own('zb_guest_country'),
     };
 
     // Anonymous, non-checkout events: never re-attach identity cookies the

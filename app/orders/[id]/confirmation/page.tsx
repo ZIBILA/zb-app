@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { motion } from "framer-motion";
@@ -28,9 +28,15 @@ import {
   dispatchSnapBrowserPurchaseOnce,
   hasSnapBrowserPurchaseBeenSent,
   waitForSnaptr,
+  fetchOrderServerFacts,
+  hasPaymentFacts,
+  orderForTracking,
   META_PENDING_POLL_INTERVAL_MS,
   META_PENDING_POLL_MAX,
 } from "@/lib/meta/browser-purchase";
+import { snapPurchaseCurrency } from "@/lib/snap/currency";
+import { snapPurchasePhone } from "@/lib/snap/identity";
+import { SNAP_PIXEL_ID } from "@/lib/snapPixel";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -56,6 +62,24 @@ export default function OrderConfirmationPage() {
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
   const { trackOrderCreated: trackOpenAiOrderCreated } = useOpenAiEvents();
+
+  // The order as the ad pixels must see it: the server's payment state, charged
+  // total, currency and items (order.serverFacts) on top of the displayed copy.
+  // What the shopper sees keeps coming from `order` itself.
+  const trackingOrder = useMemo(() => orderForTracking(order), [order]);
+
+  // Attach freshly fetched server facts to the order on screen (and to its cached
+  // copy, so a refresh keeps them). Ignored if the page now shows another order.
+  const applyServerFacts = (forOrderId: string, facts: any) => {
+    setOrder((prev: any) => {
+      if (!prev || String(prev.id) !== String(forOrderId)) return prev;
+      const next = { ...prev, serverFacts: facts };
+      try {
+        sessionStorage.setItem(`zb_confirmation_${forOrderId}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
 
   // Non-Meta analytics on first confirmed visit; Meta/Snap Purchase wait for capture.
   useEffect(() => {
@@ -150,7 +174,7 @@ export default function OrderConfirmationPage() {
 
       if (!session?.user) {
         if (
-          decideMetaBrowserPurchase(order, {
+          decideMetaBrowserPurchase(trackingOrder, {
             alreadySent: hasMetaBrowserPurchaseBeenSent(order.id),
           }).action !== "done"
         ) {
@@ -179,12 +203,12 @@ export default function OrderConfirmationPage() {
         },
       });
     }
-  }, [order, purchasedPixel, registrationStatus, session?.user]);
+  }, [order, trackingOrder, purchasedPixel, registrationStatus, session?.user]);
 
   // Meta browser Pixel Purchase: once per order, only after confirmed payment.
   useEffect(() => {
     if (!order?.id || registrationStatus !== "confirmed") return;
-    const decision = decideMetaBrowserPurchase(order, {
+    const decision = decideMetaBrowserPurchase(trackingOrder, {
       alreadySent: hasMetaBrowserPurchaseBeenSent(order.id),
     });
     const finishGuestReset = () => {
@@ -198,7 +222,7 @@ export default function OrderConfirmationPage() {
       finishGuestReset();
       return;
     }
-    const args = buildMetaBrowserPurchaseArgs(order);
+    const args = buildMetaBrowserPurchaseArgs(trackingOrder);
     if (!args) {
       finishGuestReset();
       return;
@@ -239,17 +263,20 @@ export default function OrderConfirmationPage() {
   }, []);
 
   // Snap browser Pixel PURCHASE: once per order, only after confirmed payment.
+  // Value, currency and item ids are the stored order's (the same the server
+  // Conversions API Purchase reports): the charged total in the charged currency.
   useEffect(() => {
     if (!order?.id || registrationStatus !== "confirmed") return;
+    if (!SNAP_PIXEL_ID) return; // Snap tracking is off on this deployment: nothing to wait for
     if (
-      decideSnapBrowserPurchase(order, {
+      decideSnapBrowserPurchase(trackingOrder, {
         alreadySent: hasSnapBrowserPurchaseBeenSent(order.id),
       }).action !== "fire"
     ) {
       return;
     }
-    const val = parseFloat(order.totalPrice || "0");
-    const orderCurrency = (order.currency || "INR").toUpperCase();
+    const val = Number(trackingOrder.totalPrice) || 0;
+    const orderCurrency = snapPurchaseCurrency(trackingOrder);
     let addr: any = null;
     try {
       addr = order.shippingAddress
@@ -270,9 +297,9 @@ export default function OrderConfirmationPage() {
       fn: nameParts[0] || undefined,
       ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
       em: pickRealEmail(cust.email, addr?.email),
-      ph: pickRealPhone(cust.phone, addr?.phone),
+      ph: snapPurchasePhone(cust.phone, addr?.phone), // same rule as the server event
     };
-    const snapContents = (order.items || []).map((item: any) => ({
+    const snapContents = (trackingOrder.items || []).map((item: any) => ({
       id: snapCatalogIdFromOrderItem(item) || "",
       quantity: Number(item.quantity) || 1,
       item_price: parseFloat(item.price || "0") || undefined,
@@ -298,17 +325,20 @@ export default function OrderConfirmationPage() {
   }, [order, registrationStatus]);
 
   // Poll while payment capture is still pending so Purchase can fire once paid.
+  // Only the server facts are refreshed (light tracking view); the displayed order is untouched.
   useEffect(() => {
     if (!id || !order?.id || registrationStatus !== "confirmed") return;
     const metaWaits =
-      decideMetaBrowserPurchase(order, {
+      decideMetaBrowserPurchase(trackingOrder, {
         alreadySent: hasMetaBrowserPurchaseBeenSent(order.id),
       }).action === "wait";
     const snapWaits =
-      decideSnapBrowserPurchase(order, {
+      decideSnapBrowserPurchase(trackingOrder, {
         alreadySent: hasSnapBrowserPurchaseBeenSent(order.id),
       }).action === "wait";
     if (!metaWaits && !snapWaits) return;
+    const polledOrderId = String(order.id);
+    const knownStatus = String(trackingOrder?.paymentStatus || "");
     let polls = 0;
     let cancelled = false;
     const timer = setInterval(async () => {
@@ -321,16 +351,10 @@ export default function OrderConfirmationPage() {
         return;
       }
       if (typeof document !== "undefined" && document.hidden) return;
-      try {
-        const res = await fetch(`/api/orders/${id}?bypass_auth=true`, { cache: "no-store" });
-        if (!res.ok || cancelled) return;
-        const data = await res.json().catch(() => null);
-        const next = data?.order || data;
-        if (next?.id && String(next.paymentStatus || "") !== String(order.paymentStatus || "")) {
-          setOrder(next);
-        }
-      } catch {
-        /* transient — next tick retries */
+      const facts = await fetchOrderServerFacts(polledOrderId);
+      if (!facts || cancelled) return; // transient — next tick retries
+      if (String(facts.paymentStatus || "") !== knownStatus) {
+        applyServerFacts(polledOrderId, facts);
       }
     }, META_PENDING_POLL_INTERVAL_MS);
     return () => {
@@ -338,7 +362,7 @@ export default function OrderConfirmationPage() {
       clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, order?.id, order?.paymentStatus, registrationStatus]);
+  }, [id, order?.id, trackingOrder?.paymentStatus, registrationStatus]);
 
   useEffect(() => {
     if (!id) return;
@@ -346,6 +370,7 @@ export default function OrderConfirmationPage() {
 
     // 1) Paint optimistic / cached confirmation immediately
     let painted = false;
+    let paintedOrder: any = null;
     try {
       const cached = sessionStorage.getItem(`zb_confirmation_${orderId}`);
       if (cached) {
@@ -355,6 +380,7 @@ export default function OrderConfirmationPage() {
           setLoading(false);
           setFetchError(null);
           painted = true;
+          paintedOrder = parsed;
           const status = (parsed.registrationStatus as RegistrationStatus) || "confirmed";
           setRegistrationStatus(status === "confirming" ? "confirming" : "confirmed");
           sessionStorage.setItem("last_placed_order_id", orderId);
@@ -364,16 +390,17 @@ export default function OrderConfirmationPage() {
       /* ignore */
     }
 
-    // 2) If checkout left a pending complete payload, run it in the background
-    const runPendingComplete = async () => {
-      if (completeStartedRef.current) return;
+    // 2) If checkout left a pending complete payload, run it in the background.
+    //    Resolves true when there was a payload to process (whatever the outcome).
+    const runPendingComplete = async (): Promise<boolean> => {
+      if (completeStartedRef.current) return true;
       let pendingRaw: string | null = null;
       try {
         pendingRaw = sessionStorage.getItem(`zb_complete_pending_${orderId}`);
       } catch {
         pendingRaw = null;
       }
-      if (!pendingRaw) return;
+      if (!pendingRaw) return false;
 
       completeStartedRef.current = true;
       setRegistrationStatus("confirming");
@@ -388,7 +415,7 @@ export default function OrderConfirmationPage() {
         try {
           sessionStorage.removeItem(`zb_complete_pending_${orderId}`);
         } catch {}
-        return;
+        return true;
       }
 
       try {
@@ -397,7 +424,7 @@ export default function OrderConfirmationPage() {
           // Keep confirming UI; capture webhook will make a later visit succeed.
           setRegistrationStatus("confirming");
           setRegistrationError(null);
-          return;
+          return true;
         }
         const verifyRes = completion.res!;
         const verifyData = completion.data || {};
@@ -408,6 +435,7 @@ export default function OrderConfirmationPage() {
             const raw = sessionStorage.getItem(`zb_confirmation_${orderId}`);
             if (raw) baseOptimistic = JSON.parse(raw);
           } catch {}
+          const confirmedId = String(verifyData.order?.id || verifyData.orderId || orderId);
           const confirmed = verifyData.order
             ? { ...verifyData.order, registrationStatus: "confirmed" }
             : {
@@ -415,19 +443,37 @@ export default function OrderConfirmationPage() {
                 id: verifyData.orderId || orderId,
                 registrationStatus: "confirmed",
               };
+          // The order is registered: record that FIRST, so a refresh from here on
+          // repaints the confirmation instead of re-posting the completion.
+          const cacheConfirmed = () => {
+            try {
+              sessionStorage.setItem(`zb_confirmation_${orderId}`, JSON.stringify(confirmed));
+              if (verifyData.orderId && verifyData.orderId !== orderId) {
+                sessionStorage.setItem(`zb_confirmation_${verifyData.orderId}`, JSON.stringify(confirmed));
+                sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
+              }
+              sessionStorage.removeItem(`zb_complete_pending_${orderId}`);
+              sessionStorage.removeItem("zb_pending_checkout");
+            } catch {}
+          };
+          cacheConfirmed();
+          // Then read what the server stored (payment state, charged total +
+          // currency, items) BEFORE the page turns "confirmed", so the Snap / Meta
+          // browser Purchase can fire on that first confirmed render. Bounded wait;
+          // without an answer the page behaves as before (the server-side Purchase
+          // does not depend on this). A refresh meanwhile repaints from the cache
+          // and fetches these facts in the background.
+          const serverFacts = hasPaymentFacts(verifyData.order)
+            ? null
+            : await fetchOrderServerFacts(confirmedId, { timeoutMs: 2500 });
+          if (serverFacts) {
+            confirmed.serverFacts = serverFacts;
+            cacheConfirmed();
+          }
           setOrder(confirmed);
           setRegistrationStatus("confirmed");
           setRegistrationError(null);
-          try {
-            sessionStorage.setItem(`zb_confirmation_${orderId}`, JSON.stringify(confirmed));
-            if (verifyData.orderId && verifyData.orderId !== orderId) {
-              sessionStorage.setItem(`zb_confirmation_${verifyData.orderId}`, JSON.stringify(confirmed));
-              sessionStorage.setItem("last_placed_order_id", verifyData.orderId);
-            }
-            sessionStorage.removeItem(`zb_complete_pending_${orderId}`);
-            sessionStorage.removeItem("zb_pending_checkout");
-          } catch {}
-          return;
+          return true;
         }
 
         // Recovery by Razorpay order id
@@ -462,7 +508,7 @@ export default function OrderConfirmationPage() {
                   if (data.orderId !== orderId) {
                     router.replace(`/orders/${data.orderId}/confirmation`);
                   }
-                  return;
+                  return true;
                 }
               }
             }
@@ -482,6 +528,7 @@ export default function OrderConfirmationPage() {
           `Payment succeeded, but we hit a connection issue finishing your order. Please do NOT pay again — contact support@zicabella.com with your payment ID.`
         );
       }
+      return true;
     };
 
     // 3) No cache: fetch slim confirmation (refresh / shared link)
@@ -513,14 +560,27 @@ export default function OrderConfirmationPage() {
     };
 
     void (async () => {
-      await runPendingComplete();
+      const completedHere = await runPendingComplete();
       // If we painted optimistic UI, skip blocking fetch. Revalidate only when no paint.
       if (!painted) {
         await fetchOrder();
       } else {
         setLoading(false);
+        // A cached copy from before the order's payment state was known (e.g. a
+        // refresh): fetch the server facts in the background so the browser
+        // Purchase can still fire once. Nothing on screen changes.
+        const cachedId = String(paintedOrder?.id || orderId);
+        if (
+          !completedHere &&
+          !hasPaymentFacts(paintedOrder) &&
+          !(hasMetaBrowserPurchaseBeenSent(cachedId) && hasSnapBrowserPurchaseBeenSent(cachedId))
+        ) {
+          const facts = await fetchOrderServerFacts(cachedId);
+          if (facts) applyServerFacts(cachedId, facts);
+        }
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, router]);
 
   if (loading) {

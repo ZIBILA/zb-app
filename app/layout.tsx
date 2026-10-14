@@ -17,6 +17,7 @@ import { Analytics } from "@/components/seo/Analytics";
 import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
 import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES, PLACEHOLDER_ZIP_HASHES } from "@/lib/tracking/placeholder-identity";
+import { resolveSnapPixelId } from "@/lib/snap/config";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -155,7 +156,7 @@ export default async function RootLayout({
   const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES, ...PLACEHOLDER_PHONE_HASHES, ...PLACEHOLDER_ZIP_HASHES];
   // Name placeholders are checked against fn / ln only (sha256('na') is also Namibia's country code).
   const metaBlockedNameHashes = [...PLACEHOLDER_NAME_HASHES];
-  const snapPixelId = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || "7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd";
+  const snapPixelId = resolveSnapPixelId(); // '' = Snap tracking off on this deployment (lib/snap/config.ts)
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
   const adminGtmId = process.env.NEXT_PUBLIC_ADMIN_GTM_ID || "GTM-TDGKF386";
@@ -278,12 +279,13 @@ export default async function RootLayout({
             `,
           }}
         />
-        {/* Snap Pixel Base Code */}
-        <Script
-          id="snap-pixel"
-          strategy="afterInteractive"
-          dangerouslySetInnerHTML={{
-            __html: `
+        {/* Snap Pixel Base Code (not rendered when Snap tracking is off on this deployment) */}
+        {snapPixelId && (
+          <Script
+            id="snap-pixel"
+            strategy="afterInteractive"
+            dangerouslySetInnerHTML={{
+              __html: `
               if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
                 (function(e,t,n){if(e.snaptr)return;var a=e.snaptr=function()
                 {a.handleRequest?a.handleRequest.apply(a,arguments):a.queue.push(arguments)};
@@ -296,8 +298,9 @@ export default async function RootLayout({
                 snaptr('init', '${snapPixelId}', {});
               }
             `,
-          }}
-        />
+            }}
+          />
+        )}
         {/* OpenAI (ChatGPT) Ads Pixel Base Code */}
         {openaiAdsPixelId && (
           <Script

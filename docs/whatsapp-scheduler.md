@@ -24,7 +24,7 @@ Located in `.github/workflows/whatsapp-scheduler.yml`, the workflow runs the fol
 ### 2. Configuration Setup
 1. **GitHub secrets**: Navigate to your GitHub Repository Settings → **Secrets and variables** → **Actions**, and add a Repository Secret:
    - Key: `CRON_SECRET`
-   - Value: `zicabella_cron_prod_2026` (Must match the value configured in DigitalOcean)
+   - Value: a long random string (for example the output of `openssl rand -hex 32`). It must match the `CRON_SECRET` configured in DigitalOcean. Never write the real value in this repository.
 2. **DigitalOcean Environment variables**: Ensure `CRON_SECRET` is added to your App-level environment variables on the App Platform settings (Settings → Next.js component → App-Level Environment Variables → Encrypted).
 
 ---

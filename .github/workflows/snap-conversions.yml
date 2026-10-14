@@ -4,6 +4,11 @@ name: Snap Conversions Retry
 # sending lease expired, or that were stranded as pending after a verified capture.
 # Same pattern as order-sync.yml: GitHub Actions pings the endpoint with CRON_SECRET.
 # Scheduled workflows run only from the default branch, so this activates on merge.
+#
+# The run FAILS (and GitHub notifies) when the endpoint reports an alert:
+# Snap access token missing or refused, Purchases that could not be delivered, or
+# a ledger problem. A manual run ("Run workflow") also checks the pixel id and
+# access token live against Snapchat and prints the result on the run page.
 
 on:
   schedule:
@@ -22,15 +27,31 @@ jobs:
 
     steps:
       - name: Call retry endpoint
+        env:
+          # Manual runs also ask the server to test the Snap connection (records nothing at Snap).
+          PROBE: ${{ github.event_name == 'workflow_dispatch' && '?probe=1' || '' }}
         run: |
           # Retries cover transport errors / 5xx only (a completed run answers 200).
           # On failure the HTTP status and the start of the server's reply are written
           # as an error annotation, so the cause is visible on the run summary page.
-          code=$(curl --retry 3 --retry-delay 10 -sS -m 60 -o /tmp/resp.txt -w '%{http_code}' -X GET "https://app.zicabella.com/api/cron/snap-conversions" \
+          code=$(curl --retry 3 --retry-delay 10 -sS -m 60 -o /tmp/resp.txt -w '%{http_code}' -X GET "https://app.zicabella.com/api/cron/snap-conversions${PROBE}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}") || code="${code:-000}"
-          reply=$(sed -e 's/<[^>]*>/ /g' /tmp/resp.txt 2>/dev/null | tr -s ' \n\r\t' ' ' | head -c 400)
+          reply=$(sed -e 's/<[^>]*>/ /g' /tmp/resp.txt 2>/dev/null | tr -s ' \n\r\t' ' ' | head -c 700)
           echo "HTTP $code: $reply"
           if [ "$code" != "200" ]; then
             echo "::error title=Snap retry endpoint::HTTP $code — $reply"
             exit 1
           fi
+          # ok:false = an alert (Snap access token missing / refused, Purchases that
+          # exhausted their attempts, ledger table missing / erroring) → fail the run
+          # so GitHub notifies. The server keeps unsent Purchases and retries them.
+          # A manual run's live connection test is shown whatever the outcome.
+          probe=$(jq -c '.result.probe // empty' /tmp/resp.txt 2>/dev/null | head -c 700)
+          if [ -n "$probe" ]; then
+            echo "::notice title=Snap connection test::$probe"
+          fi
+          if ! jq -e '.ok == true' /tmp/resp.txt > /dev/null 2>&1; then
+            echo "::error title=Snap retry alert::$(jq -c '.result.alerts // .' /tmp/resp.txt 2>/dev/null | head -c 700)"
+            exit 1
+          fi
+          echo "::notice title=Snap conversions::$(jq -c '.result | del(.alerts, .probe)' /tmp/resp.txt 2>/dev/null | head -c 700)"
