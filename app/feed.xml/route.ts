@@ -189,13 +189,13 @@ function generateItemXml(
   return lines.join('\n');
 }
 
-export async function GET(req?: Request): Promise<Response> {
+export async function GET(req: Request): Promise<Response> {
   const startTime = Date.now();
   try {
     console.log('[Feed] Starting feed generation...');
 
     let countryParam: string | null = null;
-    try { countryParam = req ? new URL(req.url).searchParams.get('country') : null; } catch { countryParam = null; }
+    try { countryParam = new URL(req.url).searchParams.get('country'); } catch { countryParam = null; }
     const money = await resolveFeedMoney(countryParam);
 
     const loaded = await loadFeedProducts();
