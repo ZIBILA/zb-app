@@ -84,7 +84,20 @@ export async function POST(req: Request) {
     const resolvedCodFee = configuredCodFee;
     let verifiedCodUpfrontPaid = 0;
 
-    if (clientClaimsPaid) {
+    // 100% store credit: there is no Razorpay payment to verify. The proof of
+    // payment is the wallet debit below (idempotent; fails when the balance is
+    // short), and the credit must cover what the app says the items cost.
+    const linesTotal = (Array.isArray(lineItems) ? lineItems : []).reduce(
+      (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
+    const couponDiscount = Math.max(0, Number(body.discountAmount || body.discount_amount || 0));
+    const isFullStoreCreditPayment = clientClaimsPaid && !isCod && total <= 0 && appliedStoreCredits > 0;
+
+    if (isFullStoreCreditPayment) {
+      if (appliedStoreCredits + couponDiscount + 0.01 < linesTotal) {
+        return jsonError('Store credit does not cover the order total', 400);
+      }
+      paymentStatus = 'paid';
+    } else if (clientClaimsPaid) {
       if (!paymentId) {
         return jsonError('paymentId is required to mark an order as paid', 400);
       }
