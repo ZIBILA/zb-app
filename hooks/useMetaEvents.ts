@@ -3,6 +3,7 @@ import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize';
+import { META_INR, type MetaMoney } from '@/lib/meta/money';
 
 /**
  * Cart → Meta catalog payload. Catalog item id = feed.xml <g:id> = Shopify VARIANT id
@@ -11,7 +12,9 @@ import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize
  * numItems = total units (sum of quantities), not cart lines.
  */
 export function metaCartPayload(
-  items: Array<{ variantId?: string; quantity?: number; price?: string | number; title?: string; category?: string }>
+  items: Array<{ variantId?: string; quantity?: number; price?: string | number; title?: string; category?: string }>,
+  /** Display-currency conversion (lib/meta/money.ts); omitted = INR base prices. */
+  money: MetaMoney = META_INR,
 ): {
   ids: string[];
   contents: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[];
@@ -23,7 +26,7 @@ export function metaCartPayload(
       return {
         id: normalizeVariantId(it.variantId) || '',
         quantity: Math.max(1, Number(it.quantity) || 1),
-        item_price: Number.isFinite(price) ? price : undefined,
+        item_price: Number.isFinite(price) ? money.amount(price) : undefined,
         title: it.title || undefined,
         category: it.category || undefined,
       };
