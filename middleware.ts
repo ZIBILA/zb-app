@@ -1,6 +1,7 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
+import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies } from "@/lib/meta/identity-cookies";
 
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
   DASHBOARD_HOME: ["/dashboard"],
@@ -188,8 +189,51 @@ export default withAuth(
       ? (req.nextUrl.searchParams.get('ref') || req.nextUrl.searchParams.get('aff'))?.trim()
       : null;
 
+    // Meta identity cookies (_fbp, _fbc from ?fbclid, zb_external_id) are minted and
+    // refreshed here as HTTP cookies on storefront page loads: Safari caps
+    // script-written cookies at 7 days (24 h after an fbclid landing), HTTP cookies
+    // it does not. Same names, domain and values the client code writes, so the
+    // Pixel SDK and the client simply find them present. See lib/meta/identity-cookies.ts.
+    const wantsIdentityCookies = isStorefront && isIdentityCookieRequest({
+      method: req.method,
+      pathname,
+      secFetchDest: req.headers.get('sec-fetch-dest'),
+      accept: req.headers.get('accept'),
+    });
+
+    const attachMetaIdentityCookies = (res: NextResponse) => {
+      if (!wantsIdentityCookies) return res;
+      try {
+        const host = req.headers.get('x-forwarded-host')?.split(':')[0] || req.headers.get('host')?.split(':')[0] || req.nextUrl.hostname;
+        const proto = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '');
+        const domain = identityCookieDomain(host);
+        const plan = planMetaIdentityCookies({
+          fbp: req.cookies.get('_fbp')?.value,
+          fbc: req.cookies.get('_fbc')?.value,
+          externalId: req.cookies.get('zb_external_id')?.value,
+          fbclid: req.nextUrl.searchParams.get('fbclid'),
+          nowMs: Date.now(),
+          uuid: () => crypto.randomUUID(),
+        });
+        for (const c of plan) {
+          res.cookies.set(c.name, c.value, {
+            path: '/',
+            maxAge: c.maxAge,
+            sameSite: 'lax',
+            secure: proto === 'https',
+            httpOnly: false, // the Pixel SDK and the storefront code read these
+            ...(domain ? { domain } : {}),
+          });
+        }
+      } catch (e: any) {
+        console.warn('[Middleware] Meta identity cookies skipped:', e?.message);
+      }
+      return res;
+    };
+
     const attachStorefrontCookies = async (res: NextResponse) => {
       attachClientIpCookie(res);
+      attachMetaIdentityCookies(res);
       if (refParam) {
         try {
           const { signAffiliateCookie, getAffiliateCookieOptions } = await import('@/lib/affiliate/cookie');
