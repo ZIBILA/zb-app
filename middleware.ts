@@ -1,6 +1,7 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
+import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
   DASHBOARD_HOME: ["/dashboard"],
@@ -188,8 +189,53 @@ export default withAuth(
       ? (req.nextUrl.searchParams.get('ref') || req.nextUrl.searchParams.get('aff'))?.trim()
       : null;
 
+    // Meta identity cookies (_fbp, _fbc from ?fbclid, zb_external_id) are minted and
+    // refreshed here as HTTP cookies on storefront page loads: Safari caps
+    // script-written cookies at 7 days (24 h after an fbclid landing), HTTP cookies
+    // it does not. Same names, domain and values the client code writes, so the
+    // Pixel SDK and the client simply find them present. See lib/meta/identity-cookies.ts.
+    const wantsIdentityCookies = isStorefront && isIdentityCookieRequest({
+      method: req.method,
+      pathname,
+      secFetchDest: req.headers.get('sec-fetch-dest'),
+      accept: req.headers.get('accept'),
+    });
+
+    const attachMetaIdentityCookies = (res: NextResponse) => {
+      if (!wantsIdentityCookies) return res;
+      try {
+        const host = req.headers.get('x-forwarded-host')?.split(',')[0].split(':')[0].trim() || req.headers.get('host')?.split(':')[0] || req.nextUrl.hostname;
+        const proto = (req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '')).split(',')[0].trim();
+        const domain = identityCookieDomain(host);
+        const plan = planMetaIdentityCookies({
+          fbp: req.cookies.get('_fbp')?.value,
+          fbc: req.cookies.get('_fbc')?.value,
+          externalId: req.cookies.get('zb_external_id')?.value,
+          fbclid: req.nextUrl.searchParams.get('fbclid'),
+          nowMs: Date.now(),
+          uuid: () => crypto.randomUUID(),
+        });
+        // Set-Cookie on an HTML response can stop a CDN caching it, so unchanged
+        // values are refreshed at most once per 12 h (marker cookie zb_idc); a new
+        // or changed value (first visit, new click id) is always written.
+        const refreshDue = !req.cookies.get(IDENTITY_REFRESH_MARKER)?.value;
+        const toSet = plan.filter(c => c.changed || refreshDue);
+        if (toSet.length === 0) return res;
+        const opts = { path: '/', sameSite: 'lax' as const, secure: proto === 'https', ...(domain ? { domain } : {}) };
+        for (const c of toSet) {
+          // Not HttpOnly: the Pixel SDK and the storefront code read these.
+          res.cookies.set(c.name, c.value, { ...opts, maxAge: c.maxAge, httpOnly: false });
+        }
+        if (refreshDue) res.cookies.set(IDENTITY_REFRESH_MARKER, '1', { ...opts, maxAge: IDENTITY_REFRESH_INTERVAL_S, httpOnly: true });
+      } catch (e: any) {
+        console.warn('[Middleware] Meta identity cookies skipped:', e?.message);
+      }
+      return res;
+    };
+
     const attachStorefrontCookies = async (res: NextResponse) => {
       attachClientIpCookie(res);
+      attachMetaIdentityCookies(res);
       if (refParam) {
         try {
           const { signAffiliateCookie, getAffiliateCookieOptions } = await import('@/lib/affiliate/cookie');

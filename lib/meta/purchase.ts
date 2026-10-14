@@ -26,9 +26,13 @@ import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
 import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
+import { internalOrderReason } from '@/lib/meta/internal-orders';
+import { parseConsentRegions } from '@/lib/meta/consent';
 
 const PLATFORM = 'meta';
 const EVENT = 'Purchase';
+/** Regions where a shopper must opt in (empty = no consent gating). */
+const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
 
 /** Payment states that represent a completed conversion. */
 export const META_PURCHASE_PAYMENT_STATUSES = new Set(['paid', 'cod_upfront_paid']);
@@ -39,6 +43,8 @@ export interface MetaClickContext {
   externalId?: string;
   ipAddress?: string;
   userAgent?: string;
+  /** The shopper's consent choice at checkout (zb_consent cookie), when consent regions are configured. */
+  consent?: 'granted' | 'denied';
 }
 
 function readCookie(header: string, name: string): string | undefined {
@@ -68,12 +74,14 @@ export function metaContextFromRequest(
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
   const fbp = readCookie(cookie, '_fbp') || str(fallback.fbp);
   const fbc = readCookie(cookie, '_fbc') || str(fallback.fbc);
+  const consentRaw = (readCookie(cookie, 'zb_consent') || '').toLowerCase();
   return {
     fbp: fbp && FBP_RE.test(fbp) ? fbp : undefined,
     fbc: fbc && FBC_RE.test(fbc) ? fbc : undefined,
     externalId: readCookie(cookie, 'zb_external_id') || str(fallback.externalId),
     ipAddress: ip && !isPrivateIP(ip) ? ip : undefined,
     userAgent: req.headers.get('user-agent') || undefined,
+    ...(consentRaw === 'granted' || consentRaw === 'denied' ? { consent: consentRaw as 'granted' | 'denied' } : {}),
   };
 }
 
@@ -105,7 +113,7 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
   // Placeholder names ('Customer', 'Valued Customer' …) are skipped for the next real one.
   const name = String(pickRealName(addr.name, order.customer?.name) || '').trim().split(/\s+/).filter(Boolean);
 
-  const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
+  const contents: Array<{ id: string; quantity: number; item_price?: number; delivery_category: string }> = [];
   let numItems = 0;
   for (const it of order.items || []) {
     const qty = Math.max(1, Number(it.quantity) || 1);
@@ -114,7 +122,8 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
     const id = snapCatalogIdFromOrderItem(it);
     if (!id) continue;
     const price = Number(it.price);
-    contents.push({ id, quantity: qty, ...(Number.isFinite(price) && price > 0 ? { item_price: price } : {}) });
+    // delivery_category: every web order is shipped (same value as the browser Pixel copy).
+    contents.push({ id, quantity: qty, ...(Number.isFinite(price) && price > 0 ? { item_price: price } : {}), delivery_category: 'home_delivery' });
   }
 
   const emailCandidates = [addr.email, order.customer?.email].filter(
@@ -201,6 +210,26 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
   /** Store the shopper's Meta context against an order BEFORE payment. Never throws. */
   async function recordMetaPurchaseContext(orderId: string, ctx: MetaClickContext): Promise<void> {
     await ledger.recordContext(PLATFORM, EVENT, orderId, clean(ctx));
+  }
+
+  /** Record an internal order as permanently skipped (never consumes an attempt, never resent). */
+  async function closeAsInternal(orderId: string, why: string): Promise<void> {
+    const lastError = `internal order (${why}): not reported to Meta`.slice(0, 500);
+    try {
+      const row = await prisma.adConversionDelivery.findUnique({ where: key(orderId) });
+      if (!row) {
+        await prisma.adConversionDelivery.create({
+          data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, status: 'skipped', lastError },
+        });
+      } else if (row.status === 'pending' || row.status === 'failed') {
+        await prisma.adConversionDelivery.updateMany({
+          where: { id: row.id, status: { in: ['pending', 'failed'] } },
+          data: { status: 'skipped', leaseUntil: null, lastError },
+        });
+      }
+    } catch (err: any) {
+      if (err?.code !== 'P2002') console.warn('[Meta Purchase] could not close internal order row', JSON.stringify({ orderId, error: err?.message }));
+    }
   }
 
   /**
@@ -292,6 +321,30 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     }
     if (isUnresolvedRecoveryOrder(order)) {
       return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
+    }
+    // Staff / QA / demo-account orders are never a conversion (lib/meta/internal-orders.ts).
+    // The ledger row is closed so the recovery scan does not re-examine it every run.
+    const internal = internalOrderReason(order);
+    if (internal) {
+      await closeAsInternal(orderId, internal);
+      return { status: 'skipped', reason: `internal order (${internal})` };
+    }
+    // Consent regions: a shopper who declined tracking at checkout is never reported.
+    // The choice travels in the click context (this request's, or the one recorded
+    // at order pre-creation for the webhook / cron paths).
+    if (CONSENT_REGIONS.size > 0) {
+      let consent = ctx?.consent;
+      if (!consent) {
+        try {
+          const row = await prisma.adConversionDelivery.findUnique({ where: key(orderId), select: { context: true } });
+          const stored = (row?.context || {}) as Record<string, unknown>;
+          if (stored.consent === 'denied' || stored.consent === 'granted') consent = stored.consent;
+        } catch { /* no row yet */ }
+      }
+      if (consent === 'denied') {
+        await closeAsInternal(orderId, 'consent denied');
+        return { status: 'skipped', reason: 'internal order (consent denied)' };
+      }
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!META_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
@@ -386,18 +439,18 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
       const batch = await prisma.order.findMany({
         where: { id: { in: missing.slice(i, i + 100) } },
         orderBy: { createdAt: 'asc' },
-        select: { id: true, tags: true, totalPrice: true, orderType: true, items: true },
+        select: { id: true, tags: true, totalPrice: true, orderType: true, customerId: true, items: true },
       });
       for (const o of batch) {
         if (out.length >= limit) break;
-        if (isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && metaPurchaseValue(o) !== null) out.push(o.id);
+        if (isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && !internalOrderReason(o) && metaPurchaseValue(o) !== null) out.push(o.id);
       }
     }
     return out;
   }
 
   /** Retry outcomes that mean "this row will never be sendable": stop retrying it. */
-  const TERMINAL_RETRY_SKIP = /^(order not found|not a website order|webhook-recovered order|paymentStatus=|order value missing)/;
+  const TERMINAL_RETRY_SKIP = /^(order not found|not a website order|webhook-recovered order|internal order|paymentStatus=|order value missing)/;
 
   /**
    * Retry job (cron):

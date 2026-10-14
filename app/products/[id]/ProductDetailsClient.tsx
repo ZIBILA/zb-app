@@ -10,6 +10,7 @@ import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { ShopifyProduct } from "@/lib/shopify-admin";
 import { parseShopifyRichText, formatProductDescription, matchKey } from "@/lib/utils";
 import { useCountry } from "@/lib/country-context";
+import { metaMoneyFrom } from "@/lib/meta/money";
 import { lockScroll, unlockScroll } from "@/lib/utils/scroll-lock";
 
 interface ShopSettings {
@@ -117,18 +118,40 @@ export default function ProductDetailsClient({
   allImages?: any[];
 }) {
   const router = useRouter();
-  const { formatPrice: fmtPrice } = useCountry();
+  const { formatPrice: fmtPrice, isLoading: countryLoading } = useCountry();
+  // Meta events report the money the shopper sees (display currency); INR in India.
+  const metaMoney = metaMoneyFrom(fmtPrice);
+  const metaViewContentFiredFor = useRef<string | null>(null);
   const { trackViewContent, trackAddToCart, trackAddToWishlist } = useMetaEvents();
   const { trackViewContent: trackSnapViewContent, trackAddToCart: trackSnapAddToCart } = useSnapEvents(); // Snap ADD_TO_WISHLIST fires inside toggleBookmark
   const { trackContentsViewed: trackOaiContentsViewed, trackItemsAdded: trackOaiItemsAdded } = useOpenAiEvents();
 
   useEffect(() => {
     const variantId = product.variants?.[0]?.id?.toString() || product.id.toString();
-    trackViewContent(variantId, product.title, parseFloat(product.variants?.[0]?.price || "0"), 'INR', product.product_type);
     trackSnapViewContent(variantId, product.title, parseFloat(product.variants?.[0]?.price || "0"), 'INR', product.product_type);
     trackOaiContentsViewed(variantId, product.title, parseFloat(product.variants?.[0]?.price || "0"), 'INR', product.product_type);
     zbTrackViewItem(product.id.toString(), variantId, parseFloat(product.variants?.[0]?.price || "0"), { title: product.title });
   }, [product.id, product.title, product.product_type]);
+
+  // Meta ViewContent: once per product, in the currency the shopper sees. The pricing
+  // config loads client-side; a returning non-India visitor (zb_country cookie) waits
+  // for it (bounded: 2.5 s) rather than report INR for a page priced in USD/GBP.
+  // India and first-time visitors fire immediately, exactly as before.
+  useEffect(() => {
+    const key = product.id.toString();
+    if (metaViewContentFiredFor.current === key) return;
+    const fire = () => {
+      if (metaViewContentFiredFor.current === key) return;
+      metaViewContentFiredFor.current = key;
+      const variantId = product.variants?.[0]?.id?.toString() || key;
+      trackViewContent(variantId, product.title, metaMoney.amount(parseFloat(product.variants?.[0]?.price || "0")), metaMoney.currency, product.product_type);
+    };
+    const cookieCountry = (typeof document !== "undefined" && document.cookie.match(/(?:^|; )zb_country=([^;]*)/)?.[1]) || "";
+    if (!countryLoading || !cookieCountry || cookieCountry.toUpperCase() === "IN") { fire(); return; }
+    const t = setTimeout(fire, 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id, countryLoading]);
 
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("details");
@@ -299,7 +322,7 @@ export default function ProductDetailsClient({
     });
 
     // Track AddToCart in Meta Pixel & Snap Pixel
-    trackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+    trackAddToCart(variant.id.toString(), product.title, metaMoney.amount(parseFloat(variant.price || "0")), metaMoney.currency, product.product_type);
     trackSnapAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
     trackOaiItemsAdded(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
 
@@ -345,7 +368,7 @@ export default function ProductDetailsClient({
     });
 
     // Track AddToCart in Meta Pixel & Snap Pixel
-    trackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
+    trackAddToCart(variant.id.toString(), product.title, metaMoney.amount(parseFloat(variant.price || "0")), metaMoney.currency, product.product_type);
     trackSnapAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
     trackOaiItemsAdded(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
 
@@ -564,8 +587,8 @@ export default function ProductDetailsClient({
                       variantIdStr || product.variants?.[0]?.id?.toString() || product.id.toString(),
                       product.title,
                       product.product_type,
-                      parseFloat((activeVariant || product.variants?.[0])?.price || "0") || undefined,
-                      'INR',
+                      metaMoney.amount(parseFloat((activeVariant || product.variants?.[0])?.price || "0")) || undefined,
+                      metaMoney.currency,
                       { ga: false }
                     );
                     // GA4 add_to_wishlist exactly as on main (product id)
@@ -905,8 +928,8 @@ export default function ProductDetailsClient({
                         variantIdStr || product.variants?.[0]?.id?.toString() || product.id.toString(),
                         product.title,
                         product.product_type,
-                        parseFloat((activeVariant || product.variants?.[0])?.price || "0") || undefined,
-                        'INR',
+                        metaMoney.amount(parseFloat((activeVariant || product.variants?.[0])?.price || "0")) || undefined,
+                        metaMoney.currency,
                         { ga: false }
                       );
                       // GA4 add_to_wishlist exactly as on main (product id)

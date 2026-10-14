@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { resolveMetaServerPixelId, metaPixelIdProblem } from '@/lib/meta/config';
 import {
   graphUrl,
   parseMetaError,
@@ -22,7 +23,8 @@ interface CheckResult {
 export async function GET() {
   // Admin only: operational Meta diagnostics are never public.
   try { await requireAdmin(); } catch (authErr) { return handleAuthError(authErr); }
-  const PIXEL_ID = process.env.META_PIXEL_ID;
+  // The id the server actually sends to (lib/meta/config.ts), not the raw variable.
+  const PIXEL_ID = resolveMetaServerPixelId();
   const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN;
   const META_APP_ID = process.env.META_APP_ID;
 
@@ -33,9 +35,12 @@ export async function GET() {
   // ────────────────────────────────────────
   const pixelError = validatePixelIdFormat(PIXEL_ID);
   if (pixelError) {
-    checks.push({ name: 'Pixel ID Configuration', status: 'fail', message: pixelError });
+    checks.push({ name: 'Pixel ID Configuration', status: 'fail', message: metaPixelIdProblem() || pixelError });
   } else {
-    checks.push({ name: 'Pixel ID Configuration', status: 'pass', message: `META_PIXEL_ID is set: ${PIXEL_ID}` });
+    const idProblem = metaPixelIdProblem();
+    checks.push(idProblem
+      ? { name: 'Pixel ID Configuration', status: 'fail', message: idProblem }
+      : { name: 'Pixel ID Configuration', status: 'pass', message: `Pixel / dataset id in use (browser and server agree): ${PIXEL_ID}` });
   }
 
   // ────────────────────────────────────────

@@ -12,6 +12,7 @@ import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zb
 import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
 import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
+import { metaMoneyFrom } from "@/lib/meta/money";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   MapPin,
@@ -211,7 +212,7 @@ const sanitizeAddress = (val: string) => val.replace(BLOCKED_CHARS, "");
 const isValidAddressField = (val: string, minLen = 2) => val.trim().length >= minLen;
 
 export default function CheckoutPage() {
-  const { countryCode, countryConfig, globalStoreEnabled, formatPrice: fmtPrice } = useCountry();
+  const { countryCode, countryConfig, globalStoreEnabled, formatPrice: fmtPrice, isLoading: countryLoading } = useCountry();
   const isInternational = Boolean(
     globalStoreEnabled && countryCode !== "IN" && countryConfig && !countryConfig.isBase
   );
@@ -222,6 +223,8 @@ export default function CheckoutPage() {
     },
     [fmtPrice]
   );
+  // Meta events report the money the shopper sees and Razorpay charges (display currency); INR in India.
+  const metaMoney = metaMoneyFrom(fmtPrice);
   const { data: session, status } = useSession();
   const { items, subtotal, clear, isLoaded: cartLoaded } = useCart();
   const router = useRouter();
@@ -331,42 +334,64 @@ export default function CheckoutPage() {
 
 
 
+  // Address state → identity for the checkout-start events (shared by Meta and Snap).
+  const checkoutIdentity = (): any => {
+    if (!(address.email || address.phone || address.city)) return undefined;
+    const nameParts = (address.name || "").trim().split(/\s+/);
+    return {
+      country: address.country || undefined,
+      st: address.state || undefined,
+      ct: address.city || undefined,
+      zp: address.zip || undefined,
+      fn: nameParts[0] || undefined,
+      ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+      em: address.email || undefined,
+      ph: address.phone || undefined,
+    };
+  };
+
+  // Meta InitiateCheckout: money = the display currency. It waits (bounded, 2.5 s)
+  // for the client-side pricing config only when a non-India country cookie says a
+  // conversion may apply; India and first-time visitors fire immediately, as before.
+  // Nothing else on this page waits for it (GA4 / Snap / OpenAI / zb fire below as on main).
+  const metaIcFiredRef = useRef(false);
+  useEffect(() => {
+    const canFire = status === "unauthenticated" || (status === "authenticated" && addressesLoaded);
+    if (items.length === 0 || metaIcFiredRef.current || !canFire) return;
+    const fire = () => {
+      if (metaIcFiredRef.current) return;
+      metaIcFiredRef.current = true;
+      const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ') || undefined;
+      const userData = checkoutIdentity();
+      // Meta: feed.xml g:id = variant id; num_items = total units.
+      const meta = metaCartPayload(items, metaMoney);
+      trackInitiateCheckout(
+        metaMoney.amount(subtotal), meta.numItems, metaMoney.currency, joinedCategories, meta.ids,
+        userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
+        meta.contents,
+        { ga: false }
+      );
+    };
+    const cookieCountry = (typeof document !== "undefined" && document.cookie.match(/(?:^|; )zb_country=([^;]*)/)?.[1]) || "";
+    if (!countryLoading || !cookieCountry || cookieCountry.toUpperCase() === "IN") { fire(); return; }
+    const t = setTimeout(fire, 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, subtotal, status, addressesLoaded, countryLoading]);
+
   useEffect(() => {
     const canFire = status === "unauthenticated" || (status === "authenticated" && addressesLoaded);
 
     if (items.length > 0 && !initiatedPixel && canFire) {
       setInitiatedPixel(true);
       const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ') || undefined;
-      // Product ids — used by OpenAI Ads below (unchanged). Meta uses variant ids (metaCartPayload).
+      // Product ids — used by OpenAI Ads below (unchanged). Meta uses variant ids (above).
       const contentIds = items.map(item => item.productId);
 
       // Parse the pre-filled/saved address state into userData
-      let userData: any = undefined;
-      if (address.email || address.phone || address.city) {
-        const nameParts = (address.name || "").trim().split(/\s+/);
-        const fn = nameParts[0] || undefined;
-        const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
-        userData = {
-          country: address.country || undefined,
-          st: address.state || undefined,
-          ct: address.city || undefined,
-          zp: address.zip || undefined,
-          fn,
-          ln,
-          em: address.email || undefined,
-          ph: address.phone || undefined,
-        };
-      }
+      const userData: any = checkoutIdentity();
 
       {
-        // Meta: feed.xml g:id = variant id; num_items = total units.
-        const meta = metaCartPayload(items);
-        trackInitiateCheckout(
-          subtotal, meta.numItems, 'INR', joinedCategories, meta.ids,
-          userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
-          meta.contents,
-          { ga: false }
-        );
         // GA4 begin_checkout exactly as on main (product ids, cart lines).
         ga4BeginCheckout(subtotal, 'INR', joinedCategories, contentIds, items.map(item => ({
           id: item.productId,
@@ -1591,7 +1616,7 @@ export default function CheckoutPage() {
     if (metaPaymentInfoFiredRef.current) return;
     metaPaymentInfoFiredRef.current = true;
     const nameParts = (address.name || "").trim().split(/\s+/);
-    const meta = metaCartPayload(items);
+    const meta = metaCartPayload(items, metaMoney);
     trackAddPaymentInfo(
       {
         country: address.countryCode || address.country || undefined,
@@ -1603,8 +1628,8 @@ export default function CheckoutPage() {
         em: address.email || undefined,
         ph: address.phone || undefined,
       },
-      subtotal,
-      'INR', // subtotal is the INR base amount (cart prices are INR)
+      metaMoney.amount(subtotal),
+      metaMoney.currency, // the display currency (what Razorpay charges); INR in India
       meta.ids,
       meta.contents,
       { ga: false } // GA4 add_payment_info fires at address submit, as on main

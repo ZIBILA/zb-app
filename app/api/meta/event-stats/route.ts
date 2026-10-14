@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { resolveMetaServerPixelId } from '@/lib/meta/config';
 import {
   graphUrl,
   parseMetaError,
@@ -14,7 +15,7 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   // Admin only: operational Meta diagnostics are never public.
   try { await requireAdmin(); } catch (authErr) { return handleAuthError(authErr); }
-  const PIXEL_ID = process.env.META_PIXEL_ID;
+  const PIXEL_ID = resolveMetaServerPixelId();
   const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN;
 
   // Validate configuration before making any requests

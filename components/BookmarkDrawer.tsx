@@ -12,6 +12,7 @@ import dynamic from "next/dynamic";
 import { useState, useEffect } from "react";
 import { handleImageError } from "./ImagePlaceholder";
 import { useCountry } from "@/lib/country-context";
+import { metaMoneyFrom } from "@/lib/meta/money";
 import { lockScroll, unlockScroll } from "@/lib/utils/scroll-lock";
 
 const QuickAddModal = dynamic(() => import("./QuickAddModal"), { ssr: false });
@@ -23,6 +24,7 @@ interface BookmarkDrawerProps {
 
 export default function BookmarkDrawer({ isOpen, onClose }: BookmarkDrawerProps) {
   const { formatPrice: fmtPrice } = useCountry();
+  const metaMoney = metaMoneyFrom(fmtPrice); // Meta events report the displayed currency
   const { bookmarks, removeBookmark } = useBookmarks();
   const { add: addToCart } = useCart();
   const { trackAddToCart: trackMetaAddToCart } = useMetaEvents();
@@ -53,7 +55,7 @@ export default function BookmarkDrawer({ isOpen, onClose }: BookmarkDrawerProps)
         // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
         snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
         // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
-        trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
+        trackMetaAddToCart(variant.id.toString(), product.title, metaMoney.amount(parseFloat(variant.price || "0")), metaMoney.currency, product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
         return;
       }
     }

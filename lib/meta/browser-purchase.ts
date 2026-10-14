@@ -55,6 +55,8 @@ export type MetaBrowserPurchaseDecision =
 export interface OrderServerFacts {
   paymentStatus: string;
   orderType?: string;
+  /** true = staff / QA / demo order: never a Meta or Snap Purchase (lib/meta/internal-orders.ts). */
+  internal?: boolean;
   totalPrice?: number;
   currency?: string;
   items?: Array<{ variantId?: string | null; sku?: string | null; quantity?: number; price?: number; title?: string | null }>;
@@ -70,6 +72,7 @@ export function pickOrderServerFacts(serverOrder: any, expectedOrderId?: string)
   if (typeof serverOrder.paymentStatus !== 'string' || !serverOrder.paymentStatus.trim()) return null;
   const facts: OrderServerFacts = { paymentStatus: serverOrder.paymentStatus };
   if (typeof serverOrder.orderType === 'string') facts.orderType = serverOrder.orderType;
+  if (serverOrder.internal === true) facts.internal = true;
   const total = Number(serverOrder.totalPrice);
   if (serverOrder.totalPrice !== null && serverOrder.totalPrice !== undefined && Number.isFinite(total)) facts.totalPrice = total;
   if (typeof serverOrder.currency === 'string' && serverOrder.currency.trim()) facts.currency = serverOrder.currency;
@@ -132,6 +135,7 @@ export function decideBrowserPurchase(
 ): MetaBrowserPurchaseDecision {
   if (!order?.id) return { action: 'done', reason: 'no order' };
   if (opts.alreadySent) return { action: 'done', reason: 'already sent' };
+  if (order.internal === true) return { action: 'done', reason: 'internal order' };
   if (!opts.isEligible(order)) return { action: 'done', reason: 'not eligible for this platform' };
   const created = order.createdAt ? new Date(order.createdAt).getTime() : NaN;
   if (Number.isFinite(created) && (opts.nowMs ?? Date.now()) - created >= META_BROWSER_PURCHASE_MAX_AGE_MS) {

@@ -106,8 +106,9 @@ export const eventTracker = {
         // Only the dedicated WhatsApp/business-messaging dataset. Never fall back to the
         // WEBSITE pixel: that would duplicate website conversions in the website dataset.
         const datasetId = (dbSettings['whatsapp_dataset_id'] || '').trim();
+        const { resolveMetaServerPixelId, resolveMetaPixelId, META_PRODUCTION_PIXEL_ID } = await import('@/lib/meta/config');
         const websitePixelIds = new Set(
-          [process.env.META_PIXEL_ID, process.env.NEXT_PUBLIC_META_PIXEL_ID, process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID, '2049977412558608']
+          [resolveMetaServerPixelId(), resolveMetaPixelId(), process.env.META_PIXEL_ID, process.env.NEXT_PUBLIC_META_PIXEL_ID, process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID, META_PRODUCTION_PIXEL_ID]
             .filter((v): v is string => !!v && !!v.trim())
             .map(v => v.trim())
         );
