@@ -27,6 +27,56 @@ import { getSnapDeviceContext } from '../services/snapDeviceContext';
 
 // ── Types ────────────────────────────────────────────────────────────
 
+/** Turn nested Razorpay Custom UI errors into a short customer-facing message. */
+export function parseRazorpayError(err: any): string {
+  const fallback = 'Payment was cancelled or failed. Please try again.';
+  if (!err) return fallback;
+
+  const parseJson = (raw: unknown): any => {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  };
+
+  // Custom UI often puts the real payload in description/message as a JSON string.
+  const parsed =
+    parseJson(err?.description) ||
+    parseJson(err?.message) ||
+    parseJson(typeof err === 'string' ? err : null) ||
+    (err?.error && typeof err.error === 'object' ? err : null) ||
+    (typeof err === 'object' && err?.reason ? err : null);
+
+  const nested = parsed?.error || parsed;
+  const reason = String(nested?.reason || err?.reason || '').toLowerCase();
+  const description = String(
+    nested?.description || nested?.error_description || ''
+  ).trim();
+
+  if (reason === 'payment_cancelled' || reason === 'payment_canceled') {
+    return 'Payment was cancelled or timed out in the UPI app. Please try again.';
+  }
+  if (reason === 'payment_risk_check_failed') {
+    return 'This payment was declined for security reasons. Please try another card or UPI app.';
+  }
+  if (description && !description.startsWith('{')) {
+    return description;
+  }
+
+  const top =
+    (typeof err?.description === 'string' && !err.description.trim().startsWith('{')
+      ? err.description
+      : null) ||
+    (typeof err?.message === 'string' && !err.message.trim().startsWith('{')
+      ? err.message
+      : null);
+  return top || fallback;
+}
+
 export type PaymentMethod = 'upi' | 'card' | 'netbanking' | 'wallet';
 
 export type PaymentStatus =
@@ -504,12 +554,11 @@ export function useRazorpay(): UseRazorpayReturn {
             setStatus('idle');
             return;
           }
-          
+
+          const friendly = parseRazorpayError(rzpErr);
           setStatus('failed');
-          setError(rzpErr?.description || rzpErr?.message || 'Payment was cancelled or failed');
-          throw new Error(
-            rzpErr?.description || rzpErr?.message || 'Payment was cancelled or failed'
-          );
+          setError(friendly);
+          throw new Error(friendly);
         }
 
         // ── Step 4: Verify signature on backend ──
@@ -586,8 +635,10 @@ export function useRazorpay(): UseRazorpayReturn {
 
       } catch (err: any) {
         if (!abortRef.current) {
-          console.error('[useRazorpay] Final Error:', err);
-          setError(err.message || 'Payment failed');
+          const friendly = parseRazorpayError(err);
+          // Log once — err.message is often already the same friendly string.
+          console.error('[useRazorpay] Final Error:', friendly);
+          setError(friendly);
           setStatus('failed');
           statusRef.current = 'failed';
 
@@ -602,7 +653,7 @@ export function useRazorpay(): UseRazorpayReturn {
                 orderId: opts.orderId || orderId || 'N/A',
                 total: opts.amount,
                 paymentMethod: method === 'upi' ? 'UPI' : method === 'card' ? 'Credit/Debit Card' : method === 'netbanking' ? 'Net Banking' : 'Wallet',
-                errorMessage: err.message || 'Payment failed',
+                errorMessage: friendly,
               }),
             }).catch(() => {});
           } catch (emailErr) {

@@ -184,16 +184,7 @@ export function normalizeUPIApps(payload: unknown): UPIApp[] {
     appMap.set(app.package_name, app);
   });
 
-  preferredUPIApps.forEach(app => {
-    if (!appMap.has(app.package_name)) {
-      appMap.set(app.package_name, app);
-    }
-  });
-
-  return Array.from(appMap.values()).sort((a, b) => {
-    if (!!a.is_available !== !!b.is_available) return a.is_available ? -1 : 1;
-    return a.app_name.localeCompare(b.app_name);
-  });
+  return Array.from(appMap.values()).sort((a, b) => a.app_name.localeCompare(b.app_name));
 }
 
 function getRazorpay(): any {

@@ -108,12 +108,16 @@ export default function RazorpayPaymentScreen() {
 
   useEffect(() => {
     if (tab === 'upi') {
-      const firstAvailableApp = upiApps.find(app => app.is_available !== false);
-      if (firstAvailableApp && !selectedUPIApp) {
-        setSelectedUPIApp(firstAvailableApp.package_name);
+      if (!isLoadingApps && upiApps.length === 0) {
+        setUpiSubTab('id');
+      } else {
+        const firstAvailableApp = upiApps.find(app => app.is_available !== false);
+        if (firstAvailableApp && !selectedUPIApp) {
+          setSelectedUPIApp(firstAvailableApp.package_name);
+        }
       }
     }
-  }, [tab, upiApps, selectedUPIApp]);
+  }, [tab, upiApps, selectedUPIApp, isLoadingApps]);
 
   useEffect(() => {
     Animated.spring(tabIndicator, { toValue: TABS.indexOf(tab) * tabWidth, friction: 8, tension: 40, useNativeDriver: true }).start();
@@ -424,6 +428,12 @@ export default function RazorpayPaymentScreen() {
                   ) : displayUpiApps.length === 0 ? (
                     <View style={s.emptyBox}>
                        <Typography size={10} color={colors.textMuted} style={{ textAlign: 'center', lineHeight: 18 }}>No UPI apps detected on this device.</Typography>
+                       <TouchableOpacity
+                         style={[s.subTab, { backgroundColor: colors.surface, borderColor: colors.borderLight, marginTop: 14, paddingHorizontal: 20, alignSelf: 'center' }]}
+                         onPress={() => setUpiSubTab('id')}
+                       >
+                         <Typography size={10} weight="800" color={colors.text}>PAY VIA UPI ID INSTEAD</Typography>
+                       </TouchableOpacity>
                     </View>
                   ) : (
                     <View style={s.methodGrid}>

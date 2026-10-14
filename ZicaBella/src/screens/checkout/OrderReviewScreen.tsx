@@ -56,6 +56,7 @@ export default function OrderReviewScreen() {
     type: string;
     value: number;
     discountAmount: number;
+    autoApply?: boolean;
   } | null>(null);
 
   const subtotal = checkoutTotal;
@@ -114,6 +115,47 @@ export default function OrderReviewScreen() {
     fetchCredits();
   }, [user]);
 
+  // Manual promo sticky until user removes it (don't let auto-apply overwrite).
+  const manualPromoRef = React.useRef(false);
+
+  // ─── Auto-apply best coupon for COD or prepaid ───
+  // Uses storefront coupons (live on prod) + PREPAID10 fallback — not only /discounts/active.
+  React.useEffect(() => {
+    if (subtotal <= 0) return;
+    if (manualPromoRef.current) return;
+
+    let isCancelled = false;
+    const paymentMethod = selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID';
+
+    const autoApply = async () => {
+      try {
+        const { fetchBestAutoApplyPromo } = await import('../../utils/autoApplyPromo');
+        const best = await fetchBestAutoApplyPromo({
+          appUrl: config.appUrl,
+          subtotal,
+          paymentMethod,
+        });
+        if (isCancelled || manualPromoRef.current) return;
+
+        if (best?.code) {
+          setAppliedDiscount(best);
+          setPromoCode(best.code);
+          setPromoError(null);
+        } else {
+          setAppliedDiscount((prev) => (prev && !manualPromoRef.current ? null : prev));
+          setPromoCode((prev) => (manualPromoRef.current ? prev : ''));
+        }
+      } catch (e) {
+        console.warn('[OrderReview] auto-apply failed:', e);
+      }
+    };
+    autoApply();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedPaymentMethod, subtotal]);
+
   // ─── Promo Code Handlers ─────────────────────────────────────────────
   const handleApplyPromo = async () => {
     if (!promoCode.trim()) return;
@@ -121,15 +163,21 @@ export default function OrderReviewScreen() {
     setPromoError(null);
 
     try {
+      const paymentMethod = selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID';
       const res = await fetch(`${config.appUrl}/api/app/discounts/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: promoCode.trim(), orderAmount: subtotal }),
+        body: JSON.stringify({
+          code: promoCode.trim(),
+          orderAmount: subtotal,
+          paymentMethod,
+        }),
       });
       const data = await res.json();
 
       if (data.success) {
         haptics.success();
+        manualPromoRef.current = true;
         setAppliedDiscount(data.discount);
         setPromoError(null);
       } else {
@@ -147,6 +195,7 @@ export default function OrderReviewScreen() {
 
   const handleRemovePromo = () => {
     haptics.buttonTap();
+    manualPromoRef.current = false;
     setAppliedDiscount(null);
     setPromoCode('');
     setPromoError(null);
