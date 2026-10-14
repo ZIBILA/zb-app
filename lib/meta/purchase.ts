@@ -105,7 +105,7 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
   // Placeholder names ('Customer', 'Valued Customer' …) are skipped for the next real one.
   const name = String(pickRealName(addr.name, order.customer?.name) || '').trim().split(/\s+/).filter(Boolean);
 
-  const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
+  const contents: Array<{ id: string; quantity: number; item_price?: number; delivery_category: string }> = [];
   let numItems = 0;
   for (const it of order.items || []) {
     const qty = Math.max(1, Number(it.quantity) || 1);
@@ -114,7 +114,8 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
     const id = snapCatalogIdFromOrderItem(it);
     if (!id) continue;
     const price = Number(it.price);
-    contents.push({ id, quantity: qty, ...(Number.isFinite(price) && price > 0 ? { item_price: price } : {}) });
+    // delivery_category: every web order is shipped (same value as the browser Pixel copy).
+    contents.push({ id, quantity: qty, ...(Number.isFinite(price) && price > 0 ? { item_price: price } : {}), delivery_category: 'home_delivery' });
   }
 
   const emailCandidates = [addr.email, order.customer?.email].filter(

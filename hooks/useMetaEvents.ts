@@ -36,6 +36,30 @@ export function metaCartPayload(
   };
 }
 
+/**
+ * Meta `contents` objects carry only the documented fields (`id`, `quantity`,
+ * `item_price`, optional `delivery_category`). Title / category / a duplicate
+ * `price` key belong to GA4 items, not to the Pixel or CAPI payload.
+ */
+export function metaContents(
+  items: Array<{ id: string; quantity?: number; item_price?: number; price?: number }> | undefined,
+  fallbackUnitPrice?: number,
+  deliveryCategory?: 'home_delivery' | 'in_store' | 'curbside',
+): { id: string; quantity: number; item_price?: number; delivery_category?: string }[] {
+  return (items || [])
+    .filter(it => it && it.id)
+    .map(it => {
+      const raw = it.item_price !== undefined ? it.item_price : (it.price !== undefined ? it.price : fallbackUnitPrice);
+      const price = raw === undefined ? undefined : Number(raw);
+      return {
+        id: String(it.id),
+        quantity: Math.max(1, Number(it.quantity) || 1),
+        ...(price !== undefined && Number.isFinite(price) ? { item_price: price } : {}),
+        ...(deliveryCategory ? { delivery_category: deliveryCategory } : {}),
+      };
+    });
+}
+
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
     const r = (Math.random() * 16) | 0;
@@ -353,7 +377,7 @@ export function useMetaEvents() {
       currency,
       content_ids: contentIds,
       content_type: 'product',
-      contents: finalContents
+      contents: metaContents(finalContents)
     });
     trackEvent('AddPaymentInfo', customData, base.eventId);
     sendToCapiRoute({ 
@@ -384,19 +408,10 @@ export function useMetaEvents() {
       initPixel(userData);
     }
     
-    // Map contents to include title, category, and standard price parameters
+    // Meta contents: id / quantity / item_price only (title and category stay in the
+    // GA4 items below). A line without its own price gets an even share of the value.
     const rawContents = contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []);
-    const mappedContents = rawContents.map((item: any) => {
-      const priceVal = item.item_price !== undefined ? item.item_price : (value / (rawContents.length || 1));
-      return {
-        id: item.id,
-        quantity: item.quantity || 1,
-        price: priceVal,
-        item_price: priceVal,
-        title: (item as any).title || undefined,
-        category: (item as any).category || undefined
-      };
-    });
+    const mappedContents = metaContents(rawContents, value / (rawContents.length || 1));
     
     // Server CAPI receives the real value and mapped contents — adjustment happens server-side
     const capiCustomData = cleanCustomData({
@@ -461,19 +476,10 @@ export function useMetaEvents() {
       initPixel(userData);
     }
     
-    // Map contents to include title, category, and standard price parameters
+    // Meta contents: id / quantity / item_price only, plus delivery_category (every
+    // web order ships to the door). Title and category stay in the GA4 items.
     const rawContents = contents || contentIds.map(id => ({ id, quantity: 1, item_price: value / (contentIds.length || 1) }));
-    const mappedContents = rawContents.map((item: any) => {
-      const priceVal = item.item_price !== undefined ? item.item_price : (value / (rawContents.length || 1));
-      return {
-        id: item.id,
-        quantity: item.quantity || 1,
-        price: priceVal,
-        item_price: priceVal,
-        title: (item as any).title || undefined,
-        category: (item as any).category || undefined
-      };
-    });
+    const mappedContents = metaContents(rawContents, value / (rawContents.length || 1), 'home_delivery');
 
     // Pixel fires immediately with the CONFIRMED ORDER's value/currency/contents —
     // never a value cached by an earlier checkout step. eventID = order id, the same
