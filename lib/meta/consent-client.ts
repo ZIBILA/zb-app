@@ -93,7 +93,7 @@ export function resolveMetaConsentCountry(): Promise<string | null> {
       let cc: string | null = null;
       try {
         const res = await fetch('/api/geo', { cache: 'no-store' });
-        const data: any = res.ok ? await res.json() : null;
+        const data = (res.ok ? await res.json() : null) as { ok?: boolean; countryCode?: unknown } | null;
         if (data?.ok && typeof data.countryCode === 'string' && /^[A-Za-z]{2}$/.test(data.countryCode)) cc = data.countryCode.toUpperCase();
       } catch { /* unknown stays pending: tracking is held, never assumed */ }
       if (cc) setClientCookie(GEO_COUNTRY_COOKIE, cc, 1);

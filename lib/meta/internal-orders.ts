@@ -40,9 +40,9 @@ export function internalOrderLists(env: NodeJS.ProcessEnv = process.env): Intern
   };
 }
 
-function parseAddress(raw: unknown): Record<string, any> {
+function parseAddress(raw: unknown): Record<string, unknown> {
   if (!raw) return {};
-  if (typeof raw === 'object') return raw as Record<string, any>;
+  if (typeof raw === 'object') return raw as Record<string, unknown>;
   try { return JSON.parse(String(raw)) || {}; } catch { return {}; }
 }
 
