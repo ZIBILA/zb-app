@@ -1,7 +1,7 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
-import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies } from "@/lib/meta/identity-cookies";
+import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
   DASHBOARD_HOME: ["/dashboard"],
@@ -204,8 +204,8 @@ export default withAuth(
     const attachMetaIdentityCookies = (res: NextResponse) => {
       if (!wantsIdentityCookies) return res;
       try {
-        const host = req.headers.get('x-forwarded-host')?.split(':')[0] || req.headers.get('host')?.split(':')[0] || req.nextUrl.hostname;
-        const proto = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '');
+        const host = req.headers.get('x-forwarded-host')?.split(',')[0].split(':')[0].trim() || req.headers.get('host')?.split(':')[0] || req.nextUrl.hostname;
+        const proto = (req.headers.get('x-forwarded-proto') || req.nextUrl.protocol.replace(':', '')).split(',')[0].trim();
         const domain = identityCookieDomain(host);
         const plan = planMetaIdentityCookies({
           fbp: req.cookies.get('_fbp')?.value,
@@ -215,16 +215,18 @@ export default withAuth(
           nowMs: Date.now(),
           uuid: () => crypto.randomUUID(),
         });
-        for (const c of plan) {
-          res.cookies.set(c.name, c.value, {
-            path: '/',
-            maxAge: c.maxAge,
-            sameSite: 'lax',
-            secure: proto === 'https',
-            httpOnly: false, // the Pixel SDK and the storefront code read these
-            ...(domain ? { domain } : {}),
-          });
+        // Set-Cookie on an HTML response can stop a CDN caching it, so unchanged
+        // values are refreshed at most once per 12 h (marker cookie zb_idc); a new
+        // or changed value (first visit, new click id) is always written.
+        const refreshDue = !req.cookies.get(IDENTITY_REFRESH_MARKER)?.value;
+        const toSet = plan.filter(c => c.changed || refreshDue);
+        if (toSet.length === 0) return res;
+        const opts = { path: '/', sameSite: 'lax' as const, secure: proto === 'https', ...(domain ? { domain } : {}) };
+        for (const c of toSet) {
+          // Not HttpOnly: the Pixel SDK and the storefront code read these.
+          res.cookies.set(c.name, c.value, { ...opts, maxAge: c.maxAge, httpOnly: false });
         }
+        if (refreshDue) res.cookies.set(IDENTITY_REFRESH_MARKER, '1', { ...opts, maxAge: IDENTITY_REFRESH_INTERVAL_S, httpOnly: true });
       } catch (e: any) {
         console.warn('[Middleware] Meta identity cookies skipped:', e?.message);
       }

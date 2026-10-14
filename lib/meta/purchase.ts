@@ -439,7 +439,7 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
       const batch = await prisma.order.findMany({
         where: { id: { in: missing.slice(i, i + 100) } },
         orderBy: { createdAt: 'asc' },
-        select: { id: true, tags: true, totalPrice: true, orderType: true, items: true },
+        select: { id: true, tags: true, totalPrice: true, orderType: true, customerId: true, items: true },
       });
       for (const o of batch) {
         if (out.length >= limit) break;

@@ -19,6 +19,7 @@ export const META_CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_
 type Listener = (state: ConsentState) => void;
 const listeners = new Set<Listener>();
 const pendingRelays: Array<() => void> = [];
+const pendingDrops: Array<(() => void) | undefined> = [];
 const MAX_QUEUE = 50;
 let countryLookup: Promise<string | null> | null = null;
 
@@ -43,7 +44,8 @@ function notify() {
 
 function flushQueue(run: boolean) {
   const q = pendingRelays.splice(0);
-  if (!run) return;
+  const drops = pendingDrops.splice(0);
+  if (!run) { for (const d of drops) { try { d?.(); } catch { /* ignore */ } } return; }
   for (const fn of q) { try { fn(); } catch { /* ignore */ } }
 }
 
@@ -51,11 +53,12 @@ function flushQueue(run: boolean) {
  * Run `send` now when tracking is allowed; queue it while consent is pending;
  * drop it when consent was denied.
  */
-export function whenMetaConsentAllows(send: () => void): void {
+export function whenMetaConsentAllows(send: () => void, onDrop?: () => void): void {
   const s = readMetaConsentState();
   if (!s.gated || s.status === 'granted') { send(); return; }
-  if (s.status === 'denied') return;
-  if (pendingRelays.length < MAX_QUEUE) pendingRelays.push(send);
+  if (s.status === 'denied') { onDrop?.(); return; }
+  if (pendingRelays.length < MAX_QUEUE) { pendingRelays.push(send); pendingDrops.push(onDrop); return; }
+  onDrop?.();
 }
 
 export function onMetaConsentChange(listener: Listener): () => void {

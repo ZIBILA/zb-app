@@ -79,7 +79,10 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   // Consent regions: hold the relay until the visitor's consent is known (queued,
   // flushed on grant, dropped on deny). No-op pass-through when no region is set.
   return new Promise<any>((resolve) => {
-    whenMetaConsentAllows(() => { relayToCapiRoute(payload).then(resolve, () => resolve(null)); });
+    whenMetaConsentAllows(
+      () => { relayToCapiRoute(payload).then(resolve, () => resolve(null)); },
+      () => resolve(null), // consent denied (or queue full): the relay is dropped
+    );
   });
 }
 

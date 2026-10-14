@@ -134,8 +134,9 @@ export default function ProductDetailsClient({
   }, [product.id, product.title, product.product_type]);
 
   // Meta ViewContent: once per product, in the currency the shopper sees. The pricing
-  // config loads client-side, so wait for it (bounded: 2.5 s) rather than report INR
-  // to a visitor who is shown USD/GBP. India is unaffected (identity conversion).
+  // config loads client-side; a returning non-India visitor (zb_country cookie) waits
+  // for it (bounded: 2.5 s) rather than report INR for a page priced in USD/GBP.
+  // India and first-time visitors fire immediately, exactly as before.
   useEffect(() => {
     const key = product.id.toString();
     if (metaViewContentFiredFor.current === key) return;
@@ -145,7 +146,8 @@ export default function ProductDetailsClient({
       const variantId = product.variants?.[0]?.id?.toString() || key;
       trackViewContent(variantId, product.title, metaMoney.amount(parseFloat(product.variants?.[0]?.price || "0")), metaMoney.currency, product.product_type);
     };
-    if (!countryLoading) { fire(); return; }
+    const cookieCountry = (typeof document !== "undefined" && document.cookie.match(/(?:^|; )zb_country=([^;]*)/)?.[1]) || "";
+    if (!countryLoading || !cookieCountry || cookieCountry.toUpperCase() === "IN") { fire(); return; }
     const t = setTimeout(fire, 2500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps

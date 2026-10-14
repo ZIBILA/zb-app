@@ -54,8 +54,10 @@ export function MetaPixelRouteTracker() {
   useEffect(() => {
     // Don't fire any pixel/CAPI events on admin dashboard or admin routes
     if (pathname.startsWith('/dashboard') || pathname.startsWith('/admin') || pathname.startsWith('/web-store')) return;
-    // Meta tracking is off on this deployment (lib/meta/config.ts): no Pixel, no relay.
-    if (!META_PIXEL_ID) return;
+    // Meta tracking off on this deployment (lib/meta/config.ts): the Pixel call is a
+    // no-op inside withFbq and the CAPI relay below is skipped; GA4 / first-party
+    // PageViews and the identity-cookie housekeeping keep running regardless.
+    const metaOn = !!META_PIXEL_ID;
 
     // ─── STEP 1: Synchronous setup (cookies, fbclid capture) ───
 
@@ -153,7 +155,7 @@ export function MetaPixelRouteTracker() {
     // Include piiOwner so the server can verify PII cookie identity binding
     builtIdentity.piiOwner = getClientCookie('zb_pii_owner') || undefined;
 
-    if (shouldFirePageView) {
+    if (shouldFirePageView && metaOn) {
       whenMetaConsentAllows(() => fetch('/api/meta/event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -168,7 +170,9 @@ export function MetaPixelRouteTracker() {
         }),
         keepalive: true, // survives an immediate navigation away from the page
       }).catch(err => console.warn('[Tracker Client] PageView CAPI failed:', err)));
+    }
 
+    if (shouldFirePageView) {
       // GA PageView
       trackGAPageView(pathname);
 

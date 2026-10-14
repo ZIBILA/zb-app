@@ -334,44 +334,64 @@ export default function CheckoutPage() {
 
 
 
+  // Address state → identity for the checkout-start events (shared by Meta and Snap).
+  const checkoutIdentity = (): any => {
+    if (!(address.email || address.phone || address.city)) return undefined;
+    const nameParts = (address.name || "").trim().split(/\s+/);
+    return {
+      country: address.country || undefined,
+      st: address.state || undefined,
+      ct: address.city || undefined,
+      zp: address.zip || undefined,
+      fn: nameParts[0] || undefined,
+      ln: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+      em: address.email || undefined,
+      ph: address.phone || undefined,
+    };
+  };
+
+  // Meta InitiateCheckout: money = the display currency. It waits (bounded, 2.5 s)
+  // for the client-side pricing config only when a non-India country cookie says a
+  // conversion may apply; India and first-time visitors fire immediately, as before.
+  // Nothing else on this page waits for it (GA4 / Snap / OpenAI / zb fire below as on main).
+  const metaIcFiredRef = useRef(false);
   useEffect(() => {
-    // Wait for the pricing config too, so an international shopper's InitiateCheckout
-    // carries the displayed currency (the config fetch always settles, success or not).
-    const canFire = !countryLoading && (status === "unauthenticated" || (status === "authenticated" && addressesLoaded));
+    const canFire = status === "unauthenticated" || (status === "authenticated" && addressesLoaded);
+    if (items.length === 0 || metaIcFiredRef.current || !canFire) return;
+    const fire = () => {
+      if (metaIcFiredRef.current) return;
+      metaIcFiredRef.current = true;
+      const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ') || undefined;
+      const userData = checkoutIdentity();
+      // Meta: feed.xml g:id = variant id; num_items = total units.
+      const meta = metaCartPayload(items, metaMoney);
+      trackInitiateCheckout(
+        metaMoney.amount(subtotal), meta.numItems, metaMoney.currency, joinedCategories, meta.ids,
+        userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
+        meta.contents,
+        { ga: false }
+      );
+    };
+    const cookieCountry = (typeof document !== "undefined" && document.cookie.match(/(?:^|; )zb_country=([^;]*)/)?.[1]) || "";
+    if (!countryLoading || !cookieCountry || cookieCountry.toUpperCase() === "IN") { fire(); return; }
+    const t = setTimeout(fire, 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, subtotal, status, addressesLoaded, countryLoading]);
+
+  useEffect(() => {
+    const canFire = status === "unauthenticated" || (status === "authenticated" && addressesLoaded);
 
     if (items.length > 0 && !initiatedPixel && canFire) {
       setInitiatedPixel(true);
       const joinedCategories = items.map(item => item.category).filter(Boolean).join(', ') || undefined;
-      // Product ids — used by OpenAI Ads below (unchanged). Meta uses variant ids (metaCartPayload).
+      // Product ids — used by OpenAI Ads below (unchanged). Meta uses variant ids (above).
       const contentIds = items.map(item => item.productId);
 
       // Parse the pre-filled/saved address state into userData
-      let userData: any = undefined;
-      if (address.email || address.phone || address.city) {
-        const nameParts = (address.name || "").trim().split(/\s+/);
-        const fn = nameParts[0] || undefined;
-        const ln = nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined;
-        userData = {
-          country: address.country || undefined,
-          st: address.state || undefined,
-          ct: address.city || undefined,
-          zp: address.zip || undefined,
-          fn,
-          ln,
-          em: address.email || undefined,
-          ph: address.phone || undefined,
-        };
-      }
+      const userData: any = checkoutIdentity();
 
       {
-        // Meta: feed.xml g:id = variant id; num_items = total units; money = display currency.
-        const meta = metaCartPayload(items, metaMoney);
-        trackInitiateCheckout(
-          metaMoney.amount(subtotal), meta.numItems, metaMoney.currency, joinedCategories, meta.ids,
-          userData ? { ...userData, country: address.countryCode || address.country || undefined } : undefined,
-          meta.contents,
-          { ga: false }
-        );
         // GA4 begin_checkout exactly as on main (product ids, cart lines).
         ga4BeginCheckout(subtotal, 'INR', joinedCategories, contentIds, items.map(item => ({
           id: item.productId,
@@ -407,7 +427,7 @@ export default function CheckoutPage() {
         }
       });
     }
-  }, [items, subtotal, initiatedPixel, session, address, status, addressesLoaded, countryLoading]);
+  }, [items, subtotal, initiatedPixel, session, address, status, addressesLoaded]);
 
 
   const [addressErrors, setAddressErrors] = useState<Record<string, string>>({});

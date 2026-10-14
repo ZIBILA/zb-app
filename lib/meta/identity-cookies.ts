@@ -25,6 +25,14 @@ export const EXTERNAL_ID_COOKIE = 'zb_external_id';
 /** Meta recommends 90 days for _fbp / _fbc; the external id follows the client's 365 days. */
 export const FBP_FBC_MAX_AGE_S = 90 * 24 * 60 * 60;
 export const EXTERNAL_ID_MAX_AGE_S = 365 * 24 * 60 * 60;
+/**
+ * Unchanged values are re-set (full max-age, HTTP) at most this often, tracked by
+ * a small HttpOnly marker cookie: well inside Safari's 24 h / 7 d caps, and no
+ * Set-Cookie on most page responses (a CDN may refuse to cache a response that
+ * carries one).
+ */
+export const IDENTITY_REFRESH_MARKER = 'zb_idc';
+export const IDENTITY_REFRESH_INTERVAL_S = 12 * 60 * 60;
 
 const FBP_RE = /^fb\.\d\.\d{10,13}\.\d+$/;
 const FBC_RE = /^fb\.\d\.\d{10,13}\..+$/;
