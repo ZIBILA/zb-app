@@ -48,10 +48,41 @@ function cdata(text: string): string {
   return `<![CDATA[${safe}]]>`;
 }
 
-function formatPrice(price: string | number): string {
+/** How a feed prices its items: INR base (default), or a global-store country's display currency. */
+interface FeedMoney {
+  currency: string;
+  amount: (inr: number) => number;
+}
+const INR_FEED: FeedMoney = { currency: 'INR', amount: (inr) => inr };
+
+function formatPrice(price: string | number, money: FeedMoney = INR_FEED): string {
   const num = typeof price === 'string' ? parseFloat(price) : price;
   if (isNaN(num) || num <= 0) return '';
-  return `${num.toFixed(2)} INR`;
+  const converted = money.amount(num);
+  if (!Number.isFinite(converted) || converted <= 0) return '';
+  return `${converted.toFixed(2)} ${money.currency}`;
+}
+
+/**
+ * `?country=GB` → the feed priced as that country's storefront shows and charges
+ * (INR × multiplier × FX, lib/global-pricing). Only an ACTIVE non-base country of an
+ * ENABLED global store converts; anything else is the plain INR feed. Register each
+ * country feed in Commerce Manager as a country/language feed override so catalog
+ * ads abroad show local prices that match the local Purchase values.
+ */
+async function resolveFeedMoney(countryParam: string | null): Promise<FeedMoney> {
+  const cc = String(countryParam || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc) || cc === 'IN') return INR_FEED;
+  try {
+    const { isGlobalStoreEnabled, getCountryConfig, formatPriceWithConfig } = await import('@/lib/global-pricing');
+    if (!(await isGlobalStoreEnabled())) return INR_FEED;
+    const cfg = await getCountryConfig(cc);
+    if (!cfg || cfg.code !== cc || cfg.isBase || !cfg.isActive) return INR_FEED;
+    return { currency: String(cfg.currencyCode).toUpperCase(), amount: (inr) => formatPriceWithConfig(inr, cfg, true).amount };
+  } catch (err) {
+    console.warn('[Feed] country pricing unavailable, serving INR:', (err as Error)?.message);
+    return INR_FEED;
+  }
 }
 
 function getVariantAttributes(
@@ -75,7 +106,8 @@ function getVariantAttributes(
 
 function generateItemXml(
   product: ShopifyProduct,
-  variant: ShopifyProduct['variants'][0]
+  variant: ShopifyProduct['variants'][0],
+  money: FeedMoney = INR_FEED
 ): string {
   const { size, color } = getVariantAttributes(product, variant);
 
@@ -105,10 +137,10 @@ function generateItemXml(
   let salePriceTag = '';
 
   if (compareAtPrice && compareAtPrice > variantPrice && variantPrice > 0) {
-    priceTag = formatPrice(compareAtPrice);
-    salePriceTag = formatPrice(variantPrice);
+    priceTag = formatPrice(compareAtPrice, money);
+    salePriceTag = formatPrice(variantPrice, money);
   } else if (variantPrice > 0) {
-    priceTag = formatPrice(variantPrice);
+    priceTag = formatPrice(variantPrice, money);
   }
 
   const productType = product.product_type || '';
@@ -157,10 +189,14 @@ function generateItemXml(
   return lines.join('\n');
 }
 
-export async function GET(): Promise<Response> {
+export async function GET(req?: Request): Promise<Response> {
   const startTime = Date.now();
   try {
     console.log('[Feed] Starting feed generation...');
+
+    let countryParam: string | null = null;
+    try { countryParam = req ? new URL(req.url).searchParams.get('country') : null; } catch { countryParam = null; }
+    const money = await resolveFeedMoney(countryParam);
 
     const loaded = await loadFeedProducts();
     console.log(
@@ -172,7 +208,7 @@ export async function GET(): Promise<Response> {
       if (!product.variants || !Array.isArray(product.variants)) continue;
       for (const variant of product.variants) {
         if (!variant) continue;
-        items.push(generateItemXml(product, variant));
+        items.push(generateItemXml(product, variant, money));
       }
     }
 
@@ -206,6 +242,7 @@ ${items.join('\n')}
         'Cache-Control': 'public, s-maxage=900, stale-while-revalidate=1800',
         'X-Feed-Items': String(items.length),
         'X-Feed-Generated': now,
+        'X-Feed-Currency': money.currency,
       },
     });
   } catch (err) {
