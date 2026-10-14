@@ -4,6 +4,7 @@ import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize';
 import { META_INR, type MetaMoney } from '@/lib/meta/money';
+import { claimInitiateCheckout, initiateCheckoutCartKey } from '@/lib/meta/initiate-checkout';
 
 /**
  * Cart → Meta catalog payload. Catalog item id = feed.xml <g:id> = Shopify VARIANT id
@@ -407,15 +408,23 @@ export function useMetaEvents() {
     const cacheKey = `InitiateCheckout-${value}-${numItems}`;
     if (!shouldFireEvent(cacheKey)) return;
 
-    const base = getBasePayload('InitiateCheckout');
-    if (userData) {
-      initPixel(userData);
-    }
-    
     // Meta contents: id / quantity / item_price only (title and category stay in the
     // GA4 items below). A line without its own price gets an even share of the value.
     const rawContents = contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []);
     const mappedContents = metaContents(rawContents, value / (rawContents.length || 1));
+
+    // One Meta InitiateCheckout per checkout attempt: the /checkout page remounts
+    // after the guest→login redirect and would fire again for the same cart
+    // (lib/meta/initiate-checkout.ts). GA4 below is unchanged (fires as on main).
+    const base = getBasePayload('InitiateCheckout');
+    const claim = claimInitiateCheckout(initiateCheckoutCartKey(mappedContents, contentIds), base.eventId);
+    if (!claim.fire) {
+      if (opts.ga !== false) ga4BeginCheckout(value, currency, contentCategory, contentIds, rawContents);
+      return;
+    }
+    if (userData) {
+      initPixel(userData);
+    }
     
     // Server CAPI receives the real value and mapped contents — adjustment happens server-side
     const capiCustomData = cleanCustomData({
