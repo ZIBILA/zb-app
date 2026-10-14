@@ -27,9 +27,12 @@ import { isPrivateIP } from '@/lib/ip-geo';
 import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
+import { parseConsentRegions } from '@/lib/meta/consent';
 
 const PLATFORM = 'meta';
 const EVENT = 'Purchase';
+/** Regions where a shopper must opt in (empty = no consent gating). */
+const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
 
 /** Payment states that represent a completed conversion. */
 export const META_PURCHASE_PAYMENT_STATUSES = new Set(['paid', 'cod_upfront_paid']);
@@ -40,6 +43,8 @@ export interface MetaClickContext {
   externalId?: string;
   ipAddress?: string;
   userAgent?: string;
+  /** The shopper's consent choice at checkout (zb_consent cookie), when consent regions are configured. */
+  consent?: 'granted' | 'denied';
 }
 
 function readCookie(header: string, name: string): string | undefined {
@@ -69,12 +74,14 @@ export function metaContextFromRequest(
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
   const fbp = readCookie(cookie, '_fbp') || str(fallback.fbp);
   const fbc = readCookie(cookie, '_fbc') || str(fallback.fbc);
+  const consentRaw = (readCookie(cookie, 'zb_consent') || '').toLowerCase();
   return {
     fbp: fbp && FBP_RE.test(fbp) ? fbp : undefined,
     fbc: fbc && FBC_RE.test(fbc) ? fbc : undefined,
     externalId: readCookie(cookie, 'zb_external_id') || str(fallback.externalId),
     ipAddress: ip && !isPrivateIP(ip) ? ip : undefined,
     userAgent: req.headers.get('user-agent') || undefined,
+    ...(consentRaw === 'granted' || consentRaw === 'denied' ? { consent: consentRaw as 'granted' | 'denied' } : {}),
   };
 }
 
@@ -321,6 +328,23 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     if (internal) {
       await closeAsInternal(orderId, internal);
       return { status: 'skipped', reason: `internal order (${internal})` };
+    }
+    // Consent regions: a shopper who declined tracking at checkout is never reported.
+    // The choice travels in the click context (this request's, or the one recorded
+    // at order pre-creation for the webhook / cron paths).
+    if (CONSENT_REGIONS.size > 0) {
+      let consent = ctx?.consent;
+      if (!consent) {
+        try {
+          const row = await prisma.adConversionDelivery.findUnique({ where: key(orderId), select: { context: true } });
+          const stored = (row?.context || {}) as Record<string, unknown>;
+          if (stored.consent === 'denied' || stored.consent === 'granted') consent = stored.consent;
+        } catch { /* no row yet */ }
+      }
+      if (consent === 'denied') {
+        await closeAsInternal(orderId, 'consent denied');
+        return { status: 'skipped', reason: 'internal order (consent denied)' };
+      }
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!META_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {

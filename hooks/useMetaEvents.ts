@@ -5,6 +5,7 @@ import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize';
 import { META_INR, type MetaMoney } from '@/lib/meta/money';
 import { claimInitiateCheckout, initiateCheckoutCartKey } from '@/lib/meta/initiate-checkout';
+import { whenMetaConsentAllows } from '@/lib/meta/consent-client';
 
 /**
  * Cart → Meta catalog payload. Catalog item id = feed.xml <g:id> = Shopify VARIANT id
@@ -75,6 +76,14 @@ function uuidv4() {
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
   if (!META_PIXEL_ID) return null;
+  // Consent regions: hold the relay until the visitor's consent is known (queued,
+  // flushed on grant, dropped on deny). No-op pass-through when no region is set.
+  return new Promise<any>((resolve) => {
+    whenMetaConsentAllows(() => { relayToCapiRoute(payload).then(resolve, () => resolve(null)); });
+  });
+}
+
+async function relayToCapiRoute(payload: Record<string, any>): Promise<any> {
   try {
     // Build identity data via the shared builder — ensures demo values are filtered,
     // empty fields are omitted, and all events get consistent identity enrichment.

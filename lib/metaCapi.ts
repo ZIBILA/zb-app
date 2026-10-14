@@ -16,6 +16,7 @@ import {
 } from './tracking/placeholder-identity';
 
 import { resolveMetaServerPixelId, metaPixelIdProblem } from './meta/config';
+import { ldUFields } from './meta/consent';
 
 // '' when Meta tracking is off on this deployment (see lib/meta/config.ts): every
 // send is then skipped with a logged alert instead of feeding the live dataset.
@@ -268,6 +269,8 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
         action_source: payload.actionSource ?? 'website',
         user_data: cleanedUserData,
         ...(Object.keys(cleanedCustomData).length > 0 ? { custom_data: cleanedCustomData } : {}),
+        // Limited Data Use when NEXT_PUBLIC_META_LDU=1 (Meta applies it by the visitor's location).
+        ...ldUFields(),
       },
     ],
   };

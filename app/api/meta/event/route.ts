@@ -9,6 +9,7 @@ import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/i
 import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
+import { parseConsentRegions } from '@/lib/meta/consent';
 import crypto from 'crypto';
 
 /**
@@ -34,6 +35,7 @@ const ALLOWED_EVENTS = new Set([
 const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 /** Events whose caller-supplied identity (typed/verified for that event) survives the guest strip. */
 const EXPLICIT_IDENTITY_EVENTS = new Set(['Lead', 'Subscribe', 'CompleteRegistration']);
+const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
 const MAX_VALUE = 10_000_000;
 const MAX_LIST = 100;
 
@@ -214,6 +216,23 @@ export async function POST(req: NextRequest) {
         currency: cd?.currency,
         contents: cd?.contents,
       });
+    }
+
+    // Consent regions (server backstop for the browser-side hold): a visitor who
+    // declined, or who is in a consent region and has not decided yet, is not relayed.
+    if (CONSENT_REGIONS.size > 0) {
+      const choice = String(req.cookies.get('zb_consent')?.value || '').toLowerCase();
+      if (choice === 'denied') return NextResponse.json({ success: true, skipped: true, reason: 'consent_denied' });
+      if (choice !== 'granted') {
+        let cc = String(req.cookies.get('zb_geo_cc')?.value || '').toUpperCase();
+        if (!/^[A-Z]{2}$/.test(cc)) {
+          const looked = await lookupIpGeo(ip, req);
+          cc = looked && !looked.isDevFallback ? String(looked.countryCode || '').toUpperCase() : '';
+        }
+        if (!/^[A-Z]{2}$/.test(cc) || CONSENT_REGIONS.has(cc)) {
+          return NextResponse.json({ success: true, skipped: true, reason: 'consent_pending' });
+        }
+      }
     }
 
     const fbp = req.cookies.get('_fbp')?.value;

@@ -17,6 +17,7 @@ import {
   deleteClientCookie,
 } from '@/lib/metaPixel';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
+import { whenMetaConsentAllows } from '@/lib/meta/consent-client';
 
 import { pageview as trackGAPageView } from '@/lib/gtag';
 import { trackPageView as trackZBPageView } from '@/lib/analytics-tracker';
@@ -153,7 +154,7 @@ export function MetaPixelRouteTracker() {
     builtIdentity.piiOwner = getClientCookie('zb_pii_owner') || undefined;
 
     if (shouldFirePageView) {
-      fetch('/api/meta/event', {
+      whenMetaConsentAllows(() => fetch('/api/meta/event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -166,7 +167,7 @@ export function MetaPixelRouteTracker() {
           userData: builtIdentity,
         }),
         keepalive: true, // survives an immediate navigation away from the page
-      }).catch(err => console.warn('[Tracker Client] PageView CAPI failed:', err));
+      }).catch(err => console.warn('[Tracker Client] PageView CAPI failed:', err)));
 
       // GA PageView
       trackGAPageView(pathname);
