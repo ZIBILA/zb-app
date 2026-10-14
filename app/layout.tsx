@@ -18,6 +18,7 @@ import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
 import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES, PLACEHOLDER_ZIP_HASHES } from "@/lib/tracking/placeholder-identity";
 import { resolveSnapPixelId } from "@/lib/snap/config";
+import { resolveMetaPixelId } from "@/lib/meta/config";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -151,7 +152,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || "2049977412558608";
+  // '' = Meta tracking off on this deployment (dev / test / staging without an explicit
+  // NEXT_PUBLIC_META_PIXEL_ID): the base snippet below is not rendered (lib/meta/config.ts).
+  const pixelId = resolveMetaPixelId();
   // Demo-account and synthetic placeholder hashes never used as Advanced Matching.
   const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES, ...PLACEHOLDER_PHONE_HASHES, ...PLACEHOLDER_ZIP_HASHES];
   // Name placeholders are checked against fn / ln only (sha256('na') is also Namibia's country code).
@@ -233,6 +236,8 @@ export default async function RootLayout({
             })
           }}
         />
+        {/* Meta Pixel Base Code (not rendered when Meta tracking is off on this deployment) */}
+        {pixelId && (
         <Script
           id="fb-pixel"
           strategy="afterInteractive"
@@ -279,6 +284,7 @@ export default async function RootLayout({
             `,
           }}
         />
+        )}
         {/* Snap Pixel Base Code (not rendered when Snap tracking is off on this deployment) */}
         {snapPixelId && (
           <Script

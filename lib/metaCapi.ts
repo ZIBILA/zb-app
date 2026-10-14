@@ -15,8 +15,19 @@ import {
   isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash, isPlaceholderZipHash,
 } from './tracking/placeholder-identity';
 
-const PIXEL_ID = process.env.META_PIXEL_ID || process.env.NEXT_PUBLIC_META_PIXEL_ID || '2049977412558608';
+import { resolveMetaServerPixelId, metaPixelIdProblem } from './meta/config';
+
+// '' when Meta tracking is off on this deployment (see lib/meta/config.ts): every
+// send is then skipped with a logged alert instead of feeding the live dataset.
+const PIXEL_ID = resolveMetaServerPixelId();
 const ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN!;
+
+// Once per process in production: a browser/server pixel-id mismatch silently
+// breaks Pixel↔CAPI deduplication, so say so where the operators look.
+if (process.env.NODE_ENV === 'production') {
+  const problem = metaPixelIdProblem();
+  if (problem) console.error('[Meta CAPI][ALERT] pixel configuration:', problem);
+}
 const TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE;
 
 /**

@@ -1,4 +1,4 @@
-import { trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
+import { META_PIXEL_ID, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
@@ -45,6 +45,8 @@ function uuidv4() {
 }
 
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
+  // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
+  if (!META_PIXEL_ID) return null;
   try {
     // Build identity data via the shared builder — ensures demo values are filtered,
     // empty fields are omitted, and all events get consistent identity enrichment.

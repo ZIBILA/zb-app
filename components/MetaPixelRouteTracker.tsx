@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import {
+  META_PIXEL_ID,
   initPixel,
   getMetaIdentityCookies,
   getClientCookie,
@@ -52,6 +53,8 @@ export function MetaPixelRouteTracker() {
   useEffect(() => {
     // Don't fire any pixel/CAPI events on admin dashboard or admin routes
     if (pathname.startsWith('/dashboard') || pathname.startsWith('/admin') || pathname.startsWith('/web-store')) return;
+    // Meta tracking is off on this deployment (lib/meta/config.ts): no Pixel, no relay.
+    if (!META_PIXEL_ID) return;
 
     // ─── STEP 1: Synchronous setup (cookies, fbclid capture) ───
 
