@@ -111,10 +111,13 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
       ...payload,
       userData: mergedUserData,
     };
+    // keepalive: the request survives a hard navigation that starts right after the
+    // event (CompleteRegistration → window.location.replace, Buy Now → checkout).
     const res = await fetch('/api/meta/event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(enrichedPayload),
+      keepalive: true,
     });
     if (res.ok) {
       return await res.json();

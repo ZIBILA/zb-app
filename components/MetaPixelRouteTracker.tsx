@@ -165,6 +165,7 @@ export function MetaPixelRouteTracker() {
           actionSource: 'website',
           userData: builtIdentity,
         }),
+        keepalive: true, // survives an immediate navigation away from the page
       }).catch(err => console.warn('[Tracker Client] PageView CAPI failed:', err));
 
       // GA PageView
