@@ -73,14 +73,18 @@ export function MetaPixelRouteTracker() {
       setClientCookie('_fbp', fbpVal, 90);
     }
 
-    // 3. Capture fbclid from URL and set as _fbc cookie (Click ID)
+    // 3. Capture fbclid from URL and set as _fbc cookie (Click ID).
+    // middleware.ts already mints _fbc as an HTTP cookie on the landing request;
+    // this is the fallback (e.g. a client-side route change that carries fbclid).
+    // Never rewrite a cookie that already holds this click id: on Safari a
+    // document.cookie write would replace the 90-day HTTP cookie with one capped
+    // at 24 h (ITP, link decoration). Subdomain index 1 = the cookie's own domain
+    // (.zicabella.com), as Meta's fbc spec defines it.
     const urlParams = new URLSearchParams(window.location.search);
     const fbclid = urlParams.get('fbclid');
     let fbcVal = getClientCookie('_fbc') || undefined;
-    if (fbclid) {
-      const host = window.location.hostname;
-      const depth = host.split('.').length > 2 ? host.split('.').length - 1 : 1;
-      fbcVal = `fb.${depth}.${Date.now()}.${fbclid}`;
+    if (fbclid && !(fbcVal && fbcVal.endsWith(`.${fbclid}`))) {
+      fbcVal = `fb.1.${Date.now()}.${fbclid}`;
       setClientCookie('_fbc', fbcVal, 90);
     }
 
@@ -105,12 +109,7 @@ export function MetaPixelRouteTracker() {
     if (shouldFirePageView) {
       // Client-side pixel PageView — fires NOW, no awaits
       withFbq((fbq) => {
-        const options: Record<string, any> = { eventID: eventId };
-        const testCode = process.env.NEXT_PUBLIC_META_TEST_EVENT_CODE;
-        if (testCode) {
-          options.test_event_code = testCode;
-        }
-        fbq('track', 'PageView', {}, options);
+        fbq('track', 'PageView', {}, { eventID: eventId });
       }, 'PageView');
     }
 

@@ -424,14 +424,11 @@ export const trackEvent = (
   eventId?: string
 ) => {
   withFbq((fbq) => {
+    // eventID is the only documented fbq option (Meta Pixel reference). Browser
+    // test events are selected in Events Manager by browser, never by code, so
+    // the former `test_event_code` option here did nothing.
     const options: Record<string, any> = {};
     if (eventId) options.eventID = eventId;
-    
-    const testCode = process.env.NEXT_PUBLIC_META_TEST_EVENT_CODE;
-    if (testCode) {
-      options.test_event_code = testCode;
-    }
-    
     fbq('track', eventName, params, options);
   }, eventName);
 };

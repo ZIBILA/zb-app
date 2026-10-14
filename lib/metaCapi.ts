@@ -276,7 +276,10 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     body.test_event_code = TEST_EVENT_CODE;
   }
 
-  const url = graphUrl(`/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`);
+  // The token travels in the POST body (Meta accepts it there), never in the URL,
+  // so no proxy, access log or error trace ever sees it.
+  body.access_token = ACCESS_TOKEN;
+  const url = graphUrl(`/${PIXEL_ID}/events`);
 
   try {
     const { data: resJson, logEntry } = await fetchMetaApi(url, {
