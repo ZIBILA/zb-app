@@ -26,6 +26,7 @@ import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
 import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
+import { internalOrderReason } from '@/lib/meta/internal-orders';
 
 const PLATFORM = 'meta';
 const EVENT = 'Purchase';
@@ -204,6 +205,26 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     await ledger.recordContext(PLATFORM, EVENT, orderId, clean(ctx));
   }
 
+  /** Record an internal order as permanently skipped (never consumes an attempt, never resent). */
+  async function closeAsInternal(orderId: string, why: string): Promise<void> {
+    const lastError = `internal order (${why}): not reported to Meta`.slice(0, 500);
+    try {
+      const row = await prisma.adConversionDelivery.findUnique({ where: key(orderId) });
+      if (!row) {
+        await prisma.adConversionDelivery.create({
+          data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, status: 'skipped', lastError },
+        });
+      } else if (row.status === 'pending' || row.status === 'failed') {
+        await prisma.adConversionDelivery.updateMany({
+          where: { id: row.id, status: { in: ['pending', 'failed'] } },
+          data: { status: 'skipped', leaseUntil: null, lastError },
+        });
+      }
+    } catch (err: any) {
+      if (err?.code !== 'P2002') console.warn('[Meta Purchase] could not close internal order row', JSON.stringify({ orderId, error: err?.message }));
+    }
+  }
+
   /**
    * Meta CAPI is not configured: keep the conversion as a FAILED, retryable ledger
    * row WITHOUT consuming a send attempt, pinned to the original conversion time
@@ -293,6 +314,13 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     }
     if (isUnresolvedRecoveryOrder(order)) {
       return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
+    }
+    // Staff / QA / demo-account orders are never a conversion (lib/meta/internal-orders.ts).
+    // The ledger row is closed so the recovery scan does not re-examine it every run.
+    const internal = internalOrderReason(order);
+    if (internal) {
+      await closeAsInternal(orderId, internal);
+      return { status: 'skipped', reason: `internal order (${internal})` };
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!META_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
@@ -391,14 +419,14 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
       });
       for (const o of batch) {
         if (out.length >= limit) break;
-        if (isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && metaPurchaseValue(o) !== null) out.push(o.id);
+        if (isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && !internalOrderReason(o) && metaPurchaseValue(o) !== null) out.push(o.id);
       }
     }
     return out;
   }
 
   /** Retry outcomes that mean "this row will never be sendable": stop retrying it. */
-  const TERMINAL_RETRY_SKIP = /^(order not found|not a website order|webhook-recovered order|paymentStatus=|order value missing)/;
+  const TERMINAL_RETRY_SKIP = /^(order not found|not a website order|webhook-recovered order|internal order|paymentStatus=|order value missing)/;
 
   /**
    * Retry job (cron):

@@ -193,11 +193,14 @@ export async function GET(
     if (searchParams.get("view") === "tracking") {
       // A standalone WebStoreOrder has no authoritative payment record here → no facts.
       if (!order) return NextResponse.json({ order: { id: standaloneWebStoreOrder.id } });
+      const { isInternalOrder } = await import("@/lib/meta/internal-orders");
       return NextResponse.json({
         order: {
           id: order.id,
           paymentStatus: order.paymentStatus,
           orderType: order.orderType,
+          // Staff / QA / demo orders: the browser pixels skip Purchase (no PII leaves here)
+          internal: isInternalOrder(order),
           totalPrice: order.totalPrice,
           currency: order.currency || "INR",
           items: (order.items || []).map((item: any) => ({
