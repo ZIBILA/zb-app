@@ -127,7 +127,8 @@ export function MetaPixelRouteTracker() {
       if (geoStr) {
         const geoData = JSON.parse(geoStr);
         if (!builtIdentity.country && geoData.countryCode) builtIdentity.country = geoData.countryCode.toLowerCase();
-        if (!builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
+        // Country only from an IP lookup; state / city / zip only from a GPS or typed address.
+          if (geoData.source !== 'ip' && !builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
         // IP-geolocated city / zip are the ISP's, not the shopper's — only a GPS or typed
         // address may fill ct / zp (Meta already geo-matches on the client IP).
         if (geoData.source !== 'ip') {

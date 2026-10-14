@@ -311,7 +311,10 @@ export async function POST(req: NextRequest) {
         fn: userData?.fn || bound(guestFn),
         ln: userData?.ln || bound(guestLn),
         country: userData?.country || bound(guestCountry) || ipGeo?.countryCode?.toLowerCase(),
-        st: userData?.st || bound(guestState) || ipGeo?.region,
+        // IP-derived region names are often wrong (carrier NAT, VPN) and add no match
+        // signal Meta does not already get from client_ip_address; only an address
+        // the shopper gave (bound cookies / body) fills st, ct and zp.
+        st: userData?.st || bound(guestState),
         ct: userData?.ct || bound(guestCity), // IP city / zip are the ISP's, not the shopper's
         zp: userData?.zp || bound(guestZip),
         fb_login_id: userData?.fb_login_id || fbLoginId,
@@ -415,7 +418,7 @@ export async function POST(req: NextRequest) {
       fn: userData?.fn || bound(guestFn) || sessionUserData.fn,
       ln: userData?.ln || bound(guestLn) || sessionUserData.ln,
       country: userData?.country || bound(guestCountry) || ipGeo?.countryCode?.toLowerCase(),
-      st: userData?.st || bound(guestState) || ipGeo?.region,
+      st: userData?.st || bound(guestState), // never from IP (see the fast path above)
       ct: userData?.ct || bound(guestCity), // IP city / zip are the ISP's, not the shopper's
       zp: userData?.zp || bound(guestZip),
       fb_login_id: userData?.fb_login_id || fbLoginId,

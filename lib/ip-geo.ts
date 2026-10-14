@@ -182,6 +182,7 @@ async function fetchFromIpWhoIs(ip: string, signal: AbortSignal): Promise<IpGeoR
 }
 
 async function fetchFromIpApi(ip: string, signal: AbortSignal): Promise<IpGeoResult | null> {
+  // Opt-in only (IP_GEO_PROVIDER=ip-api): the free endpoint is HTTP, see the provider chain below.
   const url = `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,regionName,city,zip,lat,lon`;
   const res = await fetch(url, { signal });
   if (res.ok) {
@@ -268,11 +269,16 @@ export async function lookupIpGeo(ip: string, req?: Request): Promise<IpGeoResul
   const apiKey = process.env.IP_GEO_API_KEY || '';
   let result: IpGeoResult | null = null;
 
-  // 4. Multi-provider fallback chain: GeoJS -> ipwho.is -> ip-api.com -> ipapi.co
+  // 4. Multi-provider fallback chain: GeoJS -> ipwho.is -> ipapi.co (all HTTPS).
+  // ip-api.com's free tier is plain HTTP and non-commercial: a visitor's IP must not
+  // leave the server unencrypted, so it is only used when IP_GEO_PROVIDER=ip-api
+  // names it explicitly (e.g. a paid HTTPS plan configured on purpose).
   const providers = [
     (signal: AbortSignal) => fetchFromGeoJs(ip, signal),
     (signal: AbortSignal) => fetchFromIpWhoIs(ip, signal),
-    (signal: AbortSignal) => fetchFromIpApi(ip, signal),
+    ...(String(process.env.IP_GEO_PROVIDER || '').toLowerCase() === 'ip-api'
+      ? [(signal: AbortSignal) => fetchFromIpApi(ip, signal)]
+      : []),
     (signal: AbortSignal) => fetchFromIpApiCo(ip, apiKey, signal),
   ];
 
