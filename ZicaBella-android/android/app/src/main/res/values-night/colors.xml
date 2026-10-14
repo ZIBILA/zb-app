@@ -1,1 +1,8 @@
-<resources/>
+<resources>
+  <!--
+    Do NOT override splashscreen_background for system night mode.
+    A phone in dark mode was forcing a black splash even on first install
+    (app default is light). Dark splash is selected only when the user
+    saved dark theme (see Theme.App.SplashScreen.Dark).
+  -->
+</resources>

@@ -12,7 +12,7 @@
     "splash": {
       "image": "./assets/zica-bella-logo_8.png",
       "resizeMode": "contain",
-      "backgroundColor": "#000000"
+      "backgroundColor": "#FFFFFF"
     },
     "web": {
       "favicon": "./assets/zb-logo-220px.png"

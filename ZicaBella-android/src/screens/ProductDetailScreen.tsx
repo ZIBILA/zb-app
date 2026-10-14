@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator, Animated, Alert, Modal, Pressable, InteractionManager
+  View, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator, Animated, Alert, Modal, Pressable, InteractionManager, NativeSyntheticEvent, NativeScrollEvent
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,7 +9,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassView, GlassBackdrop } from '../components/GlassView';
 import { Image } from 'expo-image';
 import OptimizedImage from '../components/OptimizedImage';
-import Carousel from 'react-native-reanimated-carousel';
 import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
 import { haptics } from '../utils/haptics';
@@ -30,9 +29,15 @@ import QuickAddModal from '../components/QuickAddModal';
 import { FlatProduct } from '../api/types';
 import { requireValidAuth } from '../utils/tokenUtils';
 
-import { resolveImageUrl } from '../utils/imageUtils';
+import { getOptimizedImageUrl, resolveImageArray, resolveImageUrl } from '../utils/imageUtils';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const HERO_HEIGHT = SCREEN_H * 0.72;
+const HERO_IMAGE_WIDTH = Math.min(900, Math.round(SCREEN_W * 2));
+const THUMB_WIDTH = 110;
+const THUMB_GAP = 10;
+const THUMB_ITEM_WIDTH = THUMB_WIDTH + THUMB_GAP;
+const THUMB_IMAGE_WIDTH = 240;
 
 /**
  * Custom ImageViewerModal for premium zooming experience
@@ -188,8 +193,8 @@ export default function ProductDetailScreen() {
   const [viewerVisible, setViewerVisible] = useState(false);
 
   const mainScrollRef = useRef<ScrollView>(null);
-  const carouselRef = useRef<any>(null);
-  const thumbnailCarouselRef = useRef<any>(null);
+  const heroScrollRef = useRef<ScrollView>(null);
+  const thumbnailScrollRef = useRef<ScrollView>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const [showMinimalSticky, setShowMinimalSticky] = useState(false);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
@@ -198,6 +203,29 @@ export default function ProductDetailScreen() {
   const [isMuted, setIsMuted] = useState(true);
   const [isStickySizeExpanded, setIsStickySizeExpanded] = useState(false);
   const [moodBoardImages, setMoodBoardImages] = useState<string[]>([]);
+
+  // Reset scroll + selection when opening another product (push or same-screen param update).
+  useEffect(() => {
+    setActiveImageIndex(0);
+    setSelectedSize(null);
+    setSelectedColor(null);
+    setActiveTab('DESCRIPTION');
+    setSizeError(false);
+    setIsDescriptionExpanded(false);
+    setIsStickySizeExpanded(false);
+    setShowMinimalSticky(false);
+    setMoodBoardImages([]);
+    scrollY.setValue(0);
+    const jumpTop = () => {
+      mainScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+      heroScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+      thumbnailScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+    };
+    jumpTop();
+    // Second pass after layout/content swap so we don't stay parked mid-page.
+    const t = setTimeout(jumpTop, 50);
+    return () => clearTimeout(t);
+  }, [handle, product?.id]);
 
   // Fetch mood board images (same API as webstore PDP, with gallery fallback)
   useEffect(() => {
@@ -301,7 +329,7 @@ export default function ProductDetailScreen() {
     if (!product) return { sizes: [], colors: [] };
     const sizesSet = new Set<string>();
     const colorsSet = new Set<string>();
-    product.variants.forEach(v => {
+    (product.variants || []).forEach(v => {
       if (v.size) sizesSet.add(v.size);
       if (v.color) colorsSet.add(v.color);
     });
@@ -352,10 +380,12 @@ export default function ProductDetailScreen() {
       return;
     }
 
-    const variant = product.variants.find(v => 
+    const variants = product.variants || [];
+    const variant = variants.find(v => 
       (v.size === selectedSize || !v.size) && 
       (v.color === selectedColor || !v.color)
-    ) || product.variants.find(v => v.size === selectedSize) || product.variants[0];
+    ) || variants.find(v => v.size === selectedSize) || variants[0];
+    if (!variant) return;
     
     addingLockRef.current = true;
     addItem({
@@ -377,10 +407,12 @@ export default function ProductDetailScreen() {
     if (!product) return;
     if (!requireSize()) return;
     
-    const variant = product.variants.find(v => 
+    const variants = product.variants || [];
+    const variant = variants.find(v => 
       (v.size === selectedSize || !v.size) && 
       (v.color === selectedColor || !v.color)
-    ) || product.variants.find(v => v.size === selectedSize) || product.variants[0];
+    ) || variants.find(v => v.size === selectedSize) || variants[0];
+    if (!variant) return;
     
     setBuyNowItem({
       id: `${product.id}_${variant.id}_${selectedSize || 'one-size'}`,
@@ -426,37 +458,52 @@ export default function ProductDetailScreen() {
     }
   };
 
-  const images = product ? (product.images.length > 0 ? product.images : [product.featuredImage]) : [];
+  const images = useMemo(() => {
+    if (!product) return [] as string[];
+    const fromGallery = resolveImageArray(product.images);
+    if (fromGallery.length > 0) return fromGallery;
+    const featured = resolveImageUrl(product.featuredImage);
+    return featured ? [featured] : [];
+  }, [product]);
 
-  // Prefetch adjacent gallery images for lag-free swiping
+  // Prefetch every gallery URL at hero + thumb sizes as soon as the product loads.
   useEffect(() => {
-    if (images && images.length > 0) {
-      images.slice(0, 6).forEach((img: any) => {
-        const url = typeof img === 'string' ? img : img?.url;
-        if (url) {
-          Image.prefetch(url);
-        }
-      });
-    }
+    if (images.length === 0) return;
+    images.forEach((img) => {
+      const heroUrl = getOptimizedImageUrl(img, HERO_IMAGE_WIDTH);
+      const thumbUrl = getOptimizedImageUrl(img, THUMB_IMAGE_WIDTH);
+      if (heroUrl) Image.prefetch(heroUrl).catch(() => {});
+      if (thumbUrl) Image.prefetch(thumbUrl).catch(() => {});
+    });
   }, [images]);
 
-  const renderHeroItem = useCallback(({ item }: any) => (
-    <TouchableOpacity 
-      activeOpacity={0.9} 
-      onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
-      style={styles.heroContainer}
-    >
-      <OptimizedImage 
-        source={String(item)} 
-        style={styles.heroImage} 
-        shopifyWidth={800}
-        priority="high"
-      />
-      <View style={styles.zoomPulse}>
-        <Ionicons name="expand-outline" size={12} color="#FFF" />
-      </View>
-    </TouchableOpacity>
-  ), []);
+  const scrollHeroTo = useCallback((index: number, animated = false) => {
+    if (index < 0 || index >= images.length) return;
+    heroScrollRef.current?.scrollTo({ x: index * SCREEN_W, y: 0, animated });
+  }, [images.length]);
+
+  const scrollThumbnailsTo = useCallback((index: number, animated = true) => {
+    if (index < 0 || index >= images.length) return;
+    const x = Math.max(0, index * THUMB_ITEM_WIDTH - (SCREEN_W - THUMB_ITEM_WIDTH) / 2);
+    thumbnailScrollRef.current?.scrollTo({ x, y: 0, animated });
+  }, [images.length]);
+
+  const selectImage = useCallback((index: number) => {
+    if (index < 0 || index >= images.length) return;
+    setActiveImageIndex(index);
+    // Instant page jump — all pages stay mounted and images are prefetched.
+    scrollHeroTo(index, false);
+    scrollThumbnailsTo(index, true);
+  }, [images.length, scrollHeroTo, scrollThumbnailsTo]);
+
+  const onHeroMomentumEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = Math.round(e.nativeEvent.contentOffset.x / SCREEN_W);
+    if (index === activeImageIndex || index < 0 || index >= images.length) return;
+    setActiveImageIndex(index);
+    scrollThumbnailsTo(index, true);
+  }, [activeImageIndex, images.length, scrollThumbnailsTo]);
+
+  const imageLoaderColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.28)';
 
   if (loading || !product) {
     return (
@@ -497,6 +544,7 @@ export default function ProductDetailScreen() {
       </View>
 
       <ScrollView 
+        key={`pdp-scroll-${handle || product.id}`}
         ref={mainScrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 160 + insets.bottom }}
@@ -506,59 +554,81 @@ export default function ProductDetailScreen() {
         )}
         scrollEventThrottle={16}
       >
-        {/* ── HERO GALLERY: CAROUSEL EXPERIENCE ── */}
-        <View style={styles.heroWrapper}>
-           <Carousel
-              ref={carouselRef}
-              data={images}
-              renderItem={renderHeroItem}
-              width={SCREEN_W}
-              height={SCREEN_H * 0.72} // Much taller for full screen feel
-              onSnapToItem={(index) => {
-                setActiveImageIndex(index);
-                thumbnailCarouselRef.current?.scrollTo({ index, animated: true });
-              }}
-              loop
-              autoPlay={false}
-              onConfigurePanGesture={(panGesture: any) => panGesture.activeOffsetX([-10, 10])}
-              windowSize={3}
-           />
+        {/* ── HERO GALLERY (ScrollView — avoids VirtualizedList nesting crash under Fabric) ── */}
+        <View style={[styles.heroWrapper, { height: HERO_HEIGHT }]}>
+          <ScrollView
+            ref={heroScrollRef}
+            horizontal
+            pagingEnabled
+            nestedScrollEnabled
+            directionalLockEnabled
+            showsHorizontalScrollIndicator={false}
+            overScrollMode="never"
+            decelerationRate="fast"
+            onMomentumScrollEnd={onHeroMomentumEnd}
+          >
+            {images.map((item, index) => (
+              <TouchableOpacity
+                key={`hero-${index}-${item}`}
+                activeOpacity={0.9}
+                onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
+                style={styles.heroContainer}
+              >
+                <OptimizedImage
+                  source={item}
+                  style={styles.heroImage}
+                  shopifyWidth={HERO_IMAGE_WIDTH}
+                  priority="high"
+                  loaderColor={imageLoaderColor}
+                />
+                <View style={styles.zoomPulse}>
+                  <Ionicons name="expand-outline" size={12} color="#FFF" />
+                </View>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
         </View>
 
-        <View style={{ height: 180, marginTop: 16 }}>
-          <Carousel
-            ref={thumbnailCarouselRef}
-            data={images}
-            width={120}
-            height={165}
-            style={{ width: SCREEN_W }}
-            loop
-            autoPlay={false}
-            onConfigurePanGesture={(panGesture: any) => panGesture.activeOffsetX([-10, 10])}
-            renderItem={({ index }) => (
-              <TouchableOpacity 
-                key={index} 
-                activeOpacity={0.8}
-                onPress={() => { 
-                  haptics.buttonTap(); 
-                  setActiveImageIndex(index);
-                  carouselRef.current?.scrollTo({ index, animated: true });
-                  thumbnailCarouselRef.current?.scrollTo({ index, animated: true });
-                }}
-                style={[
-                  styles.thumbnail, 
-                  activeImageIndex === index && {
-                    borderWidth: 1.5,
-                    borderColor: colors.text,
-                  },
-                  { width: 110 }
-                ]}
-              >
-                <OptimizedImage source={String(images[index])} style={StyleSheet.absoluteFill} shopifyWidth={200} />
-              </TouchableOpacity>
-            )}
-          />
-        </View>
+        {images.length > 1 ? (
+          <View style={styles.thumbnailStrip}>
+            <ScrollView
+              ref={thumbnailScrollRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              overScrollMode="never"
+              contentContainerStyle={styles.thumbnailScroll}
+            >
+              {images.map((item, index) => {
+                const selected = activeImageIndex === index;
+                return (
+                  <TouchableOpacity
+                    key={`thumb-${index}-${item}`}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      haptics.buttonTap();
+                      selectImage(index);
+                    }}
+                    style={[
+                      styles.thumbnail,
+                      selected && {
+                        borderWidth: 1.5,
+                        borderColor: colors.text,
+                      },
+                    ]}
+                  >
+                    <OptimizedImage
+                      source={item}
+                      style={StyleSheet.absoluteFill}
+                      shopifyWidth={THUMB_IMAGE_WIDTH}
+                      priority="high"
+                      loaderColor={imageLoaderColor}
+                    />
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
 
         {/* ── PRODUCT INFO ── */}
         <View style={styles.infoSection}>
@@ -600,7 +670,7 @@ export default function ProductDetailScreen() {
               </View>
                <View style={styles.sizeGrid}>
                 {options.sizes.map(s => {
-                  const variant = product.variants.find(v => v.size === s && (v.color === selectedColor || !selectedColor));
+                  const variant = (product.variants || []).find(v => v.size === s && (v.color === selectedColor || !selectedColor));
                   const isOutOfStock = variant?.quantityAvailable === 0;
                   return (
                     <TouchableOpacity 
@@ -853,7 +923,7 @@ export default function ProductDetailScreen() {
              </View>
              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: 'row', gap: 10, paddingVertical: 10 }}>
                {options.sizes.map(s => {
-                 const variant = product.variants.find(v => v.size === s);
+                 const variant = (product.variants || []).find(v => v.size === s);
                  const isOutOfStock = variant?.quantityAvailable === 0;
                  return (
                    <TouchableOpacity 
@@ -981,14 +1051,18 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.02)',
   },
   heroWrapper: {
-    paddingHorizontal: 0, 
-    marginTop: 0, // Ensure it bleeds to top
+    paddingHorizontal: 0,
+    marginTop: 0,
+    width: SCREEN_W,
   },
   heroContainer: {
-    width: '100%',
-    height: '100%', 
+    width: SCREEN_W,
+    height: HERO_HEIGHT,
   },
-  heroImage: { flex: 1 },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+  },
   zoomPulse: {
     position: 'absolute',
     bottom: 20,
@@ -1000,16 +1074,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  thumbnailStrip: {
+    height: 180,
+    marginTop: 16,
+  },
   thumbnailScroll: {
     paddingHorizontal: 20,
-    gap: 10,
+    alignItems: 'center',
   },
   thumbnail: {
-    width: 110, 
-    height: 165, // Recalibrated for proper portrait aspect
+    width: THUMB_WIDTH,
+    height: 165,
+    marginRight: THUMB_GAP,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: 'rgba(0,0,0,0.04)',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
   },
   activeDot: {
     position: 'absolute',
