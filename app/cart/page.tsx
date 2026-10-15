@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
@@ -14,7 +14,7 @@ import dynamic from "next/dynamic";
 const CheckoutWebView = dynamic(() => import("@/components/CheckoutWebView"), { ssr: false });
 const OrderSuccess = dynamic(() => import("@/components/OrderSuccess"), { ssr: false });
 
-export default function CartPage() {
+function CartPageInner() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -367,5 +367,15 @@ export default function CartPage() {
         {showSuccess && <OrderSuccess onContinue={handleSuccessContinue} />}
       </AnimatePresence>
     </div>
+  );
+}
+
+/** useSearchParams() must sit under a Suspense boundary, otherwise the whole
+ *  static page bails out to client-side rendering (empty SSR HTML). */
+export default function CartPage() {
+  return (
+    <Suspense fallback={null}>
+      <CartPageInner />
+    </Suspense>
   );
 }

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Coins, Zap, ShieldCheck, ArrowRight, Sparkles, CheckCircle2, ChevronRight } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Zica Bella App | Fashion Redefined",
+  title: { absolute: "Zica Bella App | Fashion Redefined" },
   description: "Download the Zica Bella mobile app to redeem Store Coins, enjoy exclusive archival drops, and experience seamless real-time order tracking.",
 };
 

@@ -1,10 +1,10 @@
 import { MetadataRoute } from 'next';
 import { fetchStorefrontCatalog, fetchCollections } from '@/lib/shopify-admin';
 
-export const revalidate = 3600; // ISR: regenerate every 1 hour
+export const revalidate = 3600; // ISR: regenerate every 1 hour (Shopify reads are unstable_cache-wrapped, so this stays static-safe)
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://zicabella.com';
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
   const now = new Date();
 
   const parseDate = (val: any): Date => {
@@ -27,52 +27,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: 0.9,
     },
     {
-      url: `${baseUrl}/collections/graphic-tees`,
-      lastModified: now,
-      changeFrequency: 'daily',
-      priority: 0.95,
-    },
-    {
-      url: `${baseUrl}/collections/tshirts-under-5000`,
-      lastModified: now,
-      changeFrequency: 'weekly',
-      priority: 0.95,
-    },
-    {
-      url: `${baseUrl}/collections/oversized-tees`,
-      lastModified: now,
-      changeFrequency: 'weekly',
-      priority: 0.9,
-    },
-    {
       url: `${baseUrl}/collections/new-arrivals`,
       lastModified: now,
       changeFrequency: 'daily',
       priority: 0.95,
-    },
-    {
-      url: `${baseUrl}/collections/best-sellers`,
-      lastModified: now,
-      changeFrequency: 'daily',
-      priority: 0.95,
-    },
-    {
-      url: `${baseUrl}/collections/sale`,
-      lastModified: now,
-      changeFrequency: 'daily',
-      priority: 0.9,
-    },
-    {
-      url: `${baseUrl}/chat`,
-      lastModified: now,
-      changeFrequency: 'weekly',
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/search`,
-      lastModified: now,
-      changeFrequency: 'daily',
-      priority: 0.8,
     },
     {
       url: `${baseUrl}/story`,

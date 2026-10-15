@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { signIn, useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -30,7 +30,7 @@ const COUNTRIES = [
   { name: 'France', code: '+33', iso: 'FR', flag: '🇫🇷' },
 ];
 
-export default function LoginPage() {
+function LoginPageInner() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -847,5 +847,15 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** useSearchParams() must sit under a Suspense boundary, otherwise the whole
+ *  static page bails out to client-side rendering (empty SSR HTML). */
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageInner />
+    </Suspense>
   );
 }

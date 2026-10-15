@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import GalleryClient from "./GalleryClient";
 
 export const metadata: Metadata = {
-  title: "Gallery | Zica Bella® | Luxury Indian Streetwear Archive",
+  title: { absolute: "Gallery | Zica Bella® | Luxury Indian Streetwear Archive" },
   description:
     "Explore the visual archive and curated gallery of Zica Bella. Boxy silhouettes, acid-wash textures, heavyweight streetwear drops, and behind-the-scenes campaign visuals.",
   openGraph: {

@@ -17,7 +17,11 @@ export async function generateMetadata({
 }: {
   params: { handle: string }
 }): Promise<Metadata> {
-  const { collection } = await fetchCollectionByHandle(params.handle).catch(() => ({ collection: null }));
+  // Resolve the collection here (before streaming starts) so a missing handle returns a real 404
+  // status instead of a 200 shell + client-side not-found. A Shopify error keeps the fallback metadata.
+  const lookup = await fetchCollectionByHandle(params.handle).then((r) => ({ ok: true as const, collection: r.collection })).catch(() => ({ ok: false as const, collection: null }));
+  if (lookup.ok && !lookup.collection) notFound();
+  const { collection } = lookup;
 
   const titleMap: Record<string, string> = {
     'graphic-tees': 'Heavyweight Graphic Tees',

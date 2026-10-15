@@ -8,7 +8,7 @@ import { getStoreAggregateRating } from "@/lib/reviews/getProductAggregateRating
 export const revalidate = 60; // Cache for 60 seconds
 
 export const metadata: Metadata = {
-  title: "Customer Reviews & Ratings | Zica Bella",
+  title: { absolute: "Customer Reviews & Ratings | Zica Bella" },
   description: "Read verified customer reviews and ratings for Zica Bella luxury fashion, apparel, and accessories.",
 };
 

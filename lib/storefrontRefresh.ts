@@ -1,5 +1,5 @@
 import { revalidatePath, revalidateTag } from 'next/cache';
-import { clearShopifyCache } from '@/lib/shopify-admin';
+import { clearShopifyCache, SHOPIFY_CATALOG_TAG } from '@/lib/shopify-admin';
 
 /**
  * Makes the live storefront pick up catalogue / CMS changes now instead of whenever caches expire.
@@ -29,6 +29,12 @@ export function refreshStorefront(): { refreshed: string[] } {
     } catch (e) {
       console.warn(`[Storefront Refresh] revalidate ${path} failed:`, e);
     }
+  }
+  try {
+    revalidateTag(SHOPIFY_CATALOG_TAG);
+    refreshed.push(`tag:${SHOPIFY_CATALOG_TAG}`);
+  } catch {
+    /* outside request scope */
   }
   try {
     revalidateTag('homepage');

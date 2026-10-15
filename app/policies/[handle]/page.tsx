@@ -20,7 +20,7 @@ export async function generateMetadata({ params }: PolicyPageProps): Promise<Met
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
 
   return {
-    title: `${policy.title} | Zica Bella | Premium Luxury Streetwear`,
+    title: { absolute: `${policy.title} | Zica Bella | Premium Luxury Streetwear` },
     description: `Official ${policy.title} for Zica Bella luxury streetwear. Crafted with premium loopback fabrics, Italian design elements, and modern architectural standards.`,
     alternates: {
       canonical: `${siteUrl}/policies/${params.handle}`

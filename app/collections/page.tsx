@@ -9,9 +9,10 @@ export const revalidate = 300; // ISR: revalidate every 5 minutes
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://zicabella.com";
 
 export const metadata: Metadata = {
-  title: "Subculture Collections & Limited Drops | Zica Bella® | Streetwear Archives",
+  title: { absolute: "Subculture Collections & Limited Drops | Zica Bella® | Streetwear Archives" },
   description: "Explore Zica Bella's curated limited-edition streetwear drops and subculture collections. Discover boxy drop-shoulder oversized tees, double-yarn loopback hoodies, and custom acid-wash denims. Crafted in India, worn with intent.",
   keywords: "zica bella collections, luxury streetwear India, streetwear drops, oversized t-shirts online, premium blanks, limited capsule drops, heavyweight hoodies, streetwear brand india, subculture design",
+  alternates: { canonical: `${siteUrl}/collections` },
   openGraph: {
     title: "Subculture Collections & Limited Drops | Zica Bella®",
     description: "Explore Zica Bella's curated limited-edition streetwear drops and subculture collections. Discover boxy drop-shoulder oversized tees, double-yarn loopback hoodies, and custom acid-wash denims.",

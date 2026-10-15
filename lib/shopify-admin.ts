@@ -4,6 +4,7 @@
  * Fetches the Admin access token dynamically from the local database.
  */
 
+import { unstable_cache, revalidateTag } from 'next/cache';
 import prisma from './db';
 import { parseShopifyRichText } from './utils';
 import { toE164 } from './shopify-phone';
@@ -30,6 +31,12 @@ const PAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 export function clearShopifyCache() {
   pageCache.clear();
   clearShopConfigCache();
+  try {
+    // Only legal inside route handlers / server actions (where this is called from); no-op elsewhere.
+    revalidateTag(SHOPIFY_CATALOG_TAG);
+  } catch {
+    /* called outside a request scope */
+  }
 }
 
 async function shopifyFetchPage<T>(urlStr: string, ttlMs: number = PAGE_CACHE_TTL): Promise<{ data: T; nextPageUrl?: string }> {
@@ -603,7 +610,7 @@ export interface ShopifyCollection {
   image: { src: string } | null;
 }
 
-export async function fetchCollections(limit = 250): Promise<ShopifyCollection[]> {
+async function fetchCollections__uncached(limit = 250): Promise<ShopifyCollection[]> {
   try {
     const [data, data2] = await Promise.all([
       shopifyFetch<{ custom_collections: ShopifyCollection[] }>('custom_collections.json', { limit: String(limit) }).catch(() => ({ custom_collections: [] })),
@@ -659,7 +666,7 @@ const CATALOG_TTL_MS = 60 * 1000;
  * Optionally scoped to one collection. Throws on Shopify errors (callers decide how to degrade) —
  * it never substitutes placeholder products.
  */
-export async function fetchStorefrontCatalog(opts?: { collectionId?: string | number }): Promise<ShopifyProduct[]> {
+async function fetchStorefrontCatalog__uncached(opts?: { collectionId?: string | number }): Promise<ShopifyProduct[]> {
   const params: Record<string, string> = {
     limit: '250',
     status: 'active',
@@ -705,7 +712,7 @@ export async function fetchProductsByCollectionId(collectionId: string | number,
 /**
  * Fetches only the collections that are enabled in the admin dashboard for a specific location.
  */
-export async function fetchEnabledCollections(location: 'header' | 'page' | 'menu' = 'page', shopDomain?: string): Promise<ShopifyCollection[]> {
+async function fetchEnabledCollections__uncached(location: 'header' | 'page' | 'menu' = 'page', shopDomain?: string): Promise<ShopifyCollection[]> {
   const allCollections = await fetchCollections();
   
   try {
@@ -1486,7 +1493,7 @@ export const FALLBACK_PRODUCTS: ShopifyProduct[] = [
   }
 ];
 
-export async function fetchProducts(limit = 250): Promise<ShopifyProduct[]> {
+async function fetchProducts__uncached(limit = 250): Promise<ShopifyProduct[]> {
   try {
     const data = await shopifyFetch<{ products: ShopifyProduct[] }>('products.json', {
       limit: String(limit),
@@ -1672,14 +1679,14 @@ export async function updateVariant(
 /**
  * Fetch a single product by Shopify product ID.
  */
-export async function fetchProductById(productId: string, includeMetafields = false): Promise<ShopifyProduct> {
+async function fetchProductById__uncached(productId: string, includeMetafields = false): Promise<ShopifyProduct> {
   const data = await shopifyFetch<{ product: ShopifyProduct }>(`products/${productId}.json`);
   if (!includeMetafields) return data.product;
   const metafields = await fetchProductMetafields(productId).catch(() => []);
   return { ...data.product, metafields };
 }
 
-export async function fetchProductByHandle(handle: string): Promise<ShopifyProduct | null> {
+async function fetchProductByHandle__uncached(handle: string): Promise<ShopifyProduct | null> {
   // Clients sometimes pass "foo.json" or encoded paths — normalize before Shopify
   const normalized = String(handle || '')
     .trim()
@@ -1758,7 +1765,7 @@ const GID_CACHE_TTL = 1 * 60 * 60 * 1000; // 1 hour TTL
 /**
  * Resolve a Shopify GID (Video, MediaImage, etc.) to a public URL using GraphQL.
  */
-export async function resolveShopifyGid(gid: string): Promise<string | null> {
+async function resolveShopifyGid__uncached(gid: string): Promise<string | null> {
   if (!gid || !gid.startsWith('gid://shopify/')) return null;
 
   const now = Date.now();
@@ -1853,7 +1860,7 @@ export async function fetchOrderRefunds(orderId: string): Promise<any[]> {
  * Fetch shop policies (privacy, refund, terms, shipping, legal).
  * Uses explicit caching to prevent Next.js Dynamic Server Usage 500 errors on static routes.
  */
-export async function fetchPolicies(): Promise<{ title: string; body: string; url: string; handle: string }[]> {
+async function fetchPolicies__uncached(): Promise<{ title: string; body: string; url: string; handle: string }[]> {
   try {
     const url = await adminUrl('policies.json');
     const res = await fetch(url, {
@@ -2272,7 +2279,7 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
  *    last good page instead of replacing it with fake data or a bogus 404.
  *  - handle "all" is the Shop All page.
  */
-export async function fetchCollectionByHandle(handle: string, limit?: number): Promise<{
+async function fetchCollectionByHandle__uncached(handle: string, limit?: number): Promise<{
   collection: { id: number; title: string; handle: string; body_html: string; image?: { src: string } } | null;
   products: ShopifyProduct[];
 }> {
@@ -2300,7 +2307,7 @@ export async function fetchCollectionByHandle(handle: string, limit?: number): P
  * Fetch all navigation menus with their nested items from Shopify using GraphQL.
  * This is efficient as it fetches everything in one round-trip.
  */
-export async function fetchMenus(): Promise<any[]> {
+async function fetchMenus__uncached(): Promise<any[]> {
   try {
     const query = `
       {
@@ -2485,7 +2492,7 @@ export async function flattenProduct(p: ShopifyProduct) {
 /**
  * Fetch product video URL (native video or video metafield) from Shopify
  */
-export async function fetchProductVideoUrl(productId: string): Promise<string | null> {
+async function fetchProductVideoUrl__uncached(productId: string): Promise<string | null> {
   if (!productId) return null;
   const gid = productId.startsWith('gid://shopify/Product/') 
     ? productId 
@@ -2541,3 +2548,28 @@ export async function fetchProductVideoUrl(productId: string): Promise<string | 
   }
   return null;
 }
+
+// ─── Storefront read cache ───────────────────────────────────────────
+// The storefront pages (home, collections, products, sitemap) are ISR routes. The
+// underlying Admin API calls use `cache: 'no-store'`, which would otherwise mark every
+// ISR render as dynamic (and break revalidation with Next's "static to dynamic" error).
+// Wrapping the read entry points in `unstable_cache` keeps the routes static-safe, dedupes
+// identical reads across requests (file-backed data cache, 60 s), and lets
+// `refreshStorefront()` / webhooks bust everything at once via the `shopify-catalog` tag.
+// Writes (orders, customers, inventory) are untouched.
+export const SHOPIFY_CATALOG_TAG = 'shopify-catalog';
+const CATALOG_REVALIDATE_S = 60;
+const cached = <T extends (...args: any[]) => Promise<any>>(fn: T, key: string): T =>
+  unstable_cache(fn, ['shopify', key], { revalidate: CATALOG_REVALIDATE_S, tags: [SHOPIFY_CATALOG_TAG] }) as unknown as T;
+
+export const fetchCollections = cached(fetchCollections__uncached, 'fetchCollections');
+export const fetchStorefrontCatalog = cached(fetchStorefrontCatalog__uncached, 'fetchStorefrontCatalog');
+export const fetchEnabledCollections = cached(fetchEnabledCollections__uncached, 'fetchEnabledCollections');
+export const fetchProducts = cached(fetchProducts__uncached, 'fetchProducts');
+export const fetchProductById = cached(fetchProductById__uncached, 'fetchProductById');
+export const fetchProductByHandle = cached(fetchProductByHandle__uncached, 'fetchProductByHandle');
+export const fetchCollectionByHandle = cached(fetchCollectionByHandle__uncached, 'fetchCollectionByHandle');
+export const fetchMenus = cached(fetchMenus__uncached, 'fetchMenus');
+export const fetchPolicies = cached(fetchPolicies__uncached, 'fetchPolicies');
+export const resolveShopifyGid = cached(resolveShopifyGid__uncached, 'resolveShopifyGid');
+export const fetchProductVideoUrl = cached(fetchProductVideoUrl__uncached, 'fetchProductVideoUrl');

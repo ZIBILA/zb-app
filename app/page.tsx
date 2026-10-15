@@ -140,7 +140,7 @@ export default async function Home() {
   const heroSubtitle   = nullIfEmpty(s?.heroSubtitle);
   const heroButtonText = nullIfEmpty(s?.heroButtonText);
   const heroImage      = s?.heroImage       || "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?q=80&w=2070&auto=format&fit=crop";
-  const heroVideo      = s?.heroVideo       || "/zb-video-heroo.mp4";
+  const heroVideo      = s?.heroVideo       || "/zb-video-heroo.webm";
   const heroVideoMobile = s?.heroVideoMobile || "";
   const latestTitle    = nullIfEmpty(s?.latestCurationTitle);
   const latestSubtitle = nullIfEmpty(s?.latestCurationSubtitle);
