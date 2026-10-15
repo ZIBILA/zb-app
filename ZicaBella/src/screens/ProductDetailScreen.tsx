@@ -29,8 +29,28 @@ import { config } from '../constants/config';
 import QuickAddModal from '../components/QuickAddModal';
 import { FlatProduct } from '../api/types';
 import { requireValidAuth } from '../utils/tokenUtils';
+import { useAdminSettings } from '../hooks/useAdminFeatures';
 
 import { resolveImageUrl } from '../utils/imageUtils';
+
+type PdpTrustBox = {
+  id: string;
+  icon: string;
+  title: string;
+  subtitle: string;
+  variant?: 'default' | 'highlight';
+};
+
+const DEFAULT_TRUST_BOXES: PdpTrustBox[] = [
+  { id: 'cod', icon: 'cash-outline', title: 'COD available', subtitle: '₹99 now, rest on delivery', variant: 'default' },
+  { id: 'prepaid', icon: 'pricetag-outline', title: '10% off on prepaid', subtitle: '+ 10% cashback as store credit', variant: 'highlight' },
+  { id: 'delivery', icon: 'bicycle-outline', title: 'Delivery in 3–7 days', subtitle: 'Dispatched in 24–48 hrs', variant: 'default' },
+  { id: 'returns', icon: 'refresh-outline', title: '15-day easy return/exchange', subtitle: 'No questions asked', variant: 'default' },
+];
+
+function isHttpIcon(icon: string) {
+  return /^https?:\/\//i.test(icon) || icon.startsWith('data:');
+}
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -163,7 +183,33 @@ export default function ProductDetailScreen() {
 
   const { product, loading } = useProductByHandle(handle);
   const { products: allProducts, loading: recommendedLoading } = useProducts(24);
+  const { settings: adminSettings } = useAdminSettings();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
+  const pdpSettings = adminSettings?.pdp;
+  const trustBoxes: PdpTrustBox[] = useMemo(() => {
+    const raw = pdpSettings?.trustBoxes;
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw
+        .map((b: any, i: number) => ({
+          id: String(b?.id || `box_${i}`),
+          icon: String(b?.icon || 'information-circle-outline'),
+          title: String(b?.title || '').trim(),
+          subtitle: String(b?.subtitle || '').trim(),
+          variant: (b?.variant === 'highlight' ? 'highlight' : 'default') as 'default' | 'highlight',
+        }))
+        .filter((b: PdpTrustBox) => Boolean(b.title));
+    }
+    return DEFAULT_TRUST_BOXES;
+  }, [pdpSettings?.trustBoxes]);
+
+  const showInclTaxes = pdpSettings?.showInclTaxes !== false;
+  const inclTaxesText = (pdpSettings?.inclTaxesText || 'Incl. taxes').trim();
+  const modelInfoLine = useMemo(() => {
+    const fromProduct = String(product?.modelInfo || '').trim();
+    if (fromProduct) return fromProduct;
+    return String(pdpSettings?.modelInfoDefault || "Model is 6'0\", wearing size 32 · Oversized fit, true to waist").trim();
+  }, [product?.modelInfo, pdpSettings?.modelInfoDefault]);
   
   // Randomly shuffle products for "Curated Pairs" on each visit
   const recommended = useMemo(() => {
@@ -566,9 +612,16 @@ export default function ProductDetailScreen() {
                 >
                   {String(product?.title || '').toUpperCase()}
                 </Typography>
-                <Typography size={11} weight="400" color={colors.textSecondary} style={[styles.price, { marginTop: 2, opacity: 0.6 }]}>
-                  {formatPrice(product.price)}
-                </Typography>
+                <View style={styles.priceRow}>
+                  <Typography size={13} weight="700" color={colors.text} style={styles.price}>
+                    {formatPrice(product.price)}
+                  </Typography>
+                  {showInclTaxes && !!inclTaxesText && (
+                    <Typography size={9} weight="400" color={colors.textMuted} style={styles.inclTaxes}>
+                      {inclTaxesText}
+                    </Typography>
+                  )}
+                </View>
               </View>
               <TouchableOpacity 
                 style={[styles.wishlistToggle, { backgroundColor: isWishlisted ? (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)') : 'transparent' }]}
@@ -624,6 +677,11 @@ export default function ProductDetailScreen() {
                   );
                 })}
               </View>
+              {!!modelInfoLine && (
+                <Typography size={8} weight="400" color={colors.textMuted} style={styles.modelInfoLine}>
+                  {modelInfoLine}
+                </Typography>
+              )}
            </View>
 
            {/* COLOR SELECTOR */}
@@ -680,6 +738,38 @@ export default function ProductDetailScreen() {
                 <Typography size={8} weight="800" color={colors.background} style={{ letterSpacing: 5 }}>BUY NOW</Typography>
               </TouchableOpacity>
            </View>
+
+           {/* TRUST / OFFER BOXES */}
+           {trustBoxes.length > 0 && (
+             <View style={styles.trustGrid}>
+               {trustBoxes.map((box) => {
+                 const highlight = box.variant === 'highlight';
+                 const boxBg = highlight
+                   ? '#000000'
+                   : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)');
+                 const titleColor = highlight ? '#FFFFFF' : colors.text;
+                 const subColor = highlight ? 'rgba(255,255,255,0.7)' : colors.textMuted;
+                 const iconColor = highlight ? '#FFFFFF' : colors.text;
+                 return (
+                   <View key={box.id} style={[styles.trustBox, { backgroundColor: boxBg }]}>
+                     {isHttpIcon(box.icon) ? (
+                       <Image source={{ uri: box.icon }} style={styles.trustIconImg} contentFit="contain" />
+                     ) : (
+                       <Ionicons name={box.icon as any} size={16} color={iconColor} style={{ marginBottom: 8 }} />
+                     )}
+                     <Typography size={10} weight="700" color={titleColor} style={styles.trustTitle}>
+                       {box.title}
+                     </Typography>
+                     {!!box.subtitle && (
+                       <Typography size={8} weight="400" color={subColor} style={styles.trustSubtitle}>
+                         {box.subtitle}
+                       </Typography>
+                     )}
+                   </View>
+                 );
+               })}
+             </View>
+           )}
 
             {/* INFO ACCORDION */}
            <View style={[styles.tabsBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.01)' : 'rgba(0,0,0,0.01)', borderColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)' }]}>
@@ -1010,6 +1100,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 24,
   },
+  priceRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  inclTaxes: {
+    letterSpacing: 0.2,
+  },
+  modelInfoLine: {
+    marginTop: 12,
+    lineHeight: 14,
+    letterSpacing: 0.1,
+    fontStyle: 'italic',
+  },
+  trustGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 20,
+    marginTop: 4,
+  },
+  trustBox: {
+    width: (SCREEN_W - 40 - 10) / 2,
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    minHeight: 104,
+  },
+  trustIconImg: {
+    width: 18,
+    height: 18,
+    marginBottom: 8,
+  },
+  trustTitle: {
+    letterSpacing: 0.2,
+    lineHeight: 14,
+    marginBottom: 4,
+  },
+  trustSubtitle: {
+    lineHeight: 13,
+    letterSpacing: 0.1,
+  },
   titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1017,7 +1151,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: { letterSpacing: 0.5, marginBottom: 2, lineHeight: 20 },
-  price: { letterSpacing: 2 },
+  price: { letterSpacing: 0.5 },
   wishlistToggle: {
     width: 32,
     height: 32,

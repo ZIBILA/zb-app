@@ -13,7 +13,7 @@ import { fallbackCollections, fallbackProducts } from '../constants/fallbackCata
 import { getCacheService } from '../services/cacheService';
 
 const LIST_FIELDS = 'id,title,handle,priceRange,featuredImage';
-const FULL_FIELDS = 'id,title,handle,description,descriptionHtml,availableForSale,featuredImage,images,priceRange,variants,media,details,care,sizeChart,productVideo';
+const FULL_FIELDS = 'id,title,handle,description,descriptionHtml,availableForSale,featuredImage,images,priceRange,variants,media,details,care,sizeChart,productVideo,modelInfo';
 
 const apiCache = new Map<string, { data: any; timestamp: number }>();
 const inFlightRequests = new Map<string, Promise<any>>();
@@ -146,6 +146,10 @@ function normalizeProduct(product: any): FlatProduct | null {
     care: product.care,
     sizeChart: product.sizeChart,
     productVideo: normalizedProductVideo,
+    modelInfo:
+      typeof product.modelInfo === 'string'
+        ? product.modelInfo
+        : product.modelInfo?.value || undefined,
   };
 }
 

@@ -2849,6 +2849,9 @@ export async function flattenProduct(p: ShopifyProduct, opts?: FlattenProductOpt
     care: getMetafieldText(pWithMeta, 'care'),
     sizeChart,
     productVideo,
+    modelInfo:
+      getMetafieldText(pWithMeta, 'model_info') ||
+      getMetafieldRaw(pWithMeta, ['model_info', 'model-info', 'model info', 'model_fit_line']),
   };
 }
 

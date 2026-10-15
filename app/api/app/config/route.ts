@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
 import prisma, { getShopSettings } from '@/lib/db';
+import {
+  DEFAULT_PDP_INCL_TAXES_TEXT,
+  DEFAULT_PDP_MODEL_INFO,
+  parsePdpTrustBoxes,
+} from '@/lib/pdp-trust-defaults';
 
 export const dynamic = 'force-dynamic';
 
@@ -106,6 +111,10 @@ export async function GET() {
         showSizeFit: s.showSizeFit,
         showDetails: s.showDetails,
         background: nullIfEmpty(s.pdpBackground),
+        trustBoxes: parsePdpTrustBoxes(s.pdpTrustBoxes),
+        inclTaxesText: nullIfEmpty(s.pdpInclTaxesText) || DEFAULT_PDP_INCL_TAXES_TEXT,
+        showInclTaxes: s.pdpShowInclTaxes !== false,
+        modelInfoDefault: nullIfEmpty(s.pdpModelInfoDefault) || DEFAULT_PDP_MODEL_INFO,
       },
       social: {
         instagram,
