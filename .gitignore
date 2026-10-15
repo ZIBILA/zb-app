@@ -68,3 +68,9 @@ tsc_output*.txt
 # Local audit dump (large Drive export — keep out of git)
 /docs/audit
 
+
+# perf-audit artefacts: keep summaries + before/after HTML reports, regenerate the rest
+lighthouse/**/*.report.json
+lighthouse/g*/*.report.html
+lighthouse/visual/*.png
+lighthouse/before/bundle-client.html

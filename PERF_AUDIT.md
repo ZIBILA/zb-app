@@ -3,9 +3,9 @@
 Companion to `AUDIT.md` (Phase 1 findings). This file tracks measurements, every change made, every change skipped, and what still needs approval.
 
 ## Method
-- Lighthouse 13.5 CLI, default mobile preset (simulated slow 4G, Moto G Power class, 412×823 CSS px), headless Chrome, `--only-categories` perf/a11y/best-practices/seo, **3 runs per page, medians reported**. Runner: `lighthouse/run.mjs` (`node lighthouse/run.mjs before|after`). Reports: `lighthouse/before/*.report.html`, `lighthouse/after/*.report.html`.
+- Lighthouse 13.5 CLI, default mobile preset (simulated slow 4G, Moto G Power class, 412×823 CSS px), headless Chrome, `--only-categories` perf/a11y/best-practices/seo, **3 runs per page, medians reported**. Runner: `lighthouse/run.mjs` (`node lighthouse/run.mjs before|after`). Reports: `lighthouse/before/*.report.html`, `lighthouse/after/*.report.html` (JSON twins and the per-group intermediate reports are git-ignored; each group's medians are in `lighthouse/g*/summary.md`).
 - Target: local production build (`next build && next start -p 3001`), never the live server.
-- Bundle sizes: `@next/bundle-analyzer` (`ANALYZE=true npm run build`), report saved at `lighthouse/before/bundle-client.html`.
+- Bundle sizes: `@next/bundle-analyzer` (`ANALYZE=true npm run build`), report regenerated with `ANALYZE=true npm run build` (`.next/analyze/client.html`; not committed, 1.5 MB).
 - INP is not reported by lab Lighthouse (field-only); TBT is the lab proxy.
 
 ### Environment caveat (important for reading the numbers)
@@ -140,13 +140,13 @@ So the deferred vendor download drops nothing: the queued `fbq`/`snaptr` calls r
 
 ## Phase 4 — Visual check (baseline commit vs. this branch, same mock data)
 
-Method: the untouched `main` (45bb4e6b) was built in a separate worktree and served on :3002, this branch on :3001; `lighthouse/visual-check.mjs` captured every storefront route from both at 390 px and 1440 px, light and dark (`prefers-color-scheme` + the site's `theme` localStorage key), with CSS animations disabled, and compared them with pixelmatch (threshold 0.1). Full table: `lighthouse/visual/summary.md`; captures and diff images for anything above 0.5 % in `lighthouse/visual/`.
+Method: the untouched `main` (45bb4e6b) was built in a separate worktree and served on :3002, this branch on :3001; `lighthouse/visual-check.mjs` captured every storefront route from both at 390 px and 1440 px, light and dark (`prefers-color-scheme` + the site's `theme` localStorage key), with CSS animations disabled, and compared them with pixelmatch (threshold 0.1). Full table: `lighthouse/visual/summary.md`. The captures and diff PNGs (44 MB) are git-ignored; regenerate with `node lighthouse/visual-check.mjs <baselineUrl> <branchUrl>` (see the script header for the setup).
 
 | Route | 390 dark | 390 light | 1440 dark | 1440 light | Verdict |
 |---|---|---|---|---|---|
 | `/` | 8.40 % | 0.04 % | 0.04 %* | 0.04 %* | identical layout; the 390-dark run caught the hero video frame vs poster (video source now attaches after hydration). *Page height differed by 424 px at 1440 (see note) |
 | `/collections` | 0.15 % | 0.11 % | 0.03 % | 0.02 % | identical (anti-aliasing noise) |
-| `/products/…` | 20.4 % | 36.5 % | 22.8 % | 21.8 % | **baseline capture had no product images loaded at all** (black gallery, empty thumbnails, empty "curated pairs"); this branch shows them — compared crops: `lighthouse/visual/_products_*-390-dark-{A,B}.png`. Layout boxes identical |
+| `/products/…` | 20.4 % | 36.5 % | 22.8 % | 21.8 % | **baseline capture had no product images loaded at all** (black gallery, empty thumbnails, empty "curated pairs"); this branch shows them — compared crops (regenerable, see above). Layout boxes identical |
 | `/cart` | 1.93 % | 1.80 % | 0.60 % | 0.65 % | baseline caught mid entrance animation (dimmed button, block 10 px lower); settled state identical |
 | `/faq`, `/support`, `/blogs`, `/reviews`, `/wishlist`, `/app`, 404 | ≤ 0.16 % | ≤ 0.12 % | ≤ 0.03 % | ≤ 0.02 % | identical |
 | `/story`, `/collaborations` | 2.0–2.5 % | 2.1–2.5 % | 1.2–2.0 % | 1.2–2.1 % | framer-motion entrance animations (JS-driven, not disabled by the CSS override) at different frames; same layout |
