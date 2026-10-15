@@ -31,6 +31,21 @@ import { navigationRef } from './navigationUtils';
 import CartDrawer from '../components/CartDrawer';
 import WishlistDrawer from '../components/WishlistDrawer';
 import MenuDrawer from '../components/MenuDrawer';
+import { isShakeSuppressedByHaptic } from '../utils/haptics';
+
+const SHAKE_BLOCKED_ROOT_ROUTES = new Set([
+  'CheckoutFlow',
+  'Auth',
+  'OrderConfirmation',
+  'OrderDetails',
+]);
+
+function getRootRouteName(): string | null {
+  if (!navigationRef.isReady()) return null;
+  const state = navigationRef.getRootState();
+  if (!state?.routes?.length) return null;
+  return state.routes[state.index]?.name ?? null;
+}
 
 const SafeOrderConfirmation = OrderConfirmationScreen;
 const SafeProductDetail = ProductDetailScreen;
@@ -112,6 +127,13 @@ const RootNavigator = () => {
 
             if (delta > SHAKE_THRESHOLD || magnitude > MAGNITUDE_THRESHOLD) {
               if (now - lastShakeAt > COOLDOWN_MS) {
+                // Button haptics (e.g. PLACE ORDER / Pay) vibrate the phone and
+                // look like a shake — ignore those spikes. Also never open the
+                // bag on top of checkout/payment.
+                if (isShakeSuppressedByHaptic()) return;
+                const rootRoute = getRootRouteName();
+                if (rootRoute && SHAKE_BLOCKED_ROOT_ROUTES.has(rootRoute)) return;
+
                 lastShakeAt = now;
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
                 setCartOpen(!useUIStore.getState().isCartOpen);

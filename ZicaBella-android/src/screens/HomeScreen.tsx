@@ -85,14 +85,20 @@ const HomeScreen = React.memo(() => {
   const ringHandle = 'accessories';
   const ringTitle = settings?.ringCarousel?.title || 'ACCESSORIES';
 
-  const heroVideoSrc = settingsLoading ? null : (settings?.hero?.video || config.heroVideoUrl);
-  const heroImageSrc = settings?.hero?.image || null;
+  // Image first (fast paint); video mounts only after the home shell is settled.
+  const heroImageSrc =
+    settings?.hero?.image || config.heroImageUrl || null;
+  const heroVideoSrcFromSettings = settingsLoading
+    ? null
+    : (settings?.hero?.video || config.heroVideoUrl);
 
   const latestCurationTitle = settings?.latestCuration?.title ?? null;
   const latestCurationSubtitle = settings?.latestCuration?.subtitle ?? null;
 
   const [renderStage1, setRenderStage1] = useState(false);
   const [renderStage2, setRenderStage2] = useState(false);
+  const [heroVideoReady, setHeroVideoReady] = useState(false);
+  const heroVideoSrc = heroVideoReady ? heroVideoSrcFromSettings : null;
 
   const { products, loading, isError, refetch } = useProducts(24);
   const { collections, refetch: refetchCollections } = useCollections(renderStage1 ? 20 : 0, 'page');
@@ -166,16 +172,27 @@ const HomeScreen = React.memo(() => {
     const task = InteractionManager.runAfterInteractions(() => {
       if (cancelled) return;
       setRenderStage2(true);
+      // After layout/interactions settle, start hero video (image already on screen).
+      const videoDelay = Platform.OS === 'android' ? 600 : 200;
+      setTimeout(() => {
+        if (!cancelled) setHeroVideoReady(true);
+      }, videoDelay);
     });
 
     const t2 = setTimeout(() => {
       if (!cancelled) setRenderStage2(true);
     }, Platform.OS === 'android' ? 1200 : 700);
 
+    // Hard fallback so video still starts if InteractionManager never fires.
+    const tVideo = setTimeout(() => {
+      if (!cancelled) setHeroVideoReady(true);
+    }, Platform.OS === 'android' ? 1800 : 900);
+
     return () => {
       cancelled = true;
       clearTimeout(t1);
       clearTimeout(t2);
+      clearTimeout(tVideo);
       task.cancel();
     };
   }, []);

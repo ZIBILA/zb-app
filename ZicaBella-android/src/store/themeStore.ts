@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Appearance } from 'react-native';
+import { Appearance, NativeModules } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 
 interface ThemeState {
@@ -10,14 +10,47 @@ interface ThemeState {
   setTheme: (theme: 'light' | 'dark') => void;
 }
 
-/** Written for the native splash/window, which paints before JS hydrates. */
-function persistLaunchTheme(theme: 'light' | 'dark') {
+type ThemePreferencesNative = {
+  setTheme?: (theme: string) => void;
+  getTheme?: () => string;
+};
+
+const nativeTheme = NativeModules.ZBThemePreferences as ThemePreferencesNative | undefined;
+
+function getInitialTheme(): 'light' | 'dark' {
   try {
-    new File(Paths.document, 'app-theme.txt').write(theme);
+    const fromNative = nativeTheme?.getTheme?.();
+    if (fromNative === 'dark' || fromNative === 'light') return fromNative;
+  } catch {}
+
+  try {
+    const file = new File(Paths.document, 'app-theme.txt');
+    if (file.exists) {
+      const content = file.textSync().trim();
+      if (content === 'dark' || content === 'light') return content;
+    }
+  } catch {}
+
+  return 'light';
+}
+
+/** Persists launch/splash theme for the next cold start (native splash reads this). */
+function persistLaunchTheme(theme: 'light' | 'dark') {
+  // Primary: SharedPreferences via native module (what MainActivity reads).
+  try {
+    nativeTheme?.setTheme?.(theme);
   } catch {
-    // The in-app theme still applies. The next cold start keeps the previous launch color.
+    // Module may be unavailable in Expo Go / before native rebuild.
   }
-  // Keep RN / AppCompat night resources aligned with the in-app theme.
+
+  // Fallback / sync cache: file used for instant startup resolution.
+  try {
+    const file = new File(Paths.document, 'app-theme.txt');
+    file.write(theme);
+  } catch {
+    // Native prefs are enough when the module is linked.
+  }
+
   try {
     Appearance.setColorScheme(theme);
   } catch {
@@ -28,7 +61,7 @@ function persistLaunchTheme(theme: 'light' | 'dark') {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'light',
+      theme: getInitialTheme(),
       toggleTheme: () => set((state) => {
         const theme = state.theme === 'light' ? 'dark' : 'light';
         persistLaunchTheme(theme);
@@ -43,7 +76,8 @@ export const useThemeStore = create<ThemeState>()(
       name: 'theme-storage',
       storage: createJSONStorage(() => AsyncStorage),
       onRehydrateStorage: () => (state) => {
-        if (state?.theme) persistLaunchTheme(state.theme);
+        const currentTheme = state?.theme === 'dark' ? 'dark' : 'light';
+        persistLaunchTheme(currentTheme);
       },
     }
   )

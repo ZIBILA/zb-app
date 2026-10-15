@@ -91,7 +91,7 @@ export async function POST(req: Request) {
       try {
         const parsed = JSON.parse(order.shippingAddress);
         address.name = parsed.name || address.name;
-        address.address1 = parsed.street || parsed.address1 || "";
+        address.address1 = parsed.address1 || parsed.line1 || (parsed.flat && parsed.street ? `${parsed.flat}, ${parsed.street}` : (parsed.street || parsed.flat)) || "";
         address.city = parsed.city || "";
         address.province = parsed.state || parsed.province || "";
         address.zip = parsed.zip || parsed.pincode || "";

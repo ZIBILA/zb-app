@@ -9,7 +9,7 @@ import { useThemeStore } from '../store/themeStore';
 
 const CANONICAL_SILVER_GLB = 'https://cdn.shopify.com/3d/models/e024b09e83a75c03/Zicabella-silver-logo.glb';
 
-function FallbackLogo({ size = 56, isDark }: { size?: number; isDark: boolean }) {
+function FallbackLogo({ size = 56 }: { size?: number }) {
   return (
     <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
       <Image 
@@ -18,7 +18,7 @@ function FallbackLogo({ size = 56, isDark }: { size?: number; isDark: boolean })
           width: size * 0.75, 
           height: size * 0.75, 
           opacity: 0.9,
-          tintColor: isDark ? '#FFFFFF' : '#000000',
+          tintColor: '#CBD5E1',
         }} 
         contentFit="contain"
       />
@@ -29,11 +29,9 @@ function FallbackLogo({ size = 56, isDark }: { size?: number; isDark: boolean })
 function Model({
   glbUrl,
   touchRotation,
-  isDark,
 }: {
   glbUrl: string;
   touchRotation: React.MutableRefObject<{ x: number; y: number }>;
-  isDark: boolean;
 }) {
   const { scene } = useGLTF(glbUrl);
   const group = useRef<any>(null);
@@ -43,17 +41,17 @@ function Model({
     if (scene) {
       scene.traverse((child: any) => {
         if (child.isMesh && child.material) {
-          // Exact silver metalness & specular sheen matching the webstore footer
+          // Exact silver metalness & specular sheen matching the webstore footer (identical in light and dark mode)
           child.material.metalness = 0.92;
           child.material.roughness = 0.14;
           if (child.material.color) {
-            child.material.color.set(isDark ? '#F1F5F9' : '#0F172A');
+            child.material.color.set('#F1F5F9');
           }
           child.material.needsUpdate = true;
         }
       });
     }
-  }, [scene, isDark]);
+  }, [scene]);
 
   useFrame((_state, delta) => {
     if (group.current) {
@@ -129,7 +127,7 @@ export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) 
 
   // Show flat fallback when not in viewport or 3D not ready
   if (!active) {
-    return <FallbackLogo size={size} isDark={isDark} />;
+    return <FallbackLogo size={size} />;
   }
 
   const rawUrl = (glbUrl || config.footerLogo3dGlb).trim();
@@ -147,14 +145,14 @@ export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) 
           powerPreference: "high-performance" 
         }}
       >
-        <ambientLight intensity={isDark ? 2.5 : 3.0} />
+        <ambientLight intensity={2.8} />
         <directionalLight position={[5, 10, 7]} intensity={4.5} color="#FFFFFF" />
         <directionalLight position={[-5, -10, -5]} intensity={2.5} color="#E2E8F0" />
         <spotLight position={[10, 15, 10]} angle={0.35} penumbra={1} intensity={5} color="#FFFFFF" />
         <pointLight position={[0, 0, 8]} intensity={3.5} color="#FFFFFF" />
         <Suspense fallback={null}>
           <Bounds fit clip observe margin={1}>
-            <Model glbUrl={url} touchRotation={touchRotation} isDark={isDark} />
+            <Model glbUrl={url} touchRotation={touchRotation} />
           </Bounds>
         </Suspense>
       </Canvas>

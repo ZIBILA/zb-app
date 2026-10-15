@@ -25,7 +25,7 @@
     <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
   </style>
 
-  <!-- Default / light splash — never follows system dark mode -->
+  <!-- Default / initial splash — strictly light mode on install -->
   <style name="Theme.App.SplashScreen" parent="Theme.SplashScreen">
     <item name="windowSplashScreenBackground">@color/splashscreen_background_light</item>
     <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo</item>
@@ -40,7 +40,7 @@
   <!-- Used only when the in-app theme was explicitly saved as dark -->
   <style name="Theme.App.SplashScreen.Dark" parent="Theme.SplashScreen">
     <item name="windowSplashScreenBackground">@color/splashscreen_background_dark</item>
-    <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo</item>
+    <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo_dark</item>
     <item name="windowSplashScreenIconBackgroundColor">@color/splashscreen_background_dark</item>
     <item name="postSplashScreenTheme">@style/AppTheme.Dark</item>
     <item name="android:windowSplashScreenBehavior">icon_preferred</item>

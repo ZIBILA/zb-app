@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.content.res.Configuration
 import androidx.appcompat.app.AppCompatDelegate
-import java.io.File
 
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -23,20 +22,14 @@ class MainApplication : Application(), ReactApplication {
       context = applicationContext,
       packageList =
         PackageList(this).packages.apply {
-          // Packages that cannot be autolinked yet can be added manually here, for example:
-          // add(MyReactNativePackage())
+          add(ThemePreferencesPackage())
         }
     )
   }
 
-  override fun attachBaseContext(base: Context?) {
-    super.attachBaseContext(base)
-    // Apply before any Activity/splash resolves resources so system dark mode
-    // cannot paint a black opening screen on a light-default first install.
-    applyStoredTheme(this)
-  }
-
   override fun onCreate() {
+    // Do NOT read prefs in attachBaseContext — that crashed the app
+    // (applicationContext / prefs are not safe that early).
     applyStoredTheme(this)
     super.onCreate()
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
@@ -54,19 +47,15 @@ class MainApplication : Application(), ReactApplication {
   }
 
   companion object {
-    fun isStoredDarkTheme(context: Context): Boolean {
-      return try {
-        File(context.filesDir, "app-theme.txt").takeIf { it.isFile }?.readText()?.trim() == "dark"
-      } catch (_: Exception) {
-        false
-      }
-    }
-
     fun applyStoredTheme(context: Context) {
-      AppCompatDelegate.setDefaultNightMode(
-        if (isStoredDarkTheme(context)) AppCompatDelegate.MODE_NIGHT_YES
-        else AppCompatDelegate.MODE_NIGHT_NO
-      )
+      try {
+        AppCompatDelegate.setDefaultNightMode(
+          if (ThemePreferences.isDark(context)) AppCompatDelegate.MODE_NIGHT_YES
+          else AppCompatDelegate.MODE_NIGHT_NO
+        )
+      } catch (_: Exception) {
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+      }
     }
   }
 }

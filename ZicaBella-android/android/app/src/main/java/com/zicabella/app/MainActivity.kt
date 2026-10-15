@@ -16,7 +16,7 @@ import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
-    val dark = MainApplication.isStoredDarkTheme(this)
+    val dark = ThemePreferences.isDark(this)
     // Pick an explicit splash theme from the saved app preference — never from
     // the phone's system dark mode (that was making first install open black).
     setTheme(if (dark) R.style.Theme_App_SplashScreen_Dark else R.style.Theme_App_SplashScreen)

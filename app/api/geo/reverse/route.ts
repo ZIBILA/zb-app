@@ -44,8 +44,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // ── Strategy 1: Google Maps Geocoding API (Only if dedicated server key without referrer restrictions is set) ──
-    const googleServerKey = process.env.GOOGLE_MAPS_SERVER_KEY || "";
+    // ── Strategy 1: Google Maps Geocoding API (Dedicated server key or general maps key) ──
+    const googleServerKey =
+      process.env.GOOGLE_MAPS_SERVER_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ||
+      "";
 
     if (googleServerKey) {
       try {

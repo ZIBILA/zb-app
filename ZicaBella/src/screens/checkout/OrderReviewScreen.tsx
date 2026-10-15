@@ -223,9 +223,10 @@ export default function OrderReviewScreen() {
         name: shippingAddress?.name || user?.name || 'Zica User',
         first_name: (shippingAddress?.name || user?.name || 'Zica').split(' ')[0],
         last_name: (shippingAddress?.name || user?.name || 'User').split(' ').slice(1).join(' ') || 'User',
-        line1: shippingAddress?.street || shippingAddress?.line1 || shippingAddress?.address1 || 'Address not provided',
-        address1: shippingAddress?.street || shippingAddress?.line1 || shippingAddress?.address1 || 'Address not provided',
+        line1: shippingAddress?.line1 || shippingAddress?.address1 || (shippingAddress?.flat && shippingAddress?.street ? `${shippingAddress.flat}, ${shippingAddress.street}` : (shippingAddress?.street || shippingAddress?.flat)) || 'Address not provided',
+        address1: shippingAddress?.line1 || shippingAddress?.address1 || (shippingAddress?.flat && shippingAddress?.street ? `${shippingAddress.flat}, ${shippingAddress.street}` : (shippingAddress?.street || shippingAddress?.flat)) || 'Address not provided',
         street: shippingAddress?.street || shippingAddress?.line1 || shippingAddress?.address1 || 'Address not provided',
+        flat: shippingAddress?.flat || '',
         line2: shippingAddress?.line2 || shippingAddress?.address2 || '',
         address2: shippingAddress?.line2 || shippingAddress?.address2 || '',
         city: shippingAddress?.city || 'New Delhi',
@@ -639,7 +640,7 @@ export default function OrderReviewScreen() {
              <Typography size={12} weight="600" color={colors.text}>{shippingAddress?.name || user?.name}</Typography>
              <Typography size={9} weight="600" color={colors.textExtraLight} style={{ marginTop: 2 }}>{shippingAddress?.email || user?.email}</Typography>
              <Typography size={10} color={colors.textSecondary} style={{ marginTop: 6, lineHeight: 16 }}>
-                {shippingAddress?.street || shippingAddress?.line1}{'\n'}
+                {shippingAddress?.line1 || shippingAddress?.address1 || [shippingAddress?.flat, shippingAddress?.street].filter(Boolean).join(', ') || shippingAddress?.street}{'\n'}
                 {shippingAddress?.city}, {shippingAddress?.state} {shippingAddress?.zip || shippingAddress?.pincode}
              </Typography>
              <Typography size={10} color={colors.textSecondary} style={{ marginTop: 8 }}>{shippingAddress?.phone || user?.phone}</Typography>
