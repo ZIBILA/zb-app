@@ -41,10 +41,17 @@ export default function HeroVideo({
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 768px)");
-    setIsMobile(mediaQuery.matches);
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
     mediaQuery.addEventListener("change", handler);
-    return () => mediaQuery.removeEventListener("change", handler);
+    // Attach the video only once the page has finished loading (the poster is shown meanwhile), so
+    // the multi-MB file never competes with the LCP image, fonts and JS on a slow connection.
+    const arm = () => setIsMobile(mediaQuery.matches);
+    if (document.readyState === "complete") arm();
+    else window.addEventListener("load", arm, { once: true });
+    return () => {
+      mediaQuery.removeEventListener("change", handler);
+      window.removeEventListener("load", arm);
+    };
   }, []);
 
   useEffect(() => {

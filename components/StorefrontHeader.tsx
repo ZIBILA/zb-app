@@ -5,12 +5,9 @@ import Link from "next/link";
 import NextImage from "next/image";
 import { Bookmark, ShoppingBag, ChevronLeft, ChevronDown, Search, User, Sun, Moon } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
-import dynamic from "next/dynamic";
-
-// The three drawers render nothing until opened; load their code on demand (warmed up when idle below).
-const MenuDrawer = dynamic(() => import("./MenuDrawer"), { ssr: false });
-const CartDrawer = dynamic(() => import("./CartDrawer"), { ssr: false });
-const BookmarkDrawer = dynamic(() => import("./BookmarkDrawer"), { ssr: false });
+import MenuDrawer from "./MenuDrawer";
+import CartDrawer from "./CartDrawer";
+import BookmarkDrawer from "./BookmarkDrawer";
 import { useBookmarks } from "@/lib/bookmark-context";
 import { useRouter, usePathname } from "next/navigation";
 import { useShakeToCart } from "@/lib/hooks/useShakeToCart";
@@ -28,21 +25,6 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
   const navCountRef = useRef(0);
   const prevPathnameRef = useRef(pathname);
 
-  // Warm the drawer chunks once the page is idle so opening them is as instant as before.
-  useEffect(() => {
-    const warm = () => {
-      import("./MenuDrawer");
-      import("./CartDrawer");
-      import("./BookmarkDrawer");
-    };
-    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void };
-    if (typeof w.requestIdleCallback === "function") {
-      const id = w.requestIdleCallback(warm, { timeout: 2500 });
-      return () => w.cancelIdleCallback?.(id);
-    }
-    const t = w.setTimeout(warm, 2500);
-    return () => w.clearTimeout(t);
-  }, []);
 
   useEffect(() => {
     if (prevPathnameRef.current !== pathname) {

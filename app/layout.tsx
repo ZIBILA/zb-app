@@ -194,7 +194,7 @@ export default async function RootLayout({
           }}
         />
         {/* Third-party loader gate: vendor files (gtm.js, fbevents.js, scevent.min.js, oaiq.min.js)
-            are fetched on first interaction or when the browser is idle (≤ 3 s after load), and
+            are fetched on first interaction or when the browser is idle after the load event (≤ 3 s later), and
             immediately on /checkout and order confirmation. The fbq/snaptr/oaiq/dataLayer stubs
             below are still created synchronously, so every event is queued and replayed — nothing
             is dropped, it is only sent a moment later. */}
@@ -210,8 +210,12 @@ export default async function RootLayout({
                 ['pointerdown', 'touchstart', 'keydown', 'scroll'].forEach(function (ev) {
                   window.addEventListener(ev, run, { once: true, passive: true });
                 });
-                if ('requestIdleCallback' in window) { window.requestIdleCallback(run, { timeout: 3000 }); }
-                else { window.setTimeout(run, 3000); }
+                function afterLoad() {
+                  if ('requestIdleCallback' in window) { window.requestIdleCallback(run, { timeout: 3000 }); }
+                  else { window.setTimeout(run, 3000); }
+                }
+                if (document.readyState === 'complete') { afterLoad(); }
+                else { window.addEventListener('load', afterLoad, { once: true }); }
               };
             `,
           }}

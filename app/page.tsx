@@ -77,6 +77,13 @@ export default async function Home() {
     getShopSettings(),
   ]);
 
+  // Hint the hero poster (the mobile LCP image) before the catalogue fetches below, so the
+  // <link rel="preload"> lands in the streamed <head> instead of in the body after the data.
+  // Same values as heroVideo / heroPoster further down.
+  if (s?.heroVideo || "/zb-video-heroo.webm") {
+    preload(s?.heroImage || "/zb-video-hero-poster.jpg", { as: "image", fetchPriority: "high" });
+  }
+
   // Concurrently fetch all independent assets to optimize TTFB and speed up the homepage loading
   const [collections, banners, fetchedProducts] = await Promise.all([
     fetchEnabledCollections('page').catch(() => []),
@@ -181,8 +188,6 @@ export default async function Home() {
   
   const showRingCarousel = s?.showRingCarousel ?? true;
   const ringCarouselTitle = nullIfEmpty(s?.ringCarouselTitle);
-
-  if (heroVideo) preload(heroPoster, { as: "image", fetchPriority: "high" });
 
   return (
     <div className="relative home-page max-w-full overflow-x-hidden">

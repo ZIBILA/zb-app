@@ -2,7 +2,7 @@
 // Usage: node lighthouse/visual-check.mjs <baseUrlA> <baseUrlB> [outDir]
 // Captures every storefront route at 390 px and 1440 px, light and dark, from both servers,
 // and reports the % of differing pixels (pixelmatch, threshold 0.1). Diff images are written
-// only for pages above 0.5 %.
+// only for pages above 0.5 % (VC_SAVE_ALL=1 keeps every capture).
 import puppeteer from 'puppeteer-core';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
@@ -46,7 +46,7 @@ for (const route of routes) for (const vp of viewports) for (const theme of them
     const pct = (100 * n / (w * h));
     const heightNote = a.height === b.height ? '' : ` (height ${a.height} vs ${b.height})`;
     rows.push(`| ${route} | ${vp.name} | ${theme} | ${pct.toFixed(2)} %${heightNote} |`);
-    if (pct > 0.5) { writeFileSync(resolve(out, `${tag}-A.png`), PNG.sync.write(ca)); writeFileSync(resolve(out, `${tag}-B.png`), PNG.sync.write(cb)); writeFileSync(resolve(out, `${tag}-diff.png`), PNG.sync.write(diff)); }
+    if (pct > 0.5 || process.env.VC_SAVE_ALL === '1') { writeFileSync(resolve(out, `${tag}-A.png`), PNG.sync.write(ca)); writeFileSync(resolve(out, `${tag}-B.png`), PNG.sync.write(a.height === b.height ? cb : b)); writeFileSync(resolve(out, `${tag}-diff.png`), PNG.sync.write(diff)); }
     console.log(tag, pct.toFixed(2) + '%' + heightNote);
   } catch (e) { rows.push(`| ${route} | ${vp.name} | ${theme} | error: ${String(e.message).slice(0, 60)} |`); console.log(tag, 'ERROR', e.message); }
 }

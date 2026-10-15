@@ -11,7 +11,12 @@ export default function ThreeDLogo({ src, size = 48 }: { src?: string; size?: nu
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMounted(true);
+    // Mount after the load event so the 240 KB model-viewer module never competes with the
+    // page's own resources (it is also gated on the footer being near the viewport, below).
+    const arm = () => setMounted(true);
+    if (document.readyState === "complete") arm();
+    else window.addEventListener("load", arm, { once: true });
+    return () => window.removeEventListener("load", arm);
   }, []);
 
   useEffect(() => {
