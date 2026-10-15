@@ -1,6 +1,5 @@
 import { fetchEnabledCollections } from "@/lib/shopify-admin";
 import Link from "next/link";
-import { ChevronLeft } from "lucide-react";
 import Image from "next/image";
 import { Metadata } from "next";
 

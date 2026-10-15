@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { PrismaClient } from '@prisma/client'
 import { Pool } from 'pg'
 import { PrismaPg } from '@prisma/adapter-pg'
@@ -374,7 +375,7 @@ function serializeShopField(value: unknown): unknown {
   return value;
 }
 
-export async function getShopSettings() {
+export const getShopSettings = cache(async function getShopSettings() {
   try {
     const isMock = (prisma as any)._isMock;
     if (isMock) {
@@ -397,7 +398,7 @@ export async function getShopSettings() {
     console.error('[DB] getShopSettings query failed, using persistent fallback:', error.message);
     return getPersistentSettings();
   }
-}
+})
 
 export async function updateShopSettings(updates: Record<string, any>) {
   // Always update persistent JSON file to prevent desync during DB timeouts/redeployments
@@ -453,14 +454,14 @@ export async function updateShopSettings(updates: Record<string, any>) {
   }
 }
 
-export async function getStoreSettings(pageKey: string) {
+export const getStoreSettings = cache(async function getStoreSettings(pageKey: string) {
   try {
     return await prisma.storeSettings.findUnique({ where: { pageKey } });
   } catch (error: any) {
     console.error(`[DB] getStoreSettings direct query failed for ${pageKey}:`, error.message);
     return null;
   }
-}
+})
 
 
 

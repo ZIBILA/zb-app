@@ -3,11 +3,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import NextImage from "next/image";
-import { Bookmark, ShoppingBag, ChevronLeft, ChevronDown, Search, User, Menu, Sun, Moon } from "lucide-react";
+import { Bookmark, ShoppingBag, ChevronLeft, ChevronDown, Search, User, Sun, Moon } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
-import MenuDrawer from "./MenuDrawer";
-import CartDrawer from "./CartDrawer";
-import BookmarkDrawer from "./BookmarkDrawer";
+import dynamic from "next/dynamic";
+
+// The three drawers render nothing until opened; load their code on demand (warmed up when idle below).
+const MenuDrawer = dynamic(() => import("./MenuDrawer"), { ssr: false });
+const CartDrawer = dynamic(() => import("./CartDrawer"), { ssr: false });
+const BookmarkDrawer = dynamic(() => import("./BookmarkDrawer"), { ssr: false });
 import { useBookmarks } from "@/lib/bookmark-context";
 import { useRouter, usePathname } from "next/navigation";
 import { useShakeToCart } from "@/lib/hooks/useShakeToCart";
@@ -24,6 +27,22 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
   // so we count pathname changes instead.
   const navCountRef = useRef(0);
   const prevPathnameRef = useRef(pathname);
+
+  // Warm the drawer chunks once the page is idle so opening them is as instant as before.
+  useEffect(() => {
+    const warm = () => {
+      import("./MenuDrawer");
+      import("./CartDrawer");
+      import("./BookmarkDrawer");
+    };
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void };
+    if (typeof w.requestIdleCallback === "function") {
+      const id = w.requestIdleCallback(warm, { timeout: 2500 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const t = w.setTimeout(warm, 2500);
+    return () => w.clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     if (prevPathnameRef.current !== pathname) {
@@ -122,7 +141,7 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
         {/* Left: Brand */}
         <Link href="/" className="flex items-center gap-2 active:scale-95 transition-all z-10 py-1 px-2.5 rounded-full hover:bg-foreground/5 dark:hover:bg-white/5">
           <div className="relative w-5 h-5 dark:invert">
-            <NextImage src="/zb-logo-220px.png" alt="Zica Bella" fill className="object-contain" />
+            <NextImage src="/zb-logo-220px.png" alt="Zica Bella" fill sizes="20px" className="object-contain" />
           </div>
           <span className="font-rocaston text-[9.5px] font-bold tracking-[0.22em] text-foreground/80 uppercase pt-0.5">ZICABELLA</span>
         </Link>
@@ -159,6 +178,7 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2 z-10">
+          {!mounted && <span className="h-[30px] w-[30px] shrink-0" aria-hidden />}
           {mounted && (
             <button
               onClick={() => setTheme(isDark ? "light" : "dark")}
@@ -217,6 +237,7 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
           
           <Link
             href="/profile"
+            prefetch={false}
             aria-label="Profile"
             className={`h-[30px] w-[30px] flex items-center justify-center rounded-full transition-all duration-300 active:scale-90 ${
               pathname === "/profile"
@@ -260,6 +281,7 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
 
         {/* Right: Floating Theme & Cart */}
         <div className="flex items-center gap-2 pointer-events-auto">
+          {!mounted && <span className="w-9 h-9 shrink-0" aria-hidden />}
           {mounted && (
             <button 
               onClick={() => setTheme(isDark ? "light" : "dark")}

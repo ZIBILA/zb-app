@@ -1,0 +1,16 @@
+# Lint gate scoped to the customer storefront for the perf-audit branch (AUDIT.md §9 item 13).
+# The admin dashboard, API routes and scripts carry ~3,800 pre-existing errors; they are untouched here.
+app/api/
+app/dashboard/
+app/web-store/
+app/portal/
+scripts/
+scratch/
+theme-extension/
+ZicaBella/
+ZicaBella-android/
+lighthouse/
+# Pre-existing require()/module usage in the Google Maps loader (checkout-only, not touched by this branch)
+lib/googleMapsLoader.ts
+# Pre-existing require() in the app JWT helper (auth, not touched by this branch)
+lib/appAuth.ts

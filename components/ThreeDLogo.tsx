@@ -62,7 +62,7 @@ export default function ThreeDLogo({ src, size = 48 }: { src?: string; size?: nu
         />
       ) : (
         <div className="relative w-full h-full dark:invert">
-          <NextImage src="/zb-logo-220px.png" alt="Zica Bella Logo" fill className="object-contain" priority />
+          <NextImage src="/zb-logo-220px.png" alt="Zica Bella Logo" fill className="object-contain" sizes="220px" />
         </div>
       )}
     </div>

@@ -24,7 +24,8 @@ export function refreshStorefront(): { refreshed: string[] } {
   ];
   for (const [path, type] of paths) {
     try {
-      type ? revalidatePath(path, type) : revalidatePath(path);
+      if (type) revalidatePath(path, type);
+      else revalidatePath(path);
       refreshed.push(path);
     } catch (e) {
       console.warn(`[Storefront Refresh] revalidate ${path} failed:`, e);

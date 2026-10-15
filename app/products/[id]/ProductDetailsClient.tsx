@@ -89,7 +89,9 @@ import { trackViewItem as zbTrackViewItem } from "@/lib/analytics-tracker";
 import { useRecentlyViewed } from "@/lib/recently-viewed-context";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import dynamic from "next/dynamic";
-import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
+// Zoom/pan library is only needed inside the full-screen gallery (opened on tap).
+const TransformWrapper = dynamic(() => import("react-zoom-pan-pinch").then((m) => m.TransformWrapper), { ssr: false });
+const TransformComponent = dynamic(() => import("react-zoom-pan-pinch").then((m) => m.TransformComponent), { ssr: false });
 
 const CheckoutWebView = dynamic(() => import("@/components/CheckoutWebView"), { ssr: false });
 const OrderSuccess = dynamic(() => import("@/components/OrderSuccess"), { ssr: false });
@@ -529,7 +531,7 @@ export default function ProductDetailsClient({
                 alt={product.title}
                 fill
                 className="object-cover transition-all duration-1200"
-                priority
+                loading="eager"
                 sizes="(max-width: 1200px) 50vw, 600px"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/10 to-transparent pointer-events-none" />
@@ -1565,7 +1567,6 @@ function FullScreenGallery({
                         fill 
                         className="object-contain pointer-events-none" 
                         sizes="100vw"
-                        priority={i === localActiveImg}
                         onError={handleImageError}
                         draggable={false}
                       />

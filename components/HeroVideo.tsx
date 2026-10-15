@@ -32,17 +32,14 @@ export default function HeroVideo({
 }: HeroVideoProps) {
   const [isMuted, setIsMuted] = useState(true);
   const [isInView, setIsInView] = useState(false);
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window !== "undefined") {
-      return window.matchMedia("(max-width: 768px)").matches;
-    }
-    return false;
-  });
-  const [mounted, setMounted] = useState(false);
+  // null until hydrated. The server (and the first client render) emit the <video> with the poster
+  // only, so the poster is the LCP image, mobile never downloads the desktop file, and there is no
+  // hydration mismatch. The right source is attached right after hydration.
+  const [isMobile, setIsMobile] = useState<boolean | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mounted = isMobile !== null;
 
   useEffect(() => {
-    setMounted(true);
     const mediaQuery = window.matchMedia("(max-width: 768px)");
     setIsMobile(mediaQuery.matches);
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
@@ -52,23 +49,23 @@ export default function HeroVideo({
 
   useEffect(() => {
     if (!mounted) return;
+    const el = videoRef.current;
+    if (!el) return;
     const observer = new IntersectionObserver(
       ([entry]) => setIsInView(entry.isIntersecting),
       { threshold: 0.1 }
     );
-    if (videoRef.current) observer.observe(videoRef.current);
-    return () => {
-      if (videoRef.current) observer.unobserve(videoRef.current);
-    };
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [mounted, isMobile]);
 
   useEffect(() => {
-    if (videoRef.current) {
-      if (isInView) {
-        videoRef.current.play().catch(() => {});
-      } else {
-        videoRef.current.pause();
-      }
+    const el = videoRef.current;
+    if (!el) return;
+    if (isInView) {
+      el.play().catch(() => {});
+    } else {
+      el.pause();
     }
   }, [isInView, isMobile]);
 
@@ -79,30 +76,28 @@ export default function HeroVideo({
     }
   };
 
-  const activeSrc = (isMobile && mobileSrc) ? mobileSrc : src;
+  const activeSrc = mounted ? ((isMobile && mobileSrc) ? mobileSrc : src) : null;
   // Primary first (prod settings / CDN keep winning). Local .webm is only reached if primary 404s / can't play.
-  const sources = [activeSrc, fallbackSrc].filter(
-    (url, i, arr): url is string => Boolean(url) && arr.indexOf(url) === i
-  );
+  const sources = activeSrc
+    ? [activeSrc, fallbackSrc].filter((url, i, arr): url is string => Boolean(url) && arr.indexOf(url) === i)
+    : [];
 
   return (
     <div 
       className="absolute inset-0 w-full h-full cursor-pointer group/hero"
       onClick={toggle}
-      suppressHydrationWarning
     >
       {!showControlOnly && (
         <video
           ref={videoRef}
-          key={sources.join("|")}
+          key={sources.join("|") || "poster-only"}
           autoPlay
           muted
           loop
           playsInline
-          preload={mounted ? "auto" : "metadata"}
+          preload={mounted ? "auto" : "none"}
           poster={poster || undefined}
           className="w-full h-full object-cover transition-all duration-700"
-          suppressHydrationWarning
         >
           {sources.map((url) => {
             const type = guessVideoType(url);

@@ -18,7 +18,7 @@ function CartPageInner() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { items, count, subtotal, remove, update, clear, loadFromDB } = useCart();
+  const { items, count, subtotal, remove, update, clear, loadFromDB, isLoaded } = useCart();
   const { formatPrice: fmtPrice } = useCountry();
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
@@ -210,8 +210,8 @@ function CartPageInner() {
           </h1>
         </div>
 
-        {/* Empty state */}
-        {items.length === 0 && (
+        {/* Empty state (only once localStorage has been read, otherwise it flashes for every visitor) */}
+        {isLoaded && items.length === 0 && (
           <div className="text-center pt-20 pb-8">
             <div className="glass-panel inline-flex p-6 rounded-full mb-4">
               <ShoppingBag className="w-10 h-10 text-foreground/20" />
@@ -240,7 +240,7 @@ function CartPageInner() {
                     {/* Product Image */}
                     <Link href={`/products/${item.handle}`} className="flex-shrink-0">
                       <div className="relative w-16 h-20 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.04)" }}>
-                        <Image src={item.image} alt={item.title} fill className="object-cover" />
+                        <Image src={item.image} alt={item.title} fill sizes="64px" className="object-cover" />
                       </div>
                     </Link>
 
@@ -374,7 +374,7 @@ function CartPageInner() {
  *  static page bails out to client-side rendering (empty SSR HTML). */
 export default function CartPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<div className="min-h-screen" aria-hidden />}>
       <CartPageInner />
     </Suspense>
   );

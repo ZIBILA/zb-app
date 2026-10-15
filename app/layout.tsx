@@ -5,6 +5,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
 import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
+import { fetchEnabledCollections } from "@/lib/shopify-admin";
 import { Toaster } from "sonner";
 import MetaPixelRouteTracker from "@/components/MetaPixelRouteTracker";
 import FacebookSDKInit from "@/components/FacebookSDKInit";
@@ -22,13 +23,6 @@ import { resolveMetaPixelId } from "@/lib/meta/config";
 import { parseConsentRegions } from "@/lib/meta/consent";
 import MetaConsentGate from "@/components/MetaConsentGate";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
-  display: "swap",
-});
-
 /* ISR/SSG enabled — force-dynamic removed from root layout.
    Only truly dynamic pages (checkout, cart, search) set their own dynamic mode. */
 
@@ -40,6 +34,7 @@ const inter = localFont({
   ],
   variable: "--font-inter",
   display: "swap",
+  preload: false, // only cart/orders/returns + toasts use Inter; the face still loads on demand
 });
 
 const poppins = localFont({
@@ -52,6 +47,7 @@ const poppins = localFont({
   ],
   variable: "--font-poppins",
   display: "swap",
+  preload: false, // only policies + search use Poppins
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
@@ -168,7 +164,14 @@ export default async function RootLayout({
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
   const adminGtmId = process.env.NEXT_PUBLIC_ADMIN_GTM_ID || "GTM-TDGKF386";
-  const footerData = await getStorefrontFooterData();
+  const [footerData, headerCollections] = await Promise.all([
+    getStorefrontFooterData(),
+    // Desktop header nav links: resolved here (unstable_cache, 60 s) so they are in the HTML instead
+    // of popping in after a client fetch. Only the fields the header renders are serialised.
+    fetchEnabledCollections("header")
+      .then((cols) => cols.map((c) => ({ id: c.id, handle: c.handle, title: c.title })))
+      .catch(() => [] as { id: number; handle: string; title: string }[]),
+  ]);
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -190,6 +193,29 @@ export default async function RootLayout({
             `,
           }}
         />
+        {/* Third-party loader gate: vendor files (gtm.js, fbevents.js, scevent.min.js, oaiq.min.js)
+            are fetched on first interaction or when the browser is idle (≤ 3 s after load), and
+            immediately on /checkout and order confirmation. The fbq/snaptr/oaiq/dataLayer stubs
+            below are still created synchronously, so every event is queued and replayed — nothing
+            is dropped, it is only sent a moment later. */}
+        <script
+          id="zb-third-party-gate"
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.__zbDeferThirdParty = function (fn) {
+                var done = false;
+                function run() { if (done) return; done = true; try { fn(); } catch (e) {} }
+                var p = location.pathname;
+                if (p.indexOf('/checkout') === 0 || (p.indexOf('/orders/') === 0 && p.indexOf('/confirmation') > 0)) { run(); return; }
+                ['pointerdown', 'touchstart', 'keydown', 'scroll'].forEach(function (ev) {
+                  window.addEventListener(ev, run, { once: true, passive: true });
+                });
+                if ('requestIdleCallback' in window) { window.requestIdleCallback(run, { timeout: 3000 }); }
+                else { window.setTimeout(run, 3000); }
+              };
+            `,
+          }}
+        />
         {/* Google Tag Manager - Storefront vs Admin domain routing */}
         <script
           id="google-tag-manager"
@@ -199,9 +225,9 @@ export default async function RootLayout({
                 var isAppOrAdmin = window.location.hostname === 'app.zicabella.com' || window.location.pathname.startsWith('/dashboard') || window.location.pathname.startsWith('/admin') || window.location.pathname.startsWith('/web-store');
                 if (!isAppOrAdmin) {
                   (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-                  new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+                  new Date().getTime(),event:'gtm.js'});w.__zbDeferThirdParty(function(){var f=d.getElementsByTagName(s)[0],
                   j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-                  'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+                  'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);});
                   })(window,document,'script','dataLayer','${storefrontGtmId}');
                 }
               }
@@ -209,6 +235,8 @@ export default async function RootLayout({
           }}
         />
         <link rel="preconnect" href="https://cdn.shopify.com" />
+        {/* Header wordmark font — above the fold on every page, so preload the (now same-origin) file */}
+        <link rel="preload" href="/fonts/Rocaston.ttf" as="font" type="font/ttf" crossOrigin="anonymous" />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
@@ -253,9 +281,9 @@ export default async function RootLayout({
                 {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
                 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
-                n.queue=[];t=b.createElement(e);t.async=!0;
+                n.queue=[];f.__zbDeferThirdParty(function(){t=b.createElement(e);t.async=!0;
                 t.src=v;s=b.getElementsByTagName(e)[0];
-                s.parentNode.insertBefore(t,s)}(window, document,'script',
+                s.parentNode.insertBefore(t,s)})}(window, document,'script',
                 'https://connect.facebook.net/en_US/fbevents.js');
                 fbq('set', 'autoConfig', false, '${pixelId}');
                 // Manual Advanced Matching on the FIRST init: identity this browser already
@@ -313,10 +341,10 @@ export default async function RootLayout({
               if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
                 (function(e,t,n){if(e.snaptr)return;var a=e.snaptr=function()
                 {a.handleRequest?a.handleRequest.apply(a,arguments):a.queue.push(arguments)};
-                a.queue=[];var s='script';r=t.createElement(s);r.async=!0;
+                a.queue=[];e.__zbDeferThirdParty(function(){var s='script';r=t.createElement(s);r.async=!0;
                 r.src=n;var u=t.getElementsByTagName(s)[0];
                 if (u && u.parentNode) { u.parentNode.insertBefore(r,u); } else { (document.head || document.body).appendChild(r); }
-                })(window,document,
+                });})(window,document,
                 'https://sc-static.net/scevent.min.js');
 
                 snaptr('init', '${snapPixelId}', {});
@@ -335,11 +363,11 @@ export default async function RootLayout({
                 if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
                   !function(o,a,i,q){if(o.oaiq)return;q=o.oaiq=function(){
                   q.callMethod?q.callMethod.apply(q,arguments):q.q.push(arguments)};
-                  q.q=[];q.l=1*new Date();var s=a.createElement(i),
+                  q.q=[];q.l=1*new Date();o.__zbDeferThirdParty(function(){var s=a.createElement(i),
                   f=a.getElementsByTagName(i)[0];s.async=1;
                   s.src='https://bzrcdn.openai.com/sdk/oaiq.min.js';
                   if(f&&f.parentNode){f.parentNode.insertBefore(s,f);}else{(a.head||a.body).appendChild(s);}
-                  }(window,document,'script');
+                  });}(window,document,'script');
                   oaiq('init', { pixelId: '${openaiAdsPixelId}' });
                 }
               `,
@@ -347,7 +375,7 @@ export default async function RootLayout({
           />
         )}
       </head>
-      <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
+      <body className={`${inter.variable} ${poppins.variable} antialiased`}>
         {/* Google Tag Manager (noscript) */}
         <noscript>
           <iframe
@@ -366,7 +394,7 @@ export default async function RootLayout({
           <FacebookSDKInit />
           <SnapPixelRouteTracker />
           <OpenAiPixelRouteTracker />
-          <LayoutWrapper footerData={footerData}>
+          <LayoutWrapper footerData={footerData} headerCollections={headerCollections}>
             {children}
           </LayoutWrapper>
           <Toaster position="top-right" />

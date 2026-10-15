@@ -854,7 +854,7 @@ function LoginPageInner() {
  *  static page bails out to client-side rendering (empty SSR HTML). */
 export default function LoginPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<div className="min-h-screen" aria-hidden />}>
       <LoginPageInner />
     </Suspense>
   );

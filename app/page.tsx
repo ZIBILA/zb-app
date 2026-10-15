@@ -1,6 +1,6 @@
-import { fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle } from "@/lib/shopify-admin";
+import { fetchEnabledCollections, fetchCollectionByHandle } from "@/lib/shopify-admin";
 import { isStorefrontEligible } from "@/lib/storefrontCatalog";
-import prisma, { getStoreSettings, getShopSettings, DEFAULT_SHOP_SETTINGS } from "@/lib/db";
+import prisma, { getStoreSettings, getShopSettings } from "@/lib/db";
 import NextImage from "next/image";
 import Link from "next/link";
 import { Suspense } from "react";
@@ -16,6 +16,7 @@ import SpotlightSection from "@/components/SpotlightSection";
 import LazyVideo from "@/components/LazyVideo";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import { Metadata } from "next";
+import { preload } from "react-dom";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
 
@@ -77,9 +78,8 @@ export default async function Home() {
   ]);
 
   // Concurrently fetch all independent assets to optimize TTFB and speed up the homepage loading
-  const [collections, policies, banners, fetchedProducts] = await Promise.all([
+  const [collections, banners, fetchedProducts] = await Promise.all([
     fetchEnabledCollections('page').catch(() => []),
-    fetchPolicies().catch(() => []),
     (async () => {
       try {
         return await prisma.webStoreBanner.findMany({
@@ -142,6 +142,8 @@ export default async function Home() {
   const heroImage      = s?.heroImage       || "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?q=80&w=2070&auto=format&fit=crop";
   const heroVideo      = s?.heroVideo       || "/zb-video-heroo.webm";
   const heroVideoMobile = s?.heroVideoMobile || "";
+  // The poster is the LCP element on mobile (the video itself now loads after hydration).
+  const heroPoster = s?.heroImage || "/zb-video-hero-poster.jpg";
   const latestTitle    = nullIfEmpty(s?.latestCurationTitle);
   const latestSubtitle = nullIfEmpty(s?.latestCurationSubtitle);
   const archiveTitle   = nullIfEmpty(s?.archiveTitle);
@@ -180,6 +182,8 @@ export default async function Home() {
   const showRingCarousel = s?.showRingCarousel ?? true;
   const ringCarouselTitle = nullIfEmpty(s?.ringCarouselTitle);
 
+  if (heroVideo) preload(heroPoster, { as: "image", fetchPriority: "high" });
+
   return (
     <div className="relative home-page max-w-full overflow-x-hidden">
       {/* Ambient background glows — desktop only to save mobile GPU */}
@@ -190,7 +194,7 @@ export default async function Home() {
       <section className="relative w-full h-screen overflow-hidden min-h-[500px] bg-black">
         {/* Background video */}
         {heroVideo ? (
-          <HeroVideo src={heroVideo} mobileSrc={heroVideoMobile} poster={s?.heroImage || undefined} />
+          <HeroVideo src={heroVideo} mobileSrc={heroVideoMobile} poster={heroPoster} />
         ) : (
           <NextImage src={heroImage} alt="Hero" fill priority className="object-cover" onError={handleImageError} />
         )}
@@ -297,8 +301,8 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 1 ─── */}
         <section className="mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {products.slice(0, 4).map((p: ShopifyProduct, idx: number) => (
-              <ProductCard key={p.id} product={p} priority={idx < 4} />
+            {products.slice(0, 4).map((p: ShopifyProduct) => (
+              <ProductCard key={p.id} product={p} />
             ))}
           </div>
         </section>

@@ -367,7 +367,7 @@ function OrdersPageInner() {
  *  static page bails out to client-side rendering (empty SSR HTML). */
 export default function OrdersPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<div className="min-h-screen" aria-hidden />}>
       <OrdersPageInner />
     </Suspense>
   );
