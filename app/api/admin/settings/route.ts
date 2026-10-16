@@ -50,7 +50,7 @@ function envSettings() {
     showCare: true,
     showSizeFit: true,
     showDetails: true,
-    pdpTrustBoxes: '[{"id":"cod","icon":"cash-outline","title":"COD available","subtitle":"₹99 now, rest on delivery","variant":"default"},{"id":"prepaid","icon":"pricetag-outline","title":"10% off on prepaid","subtitle":"+ 10% cashback as store credit","variant":"highlight"},{"id":"delivery","icon":"bicycle-outline","title":"Delivery in 3–7 days","subtitle":"Dispatched in 24–48 hrs","variant":"default"},{"id":"returns","icon":"refresh-outline","title":"15-day easy return/exchange","subtitle":"No questions asked","variant":"default"}]',
+    pdpTrustBoxes: '[{"id":"cod","icon":"cash-outline","title":"COD available","subtitle":"₹99 now, rest on delivery","variant":"default"},{"id":"prepaid","icon":"pricetag-outline","title":"10% off on prepaid","subtitle":"+ 10% cashback as store credit","variant":"highlight"},{"id":"delivery","icon":"truck-outline","title":"Delivery in 3–7 days","subtitle":"Dispatched in 24–48 hrs","variant":"default"},{"id":"returns","icon":"refresh-outline","title":"15-day easy return/exchange","subtitle":"No questions asked","variant":"default"}]',
     pdpInclTaxesText: 'Incl. taxes',
     pdpShowInclTaxes: true,
     pdpModelInfoDefault: "Model is 6'0\", wearing size 32 · Oversized fit, true to waist",

@@ -3,7 +3,7 @@ import { View, StyleSheet, Dimensions, Platform } from 'react-native';
 import Animated, { useAnimatedStyle, interpolate, Extrapolation, SharedValue } from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView, VideoSource } from 'expo-video';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { useColors } from '../constants/colors';
 import { useAdminSettings } from '../hooks/useAdminFeatures';
 import { Typography } from './Typography';
@@ -160,7 +160,7 @@ function FlipbookWithVideo({
     }
   });
 
-  const isFocused = useNavigation().isFocused();
+  const isFocused = useIsFocused();
 
   React.useEffect(() => {
     if (!player) return;

@@ -287,8 +287,13 @@ export function useProducts(count = 24) {
   }, [count, products.length]);
 
   useEffect(() => {
+    // Allow callers to defer catalog fetch (e.g. PDP curated pairs) with count=0
+    if (count <= 0) {
+      setLoading(false);
+      return;
+    }
     fetchProducts();
-  }, [fetchProducts]);
+  }, [fetchProducts, count]);
 
   return { products, loading, error, isError, refetch: () => fetchProducts(true) };
 }

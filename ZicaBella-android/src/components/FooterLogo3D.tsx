@@ -1,7 +1,7 @@
 import React, { Suspense, useRef, useState, useCallback, useMemo } from 'react';
 import { View, StyleSheet, PanResponder, Platform } from 'react-native';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { useGLTF, Bounds } from '@react-three/drei';
+import { useGLTF, Center } from '@react-three/drei';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { config } from '../constants/config';
@@ -60,6 +60,8 @@ function Model({
       velocity.current.y += (touchRotation.current.y - velocity.current.y) * 0.2;
       group.current.rotation.y += velocity.current.x;
       group.current.rotation.x += velocity.current.y;
+      // Gently return rotation.x towards 0 so the logo stays level and upright
+      group.current.rotation.x += (0 - group.current.rotation.x) * 0.05;
       touchRotation.current.x *= 0.98;
       touchRotation.current.y *= 0.98;
     }
@@ -67,11 +69,12 @@ function Model({
 
   return (
     <group ref={group}>
-      <primitive 
-        object={scene} 
-        scale={2.6} 
-        position={[0, 0, 0]} 
-      />
+      <Center>
+        <primitive 
+          object={scene} 
+          scale={0.58} 
+        />
+      </Center>
     </group>
   );
 }
@@ -101,18 +104,22 @@ export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) 
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderTerminationRequest: () => false,
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        // Only capture horizontal swipes directly intended to rotate the logo
+        // and allow vertical scrolling to pass freely to the ScrollView
+        return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5 && Math.abs(gestureState.dx) > 8;
+      },
+      onMoveShouldSetPanResponderCapture: () => false,
+      onPanResponderTerminationRequest: () => true,
       onPanResponderGrant: () => {
         lastGesture.current = { dx: 0, dy: 0 };
       },
       onPanResponderMove: (_evt, gestureState) => {
         const sensitivity = 0.025;
         const dx = (gestureState.dx - lastGesture.current.dx) * sensitivity;
-        const dy = (gestureState.dy - lastGesture.current.dy) * sensitivity;
+        const dy = (gestureState.dy - lastGesture.current.dy) * sensitivity * 0.2;
         touchRotation.current.x = dx;
         touchRotation.current.y = dy;
         lastGesture.current = { dx: gestureState.dx, dy: gestureState.dy };
@@ -120,8 +127,11 @@ export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) 
       onPanResponderRelease: (_evt, gestureState) => {
         const flickBoost = 0.3;
         touchRotation.current.x = gestureState.vx * flickBoost;
-        touchRotation.current.y = gestureState.vy * flickBoost;
-      }
+        touchRotation.current.y = gestureState.vy * flickBoost * 0.2;
+      },
+      onPanResponderTerminate: () => {
+        lastGesture.current = { dx: 0, dy: 0 };
+      },
     })
   ).current;
 
@@ -151,9 +161,7 @@ export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) 
         <spotLight position={[10, 15, 10]} angle={0.35} penumbra={1} intensity={5} color="#FFFFFF" />
         <pointLight position={[0, 0, 8]} intensity={3.5} color="#FFFFFF" />
         <Suspense fallback={null}>
-          <Bounds fit clip observe margin={1}>
-            <Model glbUrl={url} touchRotation={touchRotation} />
-          </Bounds>
+          <Model glbUrl={url} touchRotation={touchRotation} />
         </Suspense>
       </Canvas>
     </View>

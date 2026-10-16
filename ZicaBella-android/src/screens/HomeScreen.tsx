@@ -7,7 +7,7 @@ import {
 import Animated, { useSharedValue, useAnimatedScrollHandler, runOnJS } from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
@@ -257,8 +257,21 @@ const HomeScreen = React.memo(() => {
   const handleCloseMenu = useCallback(() => setMenuVisible(false), []);
   const handleOpenMenu = useCallback(() => setMenuVisible(true), []);
   const handleNavigateShop = useCallback(() => navigation.navigate('ShopTab'), [navigation]);
+  const handleShopAll = useCallback(() => {
+    haptics.buttonTap();
+    navigation.navigate('Collection', { handle: 'all', title: 'ALL PRODUCTS' });
+  }, [navigation]);
 
   const [isHeroMuted, setIsHeroMuted] = useState(true);
+
+  // Stop background music whenever leaving HomeScreen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setIsHeroMuted(true);
+      };
+    }, [])
+  );
 
   const toggleHeroMute = useCallback(() => {
     setIsHeroMuted(prev => !prev);
@@ -316,6 +329,8 @@ const HomeScreen = React.memo(() => {
               onToggleMute={toggleHeroMute}
               imageFallback={heroImageSrc}
               active={isVideoActive('hero')}
+              showShopAll={true}
+              onPressShopAll={handleShopAll}
             />
           </View>
         ) : null}

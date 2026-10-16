@@ -270,9 +270,8 @@ export default function DeliveryAddressScreen() {
 
       setAddress(prev => ({
         ...prev,
-        // The Flat / House No. & Building Name is intentionally kept empty or preserved
-        // so customers can enter their flat/society details manually as required.
-        flat: prev.flat || '',
+        // Always clear flat after location detect — customers must enter house/building manually
+        flat: '',
         street: detectedArea || prev.street,
         city: detectedCity || prev.city,
         state: finalStateName || prev.state,
@@ -285,20 +284,13 @@ export default function DeliveryAddressScreen() {
 
       setIsEditing(true);
       haptics.success();
-
-      // Highlight the mandatory flat field and focus it immediately
-      setAddressFieldHighlighted(true);
-      setTimeout(() => {
-        flatFieldRef.current?.focus();
-      }, 350);
+      // Flat stays empty for manual entry — no error UI until user tries to continue
+      setAddressFieldHighlighted(false);
     } catch (e) {
       console.warn('Current location detection failed:', e);
       haptics.error();
       setIsEditing(true);
-      setAddressFieldHighlighted(true);
-      setTimeout(() => {
-        flatFieldRef.current?.focus();
-      }, 350);
+      setAddressFieldHighlighted(false);
     } finally {
       setDetectingLocation(false);
     }

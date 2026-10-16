@@ -26,7 +26,7 @@ export const DEFAULT_PDP_TRUST_BOXES: PdpTrustBox[] = [
   },
   {
     id: 'delivery',
-    icon: 'bicycle-outline',
+    icon: 'truck-outline',
     title: 'Delivery in 3–7 days',
     subtitle: 'Dispatched in 24–48 hrs',
     variant: 'default',
@@ -64,9 +64,12 @@ export function parsePdpTrustBoxes(raw: unknown): PdpTrustBox[] {
       if (!title) return null;
       const variant: PdpTrustBoxVariant =
         item.variant === 'highlight' || item.highlight === true ? 'highlight' : 'default';
+      const rawIcon = String(item.icon || 'information-circle-outline').trim() || 'information-circle-outline';
+      // Legacy bicycle → truck to match the product-page trust icon set
+      const icon = rawIcon === 'bicycle-outline' ? 'truck-outline' : rawIcon;
       return {
         id: String(item.id || `box_${index}`),
-        icon: String(item.icon || 'information-circle-outline').trim() || 'information-circle-outline',
+        icon,
         title,
         subtitle: String(item.subtitle || '').trim(),
         variant,

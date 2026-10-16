@@ -70,7 +70,11 @@ const RingCarouselSection = React.memo(function RingCarouselSection({
   const isDark = theme === 'dark';
 
   const validProducts = useMemo(() => {
-    return (products || []).filter(p => p && (p.id || p.handle));
+    return (products || []).filter((p) => {
+      if (!p || !(p.id || p.handle)) return false;
+      const rawImg = p.featuredImage || (p as any).image || (p.images && p.images[0]);
+      return Boolean(resolveImageUrl(rawImg));
+    });
   }, [products]);
 
   const handleViewAll = useCallback(() => {
@@ -90,12 +94,6 @@ const RingCarouselSection = React.memo(function RingCarouselSection({
   const keyExtractor = useCallback((item: FlatProduct, index: number) => {
     return item.id || item.handle || `ring-${index}`;
   }, []);
-
-  const getItemLayout = useCallback((_: any, index: number) => ({
-    length: SNAP_INTERVAL,
-    offset: PADDING_HORIZONTAL + SNAP_INTERVAL * index,
-    index,
-  }), []);
 
   if (validProducts.length === 0) return null;
 
@@ -129,16 +127,16 @@ const RingCarouselSection = React.memo(function RingCarouselSection({
           data={validProducts}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
-          nestedScrollEnabled={true}
+          nestedScrollEnabled
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
           snapToInterval={SNAP_INTERVAL}
           decelerationRate="fast"
-          getItemLayout={getItemLayout}
-          initialNumToRender={4}
-          maxToRenderPerBatch={3}
-          windowSize={3}
-          removeClippedSubviews={Platform.OS === 'android'}
+          initialNumToRender={6}
+          maxToRenderPerBatch={4}
+          windowSize={5}
+          // Nested in Home ScrollView — clipping blanks image cells on Android
+          removeClippedSubviews={false}
           scrollEventThrottle={16}
         />
       </View>

@@ -4,8 +4,8 @@ import {
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import { useNavigation, useRoute, RouteProp, useIsFocused } from '@react-navigation/native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { GlassView, GlassBackdrop } from '../components/GlassView';
 import { Image } from 'expo-image';
 import OptimizedImage from '../components/OptimizedImage';
@@ -44,7 +44,7 @@ type PdpTrustBox = {
 const DEFAULT_TRUST_BOXES: PdpTrustBox[] = [
   { id: 'cod', icon: 'cash-outline', title: 'COD available', subtitle: '₹99 now, rest on delivery', variant: 'default' },
   { id: 'prepaid', icon: 'pricetag-outline', title: '10% off on prepaid', subtitle: '+ 10% cashback as store credit', variant: 'highlight' },
-  { id: 'delivery', icon: 'bicycle-outline', title: 'Delivery in 3–7 days', subtitle: 'Dispatched in 24–48 hrs', variant: 'default' },
+  { id: 'delivery', icon: 'truck-outline', title: 'Delivery in 3–7 days', subtitle: 'Dispatched in 24–48 hrs', variant: 'default' },
   { id: 'returns', icon: 'refresh-outline', title: '15-day easy return/exchange', subtitle: 'No questions asked', variant: 'default' },
 ];
 
@@ -52,7 +52,44 @@ function isHttpIcon(icon: string) {
   return /^https?:\/\//i.test(icon) || icon.startsWith('data:');
 }
 
+/** Map trust-box icon keys to the screenshot set (banknote, tag, truck, refresh). */
+function resolveTrustIcon(icon: string): { set: 'ion' | 'mci'; name: string } | null {
+  const key = String(icon || '').trim();
+  if (!key) return null;
+  // Legacy bicycle → truck (matches website delivery icon)
+  if (key === 'bicycle-outline') return { set: 'mci', name: 'truck-outline' };
+  const map: Record<string, { set: 'ion' | 'mci'; name: string }> = {
+    'cash-outline': { set: 'ion', name: 'cash-outline' },
+    banknote: { set: 'ion', name: 'cash-outline' },
+    'pricetag-outline': { set: 'ion', name: 'pricetag-outline' },
+    tag: { set: 'ion', name: 'pricetag-outline' },
+    'tag-outline': { set: 'mci', name: 'tag-outline' },
+    'truck-outline': { set: 'mci', name: 'truck-outline' },
+    'truck-delivery-outline': { set: 'mci', name: 'truck-delivery-outline' },
+    truck: { set: 'mci', name: 'truck-outline' },
+    'refresh-outline': { set: 'ion', name: 'refresh-outline' },
+    'refresh-cw': { set: 'ion', name: 'refresh-outline' },
+    sync: { set: 'ion', name: 'sync-outline' },
+  };
+  if (map[key]) return map[key];
+  if (key.startsWith('truck')) return { set: 'mci', name: key };
+  return { set: 'ion', name: key };
+}
+
+function TrustBoxIcon({ icon, color }: { icon: string; color: string }) {
+  if (isHttpIcon(icon)) {
+    return <Image source={{ uri: icon }} style={styles.trustIconImg} contentFit="contain" />;
+  }
+  const resolved = resolveTrustIcon(icon);
+  if (!resolved) return null;
+  if (resolved.set === 'mci') {
+    return <MaterialCommunityIcons name={resolved.name as any} size={18} color={color} />;
+  }
+  return <Ionicons name={resolved.name as any} size={18} color={color} />;
+}
+
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const MOOD_IMAGE_WIDTH = Math.min(900, Math.round(SCREEN_W * 2));
 
 /**
  * Custom ImageViewerModal for premium zooming experience
@@ -172,6 +209,151 @@ const curatedStyles = StyleSheet.create({
   },
 });
 
+/**
+ * Product video: player mounts on first Play (faster PDP load). Pause keeps the
+ * player mounted so resume continues from the same position; unmounts on leave.
+ */
+function LiveProductVideo({
+  videoUrl,
+  isMuted,
+  isPlaying,
+  onToggleMute,
+  onTogglePlay,
+}: {
+  videoUrl: string;
+  isMuted: boolean;
+  isPlaying: boolean;
+  onToggleMute: () => void;
+  onTogglePlay: () => void;
+}) {
+  const player = useVideoPlayer(videoUrl, (p) => {
+    p.loop = true;
+    p.muted = isMuted;
+    if (isPlaying) p.play();
+  });
+
+  useEffect(() => {
+    if (!player) return;
+    player.muted = isMuted;
+  }, [isMuted, player]);
+
+  useEffect(() => {
+    if (!player) return;
+    try {
+      if (isPlaying) player.play();
+      else player.pause();
+    } catch {
+      /* */
+    }
+  }, [isPlaying, player]);
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        nativeControls={false}
+        contentFit="cover"
+      />
+      <View style={styles.videoOverlay} pointerEvents="none" />
+      <Pressable
+        onPress={() => {
+          haptics.buttonTap();
+          onTogglePlay();
+        }}
+        style={StyleSheet.absoluteFill}
+      />
+      {!isPlaying && (
+        <View style={styles.playButton} pointerEvents="none">
+          <Ionicons name="play" size={28} color="#FFF" style={{ marginLeft: 3 }} />
+        </View>
+      )}
+      <Pressable
+        onPress={() => {
+          haptics.buttonTap();
+          onToggleMute();
+        }}
+        hitSlop={12}
+        style={({ pressed }) => [styles.soundButton, { opacity: pressed ? 0.6 : 1 }]}
+      >
+        <Ionicons
+          name={isMuted ? 'volume-mute-outline' : 'volume-medium-outline'}
+          size={20}
+          color="#FFF"
+        />
+      </Pressable>
+    </View>
+  );
+}
+
+function ProductVideoSection({
+  videoUrl,
+  posterUri,
+  isDark,
+}: {
+  videoUrl: string;
+  posterUri?: string | null;
+  isDark: boolean;
+}) {
+  const [hasStarted, setHasStarted] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const isFocused = useIsFocused();
+  const isAppActive = useUIStore((s) => s.isAppActive);
+
+  useEffect(() => {
+    setHasStarted(false);
+    setIsPlaying(false);
+  }, [videoUrl]);
+
+  useEffect(() => {
+    if (!isFocused || !isAppActive) {
+      setIsPlaying(false);
+      setHasStarted(false);
+    }
+  }, [isFocused, isAppActive]);
+
+  const startPlayback = () => {
+    haptics.buttonTap();
+    setHasStarted(true);
+    setIsPlaying(true);
+  };
+
+  return (
+    <View
+      style={[
+        styles.videoWrapper,
+        { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' },
+      ]}
+    >
+      {hasStarted ? (
+        <LiveProductVideo
+          videoUrl={videoUrl}
+          isMuted={isMuted}
+          isPlaying={isPlaying}
+          onToggleMute={() => setIsMuted((m) => !m)}
+          onTogglePlay={() => setIsPlaying((playing) => !playing)}
+        />
+      ) : (
+        <Pressable onPress={startPlayback} style={StyleSheet.absoluteFill}>
+          {posterUri ? (
+            <Image
+              source={{ uri: posterUri }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+            />
+          ) : null}
+          <View style={styles.videoOverlay} pointerEvents="none" />
+          <View style={styles.playButton} pointerEvents="none">
+            <Ionicons name="play" size={28} color="#FFF" style={{ marginLeft: 3 }} />
+          </View>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 export default function ProductDetailScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -182,9 +364,18 @@ export default function ProductDetailScreen() {
   const isDark = theme === 'dark';
 
   const { product, loading } = useProductByHandle(handle);
-  const { products: allProducts, loading: recommendedLoading } = useProducts(24);
+  // Defer curated-pairs catalog fetch until after first paint / interactions
+  const [loadRecommendations, setLoadRecommendations] = useState(false);
+  const { products: allProducts, loading: recommendedLoading } = useProducts(loadRecommendations ? 24 : 0);
   const { settings: adminSettings } = useAdminSettings();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      setLoadRecommendations(true);
+    });
+    return () => task.cancel();
+  }, [handle]);
 
   const pdpSettings = adminSettings?.pdp;
   const trustBoxes: PdpTrustBox[] = useMemo(() => {
@@ -241,55 +432,58 @@ export default function ProductDetailScreen() {
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<FlatProduct | null>(null);
   const [quickAddVisible, setQuickAddVisible] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
   const [isStickySizeExpanded, setIsStickySizeExpanded] = useState(false);
   const [moodBoardImages, setMoodBoardImages] = useState<string[]>([]);
 
-  // Fetch mood board images (same API as webstore PDP, with gallery fallback)
+  // Fetch mood board after first paint — parallel ID lookup (was 3 sequential ~0.7s each)
   useEffect(() => {
     if (!product) return;
     const rawId = (product.id || '').toString();
     const numericId = rawId.replace(/^gid:\/\/shopify\/Product\//i, '');
     const BASE_URL = config.appUrl.replace(/\/$/, '');
-
     let isMounted = true;
 
-    const tryFetch = async () => {
-      // 1. Try DB lookup by numericId, rawId, and handle
-      const idsToTry = [numericId, rawId, product.handle].filter(Boolean);
-
-      for (const idToTry of idsToTry) {
-        try {
-          const res = await fetch(`${BASE_URL}/api/mood-board?productId=${encodeURIComponent(idToTry!)}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (isMounted && Array.isArray(data.images) && data.images.length > 0) {
-              setMoodBoardImages(data.images.filter(Boolean));
-              return;
-            }
-          }
-        } catch (e) {}
-      }
-
-      // 2. Fallback: if no custom mood board in DB, use product gallery images
-      if (isMounted) {
-        let galleryImages: string[] = [];
-        if (product.images && Array.isArray(product.images) && product.images.length > 0) {
-          galleryImages = product.images.filter(Boolean);
-        } else if (product.featuredImage) {
-          galleryImages = [product.featuredImage];
-        }
-
-        if (galleryImages.length > 0) {
-          setMoodBoardImages(galleryImages.slice(0, 5));
-        }
-      }
+    const galleryFallback = () => {
+      if (!isMounted) return;
+      const galleryImages =
+        product.images && Array.isArray(product.images) && product.images.length > 0
+          ? product.images.filter(Boolean)
+          : product.featuredImage
+            ? [product.featuredImage]
+            : [];
+      if (galleryImages.length > 0) setMoodBoardImages(galleryImages.slice(0, 5));
     };
 
-    tryFetch();
+    const task = InteractionManager.runAfterInteractions(() => {
+      const idsToTry = [...new Set([numericId, rawId, product.handle].filter(Boolean))];
+
+      Promise.all(
+        idsToTry.map(async (idToTry) => {
+          try {
+            const res = await fetch(
+              `${BASE_URL}/api/mood-board?productId=${encodeURIComponent(idToTry!)}`
+            );
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (Array.isArray(data.images) && data.images.length > 0) {
+              return data.images.filter(Boolean) as string[];
+            }
+          } catch {
+            /* */
+          }
+          return null;
+        })
+      ).then((results) => {
+        if (!isMounted) return;
+        const hit = results.find((r) => r && r.length > 0);
+        if (hit) setMoodBoardImages(hit);
+        else galleryFallback();
+      });
+    });
 
     return () => {
       isMounted = false;
+      task.cancel();
     };
   }, [product?.id, product?.handle, product?.images, product?.featuredImage]);
 
@@ -314,34 +508,6 @@ export default function ProductDetailScreen() {
   const setCartOpen = useUIStore(s => s.setCartOpen);
   const setWishlistOpen = useUIStore(s => s.setWishlistOpen);
   const { addProduct: recordVisit, recentProducts } = useRecentStore();
-
-  const player = useVideoPlayer(product?.productVideo ?? null, (player) => {
-    player.loop = false;
-    player.muted = true;
-  });
-
-  const isFocused = useNavigation().isFocused();
-
-  const isAppActive = useUIStore(s => s.isAppActive);
-
-  useEffect(() => {
-    if (!player) return;
-    if (!isFocused || !isAppActive) {
-      player.pause();
-    } else {
-      // Small delay to ensure smooth transition
-      const task = InteractionManager.runAfterInteractions(() => {
-        player.play();
-      });
-      return () => task.cancel();
-    }
-  }, [isFocused, isAppActive, player]);
-
-  useEffect(() => {
-    if (player) {
-      player.muted = isMuted;
-    }
-  }, [isMuted, player]);
 
   const options = useMemo(() => {
     if (!product) return { sizes: [], colors: [] };
@@ -371,7 +537,10 @@ export default function ProductDetailScreen() {
   useEffect(() => {
     if (options.sizes.length === 1) setSelectedSize(options.sizes[0]);
     if (options.colors.length > 0) setSelectedColor(options.colors[0]);
-    if (product) recordVisit(product);
+    // Only record visits that can render a proper Recently Viewed card
+    if (product?.featuredImage || (product?.images && product.images.length > 0)) {
+      recordVisit(product);
+    }
   }, [options, product, recordVisit]);
 
   const requireSize = (): boolean => {
@@ -474,29 +643,29 @@ export default function ProductDetailScreen() {
 
   const images = product ? (product.images.length > 0 ? product.images : [product.featuredImage]) : [];
 
-  const renderHeroItem = useCallback(({ item, index }: any) => (
-    <TouchableOpacity 
-      activeOpacity={0.9} 
-      onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
-      style={styles.heroContainer}
-    >
-      <OptimizedImage 
-        source={String(item)} 
-        style={styles.heroImage} 
-        shopifyWidth={800}
-      />
-      <View style={styles.zoomPulse}>
-        <Ionicons name="expand-outline" size={12} color="#FFF" />
-      </View>
-      
-      {/* Background preloading of adjacent image */}
-      {index === activeImageIndex && images[index + 1] && (
-        <View style={{ width: 0, height: 0, opacity: 0 }}>
-          <OptimizedImage source={String(images[index + 1])} shopifyWidth={800} />
+  const renderHeroItem = useCallback(({ item, index }: any) => {
+    const isActive = index === activeImageIndex;
+    // Carousel windowSize=3 already limits mounts; still prioritize the active slide
+    return (
+      <TouchableOpacity 
+        activeOpacity={0.9} 
+        onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
+        style={styles.heroContainer}
+      >
+        <OptimizedImage 
+          source={String(item)} 
+          style={styles.heroImage} 
+          shopifyWidth={800}
+          transition={isActive ? 160 : 0}
+          priority={isActive ? 'high' : 'normal'}
+          showLoader={false}
+        />
+        <View style={styles.zoomPulse}>
+          <Ionicons name="expand-outline" size={12} color="#FFF" />
         </View>
-      )}
-    </TouchableOpacity>
-  ), [activeImageIndex, images]);
+      </TouchableOpacity>
+    );
+  }, [activeImageIndex]);
 
   if (loading || !product) {
     return (
@@ -594,7 +763,14 @@ export default function ProductDetailScreen() {
                   { width: 110 }
                 ]}
               >
-                <OptimizedImage source={String(images[index])} style={StyleSheet.absoluteFill} shopifyWidth={200} />
+                <OptimizedImage
+                  source={String(images[index])}
+                  style={StyleSheet.absoluteFill}
+                  shopifyWidth={200}
+                  priority={activeImageIndex === index || index < 3 ? 'normal' : 'low'}
+                  showLoader={false}
+                  transition={120}
+                />
               </TouchableOpacity>
             )}
           />
@@ -752,19 +928,22 @@ export default function ProductDetailScreen() {
                  const iconColor = highlight ? '#FFFFFF' : colors.text;
                  return (
                    <View key={box.id} style={[styles.trustBox, { backgroundColor: boxBg }]}>
-                     {isHttpIcon(box.icon) ? (
-                       <Image source={{ uri: box.icon }} style={styles.trustIconImg} contentFit="contain" />
-                     ) : (
-                       <Ionicons name={box.icon as any} size={16} color={iconColor} style={{ marginBottom: 8 }} />
-                     )}
-                     <Typography size={10} weight="700" color={titleColor} style={styles.trustTitle}>
-                       {box.title}
-                     </Typography>
-                     {!!box.subtitle && (
-                       <Typography size={8} weight="400" color={subColor} style={styles.trustSubtitle}>
-                         {box.subtitle}
+                     <View style={styles.trustIconWrap}>
+                       <TrustBoxIcon
+                         icon={box.id === 'delivery' && !box.icon ? 'truck-outline' : box.icon}
+                         color={iconColor}
+                       />
+                     </View>
+                     <View style={styles.trustTextCol}>
+                       <Typography size={10} weight="700" color={titleColor} style={styles.trustTitle}>
+                         {box.title}
                        </Typography>
-                     )}
+                       {!!box.subtitle && (
+                         <Typography size={8} weight="400" color={subColor} style={styles.trustSubtitle}>
+                           {box.subtitle}
+                         </Typography>
+                       )}
+                     </View>
                    </View>
                  );
                })}
@@ -813,24 +992,11 @@ export default function ProductDetailScreen() {
            {product.productVideo && (
              <View style={styles.videoSection}>
                 <Typography size={7} color={colors.textExtraLight} weight="700" style={styles.sectionTag}>EXPERIMENTAL REFERENCE</Typography>
-                <Pressable 
-                  style={[styles.videoWrapper, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }]}
-                  onPress={() => { haptics.buttonTap(); setIsMuted(!isMuted); }}
-                >
-                  <VideoView
-                    player={player}
-                    style={StyleSheet.absoluteFill}
-                    nativeControls={false}
-                    contentFit="cover"
-                  />
-                  <View style={styles.videoOverlay} />
-                  <Ionicons 
-                    name={isMuted ? "volume-mute-outline" : "volume-medium-outline"} 
-                    size={20} 
-                    color="#FFF" 
-                    style={{ position: 'absolute', bottom: 12, right: 12, opacity: 0.8 }} 
-                  />
-                </Pressable>
+                <ProductVideoSection
+                  videoUrl={product.productVideo}
+                  posterUri={resolveImageUrl(product.featuredImage || images[0])}
+                  isDark={isDark}
+                />
              </View>
            )}
 
@@ -847,11 +1013,13 @@ export default function ProductDetailScreen() {
                         key={`mb-${idx}`}
                         style={[styles.moodBoardItem, { backgroundColor: isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)' }]}
                       >
-                        <Image
-                          source={{ uri: resolvedUri }}
+                        <OptimizedImage
+                          source={resolvedUri}
                           style={StyleSheet.absoluteFill}
-                          contentFit="cover"
-                          transition={300}
+                          shopifyWidth={MOOD_IMAGE_WIDTH}
+                          priority={idx === 0 ? 'normal' : 'low'}
+                          showLoader={false}
+                          transition={160}
                         />
                       </View>
                     );
@@ -893,11 +1061,16 @@ export default function ProductDetailScreen() {
              </View>
             )}
 
-            {recentProducts.length > 1 && (
+            {(() => {
+              const recentItems = recentProducts
+                .filter((p) => p.id !== product.id && p.title && (p.featuredImage || (p.images && p.images.length > 0)))
+                .slice(0, 9);
+              if (recentItems.length === 0) return null;
+              return (
                <View style={styles.recentSection}>
                  <Typography size={7} color={colors.textExtraLight} weight="700" style={[styles.sectionTag, { marginLeft: 20 }]}>RECENTLY VIEWED</Typography>
                  <View style={styles.recentGrid}>
-                  {recentProducts.filter(p => p.id !== product.id).slice(0, 9).map(p => (
+                  {recentItems.map(p => (
                     <View key={p.id} style={styles.recentCardWrapper}>
                       <ProductCard 
                         product={p} 
@@ -911,7 +1084,8 @@ export default function ProductDetailScreen() {
                   ))}
                 </View>
               </View>
-           )}
+              );
+            })()}
 
            <StorefrontFooter />
         </View>
@@ -1126,14 +1300,24 @@ const styles = StyleSheet.create({
   trustBox: {
     width: (SCREEN_W - 40 - 10) / 2,
     borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 14,
-    minHeight: 104,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  trustIconWrap: {
+    width: 22,
+    marginRight: 10,
+    marginTop: 1,
+    alignItems: 'center',
   },
   trustIconImg: {
     width: 18,
     height: 18,
-    marginBottom: 8,
+  },
+  trustTextCol: {
+    flex: 1,
   },
   trustTitle: {
     letterSpacing: 0.2,
@@ -1350,7 +1534,32 @@ const styles = StyleSheet.create({
   },
   videoOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: 'rgba(0,0,0,0.15)',
+  },
+  playButton: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    marginTop: -28,
+    marginLeft: -28,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  soundButton: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
   },
   viewerHeader: {
     position: 'absolute',

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useMemo, startTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight, Volume2, VolumeX } from "lucide-react";
+import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight, Volume2, VolumeX, Play } from "lucide-react";
 import { useMetaEvents, ga4AddToWishlist } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
@@ -21,6 +21,116 @@ interface ShopSettings {
   showSizeFit: boolean;
   showDetails: boolean;
   pdpBackground?: string;
+}
+
+/**
+ * Product video with Play-to-start (no autoplay) for faster initial PDP load.
+ * Loops until the user pauses or leaves the page.
+ */
+function ProductVideoPlayer({
+  src,
+  poster,
+  className,
+  playButtonClassName,
+  muteButtonClassName,
+}: {
+  src: string;
+  poster?: string;
+  className?: string;
+  playButtonClassName?: string;
+  muteButtonClassName?: string;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setIsMuted(true);
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = 0;
+    }
+  }, [src]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = isMuted;
+  }, [isMuted]);
+
+  const handlePlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.play().then(() => setIsPlaying(true)).catch(() => {});
+  };
+
+  const handlePause = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    setIsPlaying(false);
+  };
+
+  return (
+    <div className={className}>
+      <video
+        ref={videoRef}
+        src={src}
+        poster={poster}
+        loop
+        muted={isMuted}
+        playsInline
+        preload="none"
+        className="w-full h-full object-cover"
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+      />
+      {!isPlaying ? (
+        <button
+          type="button"
+          onClick={handlePlay}
+          aria-label="Play video"
+          className={
+            playButtonClassName ||
+            "absolute inset-0 z-10 flex items-center justify-center bg-black/20"
+          }
+        >
+          <span className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center border border-white/15 backdrop-blur-sm transition-transform hover:scale-105 active:scale-95">
+            <Play className="w-6 h-6 text-white fill-white ml-0.5" />
+          </span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handlePause}
+          aria-label="Pause video"
+          className="absolute inset-0 z-[5]"
+        />
+      )}
+      {isPlaying && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsMuted(!isMuted);
+          }}
+          aria-label={isMuted ? "Unmute video" : "Mute video"}
+          className={
+            muteButtonClassName ||
+            "absolute bottom-3 right-3 z-10 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
+          }
+        >
+          {isMuted ? (
+            <VolumeX className="w-3.5 h-3.5 text-white/70" />
+          ) : (
+            <Volume2 className="w-3.5 h-3.5 text-white" />
+          )}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function ProductDescriptionContainer({
@@ -133,7 +243,6 @@ export default function ProductDetailsClient({
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("details");
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
   const [showSizeChart, setShowSizeChart] = useState(false);
   const [scrollPos, setScrollPos] = useState(0);
   const [activeImg, setActiveImg] = useState(0);
@@ -666,24 +775,11 @@ export default function ProductDetailsClient({
             {(shopSettings?.showProductVideo ?? true) && productVideoUrl && (
               <div className="space-y-2">
                 <span className="text-[7.5px] font-bold uppercase tracking-[0.3em] text-foreground/40 block">Experimental Reference</span>
-                <div className="relative aspect-[9/16] max-w-[200px] mx-auto rounded-2xl overflow-hidden border border-foreground/5 shadow-inner">
-                  <video src={productVideoUrl} autoPlay loop muted={isMuted} playsInline className="w-full h-full object-cover pointer-events-none" />
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setIsMuted(!isMuted);
-                    }}
-                    aria-label={isMuted ? "Unmute video" : "Mute video"}
-                    className="absolute bottom-3 right-3 z-10 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
-                  >
-                    {isMuted ? (
-                      <VolumeX className="w-3.5 h-3.5 text-white/70" />
-                    ) : (
-                      <Volume2 className="w-3.5 h-3.5 text-white" />
-                    )}
-                  </button>
-                </div>
+                <ProductVideoPlayer
+                  src={productVideoUrl}
+                  poster={product.image?.src || product.images?.[0]?.src}
+                  className="relative aspect-[9/16] max-w-[200px] mx-auto rounded-2xl overflow-hidden border border-foreground/5 shadow-inner"
+                />
               </div>
             )}
 
@@ -1080,36 +1176,12 @@ export default function ProductDetailsClient({
                 {(shopSettings?.showProductVideo ?? true) && productVideoUrl && (
                   <div className="mt-1 -mx-0.5">
                     <span className="text-[7.5px] font-bold uppercase tracking-[0.4em] text-foreground/40 dark:text-foreground/20 ml-1 mb-1.5 block">Experimental Reference</span>
-                    <div 
+                    <ProductVideoPlayer
+                      src={productVideoUrl}
+                      poster={product.image?.src || product.images?.[0]?.src}
                       className="relative aspect-[9/16] rounded-[2.2rem] overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-inner"
-                    >
-                      <video 
-                        key={productVideoUrl} 
-                        autoPlay 
-                        loop 
-                        muted={isMuted} 
-                        playsInline 
-                        className="w-full h-full object-cover pointer-events-none"
-                      >
-                        <source src={productVideoUrl} type="video/mp4" />
-                      </video>
-                      {/* Premium Audio Button */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setIsMuted(!isMuted);
-                        }}
-                        aria-label={isMuted ? "Unmute video" : "Mute video"}
-                        className="absolute bottom-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
-                      >
-                        {isMuted ? (
-                          <VolumeX className="w-3.5 h-3.5 text-white/70" />
-                        ) : (
-                          <Volume2 className="w-3.5 h-3.5 text-white" />
-                        )}
-                      </button>
-                    </div>
+                      muteButtonClassName="absolute bottom-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
+                    />
                   </div>
                 )}
 

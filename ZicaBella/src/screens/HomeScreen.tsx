@@ -7,7 +7,7 @@ import {
 import Animated, { useSharedValue, useAnimatedScrollHandler, runOnJS } from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
@@ -85,14 +85,20 @@ const HomeScreen = React.memo(() => {
   const ringHandle = 'accessories';
   const ringTitle = settings?.ringCarousel?.title || 'ACCESSORIES';
 
-  const heroVideoSrc = settingsLoading ? null : (settings?.hero?.video || config.heroVideoUrl);
-  const heroImageSrc = settings?.hero?.image || null;
+  // Image first (fast paint); video mounts only after the home shell is settled.
+  const heroImageSrc =
+    settings?.hero?.image || config.heroImageUrl || null;
+  const heroVideoSrcFromSettings = settingsLoading
+    ? null
+    : (settings?.hero?.video || config.heroVideoUrl);
 
   const latestCurationTitle = settings?.latestCuration?.title ?? null;
   const latestCurationSubtitle = settings?.latestCuration?.subtitle ?? null;
 
   const [renderStage1, setRenderStage1] = useState(false);
   const [renderStage2, setRenderStage2] = useState(false);
+  const [heroVideoReady, setHeroVideoReady] = useState(false);
+  const heroVideoSrc = heroVideoReady ? heroVideoSrcFromSettings : null;
 
   const { products, loading, isError, refetch } = useProducts(24);
   const { collections, refetch: refetchCollections } = useCollections(renderStage1 ? 20 : 0, 'page');
@@ -166,16 +172,27 @@ const HomeScreen = React.memo(() => {
     const task = InteractionManager.runAfterInteractions(() => {
       if (cancelled) return;
       setRenderStage2(true);
+      // After layout/interactions settle, start hero video (image already on screen).
+      const videoDelay = Platform.OS === 'android' ? 600 : 200;
+      setTimeout(() => {
+        if (!cancelled) setHeroVideoReady(true);
+      }, videoDelay);
     });
 
     const t2 = setTimeout(() => {
       if (!cancelled) setRenderStage2(true);
     }, Platform.OS === 'android' ? 1200 : 700);
 
+    // Hard fallback so video still starts if InteractionManager never fires.
+    const tVideo = setTimeout(() => {
+      if (!cancelled) setHeroVideoReady(true);
+    }, Platform.OS === 'android' ? 1800 : 900);
+
     return () => {
       cancelled = true;
       clearTimeout(t1);
       clearTimeout(t2);
+      clearTimeout(tVideo);
       task.cancel();
     };
   }, []);
@@ -240,8 +257,21 @@ const HomeScreen = React.memo(() => {
   const handleCloseMenu = useCallback(() => setMenuVisible(false), []);
   const handleOpenMenu = useCallback(() => setMenuVisible(true), []);
   const handleNavigateShop = useCallback(() => navigation.navigate('ShopTab'), [navigation]);
+  const handleShopAll = useCallback(() => {
+    haptics.buttonTap();
+    navigation.navigate('Collection', { handle: 'all', title: 'ALL PRODUCTS' });
+  }, [navigation]);
 
   const [isHeroMuted, setIsHeroMuted] = useState(true);
+
+  // Stop background music whenever leaving HomeScreen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setIsHeroMuted(true);
+      };
+    }, [])
+  );
 
   const toggleHeroMute = useCallback(() => {
     setIsHeroMuted(prev => !prev);
@@ -262,7 +292,6 @@ const HomeScreen = React.memo(() => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <GlassHeader 
         onPressMenu={handleOpenMenu}
-        onPressCenter={toggleHeroMute}
       />
       <Animated.ScrollView
         showsVerticalScrollIndicator={false}
@@ -300,6 +329,8 @@ const HomeScreen = React.memo(() => {
               onToggleMute={toggleHeroMute}
               imageFallback={heroImageSrc}
               active={isVideoActive('hero')}
+              showShopAll={true}
+              onPressShopAll={handleShopAll}
             />
           </View>
         ) : null}
@@ -369,7 +400,7 @@ const HomeScreen = React.memo(() => {
               )}
 
               {/* ═══ RING COLLECTION CAROUSEL ═══ */}
-              {settings?.ringCarousel?.show !== false && (
+              {settings?.ringCarousel?.show !== false && accessoriesItems.length > 0 && (
                  <RingCarouselSection 
                   title={ringTitle} 
                   handle={ringHandle}
