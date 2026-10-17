@@ -46,10 +46,16 @@ export default function CartScreen() {
   const isAuthenticated = useAuthStore(s => s.isAuthenticated);
 
   const handleCheckout = useCallback(() => {
-    if (!requireValidAuth(navigation, { promptMessage: 'Please sign in to proceed with checkout and payment.' })) {
+    if (!requireValidAuth(navigation)) {
       return;
     }
-    navigation.navigate('CheckoutFlow');
+    // Root stack screen — navigate via parent so nested tab navigators resolve it
+    const parent = navigation.getParent?.();
+    if (parent?.navigate) {
+      parent.navigate('CheckoutFlow');
+    } else {
+      navigation.navigate('CheckoutFlow' as never);
+    }
   }, [navigation]);
 
   const handleGoHome = useCallback(() => {

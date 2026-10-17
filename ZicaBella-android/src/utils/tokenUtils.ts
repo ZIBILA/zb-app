@@ -1,4 +1,3 @@
-import { Alert } from 'react-native';
 import { useAuthStore } from '../store/authStore';
 
 /**
@@ -53,53 +52,48 @@ export function isTokenExpired(token: string | null | undefined): boolean {
 
 /**
  * Checks whether the current user has a valid active session.
- * If expired, it automatically clears auth in store.
+ * Expired access tokens soft-clear auth (cart kept) so re-login is clean.
  */
 export function checkAuthSession(): boolean {
-  const { token, isAuthenticated, logout } = useAuthStore.getState();
+  const { token, isAuthenticated, softLogout } = useAuthStore.getState();
   if (!isAuthenticated || !token) return false;
   if (isTokenExpired(token)) {
-    logout();
+    softLogout();
     return false;
   }
   return true;
 }
 
+function navigateToAuth(navigation: any) {
+  if (!navigation) return;
+  try {
+    navigation.navigate('Auth');
+  } catch (_) {
+    // ignore
+  }
+}
+
 /**
- * Enforces valid authentication before continuing with checkout.
- * If the user's token is missing or expired:
- * 1. Logs out the expired session.
- * 2. Alerts the user with a friendly, clear message ("Session Expired").
- * 3. Redirects them to the Auth screen.
+ * Gate for checkout / Buy Now. No popups — guests and expired sessions go
+ * straight to the Auth screen.
  *
  * Returns `true` if session is valid, `false` otherwise.
  */
-export function requireValidAuth(navigation: any, options?: { promptMessage?: string }): boolean {
-  const { token, isAuthenticated, logout } = useAuthStore.getState();
+export function requireValidAuth(navigation: any, _options?: { promptMessage?: string }): boolean {
+  const { token, isAuthenticated, softLogout } = useAuthStore.getState();
   const expired = !token || isTokenExpired(token);
 
-  if (!isAuthenticated || expired) {
-    if (isAuthenticated || token) {
-      logout();
-    }
-    Alert.alert(
-      'Session Expired',
-      options?.promptMessage || 'Your session has expired. Please sign in again to continue with checkout.',
-      [
-        {
-          text: 'Sign In',
-          onPress: () => {
-            if (navigation) {
-              navigation.navigate('Auth');
-            }
-          },
-        },
-        { text: 'Cancel', style: 'cancel' },
-      ]
-    );
-    return false;
+  if (isAuthenticated && !expired) {
+    return true;
   }
-  return true;
+
+  // Expired session: clear auth flags only (keep cart for after re-login)
+  if (isAuthenticated || token) {
+    softLogout();
+  }
+
+  navigateToAuth(navigation);
+  return false;
 }
 
 /**
@@ -121,23 +115,9 @@ export function isUnauthorizedError(error: any): boolean {
 
 /**
  * Handles 401 / Unauthorized API errors across checkout screens.
- * Clears the stale token and redirects the user to the Auth screen with a clean message.
+ * Soft-clears auth and opens Auth — no alert popup.
  */
-export function handleAuthError(navigation: any, customMessage?: string) {
-  useAuthStore.getState().logout();
-  Alert.alert(
-    'Session Expired',
-    customMessage || 'Your login session has expired. Please sign in again to complete your order.',
-    [
-      {
-        text: 'Sign In',
-        onPress: () => {
-          if (navigation) {
-            navigation.navigate('Auth');
-          }
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]
-  );
+export function handleAuthError(navigation: any, _customMessage?: string) {
+  useAuthStore.getState().softLogout();
+  navigateToAuth(navigation);
 }

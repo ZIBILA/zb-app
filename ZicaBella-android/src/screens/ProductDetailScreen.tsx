@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator, Animated, Alert, Modal, Pressable, NativeSyntheticEvent, NativeScrollEvent, InteractionManager
+  View, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator, Animated, Modal, Pressable, NativeSyntheticEvent, NativeScrollEvent, InteractionManager
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -587,15 +587,6 @@ export default function ProductDetailScreen() {
     if (addingLockRef.current) return;
     if (!requireSize()) return;
 
-    if (!isAuthenticated) {
-      haptics.buttonTap();
-      Alert.alert('Sign In Required', 'Please sign in to add products to your bag and access your cart.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign In', onPress: () => navigation.navigate('Auth') }
-      ]);
-      return;
-    }
-
     const variants = product.variants || [];
     const variant = variants.find(v => 
       (v.size === selectedSize || !v.size) && 
@@ -644,8 +635,9 @@ export default function ProductDetailScreen() {
     });
 
     haptics.buttonTap();
-    
-    if (!requireValidAuth(navigation, { promptMessage: 'Please log in to proceed with checkout and payment.' })) {
+
+    // Guests go straight to Auth (no popup); signed-in users continue to checkout
+    if (!requireValidAuth(navigation)) {
       return;
     }
     
@@ -657,10 +649,7 @@ export default function ProductDetailScreen() {
     
     if (!isAuthenticated) {
       haptics.buttonTap();
-      Alert.alert('Sign In Required', 'Please sign in to add items to your wishlist and sync them across your devices.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign In', onPress: () => navigation.navigate('Auth') }
-      ]);
+      navigation.navigate('Auth');
       return;
     }
 

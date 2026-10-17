@@ -32,6 +32,7 @@ import CartDrawer from '../components/CartDrawer';
 import WishlistDrawer from '../components/WishlistDrawer';
 import MenuDrawer from '../components/MenuDrawer';
 import { isShakeSuppressedByHaptic } from '../utils/haptics';
+import { requireValidAuth } from '../utils/tokenUtils';
 
 const SHAKE_BLOCKED_ROOT_ROUTES = new Set([
   'CheckoutFlow',
@@ -188,11 +189,12 @@ const RootNavigator = () => {
           <Stack.Screen name="Main" component={TabNavigator} />
           <Stack.Screen name="Auth" component={AuthNavigator} />
           
-          {/* Auth-gated screens — deep links to these redirect to login if unauthenticated */}
+          {/* Always registered so guest→login→checkout can navigate without a missing-route race.
+              Entry is gated in CartDrawer / CartScreen / Buy Now via requireValidAuth. */}
+          <Stack.Screen name="CheckoutFlow" component={CheckoutNavigator} />
+          <Stack.Screen name="OrderConfirmation" component={SafeOrderConfirmation} />
           {isAuthenticated && (
             <>
-              <Stack.Screen name="CheckoutFlow" component={CheckoutNavigator} />
-              <Stack.Screen name="OrderConfirmation" component={SafeOrderConfirmation} />
               <Stack.Screen name="OrderDetails" component={OrderDetailsScreen as any} />
               <Stack.Screen name="StoreCreditHistory" component={StoreCreditHistoryScreen} />
             </>
@@ -244,8 +246,17 @@ const RootNavigator = () => {
           onClose={() => setCartOpen(false)} 
           onCheckout={() => {
             setCartOpen(false);
-            // @ts-ignore
-            navigationRef.current?.navigate('CheckoutFlow');
+            const nav = {
+              navigate: (name: string) => {
+                if (navigationRef.isReady()) {
+                  // @ts-ignore
+                  navigationRef.navigate(name);
+                }
+              },
+            };
+            // Guests → Auth (no popup). Signed-in → CheckoutFlow.
+            if (!requireValidAuth(nav)) return;
+            nav.navigate('CheckoutFlow');
           }}
         />
         <WishlistDrawer

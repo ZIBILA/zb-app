@@ -122,6 +122,26 @@ export default function LoginScreen({ isInline = false }: LoginScreenProps = {})
     if (isInline) {
       return;
     }
+
+    // Buy Now / post-auth checkout: wait a tick so RootStack has mounted CheckoutFlow
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { useCartStore } = require('../store/cartStore');
+      if (useCartStore.getState().buyNowItem) {
+        const goCheckout = () => {
+          if (navigationRef.isReady()) {
+            navigationRef.navigate('CheckoutFlow' as never);
+            return;
+          }
+          navigation?.navigate?.('CheckoutFlow');
+        };
+        setTimeout(goCheckout, 0);
+        return;
+      }
+    } catch (_) {
+      // non-fatal
+    }
+
     if (navigation?.canGoBack && navigation.canGoBack()) {
       navigation.goBack();
       return;
@@ -337,7 +357,7 @@ export default function LoginScreen({ isInline = false }: LoginScreenProps = {})
       if (!json.token) throw new Error('Session expired');
       
       // 1. Immediately log the user in to make the transition instant
-      login(json.user, json.token);
+      login(json.user, json.token, json.refreshToken || null);
       haptics.success();
       navigatePostAuth();
 
