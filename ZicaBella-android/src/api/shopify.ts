@@ -59,30 +59,34 @@ export async function apiFetch<T>(
       const response = await fetch(url, fetchOptions);
       clearTimeout(timeout);
 
-      // Handle 401 — token expired or invalid
+      // Handle 401 — only wipe session for authenticated mutations.
+      // Public GETs often return 401 when a stale token is attached; retry without
+      // Authorization and keep the user logged in so browsing doesn't force logout.
       if (response.status === 401) {
-        useAuthStore.getState().logout();
-        
-        // If it was a GET request (presumably public data), retry once without token
-        const reqMethod = fetchOptions.method || 'GET';
+        const reqMethod = (fetchOptions.method || 'GET').toUpperCase();
+
         if (reqMethod === 'GET') {
           const retryHeaders = { ...fetchOptions.headers } as Record<string, string>;
           delete retryHeaders['Authorization'];
           delete retryHeaders['authorization'];
-          
+
           const retryRes = await fetch(url, {
             method: reqMethod,
             headers: retryHeaders,
+            signal: controller.signal,
           });
-          
+
           if (retryRes.ok) {
             const contentType = retryRes.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
               return await retryRes.json();
             }
           }
+
+          throw new Error('Something went wrong. Please try again.');
         }
-        
+
+        useAuthStore.getState().logout();
         throw new Error('Session expired. Please log in again.');
       }
 

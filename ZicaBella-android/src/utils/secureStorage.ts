@@ -25,7 +25,9 @@ export const secureStorage = {
         // Only require the library if the native module is actually present
         const SecureStore = require('expo-secure-store');
         return await SecureStore.getItemAsync(name, {
-          keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+          // AFTER_FIRST_UNLOCK survives screen lock / brief background; WHEN_UNLOCKED
+          // can make reads fail and look like a sudden logout.
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
         });
       }
     } catch (e) {
@@ -39,7 +41,9 @@ export const secureStorage = {
       if (isNativeSecureStoreAvailable) {
         const SecureStore = require('expo-secure-store');
         await SecureStore.setItemAsync(name, value, {
-          keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+          // AFTER_FIRST_UNLOCK survives screen lock / brief background; WHEN_UNLOCKED
+          // can make reads fail and look like a sudden logout.
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
         });
         return;
       }
@@ -52,7 +56,9 @@ export const secureStorage = {
       if (isNativeSecureStoreAvailable) {
         const SecureStore = require('expo-secure-store');
         await SecureStore.deleteItemAsync(name, {
-          keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+          // AFTER_FIRST_UNLOCK survives screen lock / brief background; WHEN_UNLOCKED
+          // can make reads fail and look like a sudden logout.
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
         });
         return;
       }

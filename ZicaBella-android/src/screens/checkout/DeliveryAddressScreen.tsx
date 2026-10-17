@@ -13,6 +13,11 @@ import { haptics } from '../../utils/haptics';
 import { config } from '../../constants/config';
 import { getFreshDeviceCoordinates, getNativeReverseGeocode, requestDeviceLocationPermission } from '../../utils/deviceLocation';
 import { requireValidAuth } from '../../utils/tokenUtils';
+import {
+  buildDeliveryStreet,
+  isAdministrativeNoise,
+  stripLeadingHouseFromStreet,
+} from '../../utils/parseDetectedAddress';
 
 function parseSavedAddress(a: any, currentUser?: any) {
   if (!a) {
@@ -234,17 +239,29 @@ export default function DeliveryAddressScreen() {
 
       const nativeAddr = nativeResult.status === 'fulfilled' ? nativeResult.value : null;
       if (nativeAddr) {
-        const areaParts = [
-          nativeAddr.name,
-          nativeAddr.street,
-          nativeAddr.subregion !== nativeAddr.city ? nativeAddr.subregion : null,
-          nativeAddr.district !== nativeAddr.city ? nativeAddr.district : null,
-        ].filter(Boolean);
+        // Never use name/streetNumber — native often puts plot/house ("E 1701") there.
+        // Never use district/subregion when it's admin noise ("Meerut Division").
+        const locality =
+          nativeAddr.subregion &&
+          nativeAddr.subregion !== nativeAddr.city &&
+          !isAdministrativeNoise(nativeAddr.subregion)
+            ? nativeAddr.subregion
+            : null;
+        const district =
+          nativeAddr.district &&
+          nativeAddr.district !== nativeAddr.city &&
+          !isAdministrativeNoise(nativeAddr.district)
+            ? nativeAddr.district
+            : null;
 
-        const uniqueAreaParts = Array.from(new Set(areaParts));
-        detectedArea = uniqueAreaParts.join(', ');
+        detectedArea = buildDeliveryStreet([nativeAddr.street, locality, district]);
 
-        detectedCity = nativeAddr.city || nativeAddr.district || nativeAddr.subregion || '';
+        const cityCandidate =
+          nativeAddr.city ||
+          (!isAdministrativeNoise(nativeAddr.district || '') ? nativeAddr.district : '') ||
+          (!isAdministrativeNoise(nativeAddr.subregion || '') ? nativeAddr.subregion : '') ||
+          '';
+        detectedCity = isAdministrativeNoise(cityCandidate) ? '' : cityCandidate;
         detectedState = nativeAddr.region || '';
         detectedZip = (nativeAddr.postalCode || '').replace(/\D/g, '').slice(0, 6);
       }
@@ -254,25 +271,34 @@ export default function DeliveryAddressScreen() {
         const serverStateKey = String(serverData.state || '').trim().toUpperCase();
         const serverStateName = STATE_CODE_TO_NAME[serverStateKey] || serverData.state || '';
         const serverZip = String(serverData.zip || '').replace(/\D/g, '').slice(0, 6);
-        const serverArea = [serverData.street, serverData.landmark].filter(Boolean).join(', ') ||
-          (typeof serverData.formattedAddress === 'string' ? serverData.formattedAddress.split(',').slice(0, 3).join(',').trim() : '');
+        // houseNo stays out of street — Flat field is left empty for manual entry
+        const serverArea =
+          buildDeliveryStreet([serverData.street, serverData.landmark]) ||
+          stripLeadingHouseFromStreet(
+            typeof serverData.formattedAddress === 'string'
+              ? serverData.formattedAddress.split(',').slice(0, 3).join(',').trim()
+              : ''
+          );
 
         if (!detectedArea || (serverArea && serverArea.length > detectedArea.length)) {
           detectedArea = serverArea;
         }
-        if (!detectedCity && serverData.city) detectedCity = serverData.city;
+        if (!detectedCity && serverData.city && !isAdministrativeNoise(serverData.city)) {
+          detectedCity = serverData.city;
+        }
         if (!detectedState && serverStateName) detectedState = serverStateName;
         if (!detectedZip && serverZip) detectedZip = serverZip;
       }
 
       const finalStateKey = String(detectedState || '').trim().toUpperCase();
       const finalStateName = STATE_CODE_TO_NAME[finalStateKey] || detectedState || '';
+      const finalStreet = stripLeadingHouseFromStreet(detectedArea);
 
       setAddress(prev => ({
         ...prev,
         // Always clear flat after location detect — customers must enter house/building manually
         flat: '',
-        street: detectedArea || prev.street,
+        street: finalStreet || prev.street,
         city: detectedCity || prev.city,
         state: finalStateName || prev.state,
         pincode: detectedZip || prev.pincode,

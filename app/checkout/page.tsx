@@ -14,6 +14,10 @@ import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-co
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  buildDeliveryStreet,
+  stripLeadingHouseFromStreet,
+} from "@/lib/parseDetectedAddress";
+import {
   MapPin,
   CreditCard,
   Truck,
@@ -646,7 +650,14 @@ export default function CheckoutPage() {
           ? data.zip.replace(/\s/g, "").slice(0, 6)
           : "";
 
-        const resolvedStreet = data.street || data.landmark || (data.formattedAddress ? data.formattedAddress.split(",")[0].trim() : "");
+        // Street/locality only — never merge houseNo; Flat stays empty for manual entry
+        const resolvedStreet =
+          buildDeliveryStreet([data.street, data.landmark]) ||
+          stripLeadingHouseFromStreet(
+            data.formattedAddress
+              ? data.formattedAddress.split(",").slice(0, 3).join(",").trim()
+              : ""
+          );
 
         // Verify that meaningful address information was actually returned
         if (!data.city && !resolvedStreet && !matchedState) {
@@ -659,7 +670,7 @@ export default function CheckoutPage() {
 
         setAddress(prev => ({
           ...prev,
-          houseNo: data.houseNo || prev.houseNo,
+          houseNo: "",
           street: resolvedStreet || prev.street,
           landmark: data.landmark || prev.landmark,
           zip: validZip || prev.zip,
