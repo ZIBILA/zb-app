@@ -7,17 +7,65 @@ export { API_VERSION };
 /**
  * Auto-mint Shopify Admin tokens via client_credentials for the Render/dev shop only.
  *
- * IMPORTANT: Next.js forces NODE_ENV=development|production during `next dev` / `next start`,
- * so we also honor SHOPIFY_ENV=render (and SHOPIFY_AUTO_REFRESH_TOKEN=true).
- * Production DigitalOcean must leave those unset and keep using the legacy static token.
+ * IMPORTANT — production (DigitalOcean / live) safety:
+ * - Prod must NOT set SHOPIFY_ENV=render or SHOPIFY_AUTO_REFRESH_TOKEN=true.
+ * - Prod keeps using the legacy static SHOPIFY_ADMIN_ACCESS_TOKEN only.
+ * - Optional hard kill-switch: SHOPIFY_USE_STATIC_ADMIN_TOKEN=true forces static forever.
+ * - Next.js forces NODE_ENV=production on `next start` even on Render, so we key off
+ *   SHOPIFY_ENV / SHOPIFY_AUTO_REFRESH_TOKEN — never off NODE_ENV===production.
  */
 export function shouldAutoRefreshShopifyAdminToken(): boolean {
-  // Never mint rotating tokens during `next build` static generation —
-  // cache: 'no-store' fetch throws DYNAMIC_SERVER_USAGE and floods build logs.
+  // Never mint during `next build` static generation.
   if (process.env.NEXT_PHASE === 'phase-production-build') return false;
+
+  // Hard kill-switch — use on production if you want belt-and-suspenders.
+  if (String(process.env.SHOPIFY_USE_STATIC_ADMIN_TOKEN || '').toLowerCase() === 'true') {
+    return false;
+  }
+
+  // Explicit opt-in only (Render/dev). Production leaves these unset → static token path.
   if (process.env.SHOPIFY_AUTO_REFRESH_TOKEN === 'true') return true;
   if (String(process.env.SHOPIFY_ENV || '').toLowerCase() === 'render') return true;
-  return String(process.env.NODE_ENV) === 'render';
+
+  // NODE_ENV is never literally "render" under Next.js; do not treat production as render.
+  return false;
+}
+
+function isDynamicServerUsageError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { digest?: string; message?: string; description?: string };
+  if (e.digest === 'DYNAMIC_SERVER_USAGE') return true;
+  const msg = `${e.message || ''} ${e.description || ''}`;
+  return msg.includes('DYNAMIC_SERVER_USAGE') || msg.includes('Dynamic server usage');
+}
+
+/**
+ * Opt the current Next request into dynamic rendering BEFORE a cache:'no-store' mint fetch.
+ * No-op when auto-refresh is off (production) — production never calls this.
+ * Next 14: unstable_noStore(); Next 15+: connection() if present.
+ */
+async function ensureDynamicForTokenMint(): Promise<void> {
+  if (!shouldAutoRefreshShopifyAdminToken()) return;
+  try {
+    const cacheMod = await import('next/cache');
+    const noStore = (cacheMod as { unstable_noStore?: () => void }).unstable_noStore;
+    if (typeof noStore === 'function') {
+      noStore();
+      return;
+    }
+  } catch {
+    // ignore — fall through
+  }
+  try {
+    const serverMod = await import('next/server');
+    const connection = (serverMod as { connection?: () => Promise<void> }).connection;
+    if (typeof connection === 'function') {
+      await connection();
+    }
+  } catch (err) {
+    // Outside Next request context (CLI/tests) mint is fine; rethrow real dynamic-usage errors.
+    if (isDynamicServerUsageError(err)) throw err;
+  }
 }
 
 declare global {
@@ -40,9 +88,12 @@ async function mintShopifyClientCredentialsToken(domain: string): Promise<string
 
   if (!clientId || !clientSecret) {
     throw new Error(
-      '[Shopify Client] NODE_ENV=render auto-refresh needs SHOPIFY_API_KEY and SHOPIFY_API_SECRET'
+      '[Shopify Client] Render auto-refresh needs SHOPIFY_API_KEY and SHOPIFY_API_SECRET'
     );
   }
+
+  // Must run before cache:'no-store' — otherwise Next throws DYNAMIC_SERVER_USAGE on static pages.
+  await ensureDynamicForTokenMint();
 
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
@@ -83,7 +134,7 @@ async function mintShopifyClientCredentialsToken(domain: string): Promise<string
   global._cachedShopConfig = undefined;
 
   console.log(
-    `[Shopify Client] Minted Admin token for ${domain} (expires in ~${Math.round(expiresInSec / 3600)}h, NODE_ENV=render)`
+    `[Shopify Client] Minted Admin token for ${domain} (expires in ~${Math.round(expiresInSec / 3600)}h, SHOPIFY_ENV=render)`
   );
 
   return data.access_token;
@@ -98,7 +149,9 @@ export async function getShopifyClientCredentialsToken(
   opts?: { force?: boolean }
 ): Promise<string> {
   if (!shouldAutoRefreshShopifyAdminToken()) {
-    throw new Error('[Shopify Client] client_credentials refresh is only enabled when NODE_ENV=render');
+    throw new Error(
+      '[Shopify Client] client_credentials refresh is only enabled when SHOPIFY_ENV=render (or SHOPIFY_AUTO_REFRESH_TOKEN=true)'
+    );
   }
 
   const cached = global._shopifyClientCredToken;
@@ -132,7 +185,7 @@ export async function getShopConfig() {
       process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN ||
       '8tiahf-bk.myshopify.com';
 
-    // Render/dev only: mint + cache rotating Admin token from Client ID/Secret
+    // Render/dev ONLY (explicit SHOPIFY_ENV=render). Production never enters this branch.
     if (shouldAutoRefreshShopifyAdminToken()) {
       try {
         const accessToken = await getShopifyClientCredentialsToken(finalDomain);
@@ -140,14 +193,23 @@ export async function getShopConfig() {
         global._cachedShopConfig = config;
         return config;
       } catch (mintErr) {
-        console.warn('[Shopify Client] Auto-refresh mint failed, falling back to static token:', mintErr);
-        // fall through to static env/DB token
+        if (isDynamicServerUsageError(mintErr)) {
+          console.warn(
+            '[Shopify Client] Token mint deferred (static render); falling back to static token for this pass'
+          );
+        } else {
+          console.warn(
+            '[Shopify Client] Auto-refresh mint failed, falling back to static token:',
+            mintErr
+          );
+        }
+        // fall through to static env/DB token (Render fallback only)
       }
     }
 
     if (global._cachedShopConfig) return global._cachedShopConfig;
 
-    // Production / non-render: static env token (or DB)
+    // Production / non-render: static env token (or DB) — unchanged path
     const envToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || '';
     let finalToken = envToken;
 
