@@ -13,7 +13,7 @@ import { fallbackCollections, fallbackProducts } from '../constants/fallbackCata
 import { getCacheService } from '../services/cacheService';
 
 const LIST_FIELDS = 'id,title,handle,priceRange,featuredImage';
-const FULL_FIELDS = 'id,title,handle,description,descriptionHtml,availableForSale,featuredImage,images,priceRange,variants,media,details,care,sizeChart,productVideo,modelInfo';
+const FULL_FIELDS = 'id,title,handle,description,descriptionHtml,availableForSale,featuredImage,images,priceRange,variants,media,details,care,sizeChart,productVideo';
 
 // Manual cache functions replaced by cacheService
 const apiCache = new Map<string, { data: any; timestamp: number }>();
@@ -135,10 +135,6 @@ function normalizeProduct(product: any): FlatProduct | null {
     care: product.care,
     sizeChart: product.sizeChart,
     productVideo: normalizedProductVideo,
-    modelInfo:
-      typeof product.modelInfo === 'string'
-        ? product.modelInfo
-        : product.modelInfo?.value || undefined,
   };
 }
 
@@ -276,13 +272,8 @@ export function useProducts(count = 24) {
   }, [count, products.length]);
 
   useEffect(() => {
-    // Allow callers to defer catalog fetch (e.g. PDP curated pairs) with count=0
-    if (count <= 0) {
-      setLoading(false);
-      return;
-    }
     fetchProducts();
-  }, [fetchProducts, count]);
+  }, [fetchProducts]);
 
   return { products, loading, error, isError, refetch: () => fetchProducts(true) };
 }

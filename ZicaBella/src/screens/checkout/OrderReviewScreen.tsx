@@ -14,8 +14,6 @@ import { useAuth } from '../../hooks/useAuth';
 import { useAuthStore } from '../../store/authStore';
 import { Image } from 'expo-image';
 import { getSnapDeviceContext } from '../../services/snapDeviceContext';
-import { requireValidAuth, handleAuthError, isUnauthorizedError } from '../../utils/tokenUtils';
-import RazorpayWebViewModal, { RazorpayWebViewSuccessPayload } from '../../components/RazorpayWebViewModal';
 
 const { width } = Dimensions.get('window');
 
@@ -38,14 +36,6 @@ export default function OrderReviewScreen() {
 
   // ─── Payment State ──────────────────────────────────────────────
   const [pendingOrderData, setPendingOrderData] = useState<any>(null);
-  const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
-  const [razorpayModalData, setRazorpayModalData] = useState<{
-    orderId: string;
-    razorpayKeyId: string;
-    amount: number;
-    prefill: { name: string; email: string; contact: string };
-    orderData: any;
-  } | null>(null);
 
   // ─── Promo Code State ────────────────────────────────────────────────
   const [promoCode, setPromoCode] = useState('');
@@ -56,7 +46,6 @@ export default function OrderReviewScreen() {
     type: string;
     value: number;
     discountAmount: number;
-    autoApply?: boolean;
   } | null>(null);
 
   const subtotal = checkoutTotal;
@@ -90,11 +79,6 @@ export default function OrderReviewScreen() {
     return () => { cancelled = true; };
   }, []);
 
-  // ─── Enforce valid session on mount ──────────────────────────────────
-  React.useEffect(() => {
-    requireValidAuth(navigation);
-  }, [navigation]);
-
   // ─── Fetch Credits ──────────────────────────────────────────────────
   React.useEffect(() => {
     const fetchCredits = async () => {
@@ -115,47 +99,6 @@ export default function OrderReviewScreen() {
     fetchCredits();
   }, [user]);
 
-  // Manual promo sticky until user removes it (don't let auto-apply overwrite).
-  const manualPromoRef = React.useRef(false);
-
-  // ─── Auto-apply best coupon for COD or prepaid ───
-  // Uses storefront coupons (live on prod) + PREPAID10 fallback — not only /discounts/active.
-  React.useEffect(() => {
-    if (subtotal <= 0) return;
-    if (manualPromoRef.current) return;
-
-    let isCancelled = false;
-    const paymentMethod = selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID';
-
-    const autoApply = async () => {
-      try {
-        const { fetchBestAutoApplyPromo } = await import('../../utils/autoApplyPromo');
-        const best = await fetchBestAutoApplyPromo({
-          appUrl: config.appUrl,
-          subtotal,
-          paymentMethod,
-        });
-        if (isCancelled || manualPromoRef.current) return;
-
-        if (best?.code) {
-          setAppliedDiscount(best);
-          setPromoCode(best.code);
-          setPromoError(null);
-        } else {
-          setAppliedDiscount((prev) => (prev && !manualPromoRef.current ? null : prev));
-          setPromoCode((prev) => (manualPromoRef.current ? prev : ''));
-        }
-      } catch (e) {
-        console.warn('[OrderReview] auto-apply failed:', e);
-      }
-    };
-    autoApply();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [selectedPaymentMethod, subtotal]);
-
   // ─── Promo Code Handlers ─────────────────────────────────────────────
   const handleApplyPromo = async () => {
     if (!promoCode.trim()) return;
@@ -163,21 +106,15 @@ export default function OrderReviewScreen() {
     setPromoError(null);
 
     try {
-      const paymentMethod = selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID';
       const res = await fetch(`${config.appUrl}/api/app/discounts/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: promoCode.trim(),
-          orderAmount: subtotal,
-          paymentMethod,
-        }),
+        body: JSON.stringify({ code: promoCode.trim(), orderAmount: subtotal }),
       });
       const data = await res.json();
 
       if (data.success) {
         haptics.success();
-        manualPromoRef.current = true;
         setAppliedDiscount(data.discount);
         setPromoError(null);
       } else {
@@ -195,7 +132,6 @@ export default function OrderReviewScreen() {
 
   const handleRemovePromo = () => {
     haptics.buttonTap();
-    manualPromoRef.current = false;
     setAppliedDiscount(null);
     setPromoCode('');
     setPromoError(null);
@@ -223,17 +159,11 @@ export default function OrderReviewScreen() {
         name: shippingAddress?.name || user?.name || 'Zica User',
         first_name: (shippingAddress?.name || user?.name || 'Zica').split(' ')[0],
         last_name: (shippingAddress?.name || user?.name || 'User').split(' ').slice(1).join(' ') || 'User',
-        line1: shippingAddress?.line1 || shippingAddress?.address1 || (shippingAddress?.flat && shippingAddress?.street ? `${shippingAddress.flat}, ${shippingAddress.street}` : (shippingAddress?.street || shippingAddress?.flat)) || 'Address not provided',
-        address1: shippingAddress?.line1 || shippingAddress?.address1 || (shippingAddress?.flat && shippingAddress?.street ? `${shippingAddress.flat}, ${shippingAddress.street}` : (shippingAddress?.street || shippingAddress?.flat)) || 'Address not provided',
-        street: shippingAddress?.street || shippingAddress?.line1 || shippingAddress?.address1 || 'Address not provided',
-        flat: shippingAddress?.flat || '',
-        line2: shippingAddress?.line2 || shippingAddress?.address2 || '',
-        address2: shippingAddress?.line2 || shippingAddress?.address2 || '',
+        line1: shippingAddress?.street || shippingAddress?.line1 || 'Address not provided',
+        line2: shippingAddress?.line2 || '',
         city: shippingAddress?.city || 'New Delhi',
-        state: shippingAddress?.state || shippingAddress?.province || 'Delhi',
-        province: shippingAddress?.state || shippingAddress?.province || 'Delhi',
+        state: shippingAddress?.state || 'Delhi',
         pincode: shippingAddress?.zip || shippingAddress?.pincode || '110001',
-        zip: shippingAddress?.zip || shippingAddress?.pincode || '110001',
         country: 'India',
         phone: shippingAddress?.phone || user?.phone || '',
         email: user?.email || shippingAddress?.email || '',
@@ -261,7 +191,6 @@ export default function OrderReviewScreen() {
 
   const handlePlaceOrder = async () => {
     if (loading) return;
-    if (!requireValidAuth(navigation)) return;
     haptics.buttonTap();
 
     // Strict Address Validation
@@ -316,15 +245,8 @@ export default function OrderReviewScreen() {
           }),
         });
         
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          if (res.status === 401 || isUnauthorizedError(json.error)) {
-            setLoading(false);
-            handleAuthError(navigation);
-            return;
-          }
-          throw new Error(json.error || 'Failed to place order');
-        }
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Failed to place order');
         
         haptics.success();
         buyNowItem ? setBuyNowItem(null) : clearCart();
@@ -343,11 +265,6 @@ export default function OrderReviewScreen() {
           });
       } catch (e: any) {
         haptics.error();
-        if (isUnauthorizedError(e)) {
-          setLoading(false);
-          handleAuthError(navigation);
-          return;
-        }
         Alert.alert('Order Failed', e.message || 'Something went wrong.');
       } finally {
         setLoading(false);
@@ -386,18 +303,13 @@ export default function OrderReviewScreen() {
         }
 
         if (!orderRes.ok || !orderJson.order_id) {
-          if (orderRes.status === 401 || isUnauthorizedError(orderJson.error)) {
-            setLoading(false);
-            handleAuthError(navigation);
-            return;
-          }
           throw new Error(orderJson.error || 'Failed to create payment order.');
         }
 
         const payAmount = Number(orderJson.codFee || grandTotal);
         setLoading(false);
 
-        setRazorpayModalData({
+        navigation.navigate('RazorpayPayment', {
           amount: payAmount,
           orderId: orderJson.order_id,
           razorpayKeyId: orderJson.key_id,
@@ -408,22 +320,16 @@ export default function OrderReviewScreen() {
           },
           orderData: orderData,
         });
-        setRazorpayModalVisible(true);
       } catch (e: any) {
         haptics.error();
         console.error('[OrderReview] COD Razorpay initiation error:', e.message);
-        if (isUnauthorizedError(e)) {
-          setLoading(false);
-          handleAuthError(navigation);
-          return;
-        }
         Alert.alert('Payment Error', e.message || 'Could not start COD upfront payment. Please try again.');
         setLoading(false);
       }
       return;
     }
 
-    // Razorpay: Step 1 — create order on backend, then open Razorpay modal directly
+    // Razorpay: Step 1 — create order on backend, then navigate to Payment Screen
     setLoading(true);
     try {
       console.log('[OrderReview] Initiating Razorpay order...');
@@ -452,17 +358,12 @@ export default function OrderReviewScreen() {
       }
 
       if (!orderRes.ok || !orderJson.order_id) {
-        if (orderRes.status === 401 || isUnauthorizedError(orderJson.error)) {
-          setLoading(false);
-          handleAuthError(navigation);
-          return;
-        }
         throw new Error(orderJson.error || 'Failed to create payment order.');
       }
       
       setLoading(false);
       
-      setRazorpayModalData({
+      navigation.navigate('RazorpayPayment', {
         amount: grandTotal,
         orderId: orderJson.order_id,
         razorpayKeyId: orderJson.key_id,
@@ -473,108 +374,12 @@ export default function OrderReviewScreen() {
         },
         orderData: orderData,
       });
-      setRazorpayModalVisible(true);
     } catch (e: any) {
       haptics.error();
       console.error('[OrderReview] Razorpay initiation error:', e.message);
-      if (isUnauthorizedError(e)) {
-        setLoading(false);
-        handleAuthError(navigation);
-        return;
-      }
       Alert.alert('Payment Error', e.message || 'Could not start payment. Please try again.');
       setLoading(false);
     }
-  };
-
-  const handleRazorpaySuccess = async (payload: RazorpayWebViewSuccessPayload) => {
-    setRazorpayModalVisible(false);
-    setLoading(true);
-    try {
-      haptics.success();
-      const token = useAuthStore.getState().token || '';
-      const apiBase = getPaymentApiBaseUrl();
-      let confirmedOrderId = '';
-      let confirmedOrderNumber = '';
-
-      // 1. Verify payment signature on backend
-      try {
-        const vRes = await fetch(`${apiBase}/api/app/payment/verify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify({
-            razorpay_order_id: payload.razorpay_order_id,
-            razorpay_payment_id: payload.razorpay_payment_id,
-            razorpay_signature: payload.razorpay_signature,
-            snapDevice: await getSnapDeviceContext(),
-          }),
-        });
-        const vJson = await vRes.json().catch(() => ({}));
-        if (vJson.orderId) confirmedOrderId = vJson.orderId;
-        if (vJson.orderNumber) confirmedOrderNumber = vJson.orderNumber;
-      } catch (e) {
-        console.warn('[OrderReview] Backend verify call error:', e);
-      }
-
-      // 2. Sync/record order in database
-      const currentOrderData = razorpayModalData?.orderData || buildOrderData();
-      const orderPayload = {
-        ...currentOrderData,
-        paymentId: payload.razorpay_payment_id,
-        razorpayOrderId: payload.razorpay_order_id,
-        razorpay_order_id: payload.razorpay_order_id,
-        paymentStatus: 'paid',
-        paymentMethod: selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID',
-      };
-
-      const oRes = await fetch(`${apiBase}/api/app/orders/create`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          Authorization: token ? `Bearer ${token}` : '',
-        },
-        body: JSON.stringify(orderPayload),
-      });
-
-      const oJson = await oRes.json().catch(() => ({}));
-      const finalOrderId = confirmedOrderId || oJson.orderId || oJson.id || payload.razorpay_order_id;
-      const finalOrderNumber = confirmedOrderNumber || oJson.orderNumber || undefined;
-
-      buyNowItem ? setBuyNowItem(null) : clearCart();
-
-      navigation.getParent()?.reset({
-        index: 1,
-        routes: [
-          { name: 'Main' },
-          {
-            name: 'OrderConfirmation',
-            params: {
-              orderId: finalOrderId,
-              orderNumber: finalOrderNumber,
-              paymentMethod: selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID',
-              estimatedDelivery: '3-5 Business Days',
-            },
-          },
-        ],
-      });
-    } catch (err: any) {
-      console.error('[OrderReview] Post-payment sync error:', err);
-      Alert.alert('Payment Succeeded', 'Your payment was received. Please check your order history.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRazorpayDismiss = () => {
-    setRazorpayModalVisible(false);
-    setLoading(false);
-  };
-
-  const handleRazorpayError = (errMsg: string) => {
-    setRazorpayModalVisible(false);
-    setLoading(false);
-    Alert.alert('Payment Incomplete', errMsg || 'Payment was not completed. Please try again.');
   };
 
 
@@ -640,7 +445,7 @@ export default function OrderReviewScreen() {
              <Typography size={12} weight="600" color={colors.text}>{shippingAddress?.name || user?.name}</Typography>
              <Typography size={9} weight="600" color={colors.textExtraLight} style={{ marginTop: 2 }}>{shippingAddress?.email || user?.email}</Typography>
              <Typography size={10} color={colors.textSecondary} style={{ marginTop: 6, lineHeight: 16 }}>
-                {shippingAddress?.line1 || shippingAddress?.address1 || [shippingAddress?.flat, shippingAddress?.street].filter(Boolean).join(', ') || shippingAddress?.street}{'\n'}
+                {shippingAddress?.street || shippingAddress?.line1}{'\n'}
                 {shippingAddress?.city}, {shippingAddress?.state} {shippingAddress?.zip || shippingAddress?.pincode}
              </Typography>
              <Typography size={10} color={colors.textSecondary} style={{ marginTop: 8 }}>{shippingAddress?.phone || user?.phone}</Typography>
@@ -860,19 +665,6 @@ export default function OrderReviewScreen() {
         onPrimaryPress={handlePlaceOrder}
         loading={loading}
       />
-
-      {razorpayModalData && (
-        <RazorpayWebViewModal
-          visible={razorpayModalVisible}
-          orderId={razorpayModalData.orderId}
-          razorpayKeyId={razorpayModalData.razorpayKeyId}
-          amount={razorpayModalData.amount}
-          prefill={razorpayModalData.prefill}
-          onSuccess={handleRazorpaySuccess}
-          onDismiss={handleRazorpayDismiss}
-          onError={handleRazorpayError}
-        />
-      )}
     </View>
   );
 }

@@ -13,12 +13,7 @@
 import { Dimensions, PixelRatio, Platform } from 'react-native';
 import * as Device from 'expo-device';
 import * as Application from 'expo-application';
-let Tracking: any = null;
-try {
-  Tracking = require('expo-tracking-transparency');
-} catch {
-  Tracking = null;
-}
+import * as Tracking from 'expo-tracking-transparency';
 
 export type AttStatus = 'authorized' | 'denied' | 'restricted' | 'not_determined' | 'unavailable';
 

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useMemo } from 'react';
-import { View, StyleSheet, FlatList, RefreshControl, ActivityIndicator, Dimensions, PanResponder } from 'react-native';
+import { View, StyleSheet, FlatList, RefreshControl, ActivityIndicator, Dimensions, Animated, Platform, PanResponder } from 'react-native';
 import { haptics } from '../utils/haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
@@ -78,9 +78,13 @@ export default function CollectionScreen() {
   const [isColorOpen, setIsColorOpen] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<FlatProduct | null>(null);
+  const [isCompact, setIsCompact] = useState(false);
 
   const setTabBarVisible = useUIStore(s => s.setTabBarVisible);
   const lastScrollY = useRef(0);
+  
+  // Animation for the sticky filter appearance
+  const scrollY = useRef(new Animated.Value(0)).current;
 
   // Custom edge swipe-back gesture handler
   const panResponder = useRef(
@@ -130,22 +134,34 @@ export default function CollectionScreen() {
     setModalVisible(true);
   }, []);
 
-  const onScroll = useCallback((event: any) => {
-    const currentY = event.nativeEvent.contentOffset.y;
-    const diff = currentY - lastScrollY.current;
+  const onScroll = Animated.event(
+    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+    { 
+      useNativeDriver: false,
+      listener: (event: any) => {
+        const currentY = event.nativeEvent.contentOffset.y;
+        const diff = currentY - lastScrollY.current;
 
-    if (Math.abs(diff) > 15) {
-      const isVisible = useUIStore.getState().isTabBarVisible;
-      if (diff > 0 && currentY > 200) {
-        if (isVisible) setTabBarVisible(false);
-      } else {
-        if (!isVisible) setTabBarVisible(true);
+        if (currentY < 150) {
+          setIsCompact(false);
+        } else {
+          setIsCompact(true);
+        }
+
+        if (Math.abs(diff) > 15) {
+          const isVisible = useUIStore.getState().isTabBarVisible;
+          if (diff > 0 && currentY > 200) {
+            if (isVisible) setTabBarVisible(false);
+          } else {
+            if (!isVisible) setTabBarVisible(true);
+          }
+          if (Math.abs(diff) > 20 && isSizeOpen) setIsSizeOpen(false);
+          if (Math.abs(diff) > 20 && isColorOpen) setIsColorOpen(false);
+          lastScrollY.current = currentY;
+        }
       }
-      if (Math.abs(diff) > 20 && isSizeOpen) setIsSizeOpen(false);
-      if (Math.abs(diff) > 20 && isColorOpen) setIsColorOpen(false);
-      lastScrollY.current = currentY;
     }
-  }, [setTabBarVisible, isSizeOpen, isColorOpen]);
+  );
 
   const productRows = useMemo(() => {
     if (!products || !Array.isArray(products)) return [];
@@ -216,6 +232,19 @@ export default function CollectionScreen() {
     );
   }, [handleQuickAdd]);
 
+  // Sticky Filter Animation Values
+  const stickyFilterOpacity = scrollY.interpolate({
+    inputRange: [180, 220],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const stickyFilterTranslateY = scrollY.interpolate({
+    inputRange: [180, 220],
+    outputRange: [-20, 0],
+    extrapolate: 'clamp',
+  });
+
   if (loading && !refreshing) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
@@ -285,6 +314,38 @@ export default function CollectionScreen() {
       {/* ── Fixed Header ── */}
       <GlassHeader title={collection?.title || 'Collection'} showBack style={{ backgroundColor: 'transparent' }} />
 
+      {/* ── Sticky Advanced Filter ── */}
+      <Animated.View 
+        pointerEvents={isCompact ? 'box-none' : 'none'}
+        style={[
+          styles.stickyFilterSection, 
+          { 
+            top: insets.top + 48,
+            opacity: stickyFilterOpacity,
+            transform: [{ translateY: stickyFilterTranslateY }],
+          }
+        ]}
+      >
+        <CollectionFilters 
+          allSizes={allSizes as string[]}
+          selectedSize={selectedSize}
+          onSelectSize={setSelectedSize}
+          allColors={allColors}
+          selectedColor={selectedColor}
+          onSelectColor={setSelectedColor}
+          sortBy={sortBy}
+          onSelectSort={setSortBy}
+          viewMode={viewMode}
+          onToggleView={toggleView}
+          isTabBarVisible={true}
+          isSizeOpen={isSizeOpen}
+          setIsSizeOpen={setIsSizeOpen}
+          isColorOpen={isColorOpen}
+          setIsColorOpen={setIsColorOpen}
+          compact={true} // Always compact when sticky for cleaner look
+        />
+      </Animated.View>
+
       <QuickAddModal visible={modalVisible} product={selectedProduct} onClose={() => setModalVisible(false)} />
     </View>
   );
@@ -297,6 +358,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     zIndex: 10,
     elevation: 10, // For Android support
+  },
+  stickyFilterSection: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 3000,
+    paddingVertical: 8,
+    alignItems: 'center',
   },
   count: { letterSpacing: 4, marginBottom: 12, textAlign: 'center', marginTop: 12 },
   row: { flexDirection: 'row', width: '100%' },

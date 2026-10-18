@@ -10,7 +10,7 @@ import { useAdminSettings } from '../hooks/useAdminFeatures';
 import HeroVideo from './HeroVideo';
 import { useNavigation } from '@react-navigation/native';
 
-export default function StorefrontFooter({ mediaActive = false }: { mediaActive?: boolean }) {
+export default function StorefrontFooter() {
   const colors = useColors();
   const theme = useThemeStore(s => s.theme);
   const isDark = theme === 'dark';
@@ -46,7 +46,7 @@ export default function StorefrontFooter({ mediaActive = false }: { mediaActive?
   return (
     <View style={[styles.container, { borderTopColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.03)' }]}>
       <View style={styles.logoWrapper}>
-        <FooterLogo glbUrl={footerLogoGlb} size={64} active={mediaActive} />
+        <FooterLogo glbUrl={footerLogoGlb} size={64} />
       </View>
 
       {/* BRANDING: Exact web parity */}
@@ -57,7 +57,7 @@ export default function StorefrontFooter({ mediaActive = false }: { mediaActive?
       {/* FOOTER VIDEO (From Next.js parity) */}
       {footerVideo && (
         <View style={styles.videoSection}>
-          <HeroVideo key={footerVideo} source={footerVideo} height={200} borderRadius={24} active={mediaActive} />
+          <HeroVideo key={footerVideo} source={footerVideo} height={200} borderRadius={24} />
           <View style={[styles.videoOverlay, { backgroundColor: isDark ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.05)' }]} />
         </View>
       )}

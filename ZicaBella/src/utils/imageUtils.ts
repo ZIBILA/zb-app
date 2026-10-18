@@ -59,19 +59,3 @@ export function resolveImageArray(source: any): string[] {
   const single = resolveImageUrl(source);
   return single ? [single] : [];
 }
-
-/**
- * Returns a CDN-optimized WebP image URL with the specified width.
- * Prevents decoding massive 4K bitmaps on mobile devices.
- */
-export function getOptimizedImageUrl(source: any, width: number = 600): string | null {
-  const url = resolveImageUrl(source);
-  if (!url) return null;
-
-  if (url.includes('cdn.shopify.com')) {
-    const separator = url.includes('?') ? '&' : '?';
-    return `${url}${separator}width=${width}&format=webp`;
-  }
-
-  return url;
-}

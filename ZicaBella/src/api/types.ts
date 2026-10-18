@@ -126,8 +126,6 @@ export interface FlatProduct {
   care?: string;
   sizeChart?: string;
   productVideo?: string;
-  /** Per-product model/fit line (custom.model_info); falls back to theme default */
-  modelInfo?: string;
 }
 
 export interface FlatVariant {
@@ -223,7 +221,6 @@ export function flattenProduct(product: Product): FlatProduct {
     care: parseRichText(product.care?.value),
     sizeChart: product.sizeChart?.value,
     productVideo: product.productVideo?.reference?.sources?.[0]?.url,
-    modelInfo: (product as any).modelInfo?.value || (product as any).modelInfo || undefined,
   };
 }
 

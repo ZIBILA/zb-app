@@ -12,7 +12,6 @@ import { useAuthStore } from '../store/authStore';
 import { Typography } from '../components/Typography';
 import { useRef } from 'react';
 import { useThemeStore } from '../store/themeStore';
-import { requireValidAuth } from '../utils/tokenUtils';
 
 
 export default function CartScreen() {
@@ -46,11 +45,15 @@ export default function CartScreen() {
   const isAuthenticated = useAuthStore(s => s.isAuthenticated);
 
   const handleCheckout = useCallback(() => {
-    if (!requireValidAuth(navigation, { promptMessage: 'Please sign in to proceed with checkout and payment.' })) {
+    if (!isAuthenticated) {
+      Alert.alert('Login Required', 'Please log in to proceed with checkout and payment.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Log In', onPress: () => navigation.navigate('Auth') }
+      ]);
       return;
     }
     navigation.navigate('CheckoutFlow');
-  }, [navigation]);
+  }, [navigation, isAuthenticated]);
 
   const handleGoHome = useCallback(() => {
     navigation.navigate('HomeTab' as never);

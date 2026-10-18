@@ -291,7 +291,7 @@ export default function WebStoreDashboardOverview() {
                     {recentOrders.map((order) => (
                       <tr key={order.id} className="group hover:bg-foreground/[0.01] transition-colors">
                         <td className="py-4 font-mono text-[12px] font-semibold text-foreground group-hover:text-amber-500 transition-colors">
-                          <Link href={`/web-store/orders/${order.id}`}>
+                          <Link href={`/dashboard/webstore/orders/${order.id}`}>
                             {order.orderNumber}
                           </Link>
                         </td>

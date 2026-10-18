@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/options";
 import { redirect } from "next/navigation";
-import DashboardClientLayout from "../dashboard/DashboardClientLayout";
+import DashboardClientLayout from "../DashboardClientLayout";
 
 /** Auth-gated admin store tools — skip static generation to reduce build memory. */
 export const dynamic = "force-dynamic";

@@ -1,13 +1,12 @@
 import React from 'react';
-import { View, StyleSheet, Dimensions, Platform } from 'react-native';
+import { View, Text, StyleSheet, Dimensions } from 'react-native';
 import Animated, { useAnimatedStyle, interpolate, Extrapolation, SharedValue } from 'react-native-reanimated';
 import { Image } from 'expo-image';
-import { useVideoPlayer, VideoView, VideoSource } from 'expo-video';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { useNavigation } from '@react-navigation/native';
 import { useColors } from '../constants/colors';
 import { useAdminSettings } from '../hooks/useAdminFeatures';
 import { Typography } from './Typography';
-import { getOptimizedImageUrl } from '../utils/imageUtils';
 
 const { width } = Dimensions.get('window');
 
@@ -18,202 +17,97 @@ interface FlipbookProps {
   title?: string;
   desc?: string;
   scrollY?: SharedValue<number>;
-  /** When false, poster only — no ExoPlayer */
-  active?: boolean;
 }
 
-export default function FlipbookSection({
-  imgUrl,
-  videoUrl,
-  tag,
-  title,
-  desc,
-  scrollY,
-  active = false,
-}: FlipbookProps) {
+export default function FlipbookSection({ imgUrl, videoUrl, tag, title, desc, scrollY }: FlipbookProps) {
   const colors = useColors();
   const { settings } = useAdminSettings();
 
-  const rawImgUrl = imgUrl || settings?.flipbook?.image || null;
-  const resolvedImgUrl = React.useMemo(() => rawImgUrl ? getOptimizedImageUrl(rawImgUrl, 800) : null, [rawImgUrl]);
+  // Use exact admin settings — no hardcoded fallback defaults
+  const resolvedImgUrl = imgUrl || settings?.flipbook?.image || null;
   const resolvedVideoUrl = videoUrl || settings?.flipbook?.video || null;
 
-  const displayTag = tag || settings?.flipbook?.tag || null;
-  const displayTitle = title || settings?.flipbook?.title || null;
-  const displayDesc = desc || settings?.flipbook?.desc || null;
+  const displayTag   = tag      || settings?.flipbook?.tag    || null;
+  const displayTitle = title    || settings?.flipbook?.title  || null;
+  const displayDesc  = desc     || settings?.flipbook?.desc   || null;
 
+  // Don't render if no media is configured from admin
   if (!resolvedImgUrl && !resolvedVideoUrl) return null;
 
-  // Lazy: no player unless this slot is active
-  if (!active || !resolvedVideoUrl) {
-    return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <View style={styles.card}>
-          <View style={styles.mediaContainer}>
-            {resolvedImgUrl ? (
-              <Image
-                source={{ uri: resolvedImgUrl }}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-                cachePolicy="memory-disk"
-                transition={0}
-              />
-            ) : null}
-            <View style={styles.overlay} />
-          </View>
-          <FlipbookCopy
-            displayTag={displayTag}
-            displayTitle={displayTitle}
-            displayDesc={displayDesc}
-          />
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <FlipbookWithVideo
-      colors={colors}
-      resolvedImgUrl={resolvedImgUrl}
-      resolvedVideoUrl={resolvedVideoUrl}
-      displayTag={displayTag}
-      displayTitle={displayTitle}
-      displayDesc={displayDesc}
-      scrollY={scrollY}
-    />
-  );
-}
-
-function FlipbookCopy({
-  displayTag,
-  displayTitle,
-  displayDesc,
-}: {
-  displayTag: string | null;
-  displayTitle: string | null;
-  displayDesc: string | null;
-}) {
-  return (
-    <>
-      {displayTag ? (
-        <View style={styles.floatingTag}>
-          <Typography size={7} color="#FFFFFF" weight="600" style={styles.tagText}>
-            {displayTag}
-          </Typography>
-        </View>
-      ) : null}
-
-      <View style={styles.textContent}>
-        {displayTitle ? (
-          <Typography heading size={12} color="#FFFFFF" weight="bold" style={styles.cardTitle}>
-            {displayTitle}
-          </Typography>
-        ) : null}
-        {displayTitle || displayDesc ? <View style={styles.accentLine} /> : null}
-        {displayDesc ? (
-          <Typography size={7} color="rgba(255,255,255,0.7)" weight="300" style={styles.cardDesc}>
-            {displayDesc}
-          </Typography>
-        ) : null}
-      </View>
-    </>
-  );
-}
-
-function FlipbookWithVideo({
-  colors,
-  resolvedImgUrl,
-  resolvedVideoUrl,
-  displayTag,
-  displayTitle,
-  displayDesc,
-  scrollY,
-}: {
-  colors: ReturnType<typeof useColors>;
-  resolvedImgUrl: string | null;
-  resolvedVideoUrl: string;
-  displayTag: string | null;
-  displayTitle: string | null;
-  displayDesc: string | null;
-  scrollY?: SharedValue<number>;
-}) {
   const [layoutY, setLayoutY] = React.useState(0);
-  const [ready, setReady] = React.useState(false);
-
-  const videoSource = React.useMemo<VideoSource>(
-    () => ({ uri: resolvedVideoUrl, useCaching: true }),
-    [resolvedVideoUrl]
-  );
-
-  const player = useVideoPlayer(videoSource, (p) => {
-    p.loop = true;
-    p.muted = true;
-    try {
-      p.bufferOptions = { preferredForwardBufferDuration: 5 };
-    } catch {
-      /* */
-    }
-    try {
-      p.play();
-    } catch {
-      /* */
-    }
+  const player = useVideoPlayer(resolvedVideoUrl ?? null, (player) => {
+    if (!resolvedVideoUrl) return;
+    player.loop = true;
+    player.muted = true;
   });
 
   const isFocused = useNavigation().isFocused();
 
   React.useEffect(() => {
     if (!player) return;
-    try {
-      if (isFocused) player.play();
-      else player.pause();
-    } catch {
-      /* released */
+    if (!isFocused) {
+      player.pause();
+    } else {
+      player.play();
     }
   }, [isFocused, player]);
 
   const imageAnimatedStyle = useAnimatedStyle(() => {
     if (!scrollY) return {};
+    
+    // Calculate the scale based on scroll position
+    // Zoom in as the section approaches the center of the screen
     const scale = interpolate(
       scrollY.value,
       [layoutY - 600, layoutY, layoutY + 600],
       [1, 1.15, 1.25],
       Extrapolation.CLAMP
     );
-    return { transform: [{ scale }] };
+
+    return {
+      transform: [{ scale }],
+    };
   });
 
   return (
-    <View
+    <View 
       style={[styles.container, { backgroundColor: colors.background }]}
       onLayout={(e) => setLayoutY(e.nativeEvent.layout.y)}
     >
+      {/* Card Section */}
       <View style={styles.card}>
         <Animated.View style={[styles.mediaContainer, imageAnimatedStyle]}>
-          <VideoView
-            player={player}
-            style={StyleSheet.absoluteFill}
-            nativeControls={false}
-            contentFit="cover"
-            onFirstFrameRender={() => setReady(true)}
-            {...(Platform.OS === 'android' ? { surfaceType: 'surfaceView' as const } : {})}
-          />
-          {!ready && resolvedImgUrl ? (
+          {resolvedVideoUrl ? (
+            <VideoView
+              player={player}
+              style={StyleSheet.absoluteFill}
+              nativeControls={false}
+              contentFit="cover"
+            />
+          ) : resolvedImgUrl ? (
             <Image
               source={{ uri: resolvedImgUrl }}
               style={StyleSheet.absoluteFill}
               contentFit="cover"
-              cachePolicy="memory-disk"
-              transition={0}
+              transition={600}
             />
           ) : null}
+          {/* Subtle dark overlay for text legibility */}
           <View style={styles.overlay} />
         </Animated.View>
-        <FlipbookCopy
-          displayTag={displayTag}
-          displayTitle={displayTitle}
-          displayDesc={displayDesc}
-        />
+
+        {/* Floating Tag Overlay */}
+        {displayTag ? (
+        <View style={styles.floatingTag}>
+           <Typography size={7} color="#FFFFFF" weight="600" style={styles.tagText}>{displayTag}</Typography>
+        </View>
+        ) : null}
+
+        <View style={styles.textContent}>
+          {displayTitle ? <Typography heading size={12} color="#FFFFFF" weight="bold" style={styles.cardTitle}>{displayTitle}</Typography> : null}
+          {(displayTitle || displayDesc) ? <View style={styles.accentLine} /> : null}
+          {displayDesc ? <Typography size={7} color="rgba(255,255,255,0.7)" weight="300" style={styles.cardDesc}>{displayDesc}</Typography> : null}
+        </View>
       </View>
     </View>
   );
@@ -221,15 +115,34 @@ function FlipbookWithVideo({
 
 const styles = StyleSheet.create({
   container: {
-    paddingVertical: 40,
+    paddingVertical: 40, // Reduced vertical padding
     alignItems: 'center',
     width: '100%',
   },
+  tagWrapper: {
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  tagText: {
+    fontSize: 7,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 8,
+  },
+  tagLine: {
+    width: 20,
+    height: 1,
+    marginTop: 10,
+  },
   card: {
-    width: width,
-    aspectRatio: 3 / 4.8,
+    width: width, // Full Screen Width (Edge to Edge)
+    aspectRatio: 3 / 4.8, // Reduced height (was 3 / 5.85)
     overflow: 'hidden',
     backgroundColor: '#000',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 24 },
+    shadowOpacity: 0.25,
+    shadowRadius: 36,
     elevation: 12,
   },
   mediaContainer: {
@@ -237,7 +150,7 @@ const styles = StyleSheet.create({
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.25)',
+    backgroundColor: 'rgba(0,0,0,0.25)', // Slightly darker for better contrast
   },
   floatingTag: {
     position: 'absolute',
@@ -249,12 +162,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.15)',
-  },
-  tagText: {
-    fontSize: 7,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 8,
   },
   textContent: {
     position: 'absolute',

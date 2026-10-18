@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Image, ImageProps } from 'expo-image';
 
@@ -8,31 +8,23 @@ interface OptimizedImageProps extends Omit<ImageProps, 'source'> {
   priority?: 'low' | 'normal' | 'high';
 }
 
-const OptimizedImage = React.memo(function OptimizedImage({ 
+export default function OptimizedImage({ 
   source, 
   style, 
   shopifyWidth,
   contentFit = 'cover',
-  transition = 60,
+  transition = 100,
   priority = 'normal',
   ...props 
 }: OptimizedImageProps) {
 
-  const finalSource = useMemo(() => {
-    if (typeof source === 'string' && source.includes('cdn.shopify.com') && shopifyWidth) {
-      const separator = source.includes('?') ? '&' : '?';
-      return `${source}${separator}width=${shopifyWidth}&format=webp`;
-    }
-    return source;
-  }, [source, shopifyWidth]);
+  let finalSource = source;
+  if (typeof source === 'string' && source.includes('cdn.shopify.com') && shopifyWidth) {
+    const separator = source.includes('?') ? '&' : '?';
+    finalSource = `${source}${separator}width=${shopifyWidth}&format=webp`;
+  }
 
-  const imageSource = useMemo(() => {
-    return typeof finalSource === 'string' ? { uri: finalSource } : finalSource;
-  }, [finalSource]);
-
-  const recyclingKey = useMemo(() => {
-    return typeof finalSource === 'string' ? finalSource : undefined;
-  }, [finalSource]);
+  const imageSource = typeof finalSource === 'string' ? { uri: finalSource } : finalSource;
 
   return (
     <View style={[styles.container, style]}>
@@ -43,14 +35,12 @@ const OptimizedImage = React.memo(function OptimizedImage({
         transition={transition}
         priority={priority}
         cachePolicy="memory-disk"
-        recyclingKey={recyclingKey}
+        recyclingKey={typeof finalSource === 'string' ? finalSource : undefined}
         {...props}
       />
     </View>
   );
-});
-
-export default OptimizedImage;
+}
 
 const styles = StyleSheet.create({
   container: {
@@ -58,4 +48,3 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.03)',
   },
 });
-

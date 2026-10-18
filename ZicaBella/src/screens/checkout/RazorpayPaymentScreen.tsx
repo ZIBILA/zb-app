@@ -17,10 +17,6 @@ import { useAuthStore } from '../../store/authStore';
 import { getPaymentApiBaseUrl } from '../../constants/config';
 import { TOP_BANKS } from '../../constants/bankCodes';
 import { WALLETS } from '../../constants/walletCodes';
-import { isRazorpayAvailable } from '../../utils/razorpayBridge';
-import RazorpayWebViewModal, { RazorpayWebViewSuccessPayload } from '../../components/RazorpayWebViewModal';
-import { getSnapDeviceContext } from '../../services/snapDeviceContext';
-import { requireValidAuth } from '../../utils/tokenUtils';
 
 const UPI_LOGOS: Record<string, string> = {
   'com.google.android.apps.nbu.paisa.user': 'https://cdn.razorpay.com/app/google_pay.png',
@@ -77,7 +73,6 @@ export default function RazorpayPaymentScreen() {
   const [bankSearch, setBankSearch] = useState('');
 
   const [selectedWallet, setSelectedWallet] = useState<string | null>(null);
-  const [showWebView, setShowWebView] = useState(false);
 
   const orderRecordedRef = useRef(false);
 
@@ -91,15 +86,11 @@ export default function RazorpayPaymentScreen() {
   const TAB_LABELS = ['UPI', 'Card', 'Bank', 'Wallets'];
   const tabWidth = (SW - 48) / 4;
 
-  // Fetch installed apps & ensure valid session
+  // Fetch installed apps
   useEffect(() => {
-    if (!requireValidAuth(nav)) return;
     fetchInstalledUPIApps();
     fetchInstalledWallets();
-    if (orderId && razorpayKeyId) {
-      setShowWebView(true);
-    }
-  }, [nav, orderId, razorpayKeyId]);
+  }, []);
 
   useEffect(() => {
     if (tab === 'upi') {
@@ -122,13 +113,28 @@ export default function RazorpayPaymentScreen() {
     }
   }, [status]);
 
-  // ── Record order on backend (state before success effect) ──
+  // ── Success/Fail animations ──
+  useEffect(() => {
+    if (status === 'success' && successData) {
+      Animated.parallel([
+        Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
+        Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+      ]).start();
+      recordOrderOnBackend(successData.paymentId, successData.orderId);
+    }
+  }, [status, successData]);
+
+  useEffect(() => {
+    if (status === 'failed') {
+      Animated.spring(failScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
+    }
+  }, [status]);
+
+  // ── Record order on backend ──
   const [isRecording, setIsRecording] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [createdOrderNumber, setCreatedOrderNumber] = useState<string | null>(null);
-  const syncRetryRef = useRef(0);
-  const MAX_SYNC_RETRIES = 3;
 
   const recordOrderOnBackend = useCallback(async (paymentId: string, rzpOrderId: string) => {
     if (orderRecordedRef.current) return;
@@ -136,18 +142,13 @@ export default function RazorpayPaymentScreen() {
     setRecordError(null);
 
     try {
-      const auth = useAuthStore.getState();
-      const token = auth.token || '';
+      const token = useAuthStore.getState().token || '';
       const apiBase = getPaymentApiBaseUrl();
 
       if (orderData) {
         const isCod = String(orderData.paymentMethod || '').toUpperCase() === 'COD';
         const orderPayload = {
           ...orderData,
-          // Prefer logged-in customer so order appears under My Orders
-          customerId: auth.user?.id || orderData.customerId,
-          customerEmail: orderData.customerEmail || auth.user?.email,
-          customerPhone: orderData.customerPhone || auth.user?.phone,
           paymentId: paymentId,
           razorpayOrderId: rzpOrderId,
           razorpay_order_id: rzpOrderId,
@@ -178,10 +179,9 @@ export default function RazorpayPaymentScreen() {
         if (!res.ok || resJson.success === false) {
           throw new Error(resJson.error || 'Failed to sync order');
         }
-        setCreatedOrderId(resJson.orderId || resJson.id || successData?.localOrderId || null);
-        setCreatedOrderNumber(resJson.orderNumber || successData?.orderNumber || null);
+        setCreatedOrderId(resJson.orderId || resJson.id || null);
+        setCreatedOrderNumber(resJson.orderNumber || null);
         orderRecordedRef.current = true;
-        syncRetryRef.current = 0;
       } else {
         throw new Error('Missing order details for backend sync');
       }
@@ -191,73 +191,13 @@ export default function RazorpayPaymentScreen() {
       console.error('[RazorpayPayment] Error recording order:', e.message);
       setRecordError(e.message || 'Sync failed');
       setIsRecording(false);
-      if (syncRetryRef.current < MAX_SYNC_RETRIES) {
-        syncRetryRef.current += 1;
-        setTimeout(() => recordOrderOnBackend(paymentId, rzpOrderId), 3000);
-      }
+      setTimeout(() => recordOrderOnBackend(paymentId, rzpOrderId), 3000);
     }
-  }, [orderData, buyNowItem, setBuyNowItem, clearCart, amount, successData?.localOrderId, successData?.orderNumber]);
-
-  // ── Success/Fail animations ──
-  useEffect(() => {
-    if (status === 'success' && successData) {
-      Animated.parallel([
-        Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
-        Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-      ]).start();
-      // Prefer backend ids from verify so confirmation works even if create retries
-      if (successData.localOrderId) setCreatedOrderId(successData.localOrderId);
-      if (successData.orderNumber) setCreatedOrderNumber(successData.orderNumber);
-      recordOrderOnBackend(successData.paymentId, successData.orderId);
-    }
-  }, [status, successData]);
-
-  useEffect(() => {
-    if (status === 'failed') {
-      Animated.spring(failScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
-    }
-  }, [status]);
-
-  // ── Handle Webview Checkout Success ──
-  const handleWebViewSuccess = useCallback(async (payload: RazorpayWebViewSuccessPayload) => {
-    setShowWebView(false);
-    haptics.success();
-
-    // 1. Verify signature on backend
-    try {
-      const apiBase = getPaymentApiBaseUrl();
-      const vRes = await fetch(`${apiBase}/api/app/payment/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          razorpay_order_id: payload.razorpay_order_id,
-          razorpay_payment_id: payload.razorpay_payment_id,
-          razorpay_signature: payload.razorpay_signature,
-          snapDevice: await getSnapDeviceContext(),
-        }),
-      });
-      const vJson = await vRes.json().catch(() => ({}));
-      if (vJson.orderId) setCreatedOrderId(vJson.orderId);
-      if (vJson.orderNumber) setCreatedOrderNumber(vJson.orderNumber);
-    } catch (e) {
-      console.warn('[RazorpayPayment] Backend verify call:', e);
-    }
-
-    // 2. Animate to success
-    Animated.parallel([
-      Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
-      Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-    ]).start();
-
-    // 3. Record order on backend
-    await recordOrderOnBackend(payload.razorpay_payment_id, payload.razorpay_order_id);
-  }, [recordOrderOnBackend, successScale, successOpacity]);
+  }, [orderData, buyNowItem, setBuyNowItem, clearCart]);
 
   const isPayReady = (): boolean => {
     if (!amount || Number(amount) <= 0) return false;
     if (!orderId || !razorpayKeyId) return false;
-    // Standard web checkout doesn't require pre-selecting an app or bank
-    if (!isRazorpayAvailable()) return true;
     if (tab === 'upi') return upiSubTab === 'apps' ? !!selectedUPIApp : upiId.includes('@');
     if (tab === 'card') return cardNum.replace(/\s/g, '').length === 16 && cardExpiry.length === 5 && cardCvv.length >= 3;
     if (tab === 'netbanking') return !!selectedBank;
@@ -268,7 +208,6 @@ export default function RazorpayPaymentScreen() {
   const payReadyHint = (): string => {
     if (!amount || Number(amount) <= 0) return 'Invalid amount — go back and retry';
     if (!orderId || !razorpayKeyId) return 'Payment session not ready — go back and retry';
-    if (!isRazorpayAvailable()) return '';
     if (tab === 'upi') {
       return upiSubTab === 'apps'
         ? (selectedUPIApp ? '' : 'Select a UPI app to continue')
@@ -282,16 +221,7 @@ export default function RazorpayPaymentScreen() {
 
   const payLockRef = useRef(false);
   const onPay = async () => {
-    if (payLockRef.current || isProcessing) return;
-
-    // If native Razorpay Custom UI module is not found, launch official webview checkout
-    if (!isRazorpayAvailable()) {
-      haptics.buttonTap();
-      setShowWebView(true);
-      return;
-    }
-
-    if (!isPayReady()) return;
+    if (!isPayReady() || payLockRef.current || isProcessing) return;
     payLockRef.current = true;
     haptics.success();
     
@@ -316,20 +246,15 @@ export default function RazorpayPaymentScreen() {
       await startPayment(tab, opts);
     } catch (e: any) {
       console.error('[RazorpayPayment] Payment failed:', e.message);
-      // If native SDK fails due to missing module, fall back to webview checkout immediately
-      if (String(e.message).includes('native module not found')) {
-        setShowWebView(true);
-      }
     } finally {
       payLockRef.current = false;
     }
   };
 
   const goToOrders = () => {
-    const confirmationId = createdOrderId || successData?.localOrderId || orderId;
     nav.getParent()?.reset({
       index: 1,
-      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: confirmationId, orderNumber: createdOrderNumber || successData?.orderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
+      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
     });
   };
 
@@ -348,24 +273,18 @@ export default function RazorpayPaymentScreen() {
           </Animated.View>
           <Typography size={24} weight="800" color={colors.text} style={{ marginTop: 40, letterSpacing: 4 }}>PAID SUCCESSFULLY</Typography>
           <Typography size={11} color={colors.textMuted} style={{ marginTop: 12 }}>
-            {recordError && !createdOrderId
-              ? 'Payment received. Syncing your order again.'
-              : 'Your order has been recorded and synced.'}
+            {recordError ? 'Payment received. Syncing your order again.' : 'Your order has been recorded and synced.'}
           </Typography>
           
-          {isRecording && !createdOrderId ? (
+          {isRecording ? (
              <View style={{ marginTop: 32, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                <ActivityIndicator size="small" color={colors.textMuted} />
                <Typography size={10} color={colors.textMuted} weight="800">SYNCING WITH STORE...</Typography>
              </View>
-          ) : recordError && successData && !createdOrderId ? (
+          ) : recordError && successData ? (
             <TouchableOpacity
               style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]}
-              onPress={() => {
-                syncRetryRef.current = 0;
-                orderRecordedRef.current = false;
-                recordOrderOnBackend(successData.paymentId, successData.orderId);
-              }}
+              onPress={() => recordOrderOnBackend(successData.paymentId, successData.orderId)}
             >
               <Typography size={11} weight="800" color={colors.background} style={{ letterSpacing: 1 }}>SYNC ORDER</Typography>
             </TouchableOpacity>
@@ -409,28 +328,10 @@ export default function RazorpayPaymentScreen() {
           </Animated.View>
           <Typography size={22} weight="800" color={colors.text} style={{ marginTop: 32, letterSpacing: 2 }}>TRANSACTION FAILED</Typography>
           <Typography size={11} color={colors.textMuted} style={{ marginTop: 12, textAlign: 'center', paddingHorizontal: 40 }}>{error || 'The payment could not be completed.'}</Typography>
-          <TouchableOpacity
-            style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]}
-            onPress={() => {
-              reset();
-              setShowWebView(true);
-            }}
-          >
+          <TouchableOpacity style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]} onPress={() => reset()}>
             <Typography size={11} weight="800" color={colors.background} style={{ letterSpacing: 1 }}>RETRY PAYMENT</Typography>
           </TouchableOpacity>
         </View>
-        <RazorpayWebViewModal
-          visible={showWebView}
-          orderId={orderId}
-          razorpayKeyId={razorpayKeyId}
-          amount={amount}
-          prefill={prefill}
-          onSuccess={handleWebViewSuccess}
-          onDismiss={() => setShowWebView(false)}
-          onError={() => {
-            setShowWebView(false);
-          }}
-        />
       </View>
     );
   }
@@ -592,23 +493,12 @@ export default function RazorpayPaymentScreen() {
         )}
         <TouchableOpacity style={[s.payBtn, { backgroundColor: isPayReady() ? colors.foreground : colors.surface, opacity: isPayReady() ? 1 : 0.4 }]} onPress={onPay} disabled={isProcessing || !isPayReady()}>
           {isProcessing ? <ActivityIndicator color={colors.background} /> :
-            <Typography size={13} weight="800" color={isPayReady() ? colors.background : colors.textMuted} style={{ letterSpacing: 2 }}>{`PAY ₹${(amount || 0).toLocaleString('en-IN')}`}</Typography>
+            <Typography size={13} weight="800" color={isPayReady() ? colors.background : colors.textMuted} style={{ letterSpacing: 2 }}>PLACE ORDER</Typography>
           }
         </TouchableOpacity>
       </View>
 
-      <RazorpayWebViewModal
-        visible={showWebView}
-        orderId={orderId}
-        razorpayKeyId={razorpayKeyId}
-        amount={amount}
-        prefill={prefill}
-        onSuccess={handleWebViewSuccess}
-        onDismiss={() => setShowWebView(false)}
-        onError={() => {
-          setShowWebView(false);
-        }}
-      />
+      {/* Remove custom processing overlay to let Razorpay's native UI handle feedback */}
     </View>
   );
 }

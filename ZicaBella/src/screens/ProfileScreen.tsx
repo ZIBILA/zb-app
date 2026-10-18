@@ -433,7 +433,7 @@ export default function ProfileScreen() {
 
   // ─── NOT AUTHENTICATED ───
   if (!isAuthenticated) {
-    return <LoginScreen isInline={true} />;
+    return <LoginScreen />;
   }
 
   // ─── AUTHENTICATED VIEW ───

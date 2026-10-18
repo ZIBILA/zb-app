@@ -545,7 +545,7 @@ function WebStoreOrdersContent() {
                         />
                       </td>
                       <td className="py-4 px-3">
-                        <Link href={`/web-store/orders/${order.id}`} className="group flex flex-col gap-0.5">
+                        <Link href={`/dashboard/webstore/orders/${order.id}`} className="group flex flex-col gap-0.5">
                           <span className="font-mono text-[12px] font-bold text-foreground group-hover:text-indigo-400 transition-colors">
                             {order.orderNumber}
                           </span>
@@ -627,7 +627,7 @@ function WebStoreOrdersContent() {
                       </td>
                       <td className="py-4 px-5 text-center">
                         <Link
-                          href={`/web-store/orders/${order.id}`}
+                          href={`/dashboard/webstore/orders/${order.id}`}
                           className="w-8 h-8 rounded-xl flex items-center justify-center bg-foreground/5 text-foreground/50 hover:bg-foreground/10 hover:text-foreground transition-all"
                         >
                           <ChevronRight className="w-4 h-4" />

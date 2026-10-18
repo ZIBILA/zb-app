@@ -67,24 +67,24 @@ export default function WebStoreAdminLayout({ children, user }: WebStoreAdminLay
   };
 
   const navItems = [
-    { name: "Overview", href: "/web-store", icon: LayoutDashboard },
-    { name: "Web Store Orders", href: "/web-store/orders", icon: ShoppingBag },
-    { name: "Web Store Customers", href: "/web-store/customers", icon: Users },
-    { name: "Login Logs", href: "/web-store/logins", icon: History },
-    { name: "Banners / CMS", href: "/web-store/banners", icon: ImageIcon },
-    { name: "Gallery CMS", href: "/web-store/gallery", icon: Sparkles },
-    { name: "Coupons", href: "/web-store/coupons", icon: Tag },
+    { name: "Overview", href: "/dashboard/webstore", icon: LayoutDashboard },
+    { name: "Web Store Orders", href: "/dashboard/webstore/orders", icon: ShoppingBag },
+    { name: "Web Store Customers", href: "/dashboard/webstore/customers", icon: Users },
+    { name: "Login Logs", href: "/dashboard/webstore/logins", icon: History },
+    { name: "Banners / CMS", href: "/dashboard/webstore/banners", icon: ImageIcon },
+    { name: "Gallery CMS", href: "/dashboard/webstore/gallery", icon: Sparkles },
+    { name: "Coupons", href: "/dashboard/webstore/coupons", icon: Tag },
   ];
 
   const isActive = useCallback(
-    (href: string) => pathname === href || (href !== "/web-store" && pathname.startsWith(href)),
+    (href: string) => pathname === href || (href !== "/dashboard/webstore" && pathname.startsWith(href)),
     [pathname]
   );
 
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
 
   const getPageTitle = () => {
-    if (pathname === "/web-store") return "Web Store Overview";
+    if (pathname === "/dashboard/webstore") return "Web Store Overview";
     const segment = pathname.split("/").filter(Boolean)[1];
     if (!segment) return "Web Store";
     return `Web Store ${segment.charAt(0).toUpperCase() + segment.slice(1)}`;

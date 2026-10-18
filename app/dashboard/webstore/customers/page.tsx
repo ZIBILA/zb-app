@@ -128,7 +128,7 @@ export default function WebStoreCustomersList() {
                     <td className="py-4 px-6">
                       <div className="flex flex-col min-w-0">
                         <Link
-                          href={`/web-store/customers/${customer.id}`}
+                          href={`/dashboard/webstore/customers/${customer.id}`}
                           className="text-[12px] font-semibold text-foreground group-hover:text-amber-500 transition-colors truncate"
                         >
                           {customer.name}
@@ -142,7 +142,7 @@ export default function WebStoreCustomersList() {
                     <td className="py-4 px-4 text-[11px] text-foreground/60">{formatDate(customer.createdAt)}</td>
                     <td className="py-4 px-6 text-center">
                       <Link
-                        href={`/web-store/customers/${customer.id}`}
+                        href={`/dashboard/webstore/customers/${customer.id}`}
                         className="w-8 h-8 rounded-xl flex items-center justify-center bg-foreground/5 text-foreground/50 hover:bg-foreground/10 hover:text-foreground transition-all"
                       >
                         <ChevronRight className="w-4 h-4" />

@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { View, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
-import { useCollectionByHandle } from '../hooks/useProducts';
+import { useCollectionByHandle, useProducts } from '../hooks/useProducts';
 import { useColors } from '../constants/colors';
 import { useAdminSettings } from '../hooks/useAdminFeatures';
 import { Typography } from './Typography';
@@ -21,8 +22,6 @@ interface Props {
   collectionHandle?: string;
   media?: string;
   productIds?: string | string[];
-  products?: FlatProduct[];
-  mediaActive?: boolean;
 }
 
 const SpotlightSection = React.memo(({ 
@@ -30,9 +29,7 @@ const SpotlightSection = React.memo(({
   subtitle,
   collectionHandle,
   media,
-  productIds,
-  products: catalogProductsProp,
-  mediaActive = false,
+  productIds
 }: Props) => {
   const navigation = useNavigation<any>();
   const colors = useColors();
@@ -48,7 +45,7 @@ const SpotlightSection = React.memo(({
 
   const rawProductsSetting = productIds ?? settings?.spotlight?.products ?? (settings as any)?.spotlightProducts ?? null;
 
-  const specifiedIds = useMemo(() => {
+  const specifiedIds = React.useMemo(() => {
     if (!rawProductsSetting) return [];
     if (Array.isArray(rawProductsSetting)) {
       return rawProductsSetting.map(id => String(id).trim()).filter(Boolean);
@@ -60,9 +57,9 @@ const SpotlightSection = React.memo(({
   }, [rawProductsSetting]);
 
   const { products: collectionProducts, loading: collectionLoading } = useCollectionByHandle(resolvedCollectionHandle ?? "");
-  const catalogProducts = catalogProductsProp || [];
+  const { products: catalogProducts, loading: catalogLoading } = useProducts(50);
 
-  const displayProducts = useMemo(() => {
+  const displayProducts = React.useMemo(() => {
     const availablePool = (catalogProducts && catalogProducts.length > 0)
       ? catalogProducts
       : (collectionProducts || []);
@@ -86,7 +83,7 @@ const SpotlightSection = React.memo(({
     return (collectionProducts || []).slice(0, 6);
   }, [specifiedIds, catalogProducts, collectionProducts]);
 
-  const loading = collectionLoading;
+  const loading = collectionLoading || (specifiedIds.length > 0 && catalogLoading);
 
   if (loading && displayProducts.length === 0) {
     return (
@@ -111,7 +108,7 @@ const SpotlightSection = React.memo(({
       {/* Optional Media Background Section */}
       {resolvedMedia && (
         <View style={styles.mediaBackground}>
-          <HeroVideo source={resolvedMedia} height={400} borderRadius={0} isMuted active={mediaActive} />
+          <HeroVideo source={resolvedMedia} height={400} borderRadius={0} isMuted />
           <View style={[styles.mediaOverlay, { backgroundColor: isDark ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.2)' }]} />
         </View>
       )}
@@ -145,7 +142,7 @@ const SpotlightSection = React.memo(({
 
       {/* Grid - 3 columns, Minimalist style */}
       <View style={styles.grid}>
-        {displayProducts.map((product, idx) => (
+        {(displayProducts.length > 0 ? displayProducts : Array(3).fill(null)).map((product, idx) => (
           <TouchableOpacity 
             key={product?.id || idx}
             style={styles.item}
@@ -246,6 +243,11 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: '100%',
+  },
+  emptyImage: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   itemInfo: {
     width: '100%',

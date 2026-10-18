@@ -300,7 +300,7 @@ export default function WebStoreCustomerDetail() {
                         className="group hover:bg-foreground/[0.01] transition-colors"
                       >
                         <td className="py-4 px-3 font-mono text-[12px] font-bold text-foreground group-hover:text-amber-500 transition-colors">
-                          <Link href={`/web-store/orders/${order.id}`}>
+                          <Link href={`/dashboard/webstore/orders/${order.id}`}>
                             {order.orderNumber}
                           </Link>
                         </td>
@@ -313,7 +313,7 @@ export default function WebStoreCustomerDetail() {
                         </td>
                         <td className="py-4 px-3">
                           <Link
-                            href={`/web-store/orders/${order.id}`}
+                            href={`/dashboard/webstore/orders/${order.id}`}
                             className="w-8 h-8 rounded-xl flex items-center justify-center bg-foreground/5 text-foreground/50 hover:bg-foreground/10 hover:text-foreground transition-all"
                           >
                             <ChevronRight className="w-4 h-4" />
