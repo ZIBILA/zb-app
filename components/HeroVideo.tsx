@@ -86,8 +86,9 @@ export default function HeroVideo({
   );
 
   return (
-    <div 
-      className="absolute inset-0 w-full h-full group/hero"
+    <div
+      className="absolute inset-0 w-full h-full cursor-pointer group/hero"
+      onClick={toggle}
       suppressHydrationWarning
     >
       {!showControlOnly && (
@@ -100,7 +101,7 @@ export default function HeroVideo({
           playsInline
           preload={mounted ? "auto" : "metadata"}
           poster={poster || undefined}
-          className="w-full h-full object-cover transition-all duration-700 pointer-events-none"
+          className="w-full h-full object-cover transition-all duration-700"
           suppressHydrationWarning
         >
           {sources.map((url) => {
@@ -113,7 +114,7 @@ export default function HeroVideo({
           })}
         </video>
       )}
-      
+
       {/* Absolute minimal mute icon */}
       <button
         type="button"
@@ -131,6 +132,16 @@ export default function HeroVideo({
         )}
       </button>
 
+      {/* Brief center icon flash on press */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-active/hero:opacity-100 transition-opacity">
+        <div className="p-4 rounded-full bg-black/10 backdrop-blur-sm border border-white/5">
+          {isMuted ? (
+            <VolumeX className="w-4 h-4 text-white/40" />
+          ) : (
+            <Volume2 className="w-4 h-4 text-white/70" />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

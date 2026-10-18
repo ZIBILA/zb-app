@@ -31,41 +31,54 @@ export function shouldAutoRefreshShopifyAdminToken(): boolean {
   return false;
 }
 
-function isDynamicServerUsageError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const e = err as { digest?: string; message?: string; description?: string };
-  if (e.digest === 'DYNAMIC_SERVER_USAGE') return true;
-  const msg = `${e.message || ''} ${e.description || ''}`;
-  return msg.includes('DYNAMIC_SERVER_USAGE') || msg.includes('Dynamic server usage');
-}
-
 /**
- * Opt the current Next request into dynamic rendering BEFORE a cache:'no-store' mint fetch.
- * No-op when auto-refresh is off (production) — production never calls this.
- * Next 14: unstable_noStore(); Next 15+: connection() if present.
+ * POST form body via Node https — NOT global/Next fetch.
+ * Next patches fetch and throws DYNAMIC_SERVER_USAGE for cache:'no-store' on ISR pages
+ * (e.g. homepage revalidate=60). Native https bypasses that; production never calls this.
+ *
+ * Lazy require('https') — top-level `import … from 'node:https'` breaks Next 14 webpack
+ * (TypeError: Cannot read properties of undefined (reading 'call')).
  */
-async function ensureDynamicForTokenMint(): Promise<void> {
-  if (!shouldAutoRefreshShopifyAdminToken()) return;
-  try {
-    const cacheMod = await import('next/cache');
-    const noStore = (cacheMod as { unstable_noStore?: () => void }).unstable_noStore;
-    if (typeof noStore === 'function') {
-      noStore();
-      return;
-    }
-  } catch {
-    // ignore — fall through
-  }
-  try {
-    const serverMod = await import('next/server');
-    const connection = (serverMod as { connection?: () => Promise<void> }).connection;
-    if (typeof connection === 'function') {
-      await connection();
-    }
-  } catch (err) {
-    // Outside Next request context (CLI/tests) mint is fine; rethrow real dynamic-usage errors.
-    if (isDynamicServerUsageError(err)) throw err;
-  }
+function httpsPostForm(
+  urlStr: string,
+  body: string
+): Promise<{ status: number; text: string }> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const https = require('https') as typeof import('https');
+  const url = new URL(urlStr);
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: `${url.pathname}${url.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+          Accept: 'application/json',
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode || 0,
+            text: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      }
+    );
+    req.setTimeout(20_000, () => {
+      req.destroy(new Error('[Shopify Client] client_credentials request timed out'));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 declare global {
@@ -92,25 +105,20 @@ async function mintShopifyClientCredentialsToken(domain: string): Promise<string
     );
   }
 
-  // Must run before cache:'no-store' — otherwise Next throws DYNAMIC_SERVER_USAGE on static pages.
-  await ensureDynamicForTokenMint();
-
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
     client_id: clientId,
     client_secret: clientSecret,
-  });
+  }).toString();
 
-  const res = await fetch(`https://${domain}/admin/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-    cache: 'no-store',
-  });
+  // Native https — must not use Next fetch (DYNAMIC_SERVER_USAGE on ISR).
+  const { status, text } = await httpsPostForm(
+    `https://${domain}/admin/oauth/access_token`,
+    body
+  );
 
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`[Shopify Client] client_credentials failed [${res.status}]: ${text}`);
+  if (status < 200 || status >= 300) {
+    throw new Error(`[Shopify Client] client_credentials failed [${status}]: ${text}`);
   }
 
   let data: { access_token?: string; expires_in?: number; error?: string };
@@ -193,17 +201,13 @@ export async function getShopConfig() {
         global._cachedShopConfig = config;
         return config;
       } catch (mintErr) {
-        if (isDynamicServerUsageError(mintErr)) {
-          console.warn(
-            '[Shopify Client] Token mint deferred (static render); falling back to static token for this pass'
-          );
-        } else {
-          console.warn(
-            '[Shopify Client] Auto-refresh mint failed, falling back to static token:',
-            mintErr
-          );
-        }
-        // fall through to static env/DB token (Render fallback only)
+        // Real mint failure only (network/creds). Do not swallow — static env token on
+        // Render is usually expired and causes cascading 401s.
+        console.warn(
+          '[Shopify Client] Auto-refresh mint failed, falling back to static token:',
+          mintErr
+        );
+        // fall through to static env/DB token (last resort on Render)
       }
     }
 
