@@ -38,6 +38,96 @@ export type MetaBrowserPurchaseDecision =
   | { action: 'wait'; reason: string }
   | { action: 'done'; reason: string };
 
+// ── Server-verified order facts ─────────────────────────────────────────────
+
+/**
+ * What the browser Purchase needs to know about an order, as the SERVER stores it:
+ * payment state, order type, the charged total and its currency, and the items.
+ *
+ * The confirmation page first paints an optimistic copy of the order built in the
+ * checkout (so the shopper sees it instantly). That copy has no payment status —
+ * with it alone the decision below is always "done / paymentStatus=empty" and no
+ * browser Purchase ever fires. These facts are fetched from
+ * /api/orders/[id]/confirmation?view=tracking once the order is registered and
+ * kept NEXT TO the optimistic copy (order.serverFacts): what the shopper sees is
+ * unchanged, while tracking reads the stored order.
+ */
+export interface OrderServerFacts {
+  paymentStatus: string;
+  orderType?: string;
+  /** true = staff / QA / demo order: never a Meta or Snap Purchase (lib/meta/internal-orders.ts). */
+  internal?: boolean;
+  totalPrice?: number;
+  currency?: string;
+  items?: Array<{ variantId?: string | null; sku?: string | null; quantity?: number; price?: number; title?: string | null }>;
+}
+
+/**
+ * Facts from a server order payload, or null when the payload carries no payment
+ * state (unknown order, a standalone web-store record) or is for another order.
+ */
+export function pickOrderServerFacts(serverOrder: any, expectedOrderId?: string): OrderServerFacts | null {
+  if (!serverOrder || typeof serverOrder !== 'object' || !serverOrder.id) return null;
+  if (expectedOrderId && String(serverOrder.id) !== String(expectedOrderId)) return null;
+  if (typeof serverOrder.paymentStatus !== 'string' || !serverOrder.paymentStatus.trim()) return null;
+  const facts: OrderServerFacts = { paymentStatus: serverOrder.paymentStatus };
+  if (typeof serverOrder.orderType === 'string') facts.orderType = serverOrder.orderType;
+  if (serverOrder.internal === true) facts.internal = true;
+  const total = Number(serverOrder.totalPrice);
+  if (serverOrder.totalPrice !== null && serverOrder.totalPrice !== undefined && Number.isFinite(total)) facts.totalPrice = total;
+  if (typeof serverOrder.currency === 'string' && serverOrder.currency.trim()) facts.currency = serverOrder.currency;
+  if (Array.isArray(serverOrder.items)) {
+    facts.items = serverOrder.items.map((i: any) => ({
+      variantId: i?.variantId ?? null,
+      sku: i?.sku ?? null,
+      quantity: Number(i?.quantity) || 1,
+      price: Number(i?.price) || 0,
+      title: i?.title ?? null,
+    }));
+  }
+  return facts;
+}
+
+/** The order as tracking must see it: the displayed copy with the server facts on top. */
+export function orderForTracking<T extends Record<string, any> | null | undefined>(order: T): T {
+  const facts = order && typeof order === 'object' ? (order as any).serverFacts : null;
+  if (!facts || typeof facts !== 'object' || typeof facts.paymentStatus !== 'string') return order;
+  return { ...(order as any), ...facts };
+}
+
+/** true when the order (as tracking sees it) already carries a payment state. */
+export function hasPaymentFacts(order: any): boolean {
+  const o = orderForTracking(order);
+  return !!o && typeof o.paymentStatus === 'string' && o.paymentStatus.trim() !== '';
+}
+
+/**
+ * Fetch the server facts for an order. Never throws: null on any failure (the
+ * server-side Purchase is the authoritative one and does not depend on this).
+ */
+export async function fetchOrderServerFacts(
+  orderId: string,
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<OrderServerFacts | null> {
+  const doFetch = deps.fetchImpl ?? (typeof fetch === 'function' ? fetch : undefined);
+  if (!orderId || !doFetch) return null;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), deps.timeoutMs ?? 4000) : null;
+  try {
+    const res = await doFetch(
+      `/api/orders/${encodeURIComponent(orderId)}/confirmation?bypass_auth=true&view=tracking`,
+      { cache: 'no-store', ...(controller ? { signal: controller.signal } : {}) },
+    );
+    if (!res.ok) return null;
+    const data: any = await res.json().catch(() => null);
+    return pickOrderServerFacts(data?.order || data, orderId);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Generic decision shared by the Meta and Snap browser Purchase (eligibility differs). */
 export function decideBrowserPurchase(
   order: any,
@@ -45,6 +135,7 @@ export function decideBrowserPurchase(
 ): MetaBrowserPurchaseDecision {
   if (!order?.id) return { action: 'done', reason: 'no order' };
   if (opts.alreadySent) return { action: 'done', reason: 'already sent' };
+  if (order.internal === true) return { action: 'done', reason: 'internal order' };
   if (!opts.isEligible(order)) return { action: 'done', reason: 'not eligible for this platform' };
   const created = order.createdAt ? new Date(order.createdAt).getTime() : NaN;
   if (Number.isFinite(created) && (opts.nowMs ?? Date.now()) - created >= META_BROWSER_PURCHASE_MAX_AGE_MS) {

@@ -201,6 +201,24 @@ export async function POST(req: NextRequest) {
 
             console.log(`[Razorpay Webhook] payment.captured → Order ${order.id} marked ${isCodOrder ? 'cod_upfront_paid' : 'paid'}`);
 
+            // Tracking only (no effect on payment / order logic): the verified
+            // capture is a completed purchase, so report it to Snapchat even when
+            // the shopper never returns to the site. Same calls as
+            // /api/webhooks/razorpay; the delivery ledger guarantees one send per
+            // order across both endpoints, checkout and the retry job. Not
+            // awaited and fully guarded: it cannot delay or fail this webhook.
+            const paidOrderId = order.id;
+            void (async () => {
+              try {
+                const { emitSnapPurchase } = await import('@/lib/snap/purchase-server');
+                const { emitSnapAppPurchase } = await import('@/lib/snap/app-purchase-server');
+                await emitSnapPurchase(paidOrderId, undefined, { paymentConfirmed: true });
+                await emitSnapAppPurchase(paidOrderId, { paymentConfirmed: true });
+              } catch (snapErr: any) {
+                console.warn('[Razorpay Webhook] Snap purchase emit failed:', snapErr?.message);
+              }
+            })();
+
             // Sync corresponding WebStoreOrder to keep both models in sync
             try {
               const wsOrder = await prisma.webStoreOrder.findFirst({

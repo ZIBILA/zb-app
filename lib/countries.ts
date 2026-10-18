@@ -3,6 +3,7 @@
  */
 
 import { toE164 } from "@/lib/shopify-phone";
+import { parsePhoneForCountry } from "@/lib/tracking/phone";
 
 export interface CountryOption {
   name: string;
@@ -298,8 +299,17 @@ export function validatePostalCode(zip: string, country?: string, countryCode?: 
 }
 
 /**
- * Validate phone number based on country.
- * Formats via toE164 so legacy `+9830…` India numbers become `+919830…`.
+ * Validate phone number based on country and return it in E.164.
+ *
+ * India: formats via toE164 so legacy `+9830…` numbers become `+919830…`.
+ *
+ * Everywhere else the number is read for the selected country
+ * (lib/tracking/phone.ts): "415 555 2671" with United States → "+14155552671",
+ * "07700 900123" with United Kingdom → "+447700900123", and a number typed with
+ * its own code ("+1 …", "0044 …") keeps that code. The previous version put a
+ * "+" in front of whatever digits were typed, which stored numbers like
+ * "+4155552671" — a number of nobody, unusable for delivery calls, OTP and ad
+ * matching alike.
  */
 export function validatePhoneNumber(phone: string, country?: string, countryCode?: string): {
   valid: boolean;
@@ -318,13 +328,18 @@ export function validatePhoneNumber(phone: string, country?: string, countryCode
     };
   }
 
-  const iso = (countryCode || "").toUpperCase() || "US";
-  const formatted = toE164(phone, iso) || (phone.trim().startsWith("+") ? phone.trim() : phone.trim() ? `+${phone.replace(/\D/g, "")}` : "");
-  const digits = formatted.replace(/\D/g, "");
-  const valid = digits.length >= 7 && digits.length <= 15;
+  const iso = ((countryCode || "").trim() || findCountry(country).code || "").toUpperCase();
+  const parsed = parsePhoneForCountry(phone, iso || undefined);
+  if (parsed) {
+    return { valid: true, formattedPhone: parsed.number, error: "" };
+  }
+  const trimmed = phone.trim();
+  const countryName = (country || "").trim() || iso;
   return {
-    valid,
-    formattedPhone: formatted,
-    error: valid ? "" : "Enter a valid international phone number",
+    valid: false,
+    formattedPhone: trimmed.startsWith("+") ? trimmed : trimmed ? `+${trimmed.replace(/\D/g, "")}` : "",
+    error: countryName
+      ? `Enter a valid phone number for ${countryName}, or include the country code (for example +1 …)`
+      : "Enter a valid phone number with its country code (for example +1 …)",
   };
 }

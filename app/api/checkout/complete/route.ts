@@ -306,6 +306,12 @@ export async function POST(req: Request) {
             const payment = capture.payment;
             captureConfirmed = true;
             capturedRupees = Number(payment.amount) / 100;
+            const capturedCurrency = String(payment.currency || '').trim().toUpperCase();
+            if (capturedCurrency && capturedCurrency !== requestCurrency) {
+              console.error(
+                `[Checkout] Currency mismatch: Razorpay captured ${capturedCurrency} but the checkout reported ${requestCurrency} (payment ${razorpay.razorpay_payment_id})`
+              );
+            }
             const expectedCharge = isCodOrder ? resolvedCodFee : authoritativeTotal;
             if (Number.isFinite(capturedRupees) && capturedRupees + 1 < expectedCharge) {
               paymentUnderpaid = true;
@@ -706,6 +712,11 @@ export async function POST(req: Request) {
         // Always refresh address on complete — pre-create may have been sparse / stale
         shippingAddress: JSON.stringify(normalizedAddress || address),
         billingAddress: JSON.stringify(normalizedAddress || address),
+        // The currency this checkout was priced and charged in (the ad Purchase
+        // events report totalPrice in it); the pre-created row may predate a
+        // change of country.
+        currency: requestCurrency,
+        displayCountry: body.displayCountry || existingPreCreatedOrder.displayCountry || "IN",
         // Clear recovery hold so Shopify sync can run with real items/address
         shopifySyncStatus: 'pending',
         shopifySyncError: null,

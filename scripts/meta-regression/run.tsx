@@ -47,7 +47,7 @@ g.fetch = async (url: string, opt: any = {}) => {
     const json = await res.json();
     return { ok: res.status < 400, status: res.status, json: async () => json };
   }
-  if (u.includes('graph.facebook.com')) { graph.push(body); return { ok: true, status: 200, json: async () => ({ events_received: 1 }), text: async () => '{"events_received":1}', headers: new Map() }; }
+  if (u.includes('graph.facebook.com')) { const { access_token: _tok, ...captured } = (body && typeof body === 'object') ? body : { body }; void _tok; graph.push(captured); return { ok: true, status: 200, json: async () => ({ events_received: 1 }), text: async () => '{"events_received":1}', headers: new Map() }; }
   if (u === '/api/customers/me/default-address') {
     const p = (g.__person || {}) as any;
     return { ok: true, status: 200, json: async () => ({ city: p.city, state: p.state, zip: p.zip, country: p.country }) };

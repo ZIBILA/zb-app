@@ -18,6 +18,8 @@ Set the following environment variables in your production host:
 | `NEXT_PUBLIC_SHOPIFY_STOREFRONT_TOKEN` | Your Shopify Storefront API token. |
 | `RAZORPAY_KEY_ID` | (Optional) For payments. |
 | `RAZORPAY_KEY_SECRET` | (Optional) For payments. |
+| `SNAP_CAPI_ACCESS_TOKEN` | Snapchat Conversions API token (server only, encrypted). Required for server-side Snapchat events, Purchase included. See `docs/snap-tracking-setup.md`. |
+| `NEXT_PUBLIC_SNAP_PIXEL_ID` | (Optional) Snap Pixel ID. A production build of the live site (`NEXT_PUBLIC_SITE_URL` unset or a zicabella.com host) uses the store's pixel when unset; other hosts send nothing; `off` disables Snapchat tracking for a deployment. |
 
 > [!TIP]
 > **Connection Pooling**: If using Supabase or Neon, use the pooled connection string (port 6543 or 5432 with `?pgbouncer=true`) for `DATABASE_URL` to prevent "Too many connections" errors during high traffic.

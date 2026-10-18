@@ -9,6 +9,15 @@ export const dynamic = "force-dynamic";
 /**
  * Lightweight confirmation payload — no product includes, returns/exchanges, or
  * sequential WebStoreOrder fan-out. Used only by /orders/[id]/confirmation.
+ *
+ * `paymentStatus` and `orderType` are part of the payload: the page's browser
+ * Purchase (Snap and Meta pixels) fires only for a confirmed payment, so without
+ * them it could never fire.
+ *
+ * `?view=tracking` returns just the server-verified facts those pixels need
+ * (payment state, order type, charged total + currency, item ids) from the single
+ * order lookup — no WebStoreOrder query. The page calls it once after checkout
+ * and while it waits for a pending capture. Same access rule as the full payload.
  */
 export async function GET(
   request: Request,
@@ -181,6 +190,30 @@ export async function GET(
       }
     }
 
+    if (searchParams.get("view") === "tracking") {
+      // A standalone WebStoreOrder has no authoritative payment record here → no facts.
+      if (!order) return NextResponse.json({ order: { id: standaloneWebStoreOrder.id } });
+      const { isInternalOrder } = await import("@/lib/meta/internal-orders");
+      return NextResponse.json({
+        order: {
+          id: order.id,
+          paymentStatus: order.paymentStatus,
+          orderType: order.orderType,
+          // Staff / QA / demo orders: the browser pixels skip Purchase (no PII leaves here)
+          internal: isInternalOrder(order),
+          totalPrice: order.totalPrice,
+          currency: order.currency || "INR",
+          items: (order.items || []).map((item: any) => ({
+            variantId: item.variantId,
+            sku: item.sku,
+            quantity: item.quantity,
+            price: item.price,
+            title: item.title,
+          })),
+        },
+      });
+    }
+
     const { getCodBalanceDue, resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } = await import(
       "@/lib/cod-upfront"
     );
@@ -327,6 +360,9 @@ export async function GET(
         id: order!.id,
         orderNumber,
         shopifyOrderId: null,
+        // Needed by the browser Purchase pixels (fire only when paid; website orders only).
+        paymentStatus: order!.paymentStatus,
+        orderType: order!.orderType,
         paymentMethod: finalPaymentMethod,
         isCod: isCodOrder,
         codUpfrontPaid,

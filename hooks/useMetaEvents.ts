@@ -1,8 +1,11 @@
-import { trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
+import { META_PIXEL_ID, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize';
+import { META_INR, type MetaMoney } from '@/lib/meta/money';
+import { claimInitiateCheckout, initiateCheckoutCartKey } from '@/lib/meta/initiate-checkout';
+import { whenMetaConsentAllows } from '@/lib/meta/consent-client';
 
 /**
  * Cart → Meta catalog payload. Catalog item id = feed.xml <g:id> = Shopify VARIANT id
@@ -11,7 +14,9 @@ import { normalizePhone, normalizeName } from '@/lib/tracking/identity-normalize
  * numItems = total units (sum of quantities), not cart lines.
  */
 export function metaCartPayload(
-  items: Array<{ variantId?: string; quantity?: number; price?: string | number; title?: string; category?: string }>
+  items: Array<{ variantId?: string; quantity?: number; price?: string | number; title?: string; category?: string }>,
+  /** Display-currency conversion (lib/meta/money.ts); omitted = INR base prices. */
+  money: MetaMoney = META_INR,
 ): {
   ids: string[];
   contents: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[];
@@ -23,7 +28,7 @@ export function metaCartPayload(
       return {
         id: normalizeVariantId(it.variantId) || '',
         quantity: Math.max(1, Number(it.quantity) || 1),
-        item_price: Number.isFinite(price) ? price : undefined,
+        item_price: Number.isFinite(price) ? money.amount(price) : undefined,
         title: it.title || undefined,
         category: it.category || undefined,
       };
@@ -36,6 +41,30 @@ export function metaCartPayload(
   };
 }
 
+/**
+ * Meta `contents` objects carry only the documented fields (`id`, `quantity`,
+ * `item_price`, optional `delivery_category`). Title / category / a duplicate
+ * `price` key belong to GA4 items, not to the Pixel or CAPI payload.
+ */
+export function metaContents(
+  items: Array<{ id: string; quantity?: number; item_price?: number; price?: number }> | undefined,
+  fallbackUnitPrice?: number,
+  deliveryCategory?: 'home_delivery' | 'in_store' | 'curbside',
+): { id: string; quantity: number; item_price?: number; delivery_category?: string }[] {
+  return (items || [])
+    .filter(it => it && it.id)
+    .map(it => {
+      const raw = it.item_price !== undefined ? it.item_price : (it.price !== undefined ? it.price : fallbackUnitPrice);
+      const price = raw === undefined ? undefined : Number(raw);
+      return {
+        id: String(it.id),
+        quantity: Math.max(1, Number(it.quantity) || 1),
+        ...(price !== undefined && Number.isFinite(price) ? { item_price: price } : {}),
+        ...(deliveryCategory ? { delivery_category: deliveryCategory } : {}),
+      };
+    });
+}
+
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
     const r = (Math.random() * 16) | 0;
@@ -45,6 +74,19 @@ function uuidv4() {
 }
 
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
+  // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
+  if (!META_PIXEL_ID) return null;
+  // Consent regions: hold the relay until the visitor's consent is known (queued,
+  // flushed on grant, dropped on deny). No-op pass-through when no region is set.
+  return new Promise<any>((resolve) => {
+    whenMetaConsentAllows(
+      () => { relayToCapiRoute(payload).then(resolve, () => resolve(null)); },
+      () => resolve(null), // consent denied (or queue full): the relay is dropped
+    );
+  });
+}
+
+async function relayToCapiRoute(payload: Record<string, any>): Promise<any> {
   try {
     // Build identity data via the shared builder — ensures demo values are filtered,
     // empty fields are omitted, and all events get consistent identity enrichment.
@@ -58,7 +100,8 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
         if (geoStr) {
           const geoData = JSON.parse(geoStr);
           if (!builtIdentity.country && geoData.countryCode) builtIdentity.country = geoData.countryCode.toLowerCase();
-          if (!builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
+          // Country only from an IP lookup; state / city / zip only from a GPS or typed address.
+          if (geoData.source !== 'ip' && !builtIdentity.st && geoData.state) builtIdentity.st = geoData.state.toLowerCase();
           // IP-geolocated city / zip are the ISP's, not the shopper's — only a GPS or typed
           // address may fill ct / zp (Meta already geo-matches on the client IP).
           if (geoData.source !== 'ip') {
@@ -109,10 +152,13 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
       ...payload,
       userData: mergedUserData,
     };
+    // keepalive: the request survives a hard navigation that starts right after the
+    // event (CompleteRegistration → window.location.replace, Buy Now → checkout).
     const res = await fetch('/api/meta/event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(enrichedPayload),
+      keepalive: true,
     });
     if (res.ok) {
       return await res.json();
@@ -348,7 +394,7 @@ export function useMetaEvents() {
       currency,
       content_ids: contentIds,
       content_type: 'product',
-      contents: finalContents
+      contents: metaContents(finalContents)
     });
     trackEvent('AddPaymentInfo', customData, base.eventId);
     sendToCapiRoute({ 
@@ -374,24 +420,23 @@ export function useMetaEvents() {
     const cacheKey = `InitiateCheckout-${value}-${numItems}`;
     if (!shouldFireEvent(cacheKey)) return;
 
+    // Meta contents: id / quantity / item_price only (title and category stay in the
+    // GA4 items below). A line without its own price gets an even share of the value.
+    const rawContents = contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []);
+    const mappedContents = metaContents(rawContents, value / (rawContents.length || 1));
+
+    // One Meta InitiateCheckout per checkout attempt: the /checkout page remounts
+    // after the guest→login redirect and would fire again for the same cart
+    // (lib/meta/initiate-checkout.ts). GA4 below is unchanged (fires as on main).
     const base = getBasePayload('InitiateCheckout');
+    const claim = claimInitiateCheckout(initiateCheckoutCartKey(mappedContents, contentIds), base.eventId);
+    if (!claim.fire) {
+      if (opts.ga !== false) ga4BeginCheckout(value, currency, contentCategory, contentIds, rawContents);
+      return;
+    }
     if (userData) {
       initPixel(userData);
     }
-    
-    // Map contents to include title, category, and standard price parameters
-    const rawContents = contents || (contentIds ? contentIds.map(id => ({ id, quantity: 1 })) : []);
-    const mappedContents = rawContents.map((item: any) => {
-      const priceVal = item.item_price !== undefined ? item.item_price : (value / (rawContents.length || 1));
-      return {
-        id: item.id,
-        quantity: item.quantity || 1,
-        price: priceVal,
-        item_price: priceVal,
-        title: (item as any).title || undefined,
-        category: (item as any).category || undefined
-      };
-    });
     
     // Server CAPI receives the real value and mapped contents — adjustment happens server-side
     const capiCustomData = cleanCustomData({
@@ -456,19 +501,10 @@ export function useMetaEvents() {
       initPixel(userData);
     }
     
-    // Map contents to include title, category, and standard price parameters
+    // Meta contents: id / quantity / item_price only, plus delivery_category (every
+    // web order ships to the door). Title and category stay in the GA4 items.
     const rawContents = contents || contentIds.map(id => ({ id, quantity: 1, item_price: value / (contentIds.length || 1) }));
-    const mappedContents = rawContents.map((item: any) => {
-      const priceVal = item.item_price !== undefined ? item.item_price : (value / (rawContents.length || 1));
-      return {
-        id: item.id,
-        quantity: item.quantity || 1,
-        price: priceVal,
-        item_price: priceVal,
-        title: (item as any).title || undefined,
-        category: (item as any).category || undefined
-      };
-    });
+    const mappedContents = metaContents(rawContents, value / (rawContents.length || 1), 'home_delivery');
 
     // Pixel fires immediately with the CONFIRMED ORDER's value/currency/contents —
     // never a value cached by an earlier checkout step. eventID = order id, the same

@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@/lib/db": ["./scripts/payment-e2e/memory-prisma.ts"],
+      "@/lib/razorpay-credentials": ["./scripts/snap-test-support/fake-razorpay-credentials.ts"],
+      "@/lib/appAuth": ["./scripts/snap-test-support/fake-app-auth.ts"],
+      "@/app/api/auth/[...nextauth]/options": ["./scripts/snap-e2e/mocks.ts"],
+      "next/navigation": ["./scripts/snap-e2e/mocks.ts"],
+      "next-auth/react": ["./scripts/snap-e2e/mocks.ts"],
+      "next-auth/next": ["./scripts/snap-e2e/mocks.ts"],
+      "next-auth": ["./scripts/snap-e2e/mocks.ts"],
+      "razorpay": ["./scripts/snap-test-support/fake-razorpay.ts"],
+      "@/*": ["./*"]
+    }
+  }
+}

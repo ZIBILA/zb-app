@@ -9,6 +9,7 @@ import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/i
 import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
+import { parseConsentRegions } from '@/lib/meta/consent';
 import crypto from 'crypto';
 
 /**
@@ -34,6 +35,7 @@ const ALLOWED_EVENTS = new Set([
 const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 /** Events whose caller-supplied identity (typed/verified for that event) survives the guest strip. */
 const EXPLICIT_IDENTITY_EVENTS = new Set(['Lead', 'Subscribe', 'CompleteRegistration']);
+const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
 const MAX_VALUE = 10_000_000;
 const MAX_LIST = 100;
 
@@ -216,6 +218,23 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Consent regions (server backstop for the browser-side hold): a visitor who
+    // declined, or who is in a consent region and has not decided yet, is not relayed.
+    if (CONSENT_REGIONS.size > 0) {
+      const choice = String(req.cookies.get('zb_consent')?.value || '').toLowerCase();
+      if (choice === 'denied') return NextResponse.json({ success: true, skipped: true, reason: 'consent_denied' });
+      if (choice !== 'granted') {
+        let cc = String(req.cookies.get('zb_geo_cc')?.value || '').toUpperCase();
+        if (!/^[A-Z]{2}$/.test(cc)) {
+          const looked = await lookupIpGeo(ip, req);
+          cc = looked && !looked.isDevFallback ? String(looked.countryCode || '').toUpperCase() : '';
+        }
+        if (!/^[A-Z]{2}$/.test(cc) || CONSENT_REGIONS.has(cc)) {
+          return NextResponse.json({ success: true, skipped: true, reason: 'consent_pending' });
+        }
+      }
+    }
+
     const fbp = req.cookies.get('_fbp')?.value;
     const fbc = req.cookies.get('_fbc')?.value;
     const externalId = req.cookies.get('zb_external_id')?.value;
@@ -311,7 +330,10 @@ export async function POST(req: NextRequest) {
         fn: userData?.fn || bound(guestFn),
         ln: userData?.ln || bound(guestLn),
         country: userData?.country || bound(guestCountry) || ipGeo?.countryCode?.toLowerCase(),
-        st: userData?.st || bound(guestState) || ipGeo?.region,
+        // IP-derived region names are often wrong (carrier NAT, VPN) and add no match
+        // signal Meta does not already get from client_ip_address; only an address
+        // the shopper gave (bound cookies / body) fills st, ct and zp.
+        st: userData?.st || bound(guestState),
         ct: userData?.ct || bound(guestCity), // IP city / zip are the ISP's, not the shopper's
         zp: userData?.zp || bound(guestZip),
         fb_login_id: userData?.fb_login_id || fbLoginId,
@@ -415,7 +437,7 @@ export async function POST(req: NextRequest) {
       fn: userData?.fn || bound(guestFn) || sessionUserData.fn,
       ln: userData?.ln || bound(guestLn) || sessionUserData.ln,
       country: userData?.country || bound(guestCountry) || ipGeo?.countryCode?.toLowerCase(),
-      st: userData?.st || bound(guestState) || ipGeo?.region,
+      st: userData?.st || bound(guestState), // never from IP (see the fast path above)
       ct: userData?.ct || bound(guestCity), // IP city / zip are the ISP's, not the shopper's
       zp: userData?.zp || bound(guestZip),
       fb_login_id: userData?.fb_login_id || fbLoginId,

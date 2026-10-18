@@ -17,6 +17,10 @@ import { Analytics } from "@/components/seo/Analytics";
 import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
 import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES, PLACEHOLDER_ZIP_HASHES } from "@/lib/tracking/placeholder-identity";
+import { resolveSnapPixelId } from "@/lib/snap/config";
+import { resolveMetaPixelId } from "@/lib/meta/config";
+import { parseConsentRegions } from "@/lib/meta/consent";
+import MetaConsentGate from "@/components/MetaConsentGate";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -153,12 +157,17 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const pixelId = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || "2049977412558608";
+  // '' = Meta tracking off on this deployment (dev / test / staging without an explicit
+  // NEXT_PUBLIC_META_PIXEL_ID): the base snippet below is not rendered (lib/meta/config.ts).
+  const pixelId = resolveMetaPixelId();
+  // Consent regions / Limited Data Use — both off unless the env says otherwise (lib/meta/consent.ts).
+  const metaConsentRegions = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
+  const metaLdu = String(process.env.NEXT_PUBLIC_META_LDU || '').trim() === '1';
   // Demo-account and synthetic placeholder hashes never used as Advanced Matching.
   const metaBlockedIdentityHashes = [...DEMO_EMAIL_HASHES, ...DEMO_PHONE_HASHES, ...PLACEHOLDER_EMAIL_HASHES, ...PLACEHOLDER_PHONE_HASHES, ...PLACEHOLDER_ZIP_HASHES];
   // Name placeholders are checked against fn / ln only (sha256('na') is also Namibia's country code).
   const metaBlockedNameHashes = [...PLACEHOLDER_NAME_HASHES];
-  const snapPixelId = process.env.NEXT_PUBLIC_SNAP_PIXEL_ID || "7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd";
+  const snapPixelId = resolveSnapPixelId(); // '' = Snap tracking off on this deployment (lib/snap/config.ts)
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
   const adminGtmId = process.env.NEXT_PUBLIC_ADMIN_GTM_ID || "GTM-TDGKF386";
@@ -235,31 +244,8 @@ export default async function RootLayout({
             })
           }}
         />
-      </head>
-      <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
-        {/* Google Tag Manager (noscript) */}
-        <noscript>
-          <iframe
-            src={`https://www.googletagmanager.com/ns.html?id=${storefrontGtmId}`}
-            height="0"
-            width="0"
-            style={{ display: 'none', visibility: 'hidden' }}
-          />
-        </noscript>
-        <OrganizationJsonLd />
-        <WebsiteJsonLd />
-        <NavigationProgress />
-        <Providers>
-          <MetaPixelRouteTracker />
-          <FacebookSDKInit />
-          <SnapPixelRouteTracker />
-          <OpenAiPixelRouteTracker />
-          <LayoutWrapper footerData={footerData}>
-            {children}
-          </LayoutWrapper>
-          <Toaster position="top-right" />
-        </Providers>
-        <Analytics />
+        {/* Meta Pixel Base Code (not rendered when Meta tracking is off on this deployment) */}
+        {pixelId && (
         <Script
           id="fb-pixel"
           strategy="afterInteractive"
@@ -300,18 +286,33 @@ export default async function RootLayout({
                     }
                   }
                 } catch (e) {}
+                // Consent regions (NEXT_PUBLIC_META_CONSENT_REGIONS): hold the Pixel before init
+                // until the visitor's country is known to be outside them, or they accept.
+                // Same decision as lib/meta/consent.ts consentState(). Empty list = no gating.
+                try {
+                  var zbRegions = ${JSON.stringify(Array.from(metaConsentRegions))};
+                  if (zbRegions.length) {
+                    var zbChoice = String((zbC && zbC['zb_consent']) || '').toLowerCase();
+                    var zbCC = String((zbC && zbC['zb_geo_cc']) || '').toUpperCase();
+                    var zbHold = zbChoice === 'granted' ? false : (zbChoice === 'denied' ? true : !(/^[A-Z]{2}$/.test(zbCC) && zbRegions.indexOf(zbCC) === -1));
+                    if (zbHold) fbq('consent', 'revoke');
+                  }
+                  if (${metaLdu ? 'true' : 'false'}) fbq('dataProcessingOptions', ['LDU'], 0, 0);
+                } catch (e) {}
                 window.__zbMetaAM = zbAM;
                 fbq('init', '${pixelId}', zbAM);
               }
             `,
           }}
         />
-        {/* Snap Pixel Base Code */}
-        <Script
-          id="snap-pixel"
-          strategy="afterInteractive"
-          dangerouslySetInnerHTML={{
-            __html: `
+        )}
+        {/* Snap Pixel Base Code (not rendered when Snap tracking is off on this deployment) */}
+        {snapPixelId && (
+          <Script
+            id="snap-pixel"
+            strategy="afterInteractive"
+            dangerouslySetInnerHTML={{
+              __html: `
               if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
                 (function(e,t,n){if(e.snaptr)return;var a=e.snaptr=function()
                 {a.handleRequest?a.handleRequest.apply(a,arguments):a.queue.push(arguments)};
@@ -324,8 +325,9 @@ export default async function RootLayout({
                 snaptr('init', '${snapPixelId}', {});
               }
             `,
-          }}
-        />
+            }}
+          />
+        )}
         {/* OpenAI (ChatGPT) Ads Pixel Base Code */}
         {openaiAdsPixelId && (
           <Script
@@ -347,6 +349,32 @@ export default async function RootLayout({
             }}
           />
         )}
+      </head>
+      <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
+        {/* Google Tag Manager (noscript) */}
+        <noscript>
+          <iframe
+            src={`https://www.googletagmanager.com/ns.html?id=${storefrontGtmId}`}
+            height="0"
+            width="0"
+            style={{ display: 'none', visibility: 'hidden' }}
+          />
+        </noscript>
+        <OrganizationJsonLd />
+        <WebsiteJsonLd />
+        <NavigationProgress />
+        <Providers>
+          <MetaPixelRouteTracker />
+          <MetaConsentGate />
+          <FacebookSDKInit />
+          <SnapPixelRouteTracker />
+          <OpenAiPixelRouteTracker />
+          <LayoutWrapper footerData={footerData}>
+            {children}
+          </LayoutWrapper>
+          <Toaster position="top-right" />
+        </Providers>
+        <Analytics />
       </body>
     </html>
   );

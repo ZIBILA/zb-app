@@ -12,11 +12,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
 import { useCountry } from "@/lib/country-context";
+import { metaMoneyFrom } from "@/lib/meta/money";
 
 const QuickAddModal = dynamic(() => import("@/components/QuickAddModal"), { ssr: false });
 
 export default function WishlistPage() {
   const { formatPrice: fmtPrice } = useCountry();
+  const metaMoney = metaMoneyFrom(fmtPrice); // Meta events report the displayed currency
   const { bookmarks, removeBookmark } = useBookmarks();
   const { add: addToCart } = useCart();
   const { trackAddToCart: trackMetaAddToCart } = useMetaEvents();
@@ -46,7 +48,7 @@ export default function WishlistPage() {
         // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
         snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
         // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
-        trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
+        trackMetaAddToCart(variant.id.toString(), product.title, metaMoney.amount(parseFloat(variant.price || "0")), metaMoney.currency, product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
         toast.success(`${product.title} added to bag`);
         return;
       }
@@ -71,7 +73,7 @@ export default function WishlistPage() {
       // Snap ADD_CART (one per genuine add; selected variant id = feed.xml g:id)
       snapTrackAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type);
       // Meta AddToCart (same genuine add; selected variant id = feed.xml g:id)
-      trackMetaAddToCart(variant.id.toString(), product.title, parseFloat(variant.price || "0"), 'INR', product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
+      trackMetaAddToCart(variant.id.toString(), product.title, metaMoney.amount(parseFloat(variant.price || "0")), metaMoney.currency, product.product_type, { ga: false }); // GA4 unchanged from main (no add_to_cart here)
 
       toast.success(`${product.title} added to bag`);
     } else {

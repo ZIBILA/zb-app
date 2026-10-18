@@ -12,6 +12,7 @@ import { useMetaEvents } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { useCountry } from "@/lib/country-context";
+import { metaMoneyFrom } from "@/lib/meta/money";
 import { lockScroll, unlockScroll } from "@/lib/utils/scroll-lock";
 
 interface Props {
@@ -22,6 +23,7 @@ interface Props {
 
 export default function QuickAddModal({ product, initialSize, onClose }: Props) {
   const { formatPrice: fmtPrice } = useCountry();
+  const metaMoney = metaMoneyFrom(fmtPrice); // Meta events report the displayed currency
   const { add } = useCart();
   const { trackAddToCart } = useMetaEvents();
   const { trackAddToCart: trackSnapAddToCart } = useSnapEvents();
@@ -105,7 +107,7 @@ export default function QuickAddModal({ product, initialSize, onClose }: Props) 
       category: product.product_type,
     });
     
-    trackAddToCart(variantId, product.title, itemPrice, 'INR', product.product_type);
+    trackAddToCart(variantId, product.title, metaMoney.amount(itemPrice), metaMoney.currency, product.product_type);
     trackSnapAddToCart(variantId, product.title, itemPrice, 'INR', product.product_type);
     trackOaiItemsAdded(variantId, product.title, itemPrice, 'INR', product.product_type);
 

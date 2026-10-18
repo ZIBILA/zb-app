@@ -1,6 +1,13 @@
 import { normalizePhone, normalizeState, normalizeZip, normalizeCountry, normalizeIdentity, normalizeName, normalizeCity, isSha256Hash } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderPhone, isPlaceholderName } from '@/lib/tracking/placeholder-identity';
-export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || process.env.NEXT_PUBLIC_FACEBOOK_PIXEL_ID || '2049977412558608';
+import { resolveMetaPixelId } from '@/lib/meta/config';
+/**
+ * The Pixel id this build sends to, or '' when Meta tracking is off on this
+ * deployment (dev / test / staging without an explicit NEXT_PUBLIC_META_PIXEL_ID).
+ * See lib/meta/config.ts — the production id is used only by production builds
+ * of the live site, never by a preview build that forgot the variable.
+ */
+export const META_PIXEL_ID = resolveMetaPixelId();
 
 /**
  * Demo/test account values that must NEVER be sent to Meta Pixel or CAPI.
@@ -45,6 +52,9 @@ export function isDemoValue(field: 'phone' | 'email' | 'name', rawValue: string 
  */
 export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): void {
   if (typeof window === 'undefined') return;
+  // Meta tracking is off on this deployment (no pixel id resolved): the base
+  // snippet is not rendered, so fbq never appears — drop silently, no 3 s wait.
+  if (!META_PIXEL_ID) return;
 
   if ((window as any).fbq) {
     callback((window as any).fbq);
@@ -414,14 +424,11 @@ export const trackEvent = (
   eventId?: string
 ) => {
   withFbq((fbq) => {
+    // eventID is the only documented fbq option (Meta Pixel reference). Browser
+    // test events are selected in Events Manager by browser, never by code, so
+    // the former `test_event_code` option here did nothing.
     const options: Record<string, any> = {};
     if (eventId) options.eventID = eventId;
-    
-    const testCode = process.env.NEXT_PUBLIC_META_TEST_EVENT_CODE;
-    if (testCode) {
-      options.test_event_code = testCode;
-    }
-    
     fbq('track', eventName, params, options);
   }, eventName);
 };

@@ -7,23 +7,26 @@ import { setClientCookie, getClientCookie } from '@/lib/metaPixel';
 /**
  * FacebookSDKInit — loads the Facebook JS SDK and captures fb_login_id.
  *
- * Only renders if NEXT_PUBLIC_META_APP_ID is set. Skips admin/dashboard routes.
- * After SDK init, checks FB.getLoginStatus() — if the visitor is logged into
- * Facebook in this browser, stores their numeric userID as `zb_fb_login_id`
- * cookie (unhashed, as Meta expects for fb_login_id parameter).
+ * Opt-in: renders only when NEXT_PUBLIC_META_FB_LOGIN=1 AND NEXT_PUBLIC_META_APP_ID
+ * is set. FB.getLoginStatus() reports "connected" only for people who have
+ * authorized THIS app through Facebook Login; the storefront offers Google, Apple
+ * and OTP sign-in, so without a Facebook Login button the SDK can never produce an
+ * fb_login_id and would only add a third-party script to every page. Turn it on
+ * when (and only when) Facebook Login is added to the site.
  *
- * This enables the "Facebook Login ID" parameter in Meta Events Manager,
- * improving Event Match Quality (EMQ) by ~12% for users with active FB sessions.
+ * Skips admin/dashboard routes. When connected, stores the numeric userID as the
+ * `zb_fb_login_id` cookie (unhashed, as Meta expects for the fb_login_id parameter).
  */
 export default function FacebookSDKInit() {
   const pathname = usePathname();
   const initRef = useRef(false);
 
   const appId = process.env.NEXT_PUBLIC_META_APP_ID;
+  const enabled = process.env.NEXT_PUBLIC_META_FB_LOGIN === '1';
 
   useEffect(() => {
-    // Guard: no app ID configured
-    if (!appId) return;
+    // Guard: opt-in flag off, or no app ID configured
+    if (!enabled || !appId) return;
 
     // Guard: don't load on admin/dashboard routes
     if (
@@ -94,7 +97,7 @@ export default function FacebookSDKInit() {
         console.warn('[FacebookSDKInit] Error checking login status:', err);
       }
     }
-  }, [appId, pathname]);
+  }, [appId, enabled, pathname]);
 
   return null;
 }

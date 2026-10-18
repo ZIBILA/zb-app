@@ -4,6 +4,8 @@ import prisma from "@/lib/db";
 import { assignFailedOrderNumber } from "@/lib/orderNumber";
 
 import { isOrderValidConverted } from "@/lib/cartValidation";
+import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/purchase-server";
+import { normalizeVariantId } from "@/lib/snap/catalog-id";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +16,19 @@ function getRazorpayInstance(keyId?: string, keySecret?: string): Razorpay | nul
     return new Razorpay({ key_id: id, key_secret: secret });
   }
   return null;
+}
+
+/** Link previews (WhatsApp, Facebook) fetch the URL before the shopper does; their UA / IP must not be stored as the shopper's. */
+const LINK_PREVIEW_UA = /bot|crawler|spider|preview|facebookexternalhit|whatsapp|telegram|slack|discord|curl|wget|python-requests/i;
+
+async function recordPayLinkContext(req: NextRequest, orderId: string): Promise<void> {
+  const ua = req.headers.get("user-agent") || "";
+  if (!ua || LINK_PREVIEW_UA.test(ua)) return;
+  try {
+    await recordMetaPurchaseContext(orderId, metaContextFromRequest(req));
+  } catch {
+    /* tracking context is best-effort; the payment link must still be issued */
+  }
 }
 
 export async function GET(
@@ -111,6 +126,8 @@ export async function GET(
     let paymentLinkUrl = "";
 
     if (pendingOrder && pendingOrder.razorpayOrderId) {
+      // Re-opened link: record the click context from this visit (see below).
+      await recordPayLinkContext(req, pendingOrder.id);
       try {
         const link = await (rzInstance as any).paymentLink.create({
           amount: Math.round(cart.subtotal * 100),
@@ -189,11 +206,19 @@ export async function GET(
               quantity: item.quantity,
               price: item.price || 0,
               sku: item.variantId || item.productId || null,
+              // Catalog id for the ad-platform Purchase (feed.xml g:id = variant id).
+              variantId: normalizeVariantId(item.variantId),
               image: item.image,
             })),
           },
         },
       });
+
+      // The shopper opened this link in their own browser: record their click
+      // context now, so the Purchase the Razorpay webhook sends later carries a
+      // real user agent / IP / fbp / fbc (Meta rejects website events without
+      // client_user_agent). Never throws.
+      await recordPayLinkContext(req, pendingOrder.id);
 
       // Create the Razorpay Payment Link linked to the Razorpay Order ID
       const link = await (rzInstance as any).paymentLink.create({
