@@ -17,47 +17,60 @@ export interface FetchOptions extends RequestInit {
   skipCache?: boolean;
 }
 
+function abortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
 /**
  * Cached client fetch for admin GET requests.
  * Deduplicates concurrent requests and serves fresh memory copies within TTL.
+ *
+ * AbortSignal is honored for the *caller* (don't apply stale results) but is
+ * NOT attached to the shared network request — otherwise one abort poisons the
+ * deduped promise and later callers never receive data (stuck skeletons).
  */
 export async function cachedAdminFetch<T = any>(
   url: string,
   options: FetchOptions = {}
 ): Promise<T> {
-  const { ttlMs = 30_000, skipCache = false, ...fetchOptions } = options;
+  const { ttlMs = 30_000, skipCache = false, signal, ...fetchOptions } = options;
+
+  if (signal?.aborted) throw abortError();
 
   // 1. Check existing in-memory cache if not explicitly bypassed
   if (!skipCache) {
     const cached = memoryCache.get(url);
     if (cached && Date.now() - cached.timestamp < ttlMs) {
+      if (signal?.aborted) throw abortError();
       return cached.data as T;
     }
   }
 
-  // 2. Request deduplication: if identical URL request is already in-flight, reuse its promise
-  if (inFlightRequests.has(url)) {
-    return inFlightRequests.get(url) as Promise<T>;
+  // 2. Deduplicate in-flight network work (without the caller's abort signal)
+  let promise = inFlightRequests.get(url) as Promise<T> | undefined;
+
+  if (!promise) {
+    promise = (async () => {
+      try {
+        const res = await fetch(url, fetchOptions);
+        if (!res.ok) {
+          const errorText = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
+        }
+        const data = (await res.json()) as T;
+        memoryCache.set(url, { data, timestamp: Date.now() });
+        return data;
+      } finally {
+        inFlightRequests.delete(url);
+      }
+    })();
+
+    inFlightRequests.set(url, promise);
   }
 
-  // 3. Initiate network request
-  const promise = (async () => {
-    try {
-      const res = await fetch(url, fetchOptions);
-      if (!res.ok) {
-        const errorText = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
-      }
-      const data = (await res.json()) as T;
-      memoryCache.set(url, { data, timestamp: Date.now() });
-      return data;
-    } finally {
-      inFlightRequests.delete(url);
-    }
-  })();
-
-  inFlightRequests.set(url, promise);
-  return promise;
+  const data = await promise;
+  if (signal?.aborted) throw abortError();
+  return data;
 }
 
 /**

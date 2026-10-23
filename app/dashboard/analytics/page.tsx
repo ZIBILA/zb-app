@@ -323,6 +323,8 @@ export default function AnalyticsDashboard() {
       }
     };
 
+    let overviewSettled = false;
+
     try {
       const fetchOverview = async () => {
         try {
@@ -330,14 +332,20 @@ export default function AnalyticsDashboard() {
           if (controller.signal.aborted) return;
           if (res?.error) {
             setOverviewError(res.error);
-          } else if (res) {
+            overviewSettled = true;
+          } else if (res && typeof res === "object" && "revenue" in res) {
             setOverview(res);
             setOverviewError(null);
+            overviewSettled = true;
           } else {
             setOverviewError("Failed to fetch overview analytics");
+            overviewSettled = true;
           }
         } catch (e: any) {
-          if (e.name !== "AbortError") setOverviewError(e.message || "Failed to load overview");
+          if (e.name !== "AbortError") {
+            setOverviewError(e.message || "Failed to load overview");
+            overviewSettled = true;
+          }
         }
       };
 
@@ -450,10 +458,9 @@ export default function AnalyticsDashboard() {
       await Promise.allSettled([fetchOverview(), fetchRealtime()]);
       if (controller.signal.aborted) return;
 
-      // Clear initial loading after Wave 1 — KPIs + realtime now visible
+      // Wave 1 done — KPI/realtime can paint; keep section skeletons until their own data lands
       if (!hasLoadedRef.current) {
         setLoading(false);
-        setHasLoaded(true);
       }
 
       // ─── Wave 2: charts + carts ───
@@ -464,7 +471,13 @@ export default function AnalyticsDashboard() {
       await Promise.allSettled([fetchFunnel(), fetchTraffic(), fetchLocations(), fetchProducts()]);
       if (controller.signal.aborted) return;
 
+      // Never leave KPI skeletons up after a completed fetch with no overview payload
+      if (!overviewSettled && !controller.signal.aborted) {
+        setOverviewError((prev) => prev || "Failed to load overview metrics");
+      }
+
       hasLoadedRef.current = true;
+      setHasLoaded(true);
       consecutiveErrorsRef.current = 0;
       setConsecutiveErrors(0);
       setLastRefreshedAt(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
@@ -832,11 +845,20 @@ export default function AnalyticsDashboard() {
       )}
 
       {/* ─── KPI Cards / Loading Skeletons ──────────────── */}
-      {loading && !hasLoaded ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="glass-card p-5 rounded-2xl border border-foreground/5 h-24 animate-pulse bg-foreground/[0.02]" />
-          ))}
+      {!overview && !overviewError ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-xs text-foreground/40">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            Loading overview metrics…
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div
+                key={i}
+                className="glass-card p-5 rounded-2xl border border-foreground/10 h-24 bg-gradient-to-br from-foreground/[0.06] to-foreground/[0.02] animate-pulse"
+              />
+            ))}
+          </div>
         </div>
       ) : overview ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
@@ -864,7 +886,7 @@ export default function AnalyticsDashboard() {
 
       {/* ─── Top Visitor Locations ──────────────────────────── */}
       {locationsError && <SectionError message={locationsError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !locations ? (
+      {!locations && !locationsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />
       ) : locations ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -974,7 +996,7 @@ export default function AnalyticsDashboard() {
       {/* ─── Charts Section ──────────────────────────────── */}
       {chartsError && <SectionError message={chartsError} onRetry={() => fetchAll(false)} />}
 
-      {!hasLoaded && !charts ? (
+      {!charts && !chartsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />
       ) : charts && charts.timeSeries.length > 0 ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -1005,7 +1027,7 @@ export default function AnalyticsDashboard() {
       ) : null}
 
       {productsError && <SectionError message={productsError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !products ? (
+      {!products && !productsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />
       ) : products ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -1115,7 +1137,7 @@ export default function AnalyticsDashboard() {
         {/* Conversion Funnel */}
         <div className="lg:col-span-1">
           {funnelError && <SectionError message={funnelError} onRetry={() => fetchAll(false)} />}
-          {!hasLoaded && !funnel ? (
+          {!funnel && !funnelError ? (
             <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-96 animate-pulse bg-foreground/[0.02]" />
           ) : funnel && funnel.length > 0 && funnel.some(s => s.sessions > 0) ? (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 h-full">
@@ -1175,7 +1197,7 @@ export default function AnalyticsDashboard() {
         {/* Real-time Activity & 3D Globe */}
         <div className="lg:col-span-2">
           {realtimeError && <SectionError message={realtimeError} onRetry={() => fetchAll(false)} />}
-          {!hasLoaded && !realtime ? (
+          {!realtime && !realtimeError ? (
             <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-96 animate-pulse bg-foreground/[0.02]" />
           ) : realtime ? (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 flex flex-col justify-between">
@@ -1364,7 +1386,7 @@ export default function AnalyticsDashboard() {
       )}
 
       {trafficError && <SectionError message={trafficError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !traffic ? (
+      {!traffic && !trafficError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />
       ) : traffic && traffic.length > 0 ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -1610,8 +1632,8 @@ export default function AnalyticsDashboard() {
         );
       })()}
 
-      {/* ─── Empty state ─────────────────────────────────── */}
-      {!loading && !overview && !overviewError && !charts && !realtime && (
+      {/* ─── Empty state (only after the full initial fetch finishes with nothing) ─── */}
+      {hasLoaded && !loading && !isRefreshing && !isBackgroundRefreshing && !overview && !overviewError && !charts && !realtime && (
         <div className="text-center py-20">
           <BarChart3 className="w-12 h-12 mx-auto text-foreground/10 mb-4" />
           <h3 className="text-lg font-semibold text-foreground/40">No analytics data yet</h3>
