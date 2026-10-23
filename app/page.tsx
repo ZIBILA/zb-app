@@ -140,7 +140,8 @@ export default async function Home() {
   const heroSubtitle   = nullIfEmpty(s?.heroSubtitle);
   const heroButtonText = nullIfEmpty(s?.heroButtonText);
   const heroImage      = s?.heroImage       || "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?q=80&w=2070&auto=format&fit=crop";
-  const heroVideo      = s?.heroVideo       || "/zb-video-heroo.mp4";
+  // Prefer CMS video; default to bundled webm (the .mp4 path is not in /public)
+  const heroVideo      = s?.heroVideo       || "/zb-video-heroo.webm";
   const heroVideoMobile = s?.heroVideoMobile || "";
   const latestTitle    = nullIfEmpty(s?.latestCurationTitle);
   const latestSubtitle = nullIfEmpty(s?.latestCurationSubtitle);
@@ -190,7 +191,11 @@ export default async function Home() {
       <section className="relative w-full h-screen overflow-hidden min-h-[500px] bg-black">
         {/* Background video */}
         {heroVideo ? (
-          <HeroVideo src={heroVideo} mobileSrc={heroVideoMobile} poster={s?.heroImage || undefined} />
+          <HeroVideo
+            src={heroVideo}
+            mobileSrc={heroVideoMobile || undefined}
+            poster={s?.heroImage || "/zb-video-hero-poster.jpg"}
+          />
         ) : (
           <NextImage src={heroImage} alt="Hero" fill priority className="object-cover" onError={handleImageError} />
         )}

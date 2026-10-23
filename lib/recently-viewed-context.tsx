@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
 import { ShopifyProduct } from "./shopify-admin";
 
 interface RecentlyViewedContextType {
@@ -15,6 +15,7 @@ const MAX_ITEMS = 4;
 
 export function RecentlyViewedProvider({ children }: { children: React.ReactNode }) {
   const [recentlyViewed, setRecentlyViewed] = useState<ShopifyProduct[]>([]);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -25,11 +26,13 @@ export function RecentlyViewedProvider({ children }: { children: React.ReactNode
         console.error("Failed to parse recently viewed", e);
       }
     }
+    setIsLoaded(true);
   }, []);
 
   useEffect(() => {
+    if (!isLoaded) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(recentlyViewed));
-  }, [recentlyViewed]);
+  }, [recentlyViewed, isLoaded]);
 
   const addProduct = useCallback((product: ShopifyProduct) => {
     setRecentlyViewed((prev) => {
@@ -40,8 +43,13 @@ export function RecentlyViewedProvider({ children }: { children: React.ReactNode
     });
   }, []);
 
+  const value = useMemo(
+    () => ({ recentlyViewed, addProduct }),
+    [recentlyViewed, addProduct]
+  );
+
   return (
-    <RecentlyViewedContext.Provider value={{ recentlyViewed, addProduct }}>
+    <RecentlyViewedContext.Provider value={value}>
       {children}
     </RecentlyViewedContext.Provider>
   );

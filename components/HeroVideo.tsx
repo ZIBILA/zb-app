@@ -3,8 +3,9 @@
 import { useState, useRef, useEffect } from "react";
 import { VolumeX, Volume2 } from "lucide-react";
 
-/** Bundled local asset — used only if the primary URL fails to load (e.g. missing .mp4 on localhost/dev). */
+/** Bundled local asset — used only if the primary URL fails to load. */
 const LOCAL_WEBM_FALLBACK = "/zb-video-heroo.webm";
+const DEFAULT_POSTER = "/zb-video-hero-poster.jpg";
 
 function guessVideoType(url: string): string | undefined {
   const path = url.split("?")[0].toLowerCase();
@@ -32,45 +33,32 @@ export default function HeroVideo({
 }: HeroVideoProps) {
   const [isMuted, setIsMuted] = useState(true);
   const [isInView, setIsInView] = useState(false);
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window !== "undefined") {
-      return window.matchMedia("(max-width: 768px)").matches;
-    }
-    return false;
-  });
-  const [mounted, setMounted] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const resolvedPoster = poster || DEFAULT_POSTER;
+
+  // Prefer the local webm when the configured default .mp4 is missing from /public
+  const primarySrc =
+    src === "/zb-video-heroo.mp4" ? LOCAL_WEBM_FALLBACK : src;
 
   useEffect(() => {
-    setMounted(true);
-    const mediaQuery = window.matchMedia("(max-width: 768px)");
-    setIsMobile(mediaQuery.matches);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mediaQuery.addEventListener("change", handler);
-    return () => mediaQuery.removeEventListener("change", handler);
-  }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
+    const el = videoRef.current;
+    if (!el) return;
     const observer = new IntersectionObserver(
       ([entry]) => setIsInView(entry.isIntersecting),
       { threshold: 0.1 }
     );
-    if (videoRef.current) observer.observe(videoRef.current);
-    return () => {
-      if (videoRef.current) observer.unobserve(videoRef.current);
-    };
-  }, [mounted, isMobile]);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
-    if (videoRef.current) {
-      if (isInView) {
-        videoRef.current.play().catch(() => {});
-      } else {
-        videoRef.current.pause();
-      }
+    if (!videoRef.current) return;
+    if (isInView) {
+      videoRef.current.play().catch(() => {});
+    } else {
+      videoRef.current.pause();
     }
-  }, [isInView, isMobile]);
+  }, [isInView]);
 
   const toggle = () => {
     if (videoRef.current) {
@@ -79,37 +67,52 @@ export default function HeroVideo({
     }
   };
 
-  const activeSrc = (isMobile && mobileSrc) ? mobileSrc : src;
-  // Primary first (prod settings / CDN keep winning). Local .webm is only reached if primary 404s / can't play.
-  const sources = [activeSrc, fallbackSrc].filter(
+  // Desktop + mobile sources via media attributes (no JS hydration swap / double download)
+  const desktopSources = [primarySrc, fallbackSrc].filter(
     (url, i, arr): url is string => Boolean(url) && arr.indexOf(url) === i
   );
+  const mobileSources = mobileSrc
+    ? [mobileSrc, ...desktopSources].filter(
+        (url, i, arr): url is string => Boolean(url) && arr.indexOf(url) === i
+      )
+    : desktopSources;
 
   return (
     <div
       className="absolute inset-0 w-full h-full cursor-pointer group/hero"
       onClick={toggle}
-      suppressHydrationWarning
     >
       {!showControlOnly && (
         <video
           ref={videoRef}
-          key={sources.join("|")}
           autoPlay
           muted
           loop
           playsInline
-          preload={mounted ? "auto" : "metadata"}
-          poster={poster || undefined}
+          preload="metadata"
+          poster={resolvedPoster}
           className="w-full h-full object-cover transition-all duration-700"
-          suppressHydrationWarning
         >
-          {sources.map((url) => {
+          {mobileSrc &&
+            mobileSources.map((url) => {
+              const type = guessVideoType(url);
+              return type ? (
+                <source
+                  key={`m-${url}`}
+                  src={url}
+                  type={type}
+                  media="(max-width: 768px)"
+                />
+              ) : (
+                <source key={`m-${url}`} src={url} media="(max-width: 768px)" />
+              );
+            })}
+          {desktopSources.map((url) => {
             const type = guessVideoType(url);
             return type ? (
-              <source key={url} src={url} type={type} />
+              <source key={`d-${url}`} src={url} type={type} />
             ) : (
-              <source key={url} src={url} />
+              <source key={`d-${url}`} src={url} />
             );
           })}
         </video>

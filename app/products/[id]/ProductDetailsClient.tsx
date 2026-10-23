@@ -267,7 +267,6 @@ export default function ProductDetailsClient({
   const [activeTab, setActiveTab] = useState<string>("details");
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [showSizeChart, setShowSizeChart] = useState(false);
-  const [scrollPos, setScrollPos] = useState(0);
   const [activeImg, setActiveImg] = useState(0);
   const [direction, setDirection] = useState(0);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
@@ -347,18 +346,15 @@ export default function ProductDetailsClient({
     }
   }, [product, recordVisit]);
 
-  // Optimized Scroll Effects for Safari
+  // Scroll overlay opacity via DOM only — avoid re-rendering this large tree every frame
   useEffect(() => {
     let ticking = false;
     const handleScroll = () => {
       if (!ticking) {
         window.requestAnimationFrame(() => {
-          const scroll = window.scrollY;
-          setScrollPos(scroll);
-          
           const overlay = document.getElementById('pdp-blur-overlay-internal');
           if (overlay) {
-            const opacity = Math.min(scroll / 600, 0.4);
+            const opacity = Math.min(window.scrollY / 600, 0.4);
             overlay.style.backgroundColor = `rgba(0,0,0, ${opacity})`;
           }
           ticking = false;
@@ -638,7 +634,7 @@ export default function ProductDetailsClient({
                 alt={product.title}
                 fill
                 className="object-cover transition-all duration-1200"
-                priority
+                // One LCP candidate only (mobile carousel owns priority below)
                 sizes="(max-width: 1200px) 50vw, 600px"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/10 to-transparent pointer-events-none" />
