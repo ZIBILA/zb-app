@@ -426,6 +426,9 @@ model Return {
   order             Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product           Product        @relation(fields: [productId], references: [id])
   returnRequest     ReturnRequest? @relation(fields: [returnRequestId], references: [id])
+
+  @@index([orderId])
+  @@index([customerId])
 }
 
 model ReturnRequest {
@@ -476,6 +479,8 @@ model Exchange {
   newProduct           Product          @relation("NewProduct", fields: [newProductId], references: [id])
   order                Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   originalProduct      Product          @relation("OriginalProduct", fields: [originalProductId], references: [id])
+
+  @@index([orderId])
 }
 
 model ExchangeRequest {
@@ -518,6 +523,9 @@ model Payment {
   updatedAt    DateTime @updatedAt
   customer     Customer @relation(fields: [customerId], references: [id])
   order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([customerId])
 }
 
 model Shipment {
@@ -1057,6 +1065,7 @@ model WhatsAppWebhookEvent {
   processed Boolean  @default(false)
   createdAt DateTime @default(now())
 
+  @@index([eventType, processed])
   @@map("whatsapp_webhook_events")
 }
 
@@ -1410,6 +1419,8 @@ model SupportMessage {
   longitude   Float?
   createdAt   DateTime      @default(now())
   ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
 }
 
 model SupportKnowledgeBase {
