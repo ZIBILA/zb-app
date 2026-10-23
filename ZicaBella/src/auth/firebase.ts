@@ -31,7 +31,7 @@ export async function verifyOTP(phone: string, otp: string): Promise<boolean> {
 
     const data = await res.json();
     if (res.ok && data.user) {
-      useAuthStore.getState().login(data.user, data.token);
+      useAuthStore.getState().login(data.user, data.token, data.refreshToken || null);
       return true;
     } else {
       return false;

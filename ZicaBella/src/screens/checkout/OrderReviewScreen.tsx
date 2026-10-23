@@ -12,8 +12,10 @@ import { haptics } from '../../utils/haptics';
 import { config, getPaymentApiBaseUrl } from '../../constants/config';
 import { useAuth } from '../../hooks/useAuth';
 import { useAuthStore } from '../../store/authStore';
+import { useThemeStore } from '../../store/themeStore';
 import { Image } from 'expo-image';
 import { getSnapDeviceContext } from '../../services/snapDeviceContext';
+import { requireValidAuth, handleAuthError, isUnauthorizedError } from '../../utils/tokenUtils';
 
 const { width } = Dimensions.get('window');
 
@@ -21,6 +23,7 @@ export default function OrderReviewScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const colors = useColors();
+  const isDark = useThemeStore(s => s.theme) === 'dark';
   const { total, items, clearCart, shippingAddress, buyNowItem, setBuyNowItem } = useCartStore();
   const checkoutItems = buyNowItem ? [buyNowItem] : items;
   const checkoutTotal = buyNowItem ? parseFloat(buyNowItem.price) * buyNowItem.quantity : total();
@@ -36,6 +39,14 @@ export default function OrderReviewScreen() {
 
   // ─── Payment State ──────────────────────────────────────────────
   const [pendingOrderData, setPendingOrderData] = useState<any>(null);
+  const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
+  const [razorpayModalData, setRazorpayModalData] = useState<{
+    orderId: string;
+    razorpayKeyId: string;
+    amount: number;
+    prefill: { name: string; email: string; contact: string };
+    orderData: any;
+  } | null>(null);
 
   // ─── Promo Code State ────────────────────────────────────────────────
   const [promoCode, setPromoCode] = useState('');
@@ -46,6 +57,7 @@ export default function OrderReviewScreen() {
     type: string;
     value: number;
     discountAmount: number;
+    autoApply?: boolean;
   } | null>(null);
 
   const subtotal = checkoutTotal;
@@ -79,6 +91,11 @@ export default function OrderReviewScreen() {
     return () => { cancelled = true; };
   }, []);
 
+  // ─── Enforce valid session on mount ──────────────────────────────────
+  React.useEffect(() => {
+    requireValidAuth(navigation);
+  }, [navigation]);
+
   // ─── Fetch Credits ──────────────────────────────────────────────────
   React.useEffect(() => {
     const fetchCredits = async () => {
@@ -99,6 +116,44 @@ export default function OrderReviewScreen() {
     fetchCredits();
   }, [user]);
 
+  // Manual promo sticky until user removes it (don't let auto-apply overwrite).
+  const manualPromoRef = React.useRef(false);
+
+  // ─── Auto-apply best coupon for COD or prepaid ───
+  // Uses storefront coupons (live on prod) + PREPAID10 fallback — not only /discounts/active.
+  React.useEffect(() => {
+    if (subtotal <= 0) return;
+    if (manualPromoRef.current) return;
+
+    let isCancelled = false;
+    const paymentMethod = selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID';
+
+    const autoApply = async () => {
+      try {
+        const { fetchBestAutoApplyPromo } = await import('../../utils/autoApplyPromo');
+        const best = await fetchBestAutoApplyPromo({
+          appUrl: config.appUrl,
+          subtotal,
+          paymentMethod,
+        });
+        if (isCancelled || manualPromoRef.current) return;
+
+        if (best?.code) {
+          setAppliedDiscount(best);
+          setPromoCode(best.code);
+          setPromoError(null);
+        }
+      } catch (e) {
+        console.warn('[OrderReview] auto-apply failed:', e);
+      }
+    };
+    autoApply();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedPaymentMethod, subtotal]);
+
   // ─── Promo Code Handlers ─────────────────────────────────────────────
   const handleApplyPromo = async () => {
     if (!promoCode.trim()) return;
@@ -106,15 +161,21 @@ export default function OrderReviewScreen() {
     setPromoError(null);
 
     try {
+      const paymentMethod = selectedPaymentMethod === 'cod' ? 'COD' : 'PREPAID';
       const res = await fetch(`${config.appUrl}/api/app/discounts/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: promoCode.trim(), orderAmount: subtotal }),
+        body: JSON.stringify({
+          code: promoCode.trim(),
+          orderAmount: subtotal,
+          paymentMethod,
+        }),
       });
       const data = await res.json();
 
       if (data.success) {
         haptics.success();
+        manualPromoRef.current = true;
         setAppliedDiscount(data.discount);
         setPromoError(null);
       } else {
@@ -132,6 +193,7 @@ export default function OrderReviewScreen() {
 
   const handleRemovePromo = () => {
     haptics.buttonTap();
+    manualPromoRef.current = false;
     setAppliedDiscount(null);
     setPromoCode('');
     setPromoError(null);
@@ -159,11 +221,17 @@ export default function OrderReviewScreen() {
         name: shippingAddress?.name || user?.name || 'Zica User',
         first_name: (shippingAddress?.name || user?.name || 'Zica').split(' ')[0],
         last_name: (shippingAddress?.name || user?.name || 'User').split(' ').slice(1).join(' ') || 'User',
-        line1: shippingAddress?.street || shippingAddress?.line1 || 'Address not provided',
-        line2: shippingAddress?.line2 || '',
+        line1: shippingAddress?.line1 || shippingAddress?.address1 || (shippingAddress?.flat && shippingAddress?.street ? `${shippingAddress.flat}, ${shippingAddress.street}` : (shippingAddress?.street || shippingAddress?.flat)) || 'Address not provided',
+        address1: shippingAddress?.line1 || shippingAddress?.address1 || (shippingAddress?.flat && shippingAddress?.street ? `${shippingAddress.flat}, ${shippingAddress.street}` : (shippingAddress?.street || shippingAddress?.flat)) || 'Address not provided',
+        street: shippingAddress?.street || shippingAddress?.line1 || shippingAddress?.address1 || 'Address not provided',
+        flat: shippingAddress?.flat || '',
+        line2: shippingAddress?.line2 || shippingAddress?.address2 || '',
+        address2: shippingAddress?.line2 || shippingAddress?.address2 || '',
         city: shippingAddress?.city || 'New Delhi',
-        state: shippingAddress?.state || 'Delhi',
+        state: shippingAddress?.state || shippingAddress?.province || 'Delhi',
+        province: shippingAddress?.state || shippingAddress?.province || 'Delhi',
         pincode: shippingAddress?.zip || shippingAddress?.pincode || '110001',
+        zip: shippingAddress?.zip || shippingAddress?.pincode || '110001',
         country: 'India',
         phone: shippingAddress?.phone || user?.phone || '',
         email: user?.email || shippingAddress?.email || '',
@@ -191,6 +259,7 @@ export default function OrderReviewScreen() {
 
   const handlePlaceOrder = async () => {
     if (loading) return;
+    if (!requireValidAuth(navigation)) return;
     haptics.buttonTap();
 
     // Strict Address Validation
@@ -246,8 +315,15 @@ export default function OrderReviewScreen() {
           }),
         });
         
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Failed to place order');
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (res.status === 401 || isUnauthorizedError(json.error)) {
+            setLoading(false);
+            handleAuthError(navigation);
+            return;
+          }
+          throw new Error(json.error || 'Failed to place order');
+        }
         
         haptics.success();
         buyNowItem ? setBuyNowItem(null) : clearCart();
@@ -266,6 +342,11 @@ export default function OrderReviewScreen() {
           });
       } catch (e: any) {
         haptics.error();
+        if (isUnauthorizedError(e)) {
+          setLoading(false);
+          handleAuthError(navigation);
+          return;
+        }
         Alert.alert('Order Failed', e.message || 'Something went wrong.');
       } finally {
         setLoading(false);
@@ -304,12 +385,18 @@ export default function OrderReviewScreen() {
         }
 
         if (!orderRes.ok || !orderJson.order_id) {
+          if (orderRes.status === 401 || isUnauthorizedError(orderJson.error)) {
+            setLoading(false);
+            handleAuthError(navigation);
+            return;
+          }
           throw new Error(orderJson.error || 'Failed to create payment order.');
         }
 
         const payAmount = Number(orderJson.codFee || grandTotal);
         setLoading(false);
 
+        // Navigate to custom payment screen for COD upfront — UPI apps open directly
         navigation.navigate('RazorpayPayment', {
           amount: payAmount,
           orderId: orderJson.order_id,
@@ -324,13 +411,18 @@ export default function OrderReviewScreen() {
       } catch (e: any) {
         haptics.error();
         console.error('[OrderReview] COD Razorpay initiation error:', e.message);
+        if (isUnauthorizedError(e)) {
+          setLoading(false);
+          handleAuthError(navigation);
+          return;
+        }
         Alert.alert('Payment Error', e.message || 'Could not start COD upfront payment. Please try again.');
         setLoading(false);
       }
       return;
     }
 
-    // Razorpay: Step 1 — create order on backend, then navigate to Payment Screen
+    // Razorpay: Step 1 — create order on backend, then open Razorpay modal directly
     setLoading(true);
     try {
       console.log('[OrderReview] Initiating Razorpay order...');
@@ -359,11 +451,17 @@ export default function OrderReviewScreen() {
       }
 
       if (!orderRes.ok || !orderJson.order_id) {
+        if (orderRes.status === 401 || isUnauthorizedError(orderJson.error)) {
+          setLoading(false);
+          handleAuthError(navigation);
+          return;
+        }
         throw new Error(orderJson.error || 'Failed to create payment order.');
       }
       
       setLoading(false);
       
+      // Navigate to custom payment screen — UPI apps open directly without Razorpay popup
       navigation.navigate('RazorpayPayment', {
         amount: grandTotal,
         orderId: orderJson.order_id,
@@ -378,10 +476,18 @@ export default function OrderReviewScreen() {
     } catch (e: any) {
       haptics.error();
       console.error('[OrderReview] Razorpay initiation error:', e.message);
+      if (isUnauthorizedError(e)) {
+        setLoading(false);
+        handleAuthError(navigation);
+        return;
+      }
       Alert.alert('Payment Error', e.message || 'Could not start payment. Please try again.');
       setLoading(false);
     }
   };
+
+
+
 
 
 
@@ -446,7 +552,7 @@ export default function OrderReviewScreen() {
              <Typography size={12} weight="600" color={colors.text}>{shippingAddress?.name || user?.name}</Typography>
              <Typography size={9} weight="600" color={colors.textExtraLight} style={{ marginTop: 2 }}>{shippingAddress?.email || user?.email}</Typography>
              <Typography size={10} color={colors.textSecondary} style={{ marginTop: 6, lineHeight: 16 }}>
-                {shippingAddress?.street || shippingAddress?.line1}{'\n'}
+                {shippingAddress?.line1 || shippingAddress?.address1 || [shippingAddress?.flat, shippingAddress?.street].filter(Boolean).join(', ') || shippingAddress?.street}{'\n'}
                 {shippingAddress?.city}, {shippingAddress?.state} {shippingAddress?.zip || shippingAddress?.pincode}
              </Typography>
              <Typography size={10} color={colors.textSecondary} style={{ marginTop: 8 }}>{shippingAddress?.phone || user?.phone}</Typography>
@@ -609,22 +715,6 @@ export default function OrderReviewScreen() {
                <Typography size={10} color={colors.textSecondary}>Subtotal</Typography>
                <Typography size={10} weight="600" color={colors.text}>{formatPrice(subtotal)}</Typography>
              </View>
-             {codFee > 0 && (
-               <View style={styles.row}>
-                 <Typography size={10} color={colors.textSecondary}>COD Upfront (pay now)</Typography>
-                 <Typography size={10} weight="600" color={colors.text}>{formatPrice(codFee)}</Typography>
-               </View>
-             )}
-             {balanceDue > 0 && (
-               <View style={styles.row}>
-                 <Typography size={10} color={colors.textSecondary}>Balance due at delivery</Typography>
-                 <Typography size={10} weight="600" color={colors.text}>{formatPrice(balanceDue)}</Typography>
-               </View>
-             )}
-             <View style={styles.row}>
-               <Typography size={10} color={colors.textSecondary}>Shipping</Typography>
-               <Typography size={10} weight="600" color={colors.success}>FREE</Typography>
-             </View>
              {discountAmount > 0 && (
                <View style={styles.row}>
                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -643,11 +733,51 @@ export default function OrderReviewScreen() {
                  <Typography size={10} color="#34C759" weight="700">−{formatPrice(creditToApply)}</Typography>
                </View>
              )}
+             <View style={styles.row}>
+               <Typography size={10} color={colors.textSecondary}>Shipping</Typography>
+               <Typography size={10} weight="600" color={colors.success}>FREE</Typography>
+             </View>
+             {selectedPaymentMethod === 'cod' && (
+               <>
+                 <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
+                 <View style={styles.row}>
+                   <Typography size={10} color={colors.textSecondary}>Total Order Cost</Typography>
+                   <Typography size={10} weight="700" color={colors.text}>{formatPrice(netOrderTotal)}</Typography>
+                 </View>
+                 {codFee > 0 && (
+                   <View style={styles.row}>
+                     <Typography size={10} color={colors.textSecondary}>COD Upfront (pay now)</Typography>
+                     <Typography size={10} weight="600" color={colors.text}>{formatPrice(codFee)}</Typography>
+                   </View>
+                 )}
+                 {balanceDue > 0 && (
+                   <View style={styles.row}>
+                     <Typography size={10} color={colors.textSecondary}>Balance due at delivery</Typography>
+                     <Typography size={10} weight="600" color={colors.text}>{formatPrice(balanceDue)}</Typography>
+                   </View>
+                 )}
+               </>
+             )}
              <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
              <View style={styles.row}>
-               <Typography size={12} weight="700" color={colors.text}>Grand Total</Typography>
+               <Typography size={12} weight="700" color={colors.text}>
+                 {selectedPaymentMethod === 'cod' ? 'Pay Now' : 'Grand Total'}
+               </Typography>
                <Typography size={18} weight="800" color={colors.text}>{formatPrice(grandTotal)}</Typography>
              </View>
+             {/* 10% Store Credits cashback earned on this order — calculated from total order cost */}
+             {netOrderTotal > 0 && (
+               <View style={[styles.cashbackBox, { backgroundColor: isDark ? 'rgba(52, 199, 89, 0.08)' : 'rgba(52, 199, 89, 0.05)', borderColor: 'rgba(52, 199, 89, 0.25)' }]}>
+                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                   <Ionicons name="gift-outline" size={15} color="#34C759" />
+                   <View>
+                     <Typography size={9} color="#34C759" weight="800">10% STORE CREDITS CASHBACK</Typography>
+                     <Typography size={7.5} color={colors.textSecondary} weight="500">Credited to wallet after delivery</Typography>
+                   </View>
+                 </View>
+                 <Typography size={11} color="#34C759" weight="800">+{formatPrice(Math.round((netOrderTotal > 0 ? netOrderTotal : orderTotal) * 0.10))}</Typography>
+               </View>
+             )}
           </View>
         </View>
 
@@ -666,6 +796,7 @@ export default function OrderReviewScreen() {
         onPrimaryPress={handlePlaceOrder}
         loading={loading}
       />
+
     </View>
   );
 }
@@ -730,4 +861,13 @@ const styles = StyleSheet.create({
   },
   removeBtn: { padding: 4 },
   promoErrorRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingLeft: 2 },
+  cashbackBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 12,
+  },
 });

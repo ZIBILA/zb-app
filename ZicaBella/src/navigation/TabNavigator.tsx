@@ -35,6 +35,8 @@ import FAQScreen from '../screens/FAQScreen';
 import BlogsScreen from '../screens/BlogsScreen';
 import CollaborationsScreen from '../screens/CollaborationsScreen';
 import NotificationsScreen from '../screens/NotificationsScreen';
+import CreatorScreen from '../screens/CreatorScreen';
+import AddressesScreen from '../screens/AddressesScreen';
 
 import { BlurView } from 'expo-blur';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -91,6 +93,8 @@ function ProfileStack() {
       <Stack.Screen name="ExchangeSelectProduct" component={ExchangeSelectProductScreen as any} />
       <Stack.Screen name="Returns" component={ReturnsScreen as any} />
       <Stack.Screen name="Wishlist" component={WishlistScreen as any} />
+      <Stack.Screen name="Creator" component={CreatorScreen as any} />
+      <Stack.Screen name="Addresses" component={AddressesScreen as any} />
       <Stack.Screen name="Blogs" component={BlogsScreen as any} />
       <Stack.Screen name="Collaborations" component={CollaborationsScreen as any} />
       <Stack.Screen name="Notifications" component={NotificationsScreen as any} />
@@ -283,7 +287,7 @@ export const TabNavigator = () => {
 const styles = StyleSheet.create({
   tabBarContainer: {
     position: 'absolute',
-    bottom: Platform.OS === 'android' ? 20 : 34,
+    bottom: Platform.OS === 'android' ? 28 : 34,
     left: 20,
     right: 20,
     height: Platform.OS === 'android' ? 60 : 64,

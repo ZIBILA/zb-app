@@ -1,7 +1,7 @@
 import React, { Suspense, useRef, useState, useCallback, useMemo } from 'react';
-import { View, StyleSheet, PanResponder } from 'react-native';
+import { View, StyleSheet, PanResponder, Platform } from 'react-native';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { useGLTF, Bounds } from '@react-three/drei';
+import { useGLTF, Center } from '@react-three/drei';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { config } from '../constants/config';
@@ -9,7 +9,7 @@ import { useThemeStore } from '../store/themeStore';
 
 const CANONICAL_SILVER_GLB = 'https://cdn.shopify.com/3d/models/e024b09e83a75c03/Zicabella-silver-logo.glb';
 
-function FallbackLogo({ size = 56, isDark }: { size?: number; isDark: boolean }) {
+function FallbackLogo({ size = 56 }: { size?: number }) {
   return (
     <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
       <Image 
@@ -18,7 +18,7 @@ function FallbackLogo({ size = 56, isDark }: { size?: number; isDark: boolean })
           width: size * 0.75, 
           height: size * 0.75, 
           opacity: 0.9,
-          tintColor: isDark ? '#FFFFFF' : '#000000',
+          tintColor: '#CBD5E1',
         }} 
         contentFit="contain"
       />
@@ -29,11 +29,9 @@ function FallbackLogo({ size = 56, isDark }: { size?: number; isDark: boolean })
 function Model({
   glbUrl,
   touchRotation,
-  isDark,
 }: {
   glbUrl: string;
   touchRotation: React.MutableRefObject<{ x: number; y: number }>;
-  isDark: boolean;
 }) {
   const { scene } = useGLTF(glbUrl);
   const group = useRef<any>(null);
@@ -43,17 +41,17 @@ function Model({
     if (scene) {
       scene.traverse((child: any) => {
         if (child.isMesh && child.material) {
-          // Exact silver metalness & specular sheen matching the webstore footer
+          // Exact silver metalness & specular sheen matching the webstore footer (identical in light and dark mode)
           child.material.metalness = 0.92;
           child.material.roughness = 0.14;
           if (child.material.color) {
-            child.material.color.set(isDark ? '#F1F5F9' : '#0F172A');
+            child.material.color.set('#F1F5F9');
           }
           child.material.needsUpdate = true;
         }
       });
     }
-  }, [scene, isDark]);
+  }, [scene]);
 
   useFrame((_state, delta) => {
     if (group.current) {
@@ -62,6 +60,8 @@ function Model({
       velocity.current.y += (touchRotation.current.y - velocity.current.y) * 0.2;
       group.current.rotation.y += velocity.current.x;
       group.current.rotation.x += velocity.current.y;
+      // Gently return rotation.x towards 0 so the logo stays level and upright
+      group.current.rotation.x += (0 - group.current.rotation.x) * 0.05;
       touchRotation.current.x *= 0.98;
       touchRotation.current.y *= 0.98;
     }
@@ -69,11 +69,12 @@ function Model({
 
   return (
     <group ref={group}>
-      <primitive 
-        object={scene} 
-        scale={2.6} 
-        position={[0, 0, 0]} 
-      />
+      <Center>
+        <primitive 
+          object={scene} 
+          scale={0.58} 
+        />
+      </Center>
     </group>
   );
 }
@@ -81,16 +82,14 @@ function Model({
 type Props = {
   glbUrl?: string;
   size?: number;
+  active?: boolean;
 };
 
-export default function FooterLogo({ glbUrl, size = 56 }: Props) {
+export default function FooterLogo({ glbUrl, size = 56, active = true }: Props) {
   const theme = useThemeStore(s => s.theme);
   const isDark = theme === 'dark';
 
-  const rawUrl = (glbUrl || config.footerLogo3dGlb).trim();
-  // Ensure we use the canonical silver 3D logo if raw URL is empty or generic
-  const url = (rawUrl.length > 10 && rawUrl.startsWith('http')) ? rawUrl : CANONICAL_SILVER_GLB;
-
+  // All hooks must be called unconditionally before any early return (Rules of Hooks)
   const touchRotation = useRef({ x: 0, y: 0 });
   const lastGesture = useRef({ dx: 0, dy: 0 });
   const [renderKey, setRenderKey] = useState(0);
@@ -105,15 +104,22 @@ export default function FooterLogo({ glbUrl, size = 56 }: Props) {
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        // Only capture horizontal swipes directly intended to rotate the logo
+        // and allow vertical scrolling to pass freely to the ScrollView
+        return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5 && Math.abs(gestureState.dx) > 8;
+      },
+      onMoveShouldSetPanResponderCapture: () => false,
+      onPanResponderTerminationRequest: () => true,
       onPanResponderGrant: () => {
         lastGesture.current = { dx: 0, dy: 0 };
       },
       onPanResponderMove: (_evt, gestureState) => {
         const sensitivity = 0.025;
         const dx = (gestureState.dx - lastGesture.current.dx) * sensitivity;
-        const dy = (gestureState.dy - lastGesture.current.dy) * sensitivity;
+        const dy = (gestureState.dy - lastGesture.current.dy) * sensitivity * 0.2;
         touchRotation.current.x = dx;
         touchRotation.current.y = dy;
         lastGesture.current = { dx: gestureState.dx, dy: gestureState.dy };
@@ -121,10 +127,22 @@ export default function FooterLogo({ glbUrl, size = 56 }: Props) {
       onPanResponderRelease: (_evt, gestureState) => {
         const flickBoost = 0.3;
         touchRotation.current.x = gestureState.vx * flickBoost;
-        touchRotation.current.y = gestureState.vy * flickBoost;
-      }
+        touchRotation.current.y = gestureState.vy * flickBoost * 0.2;
+      },
+      onPanResponderTerminate: () => {
+        lastGesture.current = { dx: 0, dy: 0 };
+      },
     })
   ).current;
+
+  // Show flat fallback when not in viewport or 3D not ready
+  if (!active) {
+    return <FallbackLogo size={size} />;
+  }
+
+  const rawUrl = (glbUrl || config.footerLogo3dGlb).trim();
+  // Ensure we use the canonical silver 3D logo if raw URL is empty or generic
+  const url = (rawUrl.length > 10 && rawUrl.startsWith('http')) ? rawUrl : CANONICAL_SILVER_GLB;
 
   return (
     <View style={[styles.container, { width: size, height: size }]} {...panResponder.panHandlers}>
@@ -137,15 +155,13 @@ export default function FooterLogo({ glbUrl, size = 56 }: Props) {
           powerPreference: "high-performance" 
         }}
       >
-        <ambientLight intensity={isDark ? 2.5 : 3.0} />
+        <ambientLight intensity={2.8} />
         <directionalLight position={[5, 10, 7]} intensity={4.5} color="#FFFFFF" />
         <directionalLight position={[-5, -10, -5]} intensity={2.5} color="#E2E8F0" />
         <spotLight position={[10, 15, 10]} angle={0.35} penumbra={1} intensity={5} color="#FFFFFF" />
         <pointLight position={[0, 0, 8]} intensity={3.5} color="#FFFFFF" />
         <Suspense fallback={null}>
-          <Bounds fit clip observe margin={1}>
-            <Model glbUrl={url} touchRotation={touchRotation} isDark={isDark} />
-          </Bounds>
+          <Model glbUrl={url} touchRotation={touchRotation} />
         </Suspense>
       </Canvas>
     </View>
@@ -159,3 +175,4 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
 });
+

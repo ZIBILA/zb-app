@@ -8,6 +8,46 @@ const API_BASE = `${config.appUrl}/api/app`;
 
 const inflightRequests: Record<string, Promise<any> | undefined> = {};
 
+/** Single-flight refresh so parallel 401s don't rotate the refresh token twice. */
+let refreshInflight: Promise<boolean> | null = null;
+
+async function tryRefreshAccessToken(): Promise<boolean> {
+  if (refreshInflight) return refreshInflight;
+
+  refreshInflight = (async () => {
+    const { refreshToken } = useAuthStore.getState();
+    if (!refreshToken) return false;
+
+    try {
+      const res = await fetch(`${config.appUrl}/api/auth/mobile-refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ refreshToken }),
+      });
+
+      if (!res.ok) return false;
+
+      const json = await res.json().catch(() => null);
+      if (!json?.token) return false;
+
+      useAuthStore.getState().setTokens(json.token, json.refreshToken || refreshToken);
+      if (json.user) {
+        useAuthStore.setState({ user: json.user, isAuthenticated: true });
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshInflight = null;
+    }
+  })();
+
+  return refreshInflight;
+}
+
 export async function apiFetch<T>(
   endpoint: string,
   options?: { method?: string; body?: any; params?: Record<string, string>; timeoutMs?: number }
@@ -41,13 +81,15 @@ export async function apiFetch<T>(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options?.timeoutMs ?? 15000);
 
+    const buildHeaders = (authToken: string | null | undefined): Record<string, string> => ({
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    });
+
     const fetchOptions: RequestInit = {
       method: options?.method || 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: buildHeaders(token),
       signal: controller.signal,
     };
 
@@ -56,33 +98,59 @@ export async function apiFetch<T>(
     }
 
     try {
-      const response = await fetch(url, fetchOptions);
+      let response = await fetch(url, fetchOptions);
       clearTimeout(timeout);
 
-      // Handle 401 — token expired or invalid
+      // Handle 401 — never wipe the session on public GETs; for mutations try refresh first.
       if (response.status === 401) {
-        useAuthStore.getState().logout();
-        
-        // If it was a GET request (presumably public data), retry once without token
-        const reqMethod = fetchOptions.method || 'GET';
+        const reqMethod = (fetchOptions.method || 'GET').toUpperCase();
+
         if (reqMethod === 'GET') {
           const retryHeaders = { ...fetchOptions.headers } as Record<string, string>;
           delete retryHeaders['Authorization'];
           delete retryHeaders['authorization'];
-          
+
           const retryRes = await fetch(url, {
             method: reqMethod,
             headers: retryHeaders,
+            signal: controller.signal,
           });
-          
+
           if (retryRes.ok) {
             const contentType = retryRes.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
               return await retryRes.json();
             }
           }
+
+          throw new Error('Something went wrong. Please try again.');
         }
-        
+
+        // Authenticated write: refresh + retry once before giving up (no hard logout).
+        const refreshed = await tryRefreshAccessToken();
+        if (refreshed) {
+          const newToken = useAuthStore.getState().token;
+          const retryRes = await fetch(url, {
+            ...fetchOptions,
+            headers: buildHeaders(newToken),
+            signal: controller.signal,
+          });
+
+          if (retryRes.ok) {
+            const contentType = retryRes.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+              return await retryRes.json();
+            }
+          }
+
+          if (retryRes.status !== 401) {
+            const errorJson = await retryRes.json().catch(() => ({ error: 'Request failed' }));
+            throw new Error(errorJson.error || 'Something went wrong. Please try again.');
+          }
+        }
+
+        // Soft-clear auth so browsing/cart stay intact; caller can send user to Auth.
+        useAuthStore.getState().softLogout();
         throw new Error('Session expired. Please log in again.');
       }
 
