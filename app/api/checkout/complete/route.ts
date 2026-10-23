@@ -708,6 +708,12 @@ export async function POST(req: Request) {
         paymentFailureReason: null,
         cancelledBy: null,
         cancelledAt: null,
+        deliveryStatus: existingPreCreatedOrder.deliveryStatus && !String(existingPreCreatedOrder.deliveryStatus).toLowerCase().includes('cancel')
+          ? existingPreCreatedOrder.deliveryStatus
+          : 'pending',
+        fulfillmentStatus: existingPreCreatedOrder.fulfillmentStatus && !String(existingPreCreatedOrder.fulfillmentStatus).toLowerCase().includes('cancel')
+          ? existingPreCreatedOrder.fulfillmentStatus
+          : 'unfulfilled',
         codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
         codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
         tags: orderTags,

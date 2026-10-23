@@ -107,18 +107,18 @@ export async function POST(req: Request) {
       console.warn('[App API] Variant reprice failed; using client line totals:', priceErr?.message);
     }
 
-    // 100% store credit: there is no Razorpay payment to verify. The proof of
-    // payment is the wallet debit below (idempotent; fails when the balance is
-    // short), and the credit must cover the authoritative item total.
+    // 100% store credit or 100% coupon/discount: there is no Razorpay payment to verify.
+    const hasDiscountCoverage = (rawDiscountAmount > 0 || couponDiscount > 0 || Boolean(rawDiscountCode));
     const isFullStoreCreditPayment = clientClaimsPaid && !isCod && total <= 0 && appliedStoreCredits > 0;
+    const isFullCouponPayment = clientClaimsPaid && !isCod && total <= 0 && hasDiscountCoverage;
     const expectedPrepaidRupees = Math.max(
       0,
-      Math.round((linesTotal - appliedStoreCredits - couponDiscount) * 100) / 100
+      Math.round((linesTotal - appliedStoreCredits - couponDiscount - rawDiscountAmount) * 100) / 100
     );
 
-    if (isFullStoreCreditPayment) {
-      if (appliedStoreCredits + couponDiscount + 0.01 < linesTotal) {
-        return jsonError('Store credit does not cover the order total', 400);
+    if (isFullStoreCreditPayment || isFullCouponPayment) {
+      if (appliedStoreCredits + couponDiscount + rawDiscountAmount + 0.01 < linesTotal) {
+        return jsonError('Store credit / discount does not cover the order total', 400);
       }
       paymentStatus = 'paid';
     } else if (clientClaimsPaid) {
@@ -571,6 +571,14 @@ export async function POST(req: Request) {
             discountAmount: rawDiscountAmount,
             storeCreditAmount: appliedStoreCredits,
             discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
+            cancelledBy: null,
+            cancelledAt: null,
+            deliveryStatus: existingOrder!.deliveryStatus && !String(existingOrder!.deliveryStatus).toLowerCase().includes('cancel')
+              ? existingOrder!.deliveryStatus
+              : 'pending',
+            fulfillmentStatus: existingOrder!.fulfillmentStatus && !String(existingOrder!.fulfillmentStatus).toLowerCase().includes('cancel')
+              ? existingOrder!.fulfillmentStatus
+              : 'unfulfilled',
             tags: finalTags,
             note: note,
             shippingAddress: typeof shippingAddress === 'string' ? shippingAddress : JSON.stringify({

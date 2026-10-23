@@ -291,11 +291,12 @@ export default function OrderReviewScreen() {
     const apiBase = getPaymentApiBaseUrl();
     const orderData = buildOrderData();
 
-    // If grandTotal is 0 (fully covered by store credits), treat as paid
-    if (grandTotal === 0 && creditToApply > 0) {
+    // If grandTotal is 0 (fully covered by store credits or 100% discount/coupon), treat as paid
+    if (grandTotal === 0 && (creditToApply > 0 || discountAmount > 0)) {
       setLoading(true);
+      const zeroPayMethod = creditToApply > 0 ? 'Store Credit' : 'Coupon';
       try {
-        console.log('[OrderReview] Placing order fully covered by store credits...');
+        console.log(`[OrderReview] Placing order fully covered by ${zeroPayMethod}...`);
         const res = await fetch(`${apiBase}/api/app/orders/create`, {
           method: 'POST',
           headers: {
@@ -305,10 +306,10 @@ export default function OrderReviewScreen() {
           },
           body: JSON.stringify({
             ...orderData,
-            paymentMethod: 'Store Credit',
+            paymentMethod: zeroPayMethod,
             paymentStatus: 'paid',
             checkoutId: (storeCreditCheckoutIdRef.current ||= `sc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`),
-            // No Razorpay payment for 100% store credit: the server sends the Snap
+            // No Razorpay payment for 100% store credit/coupon: the server sends the Snap
             // MOBILE_APP Purchase from orders/create, so it needs the device context here.
             snapDevice: await getSnapDeviceContext(),
           }),
@@ -333,7 +334,7 @@ export default function OrderReviewScreen() {
               { name: 'Main' },
               { name: 'OrderConfirmation', params: { 
                 orderId: json.orderId || json.id, 
-                paymentMethod: 'Store Credit', 
+                paymentMethod: zeroPayMethod, 
                 estimatedDelivery: '3-5 Business Days',
                 orderNumber: json.orderNumber 
               } }

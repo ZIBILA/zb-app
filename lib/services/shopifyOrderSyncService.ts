@@ -768,29 +768,6 @@ export async function pullAndSyncShopifyOrder(
       }
     }
 
-    if (o.cancelled_at) {
-      fulfillmentStatus = 'cancelled';
-      deliveryStatus = 'cancelled';
-    }
-
-    // Extract primary tracking details
-    let primaryTrackingNumber: string | null = null;
-    let primaryCourier: string | null = null;
-    let primaryTrackingUrl: string | null = null;
-
-    if (Array.isArray(o.fulfillments) && o.fulfillments.length > 0) {
-      for (const f of o.fulfillments) {
-        const tn = f.tracking_number || (Array.isArray(f.tracking_numbers) ? f.tracking_numbers[0] : null);
-        if (tn) {
-          primaryTrackingNumber = String(tn);
-          primaryCourier = f.tracking_company || f.courier || 'Standard Express';
-          primaryTrackingUrl = f.tracking_url || (Array.isArray(f.tracking_urls) ? f.tracking_urls[0] : null)
-            || `https://zicabella.shiprocket.co/tracking/${tn}`;
-          break;
-        }
-      }
-    }
-
     // 1. Locate master Order
     let order: any = null;
     if (options?.localOrderId) {
@@ -810,6 +787,50 @@ export async function pullAndSyncShopifyOrder(
         where: { internalOrderNumber: extractedNumber },
         include: { shipments: true },
       }).catch(() => null);
+    }
+
+    if (o.cancelled_at) {
+      const { shouldHonorShopifyOrderCancel } = await import('@/lib/services/orderLifecycleService');
+      const decision = shouldHonorShopifyOrderCancel(order, {
+        financial_status: o.financial_status,
+        cancelled_at: o.cancelled_at,
+        cancel_reason: o.cancel_reason,
+      });
+      if (decision.honor) {
+        fulfillmentStatus = 'cancelled';
+        deliveryStatus = 'cancelled';
+      } else {
+        console.warn(
+          `[ShopifyOrderSync] Ignoring Shopify cancel for paid local order ` +
+            `${order?.internalOrderNumber || order?.id} (reason=${decision.reason})`
+        );
+        deliveryStatus =
+          order?.deliveryStatus && !String(order.deliveryStatus).toLowerCase().includes('cancel')
+            ? order.deliveryStatus
+            : 'pending';
+        fulfillmentStatus =
+          order?.fulfillmentStatus && !String(order.fulfillmentStatus).toLowerCase().includes('cancel')
+            ? order.fulfillmentStatus
+            : 'unfulfilled';
+      }
+    }
+
+    // Extract primary tracking details
+    let primaryTrackingNumber: string | null = null;
+    let primaryCourier: string | null = null;
+    let primaryTrackingUrl: string | null = null;
+
+    if (Array.isArray(o.fulfillments) && o.fulfillments.length > 0) {
+      for (const f of o.fulfillments) {
+        const tn = f.tracking_number || (Array.isArray(f.tracking_numbers) ? f.tracking_numbers[0] : null);
+        if (tn) {
+          primaryTrackingNumber = String(tn);
+          primaryCourier = f.tracking_company || f.courier || 'Standard Express';
+          primaryTrackingUrl = f.tracking_url || (Array.isArray(f.tracking_urls) ? f.tracking_urls[0] : null)
+            || `https://zicabella.shiprocket.co/tracking/${tn}`;
+          break;
+        }
+      }
     }
 
     // 2. Locate WebStoreOrder

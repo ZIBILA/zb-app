@@ -47,25 +47,26 @@ async function main() {
     const staleWso = await prisma.webStoreOrder.findMany({
       where: {
         paymentStatus: { in: ['paid', 'cod_upfront_paid', 'partially_paid'] },
-        status: { in: ['cancelled', 'canceled'] },
+        deliveryStatus: { in: ['cancelled', 'canceled'] },
       },
       select: {
         id: true,
         orderNumber: true,
-        status: true,
+        deliveryStatus: true,
         paymentStatus: true,
       },
     });
-    console.log(`Found ${staleWso.length} WebStoreOrder rows with paid paymentStatus but cancelled status:`);
+    console.log(`Found ${staleWso.length} WebStoreOrder rows with paid paymentStatus but cancelled deliveryStatus:`);
     for (const w of staleWso) {
-      console.log(`- WSO ${w.orderNumber}: status=${w.status}, paymentStatus=${w.paymentStatus}`);
+      console.log(`- WSO ${w.orderNumber}: deliveryStatus=${w.deliveryStatus}, paymentStatus=${w.paymentStatus}`);
     }
     if (staleWso.length > 0 && apply) {
       const wsoIds = staleWso.map(w => w.id);
       await prisma.webStoreOrder.updateMany({
         where: { id: { in: wsoIds } },
         data: {
-          status: 'confirmed',
+          deliveryStatus: 'pending',
+          fulfillmentStatus: 'unfulfilled',
         },
       });
       console.log(`Successfully restored ${staleWso.length} WebStoreOrder rows.`);

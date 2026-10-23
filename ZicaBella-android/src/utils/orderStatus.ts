@@ -205,6 +205,12 @@ export function resolveOrderDisplayStatus(order: any): string {
   }
 
   // 5. Normal Order Status Flow
-  return getOrderStatusLabel(order.deliveryStatus || order.status);
+  const safeDelivery = (order.deliveryStatus && !String(order.deliveryStatus).toLowerCase().includes('cancel'))
+    ? order.deliveryStatus
+    : null;
+  const safeMain = (order.status && !String(order.status).toLowerCase().includes('cancel'))
+    ? order.status
+    : null;
+  return getOrderStatusLabel(safeDelivery || safeMain || 'Processing');
 }
 
