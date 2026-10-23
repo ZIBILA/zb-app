@@ -100,12 +100,13 @@ export default function AdminWishlistPage() {
     fetchWishlists();
   }, []);
 
-  // Real-time auto-polling every 6 seconds if live sync is active
+  // Live sync: poll every 30s when the tab is visible (was 6s)
   useEffect(() => {
     if (isLiveSync) {
       timerRef.current = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
         fetchWishlists(true);
-      }, 6000);
+      }, 30_000);
     } else if (timerRef.current) {
       clearInterval(timerRef.current);
     }
@@ -114,11 +115,11 @@ export default function AdminWishlistPage() {
     };
   }, [isLiveSync]);
 
-  // Update "seconds ago" clock
+  // Relative "updated Xs ago" — 15s ticks avoid a 1Hz re-render storm
   useEffect(() => {
     syncTimerRef.current = setInterval(() => {
-      setSecondsAgo((prev) => prev + 1);
-    }, 1000);
+      setSecondsAgo((prev) => prev + 15);
+    }, 15_000);
     return () => {
       if (syncTimerRef.current) clearInterval(syncTimerRef.current);
     };

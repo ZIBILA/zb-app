@@ -168,12 +168,12 @@ export default function AbandonedCartsPage() {
   useEffect(() => {
     fetchCarts(false);
 
-    // Lightweight real-time live polling every 4 seconds (when page is visible)
+    // Poll every 30s when the tab is visible (was 4s — too aggressive for admin list)
     const intervalId = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         fetchCarts(true);
       }
-    }, 4000);
+    }, 30_000);
 
     return () => clearInterval(intervalId);
   }, [fetchCarts]);
