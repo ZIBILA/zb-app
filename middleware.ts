@@ -536,9 +536,6 @@ export default withAuth(
           pathname.startsWith('/dashboard') ||
           pathname.startsWith('/web-store') ||
           pathname.startsWith('/api/admin') ||
-          pathname.startsWith('/api/admin-debug') ||
-          pathname.startsWith('/api/debug') ||
-          pathname.startsWith('/api/seed-blogs') ||
           pathname.startsWith('/api/email') ||
           pathname.startsWith('/api/mail') ||
           pathname.startsWith('/api/marketing') ||
