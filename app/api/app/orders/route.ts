@@ -5,6 +5,9 @@ import prisma, { getShopSettings } from '@/lib/db';
 import { refreshShipmentFromCarrier } from '@/lib/services/shipmentStatusService';
 import { normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb, toOrderDeliveryStatus } from '@/lib/logistics/status';
 import { createOrder as createShopifyOrder } from '@/lib/shopify-admin';
+import { getAppAuthFromRequest, requireAppAuth, handleAppAuthError } from '@/lib/appAuth';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/app/api/auth/[...nextauth]/options';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +17,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
 };
 
+async function isDashboardAdmin() {
+  try {
+    const session = await getServerSession(authOptions);
+    const role = (session?.user as any)?.role;
+    return role === 'ADMIN' || role === 'SUPER_ADMIN';
+  } catch {
+    return false;
+  }
+}
+
 export async function OPTIONS() {
   return NextResponse.json({}, { headers: corsHeaders });
 }
@@ -21,32 +34,49 @@ export async function OPTIONS() {
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const customerId = url.searchParams.get('customerId')?.trim();
-    const phone = url.searchParams.get('phone')?.trim();
-    const email = url.searchParams.get('email')?.trim();
+    let customerId = url.searchParams.get('customerId')?.trim();
+    let phone = url.searchParams.get('phone')?.trim();
+    let email = url.searchParams.get('email')?.trim();
     const orderId = url.searchParams.get('orderId')?.trim();
     const limitRaw = url.searchParams.get('limit');
     const offsetRaw = url.searchParams.get('offset');
     const limit = limitRaw ? Math.max(1, Math.min(50, parseInt(limitRaw, 10) || 10)) : null;
     const offset = offsetRaw ? Math.max(0, parseInt(offsetRaw, 10) || 0) : 0;
-    // allow 'all' if requested (used by admin dashboard)
     const all = url.searchParams.get('all') === 'true';
-
-    // Quick count mode for admin sync stats (global)
     const countOnly = url.searchParams.get('count') === 'true';
-    if (countOnly && !customerId && !phone && !email && !orderId && !all) {
-      const total = await prisma.order.count();
-      return NextResponse.json({ total }, { headers: corsHeaders });
+
+    const dashboardAdmin = await isDashboardAdmin();
+    let appCustomer: { id: string; email?: string | null; phone?: string | null } | null = null;
+
+    // Admin-only: global count / dump of all mobile orders
+    if ((countOnly || all) && !customerId && !phone && !email && !orderId) {
+      if (!dashboardAdmin) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
+      }
+      if (countOnly) {
+        const total = await prisma.order.count();
+        return NextResponse.json({ total }, { headers: corsHeaders });
+      }
+    } else if (!dashboardAdmin) {
+      // Mobile / customer: require a valid app JWT and bind lookup to that account
+      try {
+        const { customer } = await requireAppAuth(req);
+        appCustomer = customer;
+        customerId = customer.id;
+        phone = customer.phone || phone || undefined;
+        email = customer.email || email || undefined;
+      } catch (e: any) {
+        // Guest order tracking: orderId + phone together (COD / track-without-login)
+        if (!(orderId && phone)) {
+          return handleAppAuthError(e);
+        }
+        const auth = getAppAuthFromRequest(req);
+        if (auth) {
+          // Token present but invalid/expired — still reject rather than trust query alone
+          return handleAppAuthError(e);
+        }
+      }
     }
-
-    // Extract auth token from Authorization header
-    const authHeader = req.headers.get('Authorization') || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-
-    // Allow specialized admin bypass for dashboard sync
-    const isAdmin = token === 'ADMIN_SESSION_BYPASS';
-    
-    console.log(`[Orders GET] Fetching orders. All=${all}, Phone=${phone}, Email=${email}, CustomerId=${customerId}`);
 
     if (!customerId && !phone && !email && !orderId && !all) {
       return NextResponse.json(
@@ -59,7 +89,7 @@ export async function GET(req: Request) {
     let appOrClauses: any[] = [];
 
     if (orderId) {
-      // Direct order lookup – no need for customer resolution
+      // Single-order lookup; ownership enforced after fetch for non-admins
     } else {
       // Build a flexible customer lookup that handles phone number variants
       const customerWhere: any = { OR: [] };
@@ -93,27 +123,35 @@ export async function GET(req: Request) {
       }
       customerIds = customers.map((c: { id: string }) => c.id);
 
+      // Non-admin: never expand to other customers via loose phone/email OR
+      if (appCustomer) {
+        customerIds = [appCustomer.id];
+      }
+
+      const scopedCustomers = customers.filter((c: { id: string }) => customerIds.includes(c.id));
       const matchedEmails = Array.from(new Set([
         ...(email ? [email] : []),
-        ...customers.map((c: any) => c.email).filter(Boolean) as string[]
+        ...scopedCustomers.map((c: any) => c.email).filter(Boolean) as string[]
       ]));
       const matchedPhones = Array.from(new Set([
         ...(phone ? [phone] : []),
-        ...customers.map((c: any) => c.phone).filter(Boolean) as string[]
+        ...scopedCustomers.map((c: any) => c.phone).filter(Boolean) as string[]
       ]));
       const matchedPhoneLast10s = Array.from(new Set([
         ...(phone && phone.replace(/\D/g, '').length >= 10 ? [phone.replace(/\D/g, '').slice(-10)] : []),
-        ...customers.map((c: any) => c.phoneLast10).filter(Boolean) as string[]
+        ...scopedCustomers.map((c: any) => c.phoneLast10).filter(Boolean) as string[]
       ])).filter(Boolean);
 
       appOrClauses = [];
       if (customerIds.length > 0) appOrClauses.push({ customerId: { in: customerIds } });
-      if (matchedEmails.length > 0) appOrClauses.push({ customer: { email: { in: matchedEmails } } });
-      if (matchedPhones.length > 0) appOrClauses.push({ customer: { phone: { in: matchedPhones } } });
-      if (matchedPhoneLast10s.length > 0) appOrClauses.push({ customer: { phoneLast10: { in: matchedPhoneLast10s } } });
+      if (!appCustomer) {
+        if (matchedEmails.length > 0) appOrClauses.push({ customer: { email: { in: matchedEmails } } });
+        if (matchedPhones.length > 0) appOrClauses.push({ customer: { phone: { in: matchedPhones } } });
+        if (matchedPhoneLast10s.length > 0) appOrClauses.push({ customer: { phoneLast10: { in: matchedPhoneLast10s } } });
+      }
     }
 
-    const orders = await prisma.order.findMany({
+    let orders = await prisma.order.findMany({
       where: all ? {
         OR: [
           { orderType: 'MOBILE_APP' },
@@ -154,6 +192,29 @@ export async function GET(req: Request) {
       orderBy: { createdAt: 'desc' },
       ...(limit ? { skip: offset, take: limit } : {}),
     });
+
+    // Enforce ownership for single-order / guest lookups
+    if (!dashboardAdmin && orderId) {
+      const phoneLast10 = phone ? phone.replace(/\D/g, '').slice(-10) : '';
+      const allowed = orders.filter((o: any) => {
+        if (appCustomer && o.customerId === appCustomer.id) return true;
+        if (appCustomer && o.customer?.id === appCustomer.id) return true;
+        if (phoneLast10.length === 10) {
+          const orderPhone = String(o.customer?.phone || '').replace(/\D/g, '');
+          if (orderPhone.slice(-10) === phoneLast10) return true;
+          try {
+            const addr = typeof o.shippingAddress === 'string' ? JSON.parse(o.shippingAddress) : o.shippingAddress;
+            const shipPhone = String(addr?.phone || '').replace(/\D/g, '');
+            if (shipPhone.slice(-10) === phoneLast10) return true;
+          } catch { /* ignore */ }
+        }
+        return false;
+      });
+      if (allowed.length === 0) {
+        return NextResponse.json({ orders: [] }, { headers: corsHeaders });
+      }
+      orders = allowed;
+    }
 
     // Auto-link only onto a verified Customer id from the lookup above (FK-safe)
     const targetCustomerId = customerIds.find((id) => id === customerId) || customerIds[0];

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { adjustInventoryLevel, fetchLocations } from '@/lib/shopify-admin';
 import prisma from '@/lib/db';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +13,8 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(req: Request) {
   try {
+    await requireAdmin('INVENTORY', 'edit');
+
     const body = await req.json();
     const { inventoryItemId, delta } = body;
     let { locationId } = body;
@@ -67,6 +70,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, inventoryLevel: updatedLevel });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Inventory Adjust Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -3,6 +3,7 @@ import db from '@/lib/db';
 import { EmailService } from '@/lib/services/email.service';
 import { SmsService } from '@/lib/services/sms.service';
 import { WhatsAppService } from '@/lib/services/whatsapp.service';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 // Assuming NotificationService has a way to send, or we just call the existing /api/notifications/send-manual
 import { fetchAllCustomers } from '@/lib/shopify-admin';
 import { isOptedIn } from '@/lib/whatsapp/templates';
@@ -10,6 +11,8 @@ import { formatPhone } from '@/lib/whatsapp/client';
 
 export async function POST(req: Request) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const { channel, targetAudience, subject, messageBody, templateId, mediaUrl } = await req.json();
 
     if (!channel || !targetAudience || !messageBody) {
@@ -138,6 +141,9 @@ export async function POST(req: Request) {
     });
 
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Campaign Dispatch Error:', error);
     return NextResponse.json({ error: error.message || 'Failed to dispatch campaign' }, { status: 500 });
   }

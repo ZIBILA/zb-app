@@ -91,11 +91,39 @@ export async function POST(req: Request) {
     const isCod = String(orderData?.paymentMethod || '').toUpperCase() === 'COD';
     const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
     const configuredCodFee = isCod ? await getConfiguredCodUpfrontAmount() : 0;
-    // COD: charge dashboard fee only. Prepaid: charge the client amount (order total).
-    const chargeAmountRupees = isCod ? configuredCodFee : amountRupees;
+
+    // Prepaid: reprice line items from Shopify when possible so Razorpay isn't opened for ₹1.
+    let prepaidCharge = amountRupees;
+    if (!isCod && Array.isArray(orderData?.lineItems) && orderData.lineItems.length > 0) {
+      try {
+        const { fetchVariantPriceMap, sumLineItemsWithAuthoritativePrices } = await import(
+          '@/lib/shopify-variant-prices'
+        );
+        const priceMap = await fetchVariantPriceMap(
+          orderData.lineItems.map((li: any) => String(li?.variantId || li?.variant_id || ''))
+        );
+        if (priceMap.size > 0) {
+          const priced = sumLineItemsWithAuthoritativePrices(orderData.lineItems, priceMap);
+          const credits = Math.max(0, Number(orderData.appliedStoreCredits || 0));
+          const discount = Math.max(0, Number(orderData.discountAmount || orderData.discount_amount || 0));
+          prepaidCharge = Math.max(0, Math.round((priced.subtotal - credits - discount) * 100) / 100);
+        }
+      } catch (e: any) {
+        console.warn('[MobileCheckout] Prepaid reprice failed:', e?.message);
+      }
+    }
+    if (!isCod && prepaidCharge <= 0) {
+      return NextResponse.json(
+        { error: 'Invalid prepaid amount after discounts' },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    // COD: charge dashboard fee only. Prepaid: server-floor amount.
+    const chargeAmountRupees = isCod ? configuredCodFee : prepaidCharge;
     const orderTotalRupees = isCod
       ? Number(orderData?.total ?? orderData?.total_price ?? amountRupees)
-      : amountRupees;
+      : chargeAmountRupees;
 
     // Razorpay receipt: required, max 40 chars
     let receipt = typeof receiptIn === 'string' && receiptIn.trim() ? receiptIn.trim() : `zb_${Date.now()}`;

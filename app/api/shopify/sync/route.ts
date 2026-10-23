@@ -9,6 +9,7 @@ import {
 import prisma from '@/lib/db';
 import { registerWebhooks } from '@/lib/shopify-webhooks';
 import { extractSizeFromVariant } from '@/lib/utils';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,7 @@ export async function POST() {
   };
 
   try {
+    await requireAdmin('PRODUCTS', 'edit');
     // Ensure shop record exists
     const shopDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN || '8tiahf-bk.myshopify.com';
     const envToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN;
@@ -510,6 +512,9 @@ export async function POST() {
       synced: results,
     });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Sync Error:', error.stack);
     return NextResponse.json(
       { error: 'Sync failed', details: error.message, partialResults: results },

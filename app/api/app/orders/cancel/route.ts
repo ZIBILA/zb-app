@@ -153,14 +153,14 @@ export async function POST(req: Request) {
     // 3. Automatic Order Email Webhook Trigger (Non-blocking)
     try {
       const localApiUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.zicabella.com'}/api/orders/status-update`;
-      const apiSecret = process.env.INTERNAL_API_SECRET || 'ZB_INTERNAL_SECRET_987654321';
+      const apiSecret = process.env.INTERNAL_API_SECRET;
       
       const fullOrder = await prisma.order.findUnique({
         where: { id: updatedOrder.id },
         include: { items: true }
       });
 
-      if (fullOrder && order.customer && order.customer.email) {
+      if (apiSecret && fullOrder && order.customer && order.customer.email) {
         const payload = {
           orderId: fullOrder.id,
           newStatus: 'cancelled',

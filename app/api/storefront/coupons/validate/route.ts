@@ -9,6 +9,18 @@ import prisma from "@/lib/db";
  */
 export async function POST(req: Request) {
   try {
+    // Light abuse throttle (enumeration of influencer / secure codes)
+    try {
+      const { checkRateLimit } = await import("@/lib/rate-limit");
+      const rl = await checkRateLimit(req, "coupon-validate", {
+        maxRequests: 30,
+        windowMs: 60_000,
+      });
+      if (!rl.allowed && rl.response) return rl.response;
+    } catch {
+      /* never block checkout on limiter errors */
+    }
+
     const body = await req.json();
     const { code, subtotal, paymentMethod } = body;
 
@@ -28,54 +40,67 @@ export async function POST(req: Request) {
       },
     });
 
+    const genericInvalid = {
+      valid: false,
+      discount: 0,
+      discountType: "",
+      message: "Invalid coupon code.",
+    };
+
     if (!coupon) {
-      return NextResponse.json({
-        valid: false,
-        discount: 0,
-        discountType: "",
-        message: "Invalid coupon code.",
-      });
+      return NextResponse.json(genericInvalid);
     }
+
+    // Secure / influencer codes: never leak why they failed
+    const secureMsg = coupon.isSecure ? genericInvalid : null;
 
     // Check date validity
     const now = new Date();
     if (coupon.validFrom && new Date(coupon.validFrom) > now) {
-      return NextResponse.json({
-        valid: false,
-        discount: 0,
-        discountType: "",
-        message: "This coupon is not yet active.",
-      });
+      return NextResponse.json(
+        secureMsg || {
+          valid: false,
+          discount: 0,
+          discountType: "",
+          message: "This coupon is not yet active.",
+        }
+      );
     }
 
     if (coupon.validUntil && new Date(coupon.validUntil) < now) {
-      return NextResponse.json({
-        valid: false,
-        discount: 0,
-        discountType: "",
-        message: "This coupon has expired.",
-      });
+      return NextResponse.json(
+        secureMsg || {
+          valid: false,
+          discount: 0,
+          discountType: "",
+          message: "This coupon has expired.",
+        }
+      );
     }
 
     // Check usage limit
     if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
-      return NextResponse.json({
-        valid: false,
-        discount: 0,
-        discountType: "",
-        message: "This coupon has reached its usage limit.",
-      });
+      return NextResponse.json(
+        secureMsg || {
+          valid: false,
+          discount: 0,
+          discountType: "",
+          message: "This coupon has reached its usage limit.",
+        }
+      );
     }
 
     // Check minimum order amount
     const minOrderVal = Number(coupon.minOrderValue || 0);
     if (minOrderVal > 0 && subtotal < minOrderVal) {
-      return NextResponse.json({
-        valid: false,
-        discount: 0,
-        discountType: "",
-        message: `Minimum order of ₹${minOrderVal.toLocaleString("en-IN")} required.`,
-      });
+      return NextResponse.json(
+        secureMsg || {
+          valid: false,
+          discount: 0,
+          discountType: "",
+          message: `Minimum order of ₹${minOrderVal.toLocaleString("en-IN")} required.`,
+        }
+      );
     }
 
     // Check payment method applicability (COD upfront payment is STILL a COD order)

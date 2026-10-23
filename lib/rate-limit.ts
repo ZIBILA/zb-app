@@ -97,9 +97,10 @@ export async function rateLimit(
     try {
       const windowStart = new Date(now.getTime() - windowMs);
 
-      // Clean up old entries first to prevent DB bloat
+      // Clean up old entries for this key only (never wipe other keys' longer windows)
       await prisma.$executeRawUnsafe(
-        `DELETE FROM "RateLimitLog" WHERE "timestamp" < $1`,
+        `DELETE FROM "RateLimitLog" WHERE "key" = $1 AND "timestamp" < $2`,
+        key,
         windowStart
       );
 

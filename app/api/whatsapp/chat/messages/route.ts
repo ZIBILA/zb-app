@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { WhatsAppService } from '@/lib/services/whatsapp.service';
 import { sendTemplate, formatPhone } from '@/lib/whatsapp/client';
 import { logMessage } from '@/lib/whatsapp/logger';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(req: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'view');
     const { searchParams } = new URL(req.url);
     const phone = searchParams.get('phone');
     const since = searchParams.get('since');
@@ -63,6 +65,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ messages });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') return handleAuthError(error);
     console.error('[WhatsApp Messages API] GET error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -73,6 +76,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'edit');
     const body = await req.json();
     const { phone, text, mediaUrl, mediaType, templateName, components } = body;
 
@@ -152,6 +156,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, message: newMessage });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') return handleAuthError(error);
     console.error('[WhatsApp Messages API] POST error:', error);
     const message = error.response?.data?.error?.message || error.message;
     return NextResponse.json({ error: message }, { status: 500 });

@@ -239,17 +239,30 @@ export async function POST(req: Request) {
       }
     }
 
-    // ₹0 payable: store credit, validated 100% coupon, or explicit coupon/store_credit method.
-    // Do not treat a bare client total:0 with no credit/coupon as paid.
+    // ₹0 payable only when a server-validated coupon/credit actually covers the cart.
+    // Never trust paymentMethod:"coupon" alone — that would mark unpaid orders as paid.
     const isZeroPayableMethod =
       paymentMethod === "store_credit" ||
       paymentMethod === "STORE_CREDIT" ||
       paymentMethod === "coupon" ||
       paymentMethod === "COUPON";
+    const hasValidatedZeroCover =
+      Number(finalCouponDiscount) > 0 ||
+      parsedStoreCredit > 0 ||
+      Boolean(finalCouponCode);
+    // Prefer Shopify-verified payable total; otherwise subtract server-validated discounts from subtotal.
+    const serverPayableAmount = priceVerified
+      ? Math.max(0, Number(authoritativeTotal))
+      : Math.max(
+          0,
+          Number(subtotal || total || 0) -
+            Number(finalCouponDiscount || 0) -
+            parsedStoreCredit
+        );
     const isFullStoreCredit =
-      isZeroPayableMethod ||
-      (Number(total) === 0 &&
-        (parsedStoreCredit > 0 || finalCouponDiscount > 0 || Boolean(finalCouponCode)));
+      hasValidatedZeroCover &&
+      serverPayableAmount <= 0.01 &&
+      (isZeroPayableMethod || Number(total) === 0);
 
 
     // 1. Verify Payment (Required for prepaid and COD upfront fee, unless 100% store credit)

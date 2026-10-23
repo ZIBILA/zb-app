@@ -86,13 +86,35 @@ export async function POST(req: Request) {
     const resolvedCodFee = configuredCodFee;
     let verifiedCodUpfrontPaid = 0;
 
-    // 100% store credit: there is no Razorpay payment to verify. The proof of
-    // payment is the wallet debit below (idempotent; fails when the balance is
-    // short), and the credit must cover what the app says the items cost.
-    const linesTotal = (Array.isArray(lineItems) ? lineItems : []).reduce(
+    // Reprice from Shopify so a client can't mark a ₹1 capture as paid for a full cart.
+    const clientLinesTotal = (Array.isArray(lineItems) ? lineItems : []).reduce(
       (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
     const couponDiscount = Math.max(0, Number(body.discountAmount || body.discount_amount || 0));
+    let linesTotal = clientLinesTotal;
+    try {
+      const { fetchVariantPriceMap, sumLineItemsWithAuthoritativePrices } = await import(
+        '@/lib/shopify-variant-prices'
+      );
+      const variantIds = (Array.isArray(lineItems) ? lineItems : []).map(
+        (li: any) => String(li?.variantId || li?.variant_id || '')
+      );
+      const priceMap = await fetchVariantPriceMap(variantIds);
+      if (priceMap.size > 0) {
+        const priced = sumLineItemsWithAuthoritativePrices(lineItems, priceMap);
+        linesTotal = priced.subtotal;
+      }
+    } catch (priceErr: any) {
+      console.warn('[App API] Variant reprice failed; using client line totals:', priceErr?.message);
+    }
+
+    // 100% store credit: there is no Razorpay payment to verify. The proof of
+    // payment is the wallet debit below (idempotent; fails when the balance is
+    // short), and the credit must cover the authoritative item total.
     const isFullStoreCreditPayment = clientClaimsPaid && !isCod && total <= 0 && appliedStoreCredits > 0;
+    const expectedPrepaidRupees = Math.max(
+      0,
+      Math.round((linesTotal - appliedStoreCredits - couponDiscount) * 100) / 100
+    );
 
     if (isFullStoreCreditPayment) {
       if (appliedStoreCredits + couponDiscount + 0.01 < linesTotal) {
@@ -124,10 +146,13 @@ export async function POST(req: Request) {
         const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
         const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
         const creds = await resolveRazorpayCredentials();
+        const expectedMinRupees = isCod
+          ? resolvedCodFee || DEFAULT_COD_UPFRONT_AMOUNT
+          : expectedPrepaidRupees;
         const captured = await assertCapturedCharge({
           paymentId,
           credentials: creds,
-          expectedMinRupees: isCod ? resolvedCodFee || DEFAULT_COD_UPFRONT_AMOUNT : 0,
+          expectedMinRupees,
           orderId: rzpOrderId,
         });
         verifiedCodUpfrontPaid = paymentAmountRupees(captured);

@@ -8,9 +8,9 @@ export async function GET(request: NextRequest): Promise<Response> {
   const { searchParams } = new URL(request.url);
   const secret = searchParams.get('secret');
   
-  const expectedSecret = process.env.ADMIN_SESSION_TOKEN || 'zica_db_push_secret_2026';
+  const expectedSecret = process.env.ADMIN_SESSION_TOKEN;
   
-  if (secret !== expectedSecret) {
+  if (!expectedSecret || !secret || secret !== expectedSecret) {
     return NextResponse.json({ 
       error: 'Unauthorized. Please provide the correct ?secret= query parameter.' 
     }, { status: 401 });

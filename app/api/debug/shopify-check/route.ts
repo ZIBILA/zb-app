@@ -1,28 +1,21 @@
-import { NextResponse } from 'next/server';
-import { searchCustomerByPhone } from '@/lib/shopify-admin';
+import { NextResponse } from "next/server";
+import { requireSuperAdmin, handleAuthError } from "@/lib/auth/rbac";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const phone = searchParams.get('phone') || '9222212222';
-
+/** Debug endpoint — admin only. Do not expose data publicly. */
+export async function GET() {
   try {
-    const customer = await searchCustomerByPhone(phone);
-    return NextResponse.json({
-      phone,
-      found: !!customer,
-      customer: customer ? {
-        id: customer.id,
-        first_name: customer.first_name,
-        last_name: customer.last_name,
-        email: customer.email,
-        phone: customer.phone,
-        orders_count: customer.orders_count,
-        total_spent: customer.total_spent,
-      } : null
-    });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    await requireSuperAdmin();
+    return NextResponse.json(
+      { error: "This debug endpoint has been disabled. Use authenticated admin tools." },
+      { status: 410 }
+    );
+  } catch (e: any) {
+    return handleAuthError(e);
   }
+}
+
+export async function POST() {
+  return GET();
 }

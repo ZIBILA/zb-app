@@ -8,6 +8,7 @@ import {
   updateProductMetafield
 } from '@/lib/shopify-admin';
 import prisma from '@/lib/db';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,9 +17,11 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
+    await requireAdmin('PRODUCTS', 'view');
     const product = await fetchProductById(params.id);
     return NextResponse.json({ product });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') return handleAuthError(error);
     console.error('Shopify Product GET Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -29,6 +32,7 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
+    await requireAdmin('PRODUCTS', 'edit');
     const body = await req.json();
     const { status, title, tags, body_html, product_type, vendor, variants, metafields } = body;
     
@@ -162,6 +166,7 @@ export async function PATCH(
 
     return NextResponse.json({ product: finalProduct });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') return handleAuthError(error);
     console.error('Shopify Product PATCH Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -1,33 +1,21 @@
-import { NextResponse } from 'next/server';
-import prisma from '@/lib/db';
+import { NextResponse } from "next/server";
+import { requireSuperAdmin, handleAuthError } from "@/lib/auth/rbac";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
+/** Debug endpoint — admin only. Do not expose data publicly. */
 export async function GET() {
-  const envVars = {
-    DATABASE_URL: process.env.DATABASE_URL ? 'PRESENT (hidden)' : 'MISSING',
-    POSTGRES_PRISMA_URL: process.env.POSTGRES_PRISMA_URL ? 'PRESENT (hidden)' : 'MISSING',
-    POSTGRES_URL: process.env.POSTGRES_URL ? 'PRESENT (hidden)' : 'MISSING',
-    NODE_ENV: process.env.NODE_ENV,
-    NEXT_PHASE: process.env.NEXT_PHASE,
-  };
-
   try {
-    // Attempt a real DB operation
-    const shopCount = await prisma.shop.count();
-    return NextResponse.json({
-      status: 'connected',
-      isMock: (prisma as any)._isMock || false,
-      mockReason: (prisma as any)._mockReason || null,
-      dbType: prisma.constructor.name,
-      shopCount,
-      envVars
-    });
-  } catch (error: any) {
-    return NextResponse.json({
-      status: 'error',
-      message: error.message,
-      envVars
-    }, { status: 500 });
+    await requireSuperAdmin();
+    return NextResponse.json(
+      { error: "This debug endpoint has been disabled. Use authenticated admin tools." },
+      { status: 410 }
+    );
+  } catch (e: any) {
+    return handleAuthError(e);
   }
+}
+
+export async function POST() {
+  return GET();
 }

@@ -1,32 +1,21 @@
-import { NextResponse } from 'next/server';
-import prisma from '@/lib/db';
+import { NextResponse } from "next/server";
+import { requireSuperAdmin, handleAuthError } from "@/lib/auth/rbac";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
+/** Debug endpoint — admin only. Do not expose data publicly. */
 export async function GET() {
   try {
-    const shop = await prisma.shop.findFirst({
-      include: {
-        _count: {
-          select: {
-            products: true,
-            customers: true,
-            orders: true
-          }
-        }
-      }
-    });
-
-    return NextResponse.json({
-      status: 'success',
-      shop: shop ? {
-        id: shop.id,
-        domain: shop.domain,
-        accessToken: shop.accessToken ? 'PRESENT' : 'MISSING',
-        _count: shop._count
-      } : 'No shop found'
-    });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    await requireSuperAdmin();
+    return NextResponse.json(
+      { error: "This debug endpoint has been disabled. Use authenticated admin tools." },
+      { status: 410 }
+    );
+  } catch (e: any) {
+    return handleAuthError(e);
   }
+}
+
+export async function POST() {
+  return GET();
 }

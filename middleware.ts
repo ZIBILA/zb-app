@@ -125,11 +125,14 @@ export default withAuth(
 
     // Allow webhook / payment-provider callbacks through without auth or CSRF.
     // These are authenticated by signature headers, not browser Origin.
+    // Razorpay: only public create/verify — refund & capture require admin auth.
     if (
       pathname.startsWith('/api/webhooks') ||
       pathname.startsWith('/api/shopify/webhooks') ||
+      pathname.startsWith('/api/whatsapp/webhook') ||
       pathname.startsWith('/api/payments/webhook') ||
-      pathname.startsWith('/api/razorpay')
+      pathname === '/api/razorpay/create-order' ||
+      pathname === '/api/razorpay/verify-payment'
     ) {
       return NextResponse.next();
     }
@@ -277,9 +280,18 @@ export default withAuth(
       pathname.startsWith('/web-store') ||
       pathname.startsWith('/api/admin') ||
       pathname.startsWith('/api/web-store') ||
+      pathname.startsWith('/api/email') ||
+      pathname.startsWith('/api/mail') ||
+      pathname.startsWith('/api/marketing') ||
+      pathname.startsWith('/api/notifications/send-manual') ||
+      pathname === '/api/send-notification' ||
+      (pathname.startsWith('/api/whatsapp') && !pathname.startsWith('/api/whatsapp/webhook')) ||
+      (pathname.startsWith('/api/shopify') && !pathname.startsWith('/api/shopify/webhooks') && !pathname.startsWith('/api/shopify/auth')) ||
+      pathname === '/api/razorpay/refund' ||
+      pathname === '/api/razorpay/capture-payment' ||
       pathname === '/api/payments/refund';
 
-    if (isAdminMutationPath && ["POST", "PUT", "DELETE"].includes(req.method)) {
+    if (isAdminMutationPath && ["POST", "PUT", "DELETE", "PATCH"].includes(req.method)) {
       const origin = req.headers.get("origin");
       const referer = req.headers.get("referer");
       const currentHost = (
@@ -515,10 +527,32 @@ export default withAuth(
         }
 
         // Determine if route requires NextAuth admin validation
+        const shopifyPublicGet =
+          req.method === 'GET' &&
+          (pathname.startsWith('/api/shopify/products') ||
+            pathname.startsWith('/api/shopify/collections'));
+
         const isAdminRoute =
           pathname.startsWith('/dashboard') ||
           pathname.startsWith('/web-store') ||
           pathname.startsWith('/api/admin') ||
+          pathname.startsWith('/api/admin-debug') ||
+          pathname.startsWith('/api/debug') ||
+          pathname.startsWith('/api/seed-blogs') ||
+          pathname.startsWith('/api/email') ||
+          pathname.startsWith('/api/mail') ||
+          pathname.startsWith('/api/marketing') ||
+          pathname.startsWith('/api/notifications/send-manual') ||
+          pathname.startsWith('/api/notifications/history') ||
+          pathname.startsWith('/api/notifications/stats') ||
+          pathname === '/api/send-notification' ||
+          (pathname.startsWith('/api/whatsapp') && !pathname.startsWith('/api/whatsapp/webhook')) ||
+          (pathname.startsWith('/api/shopify') &&
+            !pathname.startsWith('/api/shopify/webhooks') &&
+            !pathname.startsWith('/api/shopify/auth') &&
+            !shopifyPublicGet) ||
+          pathname === '/api/razorpay/refund' ||
+          pathname === '/api/razorpay/capture-payment' ||
           (pathname.startsWith('/api/web-store') && !(pathname === '/api/web-store/banners' || pathname === '/api/web-store/gallery')) ||
           pathname === '/api/payments/refund';
 
