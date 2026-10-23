@@ -170,7 +170,6 @@ export default async function RootLayout({
   const snapPixelId = resolveSnapPixelId(); // '' = Snap tracking off on this deployment (lib/snap/config.ts)
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
-  const adminGtmId = process.env.NEXT_PUBLIC_ADMIN_GTM_ID || "GTM-TDGKF386";
   const footerData = await getStorefrontFooterData();
 
   return (
@@ -193,21 +192,19 @@ export default async function RootLayout({
             `,
           }}
         />
-        {/* Google Tag Manager - Storefront vs Admin domain routing */}
+        {/* GTM stub only — network gtm.js loads via lazyOnload below so it stays off the critical path. */}
         <script
-          id="google-tag-manager"
+          id="google-tag-manager-stub"
           dangerouslySetInnerHTML={{
             __html: `
-              if (typeof window !== 'undefined') {
-                var isAppOrAdmin = window.location.hostname === 'app.zicabella.com' || window.location.pathname.startsWith('/dashboard') || window.location.pathname.startsWith('/admin') || window.location.pathname.startsWith('/web-store');
-                if (!isAppOrAdmin) {
-                  (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-                  new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-                  j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-                  'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-                  })(window,document,'script','dataLayer','${storefrontGtmId}');
+              (function () {
+                var isAppOrAdmin = location.hostname === 'app.zicabella.com' || location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/admin') || location.pathname.startsWith('/web-store');
+                window.__zbGtmId = isAppOrAdmin ? '' : '${storefrontGtmId}';
+                window.dataLayer = window.dataLayer || [];
+                if (window.__zbGtmId) {
+                  window.dataLayer.push({'gtm.start': new Date().getTime(), event: 'gtm.js'});
                 }
-              }
+              })();
             `,
           }}
         />
@@ -244,27 +241,17 @@ export default async function RootLayout({
             })
           }}
         />
-        {/* Meta Pixel Base Code (not rendered when Meta tracking is off on this deployment) */}
+        {/* Pixel queue stubs + init (no network). External SDKs load via lazyOnload so early track() calls still queue. */}
         {pixelId && (
-        <Script
-          id="fb-pixel"
-          strategy="afterInteractive"
+        <script
+          id="fb-pixel-stub"
           dangerouslySetInnerHTML={{
             __html: `
-              if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
-                !function(f,b,e,v,n,t,s)
-                {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+              if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+                !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
-                if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
-                n.queue=[];t=b.createElement(e);t.async=!0;
-                t.src=v;s=b.getElementsByTagName(e)[0];
-                s.parentNode.insertBefore(t,s)}(window, document,'script',
-                'https://connect.facebook.net/en_US/fbevents.js');
+                if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];}(window);
                 fbq('set', 'autoConfig', false, '${pixelId}');
-                // Manual Advanced Matching on the FIRST init: identity this browser already
-                // holds (hashed zb_guest_* cookies, only when bound to this visitor via
-                // zb_pii_owner) is available to PageView and the first ViewContent too.
-                // Later initPixel() calls still add new identity (login / checkout).
                 var zbAM = {};
                 try {
                   var zbC = {};
@@ -286,9 +273,6 @@ export default async function RootLayout({
                     }
                   }
                 } catch (e) {}
-                // Consent regions (NEXT_PUBLIC_META_CONSENT_REGIONS): hold the Pixel before init
-                // until the visitor's country is known to be outside them, or they accept.
-                // Same decision as lib/meta/consent.ts consentState(). Empty list = no gating.
                 try {
                   var zbRegions = ${JSON.stringify(Array.from(metaConsentRegions))};
                   if (zbRegions.length) {
@@ -300,55 +284,67 @@ export default async function RootLayout({
                   if (${metaLdu ? 'true' : 'false'}) fbq('dataProcessingOptions', ['LDU'], 0, 0);
                 } catch (e) {}
                 window.__zbMetaAM = zbAM;
+                window.__zbLoadMetaPixel = true;
                 fbq('init', '${pixelId}', zbAM);
               }
             `,
           }}
         />
         )}
-        {/* Snap Pixel Base Code (not rendered when Snap tracking is off on this deployment) */}
         {snapPixelId && (
-          <Script
-            id="snap-pixel"
-            strategy="afterInteractive"
+          <script
+            id="snap-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-              if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
-                (function(e,t,n){if(e.snaptr)return;var a=e.snaptr=function()
-                {a.handleRequest?a.handleRequest.apply(a,arguments):a.queue.push(arguments)};
-                a.queue=[];var s='script';r=t.createElement(s);r.async=!0;
-                r.src=n;var u=t.getElementsByTagName(s)[0];
-                if (u && u.parentNode) { u.parentNode.insertBefore(r,u); } else { (document.head || document.body).appendChild(r); }
-                })(window,document,
-                'https://sc-static.net/scevent.min.js');
-
+              if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+                if (!window.snaptr) {
+                  var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
+                  a.queue = [];
+                }
+                window.__zbLoadSnapPixel = true;
                 snaptr('init', '${snapPixelId}', {});
               }
             `,
             }}
           />
         )}
-        {/* OpenAI (ChatGPT) Ads Pixel Base Code */}
         {openaiAdsPixelId && (
-          <Script
-            id="openai-ads-pixel"
-            strategy="afterInteractive"
+          <script
+            id="openai-ads-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-                if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/dashboard') && !window.location.pathname.startsWith('/admin') && !window.location.pathname.startsWith('/web-store')) {
-                  !function(o,a,i,q){if(o.oaiq)return;q=o.oaiq=function(){
-                  q.callMethod?q.callMethod.apply(q,arguments):q.q.push(arguments)};
-                  q.q=[];q.l=1*new Date();var s=a.createElement(i),
-                  f=a.getElementsByTagName(i)[0];s.async=1;
-                  s.src='https://bzrcdn.openai.com/sdk/oaiq.min.js';
-                  if(f&&f.parentNode){f.parentNode.insertBefore(s,f);}else{(a.head||a.body).appendChild(s);}
-                  }(window,document,'script');
+                if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+                  if (!window.oaiq) {
+                    var q = window.oaiq = function () { q.callMethod ? q.callMethod.apply(q, arguments) : q.q.push(arguments); };
+                    q.q = []; q.l = 1 * new Date();
+                  }
+                  window.__zbLoadOpenAiPixel = true;
                   oaiq('init', { pixelId: '${openaiAdsPixelId}' });
                 }
               `,
             }}
           />
         )}
+        <Script
+          id="third-party-pixels-loader"
+          strategy="lazyOnload"
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function () {
+                function inject(src) {
+                  var s = document.createElement('script');
+                  s.async = true;
+                  s.src = src;
+                  (document.head || document.body).appendChild(s);
+                }
+                if (window.__zbGtmId) inject('https://www.googletagmanager.com/gtm.js?id=' + window.__zbGtmId);
+                if (window.__zbLoadMetaPixel) inject('https://connect.facebook.net/en_US/fbevents.js');
+                if (window.__zbLoadSnapPixel) inject('https://sc-static.net/scevent.min.js');
+                if (window.__zbLoadOpenAiPixel) inject('https://bzrcdn.openai.com/sdk/oaiq.min.js');
+              })();
+            `,
+          }}
+        />
       </head>
       <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
         {/* Google Tag Manager (noscript) */}
