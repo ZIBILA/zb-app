@@ -168,9 +168,10 @@ export default function DashboardOverview() {
   const fetchStats = async (silent = false) => {
     if (!silent && !stats) setStatsLoading(true);
     try {
-      const orderLimit = silent ? 10 : 50;
-      const productLimit = silent ? 50 : 100;
-      const customerLimit = silent ? 20 : 50;
+      // Always use the same sample sizes so silent refresh doesn't shrink KPI cards
+      const orderLimit = 50;
+      const productLimit = 100;
+      const customerLimit = 50;
 
       // Parallelize cached fetches to make dashboard load instantly
       const [ordersData, productsData, customersData] = await Promise.all([
@@ -204,6 +205,7 @@ export default function DashboardOverview() {
       lowStockProducts.sort((a, b) => a.stock - b.stock);
 
       setStats({
+        // Note: these are sample-window KPIs (last N records), not store-wide totals.
         totalRevenue,
         totalOrders: orders.length,
         totalCustomers: customers.length,
@@ -223,15 +225,11 @@ export default function DashboardOverview() {
     try {
       const ordersData = await cachedAdminFetch<any>("/api/shopify/orders?limit=5");
       const orders = ordersData.orders || [];
-      setStats(prev => ({
-        totalRevenue: 0,
-        totalOrders: 0,
-        totalCustomers: 0,
-        totalProducts: 0,
-        lowStockItems: 0,
+      // Only refresh the recent-orders strip — never zero out KPI cards
+      setStats(prev => prev ? ({
+        ...prev,
         recentOrders: orders.slice(0, 5),
-        lowStockProducts: prev?.lowStockProducts || [],
-      }));
+      }) : prev);
     } catch (err) {
       console.error("Failed to fetch orders only:", err);
     }

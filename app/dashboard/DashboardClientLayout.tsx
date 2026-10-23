@@ -57,7 +57,6 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { useRealtimeSync } from "@/lib/hooks/useRealtime";
 import ThemeToggle from "@/components/ThemeToggle";
-import AdminPolarisProvider from "@/components/AdminPolarisProvider";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { data: session } = useSession();
@@ -445,7 +444,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           .replace(/\b\w/g, (l) => l.toUpperCase());
 
   return (
-    <AdminPolarisProvider>
       <div className="min-h-[100dvh] flex text-foreground bg-background dark:bg-[#0A0A0A] font-sans selection:bg-foreground/20 selection:text-foreground">
       {/* Subtle background */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden bg-background" aria-hidden="true">
@@ -843,6 +841,5 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </main>
     </div>
-  </AdminPolarisProvider>
   );
 }
