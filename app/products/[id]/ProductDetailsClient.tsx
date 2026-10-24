@@ -818,6 +818,7 @@ export default function ProductDetailsClient({
                         alt={`${product.title} mood board ${idx + 1}`}
                         className="w-full h-full object-cover"
                         loading="lazy"
+                        referrerPolicy="no-referrer"
                       />
                     </div>
                   ))}
@@ -1220,6 +1221,7 @@ export default function ProductDetailsClient({
                             alt={`${product.title} mood ${idx + 1}`}
                             className="w-full h-full object-cover"
                             loading="lazy"
+                            referrerPolicy="no-referrer"
                           />
                         </div>
                       ))}

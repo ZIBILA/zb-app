@@ -49,8 +49,21 @@ export async function PATCH(req: NextRequest) {
       parsedImages = images;
     }
 
-    // Cap at 10 images
-    parsedImages = parsedImages.filter(Boolean).slice(0, 10);
+    parsedImages = parsedImages
+      .map((value) => {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        try {
+          const href = raw.startsWith('//') ? `https:${raw}` : raw;
+          const url = new URL(href);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+          return url.href;
+        } catch {
+          return '';
+        }
+      })
+      .filter(Boolean)
+      .slice(0, 10);
 
     const moodBoard = await prisma.productMoodBoard.upsert({
       where: { shopifyProductId },

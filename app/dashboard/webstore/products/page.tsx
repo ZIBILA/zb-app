@@ -2,11 +2,10 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
-  Search, Save, RefreshCw, CheckCircle, Loader2, Upload, X, Link as LinkIcon,
-  Image as ImageIcon, Package, ChevronDown, ChevronRight, Info, Sparkles, ExternalLink,
-  GripVertical
+  Search, Save, RefreshCw, CheckCircle, Loader2, X, Link as LinkIcon,
+  Image as ImageIcon, Package, ChevronDown, ChevronRight, Info, Sparkles,
 } from "lucide-react";
-import { motion, AnimatePresence, Reorder } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import NextImage from "next/image";
 
@@ -25,6 +24,31 @@ interface MoodBoardData {
   images: string; // JSON string array
 }
 
+function normalizeImageUrl(raw: string): string | null {
+  let value = String(raw || "").trim().replace(/^['"]+|['"]+$/g, "");
+  if (!value) return null;
+  if (value.startsWith("//")) value = `https:${value}`;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function parseImageUrls(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(/[\s,;]+/)) {
+    const href = normalizeImageUrl(part);
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    out.push(href);
+  }
+  return out;
+}
+
 export default function WebStoreProductsPage() {
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState<ShopifyProduct[]>([]);
@@ -33,7 +57,7 @@ export default function WebStoreProductsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [savingProduct, setSavingProduct] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<Record<string, 'idle' | 'success' | 'error'>>({});
-  const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
+  const [urlDrafts, setUrlDrafts] = useState<Record<string, string>>({});
 
   // Load data
   useEffect(() => {
@@ -102,57 +126,38 @@ export default function WebStoreProductsPage() {
     setMoodBoards((prev) => ({ ...prev, [productId]: images.slice(0, 10) }));
   };
 
-  // Add image to mood board
-  const addImage = (productId: string, url: string) => {
-    const current = getMoodBoardImages(productId);
-    if (current.length >= 10) {
-      toast.error("Maximum 10 images per mood board");
-      return;
+  const addImageUrls = (productId: string, raw: string) => {
+    const incoming = parseImageUrls(raw);
+    if (incoming.length === 0) {
+      toast.error("Paste a valid image URL (https://cdn.shopify.com/...)");
+      return false;
     }
-    updateLocalMoodBoard(productId, [...current, url]);
+    const current = getMoodBoardImages(productId);
+    const existing = new Set(current.map((url) => url.trim()));
+    const next = [...current];
+    for (const href of incoming) {
+      if (existing.has(href)) continue;
+      if (next.length >= 10) {
+        toast.error("Maximum 10 images per mood board");
+        break;
+      }
+      existing.add(href);
+      next.push(href);
+    }
+    if (next.length === current.length) {
+      toast.error("That URL is already on this mood board");
+      return false;
+    }
+    updateLocalMoodBoard(productId, next);
+    return true;
   };
 
-  // Remove image from mood board
   const removeImage = (productId: string, index: number) => {
     const current = getMoodBoardImages(productId);
     updateLocalMoodBoard(
       productId,
       current.filter((_, i) => i !== index)
     );
-  };
-
-  // Handle file upload for a specific slot
-  const handleUpload = async (productId: string, slotIndex: number, file: File) => {
-    const slotKey = `${productId}-${slotIndex}`;
-    setUploadingSlot(slotKey);
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      if (data.url) {
-        const current = [...getMoodBoardImages(productId)];
-        if (slotIndex >= current.length) {
-          // Adding a new image
-          current.push(data.url);
-        } else {
-          current[slotIndex] = data.url;
-        }
-        updateLocalMoodBoard(productId, current);
-        toast.success("Image uploaded");
-      } else {
-        toast.error(data.error || "Upload failed");
-      }
-    } catch {
-      toast.error("Upload failed");
-    } finally {
-      setUploadingSlot(null);
-    }
   };
 
   // Save mood board for a product
@@ -241,8 +246,7 @@ export default function WebStoreProductsPage() {
           <div className="px-4 py-3 bg-foreground/[0.02] rounded-xl border border-foreground/[0.05] flex items-center gap-3">
             <Info className="w-4 h-4 text-foreground/50 shrink-0" />
             <p className="text-[10px] font-medium text-foreground/50 uppercase tracking-widest">
-              Click a product to expand and manage its mood board. Upload images or
-              paste URLs. Up to 10 images per product.
+              Click a product to expand its mood board. Upload files in Shopify, then paste the CDN URLs here. Add, remove, preview, and save — up to 10 images per product.
             </p>
           </div>
 
@@ -366,115 +370,112 @@ export default function WebStoreProductsPage() {
                             </button>
                           </div>
 
-                          {/* Image Slots Grid */}
                           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-                            {/* Existing images */}
-                            {images.map((imgUrl, idx) => {
-                              const slotKey = `${productId}-${idx}`;
-                              const isUploadingThis = uploadingSlot === slotKey;
-
-                              return (
-                                <div
-                                  key={idx}
-                                  className="relative group rounded-lg overflow-hidden border border-foreground/[0.06] bg-foreground/[0.02] aspect-square"
-                                >
-                                  {imgUrl ? (
-                                    <>
-                                      <img
-                                        src={imgUrl}
-                                        alt={`Mood board ${idx + 1}`}
-                                        className="w-full h-full object-cover"
-                                      />
-                                      {/* Remove button */}
-                                      <button
-                                        onClick={() =>
-                                          removeImage(productId, idx)
-                                        }
-                                        className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
-                                      >
-                                        <X className="w-3 h-3" />
-                                      </button>
-                                      {/* Slot number */}
-                                      <span className="absolute bottom-1.5 left-1.5 text-[7px] font-bold text-white/70 bg-black/40 px-1.5 py-0.5 rounded">
-                                        {idx + 1}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <div className="w-full h-full flex items-center justify-center">
-                                      <ImageIcon className="w-5 h-5 text-foreground/15" />
-                                    </div>
-                                  )}
-
-                                  {isUploadingThis && (
-                                    <div className="absolute inset-0 bg-background/80 flex items-center justify-center">
-                                      <Loader2 className="w-4 h-4 animate-spin text-foreground/60" />
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-
-                            {/* Add new image slot (if under 10) */}
-                            {images.length < 10 && (
-                              <div className="relative rounded-lg border-2 border-dashed border-foreground/[0.08] bg-foreground/[0.01] aspect-square flex flex-col items-center justify-center gap-2 hover:border-foreground/20 transition-colors group cursor-pointer">
-                                <label className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer">
-                                  <Upload className="w-4 h-4 text-foreground/30 group-hover:text-foreground/50 transition-colors" />
-                                  <span className="text-[7px] font-bold uppercase tracking-widest text-foreground/30 group-hover:text-foreground/50 transition-colors mt-1">
-                                    Upload
+                            {images.map((imgUrl, idx) => (
+                              <div
+                                key={`${imgUrl}-${idx}`}
+                                className="relative group rounded-lg overflow-hidden border border-foreground/[0.06] bg-foreground/[0.02] aspect-square"
+                              >
+                                <img
+                                  src={imgUrl}
+                                  alt={`Mood board ${idx + 1}`}
+                                  className="w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = "none";
+                                    const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
+                                    if (fallback) fallback.classList.remove("hidden");
+                                  }}
+                                />
+                                <div className="hidden absolute inset-0 flex flex-col items-center justify-center gap-1 px-2 text-center">
+                                  <ImageIcon className="w-4 h-4 text-foreground/25" />
+                                  <span className="text-[8px] font-semibold uppercase tracking-widest text-foreground/35">
+                                    Couldn’t load
                                   </span>
-                                  <input
-                                    type="file"
-                                    className="hidden"
-                                    accept="image/*"
-                                    onChange={(e) => {
-                                      const file = e.target.files?.[0];
-                                      if (file) {
-                                        handleUpload(
-                                          productId,
-                                          images.length,
-                                          file
-                                        );
-                                      }
-                                      e.target.value = "";
-                                    }}
-                                  />
-                                </label>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeImage(productId, idx)}
+                                  className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                                  aria-label="Remove image"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                                <span className="absolute bottom-1.5 left-1.5 text-[7px] font-bold text-white/70 bg-black/40 px-1.5 py-0.5 rounded">
+                                  {idx + 1}
+                                </span>
                               </div>
-                            )}
+                            ))}
                           </div>
 
-                          {/* URL input for adding by link */}
+                          {images.length > 0 && (
+                            <div className="mt-3 space-y-1.5">
+                              {images.map((imgUrl, idx) => (
+                                <div
+                                  key={`url-${idx}`}
+                                  className="flex items-center gap-2 rounded-md border border-foreground/[0.05] bg-foreground/[0.02] px-2 py-1.5"
+                                >
+                                  <span className="w-5 shrink-0 text-[9px] font-mono text-foreground/40">
+                                    {idx + 1}
+                                  </span>
+                                  <LinkIcon className="w-3 h-3 shrink-0 text-foreground/30" />
+                                  <input
+                                    type="text"
+                                    value={imgUrl}
+                                    readOnly
+                                    className="min-w-0 flex-1 bg-transparent text-[10px] font-mono text-foreground/70 outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeImage(productId, idx)}
+                                    className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-red-500 hover:bg-red-500/5"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
                           {images.length < 10 && (
-                            <div className="mt-3 flex gap-2">
-                              <input
-                                type="text"
-                                placeholder="Paste image URL here and press Enter..."
-                                className="flex-1 bg-foreground/[0.02] px-3 py-2 rounded-md border border-foreground/[0.06] focus:border-foreground/20 text-[11px] font-medium text-foreground placeholder:text-foreground/30 outline-none transition-colors"
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    const input = e.target as HTMLInputElement;
-                                    const url = input.value.trim();
-                                    if (url) {
-                                      addImage(productId, url);
-                                      input.value = "";
+                            <div className="mt-3 space-y-1.5">
+                              <div className="flex gap-2">
+                                <input
+                                  type="url"
+                                  value={urlDrafts[productId] || ""}
+                                  onChange={(e) =>
+                                    setUrlDrafts((prev) => ({
+                                      ...prev,
+                                      [productId]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Paste Shopify CDN URL (https://cdn.shopify.com/s/files/...)"
+                                  className="flex-1 bg-foreground/[0.02] px-3 py-2 rounded-md border border-foreground/[0.06] focus:border-foreground/20 text-[11px] font-medium text-foreground placeholder:text-foreground/30 outline-none transition-colors"
+                                  onKeyDown={(e) => {
+                                    if (e.key !== "Enter") return;
+                                    e.preventDefault();
+                                    const raw = urlDrafts[productId] || "";
+                                    if (addImageUrls(productId, raw)) {
+                                      setUrlDrafts((prev) => ({ ...prev, [productId]: "" }));
                                     }
-                                  }
-                                }}
-                              />
-                              <button
-                                onClick={() => {
-                                  const input = document.querySelector(
-                                    `input[placeholder="Paste image URL here and press Enter..."]`
-                                  ) as HTMLInputElement;
-                                  if (input?.value.trim()) {
-                                    addImage(productId, input.value.trim());
-                                    input.value = "";
-                                  }
-                                }}
-                                className="px-3 py-2 rounded-md bg-foreground/5 border border-foreground/[0.06] text-[9px] font-bold uppercase tracking-widest text-foreground/50 hover:text-foreground hover:bg-foreground/10 transition-colors shrink-0"
-                              >
-                                Add
-                              </button>
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const raw = urlDrafts[productId] || "";
+                                    if (addImageUrls(productId, raw)) {
+                                      setUrlDrafts((prev) => ({ ...prev, [productId]: "" }));
+                                    }
+                                  }}
+                                  className="px-3 py-2 rounded-md bg-foreground/5 border border-foreground/[0.06] text-[9px] font-bold uppercase tracking-widest text-foreground/50 hover:text-foreground hover:bg-foreground/10 transition-colors shrink-0"
+                                >
+                                  Add
+                                </button>
+                              </div>
+                              <p className="text-[9px] text-foreground/40">
+                                Paste one URL, or several separated by new lines. Then click Save Mood Board.
+                              </p>
                             </div>
                           )}
                         </div>
