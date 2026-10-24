@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { searchProducts, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
+import { searchProducts, flattenProducts } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +23,8 @@ export async function GET(req: Request) {
       });
     }
 
-    const flat = await Promise.all(products.map(flattenProduct));
+    // searchProducts already attaches metafields when possible; flattenProducts batches any gaps.
+    const flat = await flattenProducts(products);
 
     return NextResponse.json({ products: flat }, {
       headers: {

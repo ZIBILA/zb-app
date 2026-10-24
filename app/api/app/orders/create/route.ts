@@ -77,6 +77,8 @@ export async function POST(req: Request) {
     const subtotal = Number(body.subtotal || body.subtotal_price || 0);
     const total = Number(body.total || body.total_price || 0);
     const appliedStoreCredits = Number(body.appliedStoreCredits || 0);
+    const rawDiscountCode = body.discountCode || body.discount_code || null;
+    const rawDiscountAmount = Number(body.discountAmount || body.discount_amount || 0);
 
     const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
     const configuredCodFee = paymentMethod === 'COD' ? await getConfiguredCodUpfrontAmount() : 0;
@@ -84,17 +86,39 @@ export async function POST(req: Request) {
     const resolvedCodFee = configuredCodFee;
     let verifiedCodUpfrontPaid = 0;
 
-    // 100% store credit: there is no Razorpay payment to verify. The proof of
-    // payment is the wallet debit below (idempotent; fails when the balance is
-    // short), and the credit must cover what the app says the items cost.
-    const linesTotal = (Array.isArray(lineItems) ? lineItems : []).reduce(
+    // Reprice from Shopify so a client can't mark a ₹1 capture as paid for a full cart.
+    const clientLinesTotal = (Array.isArray(lineItems) ? lineItems : []).reduce(
       (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
     const couponDiscount = Math.max(0, Number(body.discountAmount || body.discount_amount || 0));
-    const isFullStoreCreditPayment = clientClaimsPaid && !isCod && total <= 0 && appliedStoreCredits > 0;
+    let linesTotal = clientLinesTotal;
+    try {
+      const { fetchVariantPriceMap, sumLineItemsWithAuthoritativePrices } = await import(
+        '@/lib/shopify-variant-prices'
+      );
+      const variantIds = (Array.isArray(lineItems) ? lineItems : []).map(
+        (li: any) => String(li?.variantId || li?.variant_id || '')
+      );
+      const priceMap = await fetchVariantPriceMap(variantIds);
+      if (priceMap.size > 0) {
+        const priced = sumLineItemsWithAuthoritativePrices(lineItems, priceMap);
+        linesTotal = priced.subtotal;
+      }
+    } catch (priceErr: any) {
+      console.warn('[App API] Variant reprice failed; using client line totals:', priceErr?.message);
+    }
 
-    if (isFullStoreCreditPayment) {
-      if (appliedStoreCredits + couponDiscount + 0.01 < linesTotal) {
-        return jsonError('Store credit does not cover the order total', 400);
+    // 100% store credit or 100% coupon/discount: there is no Razorpay payment to verify.
+    const hasDiscountCoverage = (rawDiscountAmount > 0 || couponDiscount > 0 || Boolean(rawDiscountCode));
+    const isFullStoreCreditPayment = clientClaimsPaid && !isCod && total <= 0 && appliedStoreCredits > 0;
+    const isFullCouponPayment = clientClaimsPaid && !isCod && total <= 0 && hasDiscountCoverage;
+    const expectedPrepaidRupees = Math.max(
+      0,
+      Math.round((linesTotal - appliedStoreCredits - couponDiscount - rawDiscountAmount) * 100) / 100
+    );
+
+    if (isFullStoreCreditPayment || isFullCouponPayment) {
+      if (appliedStoreCredits + couponDiscount + rawDiscountAmount + 0.01 < linesTotal) {
+        return jsonError('Store credit / discount does not cover the order total', 400);
       }
       paymentStatus = 'paid';
     } else if (clientClaimsPaid) {
@@ -122,10 +146,13 @@ export async function POST(req: Request) {
         const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
         const { assertCapturedCharge, paymentAmountRupees } = await import('@/lib/razorpay-payment');
         const creds = await resolveRazorpayCredentials();
+        const expectedMinRupees = isCod
+          ? resolvedCodFee || DEFAULT_COD_UPFRONT_AMOUNT
+          : expectedPrepaidRupees;
         const captured = await assertCapturedCharge({
           paymentId,
           credentials: creds,
-          expectedMinRupees: isCod ? resolvedCodFee || DEFAULT_COD_UPFRONT_AMOUNT : 0,
+          expectedMinRupees,
           orderId: rzpOrderId,
         });
         verifiedCodUpfrontPaid = paymentAmountRupees(captured);
@@ -342,13 +369,15 @@ export async function POST(req: Request) {
       'mobile-app',
       `zb-order-${orderNumber}`,
       paymentMethod === 'COD' ? 'cod' : 'prepaid',
-      appliedStoreCredits > 0 ? 'store-credit-used' : null
+      appliedStoreCredits > 0 ? 'store-credit-used' : null,
+      rawDiscountCode ? `discount:${rawDiscountCode}` : null,
     ].filter(Boolean).join(', ');
 
     const note = [
       `Mobile app order`,
       `InternalOrderId: ${orderNumber}`,
       `PaymentMethod: ${paymentMethod}`,
+      rawDiscountCode ? `Discount Code: ${rawDiscountCode} (₹${rawDiscountAmount})` : null,
       appliedStoreCredits > 0 ? `Store Credits Used: ₹${appliedStoreCredits}` : null,
       paymentId ? `PaymentId: ${paymentId}` : null,
     ]
@@ -440,8 +469,8 @@ export async function POST(req: Request) {
               totalPrice: total,
               subtotalPrice: subtotal,
               totalTax: 0,
-              discountAmount: appliedStoreCredits,
-              discountCode: appliedStoreCredits > 0 ? 'STORE_CREDIT' : null,
+              discountAmount: rawDiscountAmount + appliedStoreCredits,
+              discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
               currency: 'INR',
               fulfillmentStatus: 'unfulfilled',
               deliveryStatus: 'pending',
@@ -539,6 +568,17 @@ export async function POST(req: Request) {
             paymentCapturedAt: isPaidLike ? now : existingOrder!.paymentCapturedAt,
             totalPrice: total,
             subtotalPrice: subtotal,
+            discountAmount: rawDiscountAmount,
+            storeCreditAmount: appliedStoreCredits,
+            discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
+            cancelledBy: null,
+            cancelledAt: null,
+            deliveryStatus: existingOrder!.deliveryStatus && !String(existingOrder!.deliveryStatus).toLowerCase().includes('cancel')
+              ? existingOrder!.deliveryStatus
+              : 'pending',
+            fulfillmentStatus: existingOrder!.fulfillmentStatus && !String(existingOrder!.fulfillmentStatus).toLowerCase().includes('cancel')
+              ? existingOrder!.fulfillmentStatus
+              : 'unfulfilled',
             tags: finalTags,
             note: note,
             shippingAddress: typeof shippingAddress === 'string' ? shippingAddress : JSON.stringify({
@@ -644,6 +684,9 @@ export async function POST(req: Request) {
           totalPrice: total,
           subtotalPrice: subtotal,
           totalTax: 0,
+          discountAmount: rawDiscountAmount,
+          storeCreditAmount: appliedStoreCredits,
+          discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
           currency: 'INR',
           paymentStatus,
           razorpayOrderId: rzpOrderId,
@@ -767,8 +810,8 @@ export async function POST(req: Request) {
           totalPrice: total,
           subtotalPrice: subtotal,
           totalTax: 0,
-          discountAmount: appliedStoreCredits,
-          discountCode: appliedStoreCredits > 0 ? 'STORE_CREDIT' : null,
+          discountAmount: rawDiscountAmount + appliedStoreCredits,
+          discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
           currency: 'INR',
           fulfillmentStatus: 'unfulfilled',
           deliveryStatus: 'pending',

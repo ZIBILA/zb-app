@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, Modal, TouchableOpacity, 
-  Dimensions, Pressable, Alert, Platform
+  Dimensions, Pressable, Platform
 } from 'react-native';
 import { Image } from 'expo-image';
 import { BlurView } from 'expo-blur';
@@ -115,10 +115,8 @@ const QuickAddModal = React.memo(({ visible, product, initialSize, onClose }: Pr
     
     if (!isAuthenticated) {
       haptics.buttonTap();
-      Alert.alert('Sign In Required', 'Please sign in to add items to your wishlist.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign In', onPress: () => { onClose(); navigation.navigate('Auth'); } }
-      ]);
+      onClose();
+      navigation.navigate('Auth');
       return;
     }
 
@@ -138,15 +136,6 @@ const QuickAddModal = React.memo(({ visible, product, initialSize, onClose }: Pr
 
   const handleAdd = () => {
     if (addingLockRef.current || added) return;
-    // Strictly require login for adding to bag
-    if (!isAuthenticated) {
-      haptics.buttonTap();
-      Alert.alert('Sign In Required', 'Please sign in to add products to your bag.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign In', onPress: () => { onClose(); navigation.navigate('Auth'); } }
-      ]);
-      return;
-    }
 
     // Strictly require size selection when product has variants
     if (needsSize && !selectedSize) {

@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface ShopifyVariant {
   id: number;
@@ -83,12 +84,14 @@ export default function InventoryPage() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const fetchProducts = async () => {
-    setLoading(true);
+  const fetchProducts = async (silent = false) => {
+    if (!silent && products.length === 0) setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/shopify/products?limit=250");
-      const data = await res.json();
+      const data = await cachedAdminFetch<any>("/api/shopify/products?limit=250", {
+        skipCache: silent,
+        ttlMs: 60_000,
+      });
       setProducts(data.products || []);
       if (data.error) setError(`Shopify API: ${data.error}`);
     } catch (err) {
@@ -98,22 +101,8 @@ export default function InventoryPage() {
     }
   };
 
-  const fetchLocation = async () => {
-    try {
-      await fetch("/api/shopify/sync", { method: "HEAD" }).catch(() => null);
-      const locRes = await fetch("/api/shopify/products?limit=1");
-      const locData = await locRes.json();
-      if (locData.products?.[0]?.variants?.[0]) {
-        setLocationId("auto");
-      }
-    } catch {
-      // Ignore
-    }
-  };
-
   useEffect(() => {
     fetchProducts();
-    fetchLocation();
   }, []);
 
   const handleDelta = (variantId: number, change: number) => {
@@ -132,10 +121,6 @@ export default function InventoryPage() {
 
     setAdjusting((prev) => ({ ...prev, [variant.id]: 1 }));
     try {
-      if (!locationId || locationId === "auto") {
-        await fetch("/api/shopify/products?limit=1");
-      }
-
       const res = await fetch("/api/shopify/inventory/adjust", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -332,17 +317,6 @@ export default function InventoryPage() {
     return { totalProducts, totalVariants, totalStock, lowStock, outOfStock };
   }, [products]);
 
-  if (loading && products.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
-        <Loader2 className="w-5 h-5 text-foreground/40 animate-spin" />
-        <span className="text-[11px] font-medium text-foreground/40 tracking-wide">
-          Loading Inventory…
-        </span>
-      </div>
-    );
-  }
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -372,13 +346,15 @@ export default function InventoryPage() {
             Inventory
           </h1>
           <p className="text-[12px] text-foreground/50 mt-0.5">
-            Manage stock levels across {stats.totalProducts} products · {stats.totalVariants} variants
+            {loading && products.length === 0
+              ? "Connecting to catalog & synchronizing stock levels…"
+              : `Manage stock levels across ${stats.totalProducts} products · ${stats.totalVariants} variants`}
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <button
-            onClick={fetchProducts}
+            onClick={() => fetchProducts(true)}
             disabled={loading}
             className="glass-button flex items-center gap-2 px-4 py-2 text-[11px] font-medium !rounded-lg disabled:opacity-50"
           >
@@ -402,21 +378,30 @@ export default function InventoryPage() {
 
       {/* Stats Row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: "Total Units", value: stats.totalStock.toLocaleString("en-IN"), color: "text-foreground" },
-          { label: "Products", value: stats.totalProducts, color: "text-foreground" },
-          { label: "Low Stock", value: stats.lowStock, color: stats.lowStock > 0 ? "text-amber-500" : "text-foreground" },
-          { label: "Out of Stock", value: stats.outOfStock, color: stats.outOfStock > 0 ? "text-red-500" : "text-foreground" },
-        ].map((stat) => (
-          <div key={stat.label} className="glass-panel !rounded-xl px-4 py-3">
-            <p className="text-[10px] font-medium text-foreground/40 uppercase tracking-wider mb-1">
-              {stat.label}
-            </p>
-            <p className={`text-lg font-semibold ${stat.color}`}>
-              {stat.value}
-            </p>
-          </div>
-        ))}
+        {loading && products.length === 0 ? (
+          [...Array(4)].map((_, i) => (
+            <div key={`inv-stat-skel-${i}`} className="glass-panel !rounded-xl px-4 py-3 animate-pulse space-y-2">
+              <div className="h-2.5 w-16 bg-foreground/10 rounded" />
+              <div className="h-6 w-12 bg-foreground/10 rounded" />
+            </div>
+          ))
+        ) : (
+          [
+            { label: "Total Units", value: stats.totalStock.toLocaleString("en-IN"), color: "text-foreground" },
+            { label: "Products", value: stats.totalProducts, color: "text-foreground" },
+            { label: "Low Stock", value: stats.lowStock, color: stats.lowStock > 0 ? "text-amber-500" : "text-foreground" },
+            { label: "Out of Stock", value: stats.outOfStock, color: stats.outOfStock > 0 ? "text-red-500" : "text-foreground" },
+          ].map((stat) => (
+            <div key={stat.label} className="glass-panel !rounded-xl px-4 py-3">
+              <p className="text-[10px] font-medium text-foreground/40 uppercase tracking-wider mb-1">
+                {stat.label}
+              </p>
+              <p className={`text-lg font-semibold ${stat.color}`}>
+                {stat.value}
+              </p>
+            </div>
+          ))
+        )}
       </div>
 
       {/* Search + Filters */}
@@ -469,7 +454,25 @@ export default function InventoryPage() {
 
       {/* Product List */}
       <div className="glass-panel !rounded-2xl overflow-hidden !p-0">
-        {filtered.length === 0 ? (
+        {loading && products.length === 0 ? (
+          <div className="divide-y divide-foreground/[0.04] p-2 space-y-1">
+            {[...Array(6)].map((_, i) => (
+              <div key={`prod-skel-${i}`} className="flex items-center justify-between gap-4 px-5 py-3.5 animate-pulse">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="w-10 h-10 rounded-lg bg-foreground/10 shrink-0" />
+                  <div className="space-y-2">
+                    <div className="h-3.5 w-48 bg-foreground/10 rounded" />
+                    <div className="h-2.5 w-24 bg-foreground/5 rounded" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-6">
+                  <div className="h-4 w-12 bg-foreground/10 rounded" />
+                  <div className="h-4 w-16 bg-foreground/10 rounded" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16">
             <PackageSearch className="w-8 h-8 text-foreground/15 mb-3" />
             <h3 className="text-[13px] font-medium text-foreground/60">

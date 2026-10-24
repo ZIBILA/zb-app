@@ -19,9 +19,10 @@ import {
   ChevronDown,
   RefreshCw,
 } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface ShopifyCollection {
   id: string;
@@ -64,7 +65,8 @@ export default function CollectionsAdminPage() {
     try {
       const res = await fetch("/api/admin/collections/sync", { method: "POST" });
       if (res.ok) {
-        await fetchData();
+        invalidateAdminCache("/api/admin/collections");
+        await fetchData(true);
       }
     } catch (err) {
       console.error("Failed to sync from Shopify:", err);
@@ -73,10 +75,13 @@ export default function CollectionsAdminPage() {
     }
   };
 
-  async function fetchData() {
+  async function fetchData(silent = false) {
+    if (!silent && collections.length === 0) setLoading(true);
     try {
-      const res = await fetch("/api/admin/collections");
-      const data = await res.json();
+      const data = await cachedAdminFetch<any>("/api/admin/collections", {
+        skipCache: silent,
+        ttlMs: 60_000,
+      });
       if (data.allCollections) {
         setCollections(data.allCollections);
         setEnabled(data.enabled);
@@ -144,6 +149,7 @@ export default function CollectionsAdminPage() {
         body: JSON.stringify(enabled),
       });
       if (res.ok) {
+        invalidateAdminCache("/api/admin/collections");
         setSuccess(true);
         setTimeout(() => setSuccess(false), 3000);
       }

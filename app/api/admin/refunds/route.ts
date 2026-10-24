@@ -14,6 +14,29 @@ export async function GET(req: Request) {
     await requirePermission('RETURNS_EXCHANGES', 'view');
 
     const { searchParams } = new URL(req.url);
+    const summaryOnly = searchParams.get('summaryOnly') === 'true' || searchParams.get('countOnly') === 'true';
+
+    // Fast path: returns & other pages needing only the pending refund counter
+    if (summaryOnly) {
+      const [pendingRequests, pendingStandalone] = await Promise.all([
+        prisma.returnRequest.count({
+          where: { status: { in: ['received', 'refund_pending', 'approved'] } }
+        }),
+        prisma.return.count({
+          where: {
+            returnRequestId: null,
+            status: { in: ['received', 'refund_pending', 'approved'] }
+          }
+        }),
+      ]);
+      return NextResponse.json({
+        refunds: [],
+        summary: {
+          pendingCount: pendingRequests + pendingStandalone,
+        }
+      });
+    }
+
     const statusFilter = searchParams.get('status') || 'all'; // all, pending, completed, rejected
     const methodFilter = searchParams.get('method') || 'all'; // all, original_method, store_credit
     const search = searchParams.get('search')?.trim().toLowerCase();

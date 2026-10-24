@@ -217,23 +217,30 @@ export default function OrderDetailPage() {
     if (id) fetchOrder();
   }, [id, fetchOrder]);
 
+  // Derive sync inputs from stable fields — depending on `order` re-ran this
+  // effect on every fetchOrder and could loop syncs while cancelling.
+  const orderIdForSync = order?.id;
+  const liveShipment = order
+    ? pickActiveOutboundShipment((order.shipments || []) as any[])
+    : null;
+  const liveDeliveryCode = order
+    ? normalizeCarrierStatus(liveShipment?.status || order.deliveryStatus)
+    : null;
+  const awaitingFinalCancel = liveDeliveryCode === 'cancellation_requested';
+  const syncAwb = liveShipment?.awb || order?.delhivery_awb || null;
+
   // Lazy logistics sync: page renders from DB first, then after paint we pull
   // Shiprocket. While Cancellation Requested, keep polling until exact Cancelled.
   useEffect(() => {
-    if (loading || !order?.id) return;
+    if (loading || !orderIdForSync) return;
 
-    const live = pickActiveOutboundShipment((order.shipments || []) as any[]);
-    const liveCode = normalizeCarrierStatus(live?.status || order.deliveryStatus);
-    const awaitingFinalCancel = liveCode === 'cancellation_requested';
-    const awb = live?.awb || order.delhivery_awb;
-
-    if (!awb && !awaitingFinalCancel) {
-      logisticsSyncedForOrderRef.current = order.id;
+    if (!syncAwb && !awaitingFinalCancel) {
+      logisticsSyncedForOrderRef.current = orderIdForSync;
       return;
     }
 
     // One-shot sync for normal statuses; poll while void is in progress.
-    if (!awaitingFinalCancel && logisticsSyncedForOrderRef.current === order.id) return;
+    if (!awaitingFinalCancel && logisticsSyncedForOrderRef.current === orderIdForSync) return;
 
     let cancelled = false;
     let idleId: number | null = null;
@@ -242,13 +249,13 @@ export default function OrderDetailPage() {
 
     const runSync = async () => {
       if (cancelled) return;
-      if (!awaitingFinalCancel) logisticsSyncedForOrderRef.current = order.id;
+      if (!awaitingFinalCancel) logisticsSyncedForOrderRef.current = orderIdForSync;
       setLogisticsSyncing(true);
       try {
         const res = await fetch('/api/logistics/sync-status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ order_id: order.id }),
+          body: JSON.stringify({ order_id: orderIdForSync }),
         });
         if (!cancelled && res.ok) await fetchOrder(true);
       } catch {
@@ -287,7 +294,7 @@ export default function OrderDetailPage() {
       if (timeoutId) clearTimeout(timeoutId);
       if (pollId) clearInterval(pollId);
     };
-  }, [loading, order, fetchOrder]);
+  }, [loading, orderIdForSync, awaitingFinalCancel, syncAwb, fetchOrder]);
 
   useEffect(() => {
     if (order) {

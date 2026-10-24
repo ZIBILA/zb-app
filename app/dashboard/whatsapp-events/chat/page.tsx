@@ -316,23 +316,31 @@ export default function WhatsAppChatPage() {
   useEffect(() => {
     if (!activePhone) return;
 
+    const phoneForThisEffect = activePhone;
     const lastMsgRef = { current: "" };
+    const abort = new AbortController();
+    let active = true;
 
     async function fetchInitialMessages() {
       setLoadingMessages(true);
       try {
-        const res = await fetch(`/api/whatsapp/chat/messages?phone=${encodeURIComponent(activePhone!)}`);
+        const res = await fetch(
+          `/api/whatsapp/chat/messages?phone=${encodeURIComponent(phoneForThisEffect)}`,
+          { signal: abort.signal }
+        );
         const data = await res.json();
+        if (!active) return;
         if (res.ok && Array.isArray(data.messages)) {
           setMessages(data.messages);
           if (data.messages.length > 0) {
             lastMsgRef.current = data.messages[data.messages.length - 1].createdAt;
           }
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
         console.error("Error loading messages thread:", err);
       } finally {
-        setLoadingMessages(false);
+        if (active) setLoadingMessages(false);
       }
     }
 
@@ -343,8 +351,12 @@ export default function WhatsAppChatPage() {
       messagesFetchInFlight.current = true;
       try {
         const sinceParam = lastMsgRef.current ? `&since=${encodeURIComponent(lastMsgRef.current)}` : '';
-        const res = await fetch(`/api/whatsapp/chat/messages?phone=${encodeURIComponent(activePhone!)}${sinceParam}`);
+        const res = await fetch(
+          `/api/whatsapp/chat/messages?phone=${encodeURIComponent(phoneForThisEffect)}${sinceParam}`,
+          { signal: abort.signal }
+        );
         const data = await res.json();
+        if (!active) return;
         if (res.ok && Array.isArray(data.messages) && data.messages.length > 0) {
           setMessages(prev => {
             const existingIds = new Set(prev.map(m => m.id));
@@ -354,7 +366,8 @@ export default function WhatsAppChatPage() {
           });
           lastMsgRef.current = data.messages[data.messages.length - 1].createdAt;
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
         console.error("Error polling delta messages:", err);
       } finally {
         messagesFetchInFlight.current = false;
@@ -364,7 +377,11 @@ export default function WhatsAppChatPage() {
     fetchInitialMessages();
 
     const interval = setInterval(pollDeltaMessages, 4000);
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      abort.abort();
+      clearInterval(interval);
+    };
   }, [activePhone]);
 
   // Scroll to bottom only on conversation open / send / when already near bottom.

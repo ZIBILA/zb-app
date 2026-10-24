@@ -1293,12 +1293,13 @@ function BroadcastCampaigns() {
     }
   }, [campaigns]);
 
-  // Poll active sending campaigns
+  // Poll active sending campaigns every 10s (was 3s); stable deps so interval is not reset each poll
+  const hasActiveCampaign = campaigns.some(c => c.status === "sending" || c.status === "queued");
   useEffect(() => {
-    const hasActiveCampaign = campaigns.some(c => c.status === "sending" || c.status === "queued");
     if (!hasActiveCampaign) return;
 
     const interval = setInterval(async () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       try {
         const res = await fetch("/api/whatsapp/campaigns");
         const data = await res.json();
@@ -1308,10 +1309,10 @@ function BroadcastCampaigns() {
       } catch (err) {
         console.error("Polling campaigns failed:", err);
       }
-    }, 3000);
+    }, 10_000);
 
     return () => clearInterval(interval);
-  }, [campaigns]);
+  }, [hasActiveCampaign]);
 
   // Load audience from DB
   const loadSegment = async (selectedAudience: string) => {

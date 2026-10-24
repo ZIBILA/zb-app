@@ -45,7 +45,7 @@ export default function WishlistScreen() {
     } else if (product.handle) {
       // Navigate to product detail for full variant/size selection
       haptics.buttonTap();
-      navigation.navigate('ProductDetail', { handle: product.handle });
+      navigation.navigate('ProductDetail', { handle: product.handle, initialProduct: product });
     } else {
       // No variants and no handle — show an alert
       haptics.error();

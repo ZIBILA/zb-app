@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Modal } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { GlassView } from './GlassView';
 import { Typography } from './Typography';
 import { useColors } from '../constants/colors';
+import { useThemeStore } from '../store/themeStore';
 import { haptics } from '../utils/haptics';
 
 interface ConsentModalProps {
@@ -13,6 +13,7 @@ interface ConsentModalProps {
 export const ConsentModal = ({ onConsentComplete }: ConsentModalProps) => {
   const [isVisible, setIsVisible] = useState(false);
   const colors = useColors();
+  const isDark = useThemeStore((state) => state.theme) === 'dark';
 
   useEffect(() => {
     checkFirstLaunch();
@@ -42,38 +43,45 @@ export const ConsentModal = ({ onConsentComplete }: ConsentModalProps) => {
   if (!isVisible) return null;
 
   return (
-    <Modal transparent animationType="fade" visible={isVisible}>
-      <GlassView intensity={100} tint="dark" style={StyleSheet.absoluteFill}>
-        <View style={styles.container}>
-          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
-            <Typography heading weight="700" size={16} color={colors.text} style={styles.title}>
-              DATA & PRIVACY
-            </Typography>
-            
-            <Typography size={11} color={colors.textSecondary} style={styles.paragraph}>
-              To provide the Zica Bella experience, we collect basic usage analytics and crash reports. 
-              This helps us fix bugs faster and improve the app.
-            </Typography>
+    <Modal transparent animationType="fade" visible={isVisible} statusBarTranslucent>
+      <View style={[styles.container, { backgroundColor: isDark ? 'rgba(0,0,0,0.72)' : 'rgba(5,5,6,0.28)' }]}>
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: colors.surfaceElevated,
+              borderColor: colors.borderLight,
+            },
+            !isDark && styles.cardLight,
+          ]}
+        >
+          <Typography heading weight="700" size={16} color={colors.text} style={styles.title}>
+            DATA & PRIVACY
+          </Typography>
 
-            <Typography size={11} color={colors.textSecondary} style={styles.paragraph}>
-              By continuing to use the app, you agree to our Terms of Service and Privacy Policy. 
-              You can review these at any time in your Profile Settings.
-            </Typography>
+          <Typography size={11} color={colors.textSecondary} style={styles.paragraph}>
+            To provide the Zica Bella experience, we collect basic usage analytics and crash reports.
+            This helps us fix bugs faster and improve the app.
+          </Typography>
 
-            <TouchableOpacity 
-              style={[styles.button, { backgroundColor: colors.foreground }]}
-              onPress={handleAccept}
-              activeOpacity={0.8}
-              accessibilityLabel="Accept privacy terms and continue"
-              accessibilityRole="button"
-            >
-              <Typography size={11} weight="700" color={colors.background} style={{ letterSpacing: 1 }}>
-                I UNDERSTAND
-              </Typography>
-            </TouchableOpacity>
-          </View>
+          <Typography size={11} color={colors.textSecondary} style={styles.paragraph}>
+            By continuing to use the app, you agree to our Terms of Service and Privacy Policy.
+            You can review these at any time in your Profile Settings.
+          </Typography>
+
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: colors.foreground }]}
+            onPress={handleAccept}
+            activeOpacity={0.8}
+            accessibilityLabel="Accept privacy terms and continue"
+            accessibilityRole="button"
+          >
+            <Typography size={11} weight="700" color={colors.background} style={{ letterSpacing: 1 }}>
+              I UNDERSTAND
+            </Typography>
+          </TouchableOpacity>
         </View>
-      </GlassView>
+      </View>
     </Modal>
   );
 };
@@ -84,13 +92,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
-    backgroundColor: 'rgba(0,0,0,0.6)',
   },
   card: {
     width: '100%',
     padding: 24,
     borderRadius: 24,
     borderWidth: 1,
+  },
+  cardLight: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 8,
   },
   title: {
     letterSpacing: 2,

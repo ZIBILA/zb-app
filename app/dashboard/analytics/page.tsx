@@ -12,10 +12,7 @@ import {
   Flame, Sparkles, Laptop, ShieldCheck, Zap
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import { cachedAdminFetch } from "@/lib/adminClientCache";
 
 // Dynamic Client-Only Import of Globe3D to prevent SSR hydration mismatches
 const Globe3D = dynamic(() => import("@/components/Globe3D"), {
@@ -26,6 +23,14 @@ const Globe3D = dynamic(() => import("@/components/Globe3D"), {
     </div>
   ),
 });
+
+const PerformanceTimeSeriesChart = dynamic(
+  () => import("@/components/admin/charts/PerformanceTimeSeriesChart"),
+  {
+    ssr: false,
+    loading: () => <div className="h-full w-full min-h-[280px] animate-pulse rounded-xl bg-foreground/[0.03]" />,
+  }
+);
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -217,14 +222,6 @@ function formatNumber(val: number): string {
   return val.toLocaleString("en-IN");
 }
 
-function formatChartDate(dateStr: string, granularity: string): string {
-  const d = new Date(dateStr);
-  if (granularity === "hour") return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
-  if (granularity === "day") return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
-  if (granularity === "week") return `W${Math.ceil(d.getDate() / 7)} ${d.toLocaleDateString("en-IN", { month: "short" })}`;
-  return d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
-}
-
 const FUNNEL_LABELS: Record<string, string> = {
   page_view: "Visitors",
   view_item: "Product Views",
@@ -313,23 +310,20 @@ export default function AnalyticsDashboard() {
 
     const handleSafeFetch = async (url: string) => {
       try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (res.status === 401) {
+        return await cachedAdminFetch(url, { signal: controller.signal, skipCache: silent, ttlMs: 45_000 });
+      } catch (e: any) {
+        if (e.name === "AbortError") throw e;
+        if (e.message?.includes("HTTP 401")) {
           if (typeof window !== "undefined") {
             window.location.href = "/dashboard/login?callbackUrl=" + encodeURIComponent(window.location.pathname);
           }
           return { error: "Unauthorized" };
         }
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          return { error: errJson.error || `HTTP ${res.status}: ${res.statusText}` };
-        }
-        return await res.json();
-      } catch (e: any) {
-        if (e.name === "AbortError") throw e;
         return { error: e.message || "Failed to load data" };
       }
     };
+
+    let overviewSettled = false;
 
     try {
       const fetchOverview = async () => {
@@ -338,14 +332,20 @@ export default function AnalyticsDashboard() {
           if (controller.signal.aborted) return;
           if (res?.error) {
             setOverviewError(res.error);
-          } else if (res) {
+            overviewSettled = true;
+          } else if (res && typeof res === "object" && "revenue" in res) {
             setOverview(res);
             setOverviewError(null);
+            overviewSettled = true;
           } else {
             setOverviewError("Failed to fetch overview analytics");
+            overviewSettled = true;
           }
         } catch (e: any) {
-          if (e.name !== "AbortError") setOverviewError(e.message || "Failed to load overview");
+          if (e.name !== "AbortError") {
+            setOverviewError(e.message || "Failed to load overview");
+            overviewSettled = true;
+          }
         }
       };
 
@@ -458,10 +458,9 @@ export default function AnalyticsDashboard() {
       await Promise.allSettled([fetchOverview(), fetchRealtime()]);
       if (controller.signal.aborted) return;
 
-      // Clear initial loading after Wave 1 — KPIs + realtime now visible
+      // Wave 1 done — KPI/realtime can paint; keep section skeletons until their own data lands
       if (!hasLoadedRef.current) {
         setLoading(false);
-        setHasLoaded(true);
       }
 
       // ─── Wave 2: charts + carts ───
@@ -472,7 +471,13 @@ export default function AnalyticsDashboard() {
       await Promise.allSettled([fetchFunnel(), fetchTraffic(), fetchLocations(), fetchProducts()]);
       if (controller.signal.aborted) return;
 
+      // Never leave KPI skeletons up after a completed fetch with no overview payload
+      if (!overviewSettled && !controller.signal.aborted) {
+        setOverviewError((prev) => prev || "Failed to load overview metrics");
+      }
+
       hasLoadedRef.current = true;
+      setHasLoaded(true);
       consecutiveErrorsRef.current = 0;
       setConsecutiveErrors(0);
       setLastRefreshedAt(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
@@ -840,11 +845,20 @@ export default function AnalyticsDashboard() {
       )}
 
       {/* ─── KPI Cards / Loading Skeletons ──────────────── */}
-      {loading && !hasLoaded ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="glass-card p-5 rounded-2xl border border-foreground/5 h-24 animate-pulse bg-foreground/[0.02]" />
-          ))}
+      {!overview && !overviewError ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-xs text-foreground/40">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            Loading overview metrics…
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div
+                key={i}
+                className="glass-card p-5 rounded-2xl border border-foreground/10 h-24 bg-gradient-to-br from-foreground/[0.06] to-foreground/[0.02] animate-pulse"
+              />
+            ))}
+          </div>
         </div>
       ) : overview ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
@@ -872,7 +886,7 @@ export default function AnalyticsDashboard() {
 
       {/* ─── Top Visitor Locations ──────────────────────────── */}
       {locationsError && <SectionError message={locationsError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !locations ? (
+      {!locations && !locationsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />
       ) : locations ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -982,7 +996,7 @@ export default function AnalyticsDashboard() {
       {/* ─── Charts Section ──────────────────────────────── */}
       {chartsError && <SectionError message={chartsError} onRetry={() => fetchAll(false)} />}
 
-      {!hasLoaded && !charts ? (
+      {!charts && !chartsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />
       ) : charts && charts.timeSeries.length > 0 ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -1002,70 +1016,18 @@ export default function AnalyticsDashboard() {
               ))}
             </div>
           </div>
-          <div className="h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={charts.timeSeries}>
-                <defs>
-                  <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(var(--foreground))" stopOpacity={0.15} />
-                    <stop offset="100%" stopColor="hsl(var(--foreground))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--foreground) / 0.06)" />
-                <XAxis
-                  dataKey="date"
-                  tickFormatter={(v) => formatChartDate(v, charts.granularity)}
-                  tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.4)" }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.4)" }}
-                  axisLine={false}
-                  tickLine={false}
-                  tickFormatter={(v) => activeChart === "revenue" ? formatCurrency(v) : formatNumber(v)}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--foreground) / 0.1)",
-                    borderRadius: "12px",
-                    fontSize: "11px",
-                    boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
-                  }}
-                  labelFormatter={(v) => formatChartDate(v as string, charts.granularity)}
-                  formatter={(value: any) =>
-                    activeChart === "revenue" ? [formatCurrency(value), "Revenue"]
-                    : activeChart === "conversion" ? [`${value}%`, "Conversion"]
-                    : activeChart === "logins" ? [formatNumber(value), "Logins"]
-                    : activeChart === "newLogins" ? [formatNumber(value), "New Signups"]
-                    : [formatNumber(value), activeChart.charAt(0).toUpperCase() + activeChart.slice(1)]
-                  }
-                />
-                <Area
-                  type="monotone"
-                  dataKey={
-                    activeChart === "revenue" ? "revenue"
-                    : activeChart === "orders" ? "orders"
-                    : activeChart === "sessions" ? "sessions"
-                    : activeChart === "logins" ? "logins"
-                    : activeChart === "newLogins" ? "newLogins"
-                    : "conversionRate"
-                  }
-                  stroke="hsl(var(--foreground))"
-                  strokeWidth={2}
-                  fill="url(#chartGradient)"
-                  dot={false}
-                  activeDot={{ r: 4, strokeWidth: 2, fill: "hsl(var(--background))" }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+          <div className="h-[280px] w-full min-w-0">
+            <PerformanceTimeSeriesChart
+              data={charts.timeSeries}
+              granularity={charts.granularity}
+              activeChart={activeChart}
+            />
           </div>
         </motion.div>
       ) : null}
 
       {productsError && <SectionError message={productsError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !products ? (
+      {!products && !productsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />
       ) : products ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -1175,7 +1137,7 @@ export default function AnalyticsDashboard() {
         {/* Conversion Funnel */}
         <div className="lg:col-span-1">
           {funnelError && <SectionError message={funnelError} onRetry={() => fetchAll(false)} />}
-          {!hasLoaded && !funnel ? (
+          {!funnel && !funnelError ? (
             <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-96 animate-pulse bg-foreground/[0.02]" />
           ) : funnel && funnel.length > 0 && funnel.some(s => s.sessions > 0) ? (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 h-full">
@@ -1235,7 +1197,7 @@ export default function AnalyticsDashboard() {
         {/* Real-time Activity & 3D Globe */}
         <div className="lg:col-span-2">
           {realtimeError && <SectionError message={realtimeError} onRetry={() => fetchAll(false)} />}
-          {!hasLoaded && !realtime ? (
+          {!realtime && !realtimeError ? (
             <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-96 animate-pulse bg-foreground/[0.02]" />
           ) : realtime ? (
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 flex flex-col justify-between">
@@ -1424,7 +1386,7 @@ export default function AnalyticsDashboard() {
       )}
 
       {trafficError && <SectionError message={trafficError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !traffic ? (
+      {!traffic && !trafficError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />
       ) : traffic && traffic.length > 0 ? (
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
@@ -1670,8 +1632,8 @@ export default function AnalyticsDashboard() {
         );
       })()}
 
-      {/* ─── Empty state ─────────────────────────────────── */}
-      {!loading && !overview && !overviewError && !charts && !realtime && (
+      {/* ─── Empty state (only after the full initial fetch finishes with nothing) ─── */}
+      {hasLoaded && !loading && !isRefreshing && !isBackgroundRefreshing && !overview && !overviewError && !charts && !realtime && (
         <div className="text-center py-20">
           <BarChart3 className="w-12 h-12 mx-auto text-foreground/10 mb-4" />
           <h3 className="text-lg font-semibold text-foreground/40">No analytics data yet</h3>

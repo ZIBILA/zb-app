@@ -7,8 +7,13 @@ import { ProductJsonLd } from "@/components/seo/ProductJsonLd";
 import { Breadcrumb } from "@/components/seo/Breadcrumb";
 import { getProductAggregateRating, getProductReviews } from "@/lib/reviews/getProductAggregateRating";
 import { ProductReviews } from "@/components/reviews/ProductReviews";
+import { cache } from "react";
 
 export const revalidate = 60; // ISR: revalidate every 60 seconds
+
+const getProduct = cache(async (handle: string) => {
+  return await fetchProductByHandle(handle);
+});
 
 export async function generateMetadata({
   params,
@@ -17,7 +22,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   let product: ShopifyProduct | null = null;
   try {
-    product = await fetchProductByHandle(params.id);
+    product = await getProduct(params.id);
   } catch {
     // Silently fall through to "not found" metadata
   }
@@ -115,7 +120,7 @@ export default async function ProductPage({ params }: { params: { id: string } }
 
   try {
     [product, shop, allProducts] = await Promise.all([
-      fetchProductByHandle(params.id).catch(() => null),
+      getProduct(params.id).catch(() => null),
       getShopSettings().catch(() => null),
       fetchProducts(12).catch(() => [] as ShopifyProduct[])
     ]);

@@ -151,6 +151,21 @@ const nextConfig = {
         destination: '/collections/tshirts-under-5000',
         permanent: true,
       },
+      {
+        source: '/login/admin',
+        destination: '/dashboard/login',
+        permanent: false,
+      },
+      {
+        source: '/web-store',
+        destination: '/dashboard/webstore',
+        permanent: false,
+      },
+      {
+        source: '/web-store/:path*',
+        destination: '/dashboard/webstore/:path*',
+        permanent: false,
+      },
     ];
   }
 };

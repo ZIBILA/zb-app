@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface MobileOrder {
   id: string;
@@ -74,8 +75,8 @@ export default function MobileOrdersPage() {
   });
   const LIMIT = 50;
 
-  const fetchOrders = useCallback(async () => {
-    setLoading(true);
+  const fetchOrders = useCallback(async (silent = false) => {
+    if (!silent && orders.length === 0) setLoading(true);
     try {
       const offset = (page - 1) * LIMIT;
       let url = `/api/admin/mobile-orders?limit=${LIMIT}&offset=${offset}&search=${search}`;
@@ -83,8 +84,10 @@ export default function MobileOrdersPage() {
         url += `&${tab === 'abandoned' ? 'abandoned=true' : 'active=true'}`;
       }
       
-      const res = await fetch(url);
-      const data = await res.json();
+      const data = await cachedAdminFetch<any>(url, {
+        skipCache: silent,
+        ttlMs: 30_000,
+      });
       
       if (data.success) {
         setOrders(data.orders);

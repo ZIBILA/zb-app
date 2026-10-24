@@ -1,5 +1,5 @@
 // Admin-dashboard Zica AI chat removed (Developer Brief item #26).
-// Customer-facing Zica AI (/api/zica-ai) is unchanged.
+// Customer-facing Zica AI (/api/zica-ai) also uses Anthropic via callClaude.
 
 import { NextResponse } from "next/server";
 

@@ -235,13 +235,13 @@ async function GET_impl(req: Request) {
       ...countByReverseStageFilter(combined.map((e: any) => e.liveStage)),
     };
     
-    statusGroups.forEach((g: any) => {
-      const s = g.status.toLowerCase();
-      statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+    (Array.isArray(statusGroups) ? statusGroups : []).forEach((g: any) => {
+      const s = g?.status?.toLowerCase();
+      if (s) statusCounts[s] = (statusCounts[s] || 0) + (g._count?.id || 0);
     });
-    standaloneStatusGroups.forEach((g: any) => {
-      const s = g.status.toLowerCase();
-      statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+    (Array.isArray(standaloneStatusGroups) ? standaloneStatusGroups : []).forEach((g: any) => {
+      const s = g?.status?.toLowerCase();
+      if (s) statusCounts[s] = (statusCounts[s] || 0) + (g._count?.id || 0);
     });
 
     const stageFiltered =

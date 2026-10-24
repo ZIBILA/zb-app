@@ -2,9 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sendMail } from '@/lib/mailer';
 import { marketingTemplate } from '@/lib/email-templates';
 import { logEmail } from '@/lib/log-email';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const data = await req.json();
     const { recipients, headline, subheadline, bodyText, ctaLabel, ctaUrl, imageUrl, footerNote } = data;
 
@@ -44,6 +47,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, messageId: result.messageId });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

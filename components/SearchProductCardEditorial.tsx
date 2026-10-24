@@ -323,8 +323,7 @@ export default function SearchProductCardEditorial({ chunk, index, priority = fa
                   {/* Product Video box */}
                   {p1.video && (
                     <div 
-                      className="relative w-20 sm:w-24 aspect-[9/16] rounded-xl overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-md flex-shrink-0 cursor-pointer"
-                      onClick={() => setIsMuted(!isMuted)}
+                      className="relative w-20 sm:w-24 aspect-[9/16] rounded-xl overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-md flex-shrink-0"
                     >
                       <video
                         src={p1.video}
@@ -334,8 +333,16 @@ export default function SearchProductCardEditorial({ chunk, index, priority = fa
                         playsInline
                         className="w-full h-full object-cover pointer-events-none"
                       />
-                      {/* Audio indicator */}
-                      <div className="absolute bottom-2.5 right-2.5 z-10 p-1.5 rounded-full bg-black/45 backdrop-blur-[2px]">
+                      {/* Audio indicator button */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsMuted(!isMuted);
+                        }}
+                        aria-label={isMuted ? "Unmute video" : "Mute video"}
+                        className="absolute bottom-2.5 right-2.5 z-10 p-1.5 rounded-full bg-black/60 backdrop-blur-[2px] transition-transform hover:scale-105 active:scale-90"
+                      >
                         {isMuted ? (
                           <X className="w-2 h-2 text-white/50" />
                         ) : (
@@ -344,7 +351,7 @@ export default function SearchProductCardEditorial({ chunk, index, priority = fa
                             <div className="w-[1.2px] h-2.5 bg-white animate-pulse" style={{ animationDelay: '0.1s' }} />
                           </div>
                         )}
-                      </div>
+                      </button>
                     </div>
                   )}
                 </div>

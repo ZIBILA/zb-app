@@ -15,6 +15,10 @@ import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel
 import { metaMoneyFrom } from "@/lib/meta/money";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  buildDeliveryStreet,
+  stripLeadingHouseFromStreet,
+} from "@/lib/parseDetectedAddress";
+import {
   MapPin,
   CreditCard,
   Truck,
@@ -671,7 +675,14 @@ export default function CheckoutPage() {
           ? data.zip.replace(/\s/g, "").slice(0, 6)
           : "";
 
-        const resolvedStreet = data.street || data.landmark || (data.formattedAddress ? data.formattedAddress.split(",")[0].trim() : "");
+        // Street/locality only — never merge houseNo; Flat stays empty for manual entry
+        const resolvedStreet =
+          buildDeliveryStreet([data.street, data.landmark]) ||
+          stripLeadingHouseFromStreet(
+            data.formattedAddress
+              ? data.formattedAddress.split(",").slice(0, 3).join(",").trim()
+              : ""
+          );
 
         // Verify that meaningful address information was actually returned
         if (!data.city && !resolvedStreet && !matchedState) {
@@ -684,7 +695,7 @@ export default function CheckoutPage() {
 
         setAddress(prev => ({
           ...prev,
-          houseNo: data.houseNo || prev.houseNo,
+          houseNo: "",
           street: resolvedStreet || prev.street,
           landmark: data.landmark || prev.landmark,
           zip: validZip || prev.zip,
@@ -1666,15 +1677,16 @@ export default function CheckoutPage() {
       const fullStreet = [address.houseNo, address.street, address.landmark].filter(Boolean).join(", ");
       const checkoutAddress = { ...address, street: fullStreet };
 
-      // Case 1: 100% Store Credit Payment (finalTotal === 0)
-      if (finalTotal === 0 && appliedStoreCredit > 0) {
-        console.log("[Checkout] Completing order with 100% Store Credit");
+      // Case 1: ₹0 payable — 100% store credit and/or 100% coupon (no Razorpay)
+      if (finalTotal === 0 && (appliedStoreCredit > 0 || (couponValid && couponDiscount > 0))) {
+        const zeroPayMethod = appliedStoreCredit > 0 ? "store_credit" : "coupon";
+        console.log(`[Checkout] Completing ₹0 order via ${zeroPayMethod}`);
         const completeRes = await fetch("/api/checkout/complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             address: checkoutAddress,
-            paymentMethod: "store_credit",
+            paymentMethod: zeroPayMethod,
             items,
             total: 0,
             subtotal,
@@ -1706,7 +1718,7 @@ export default function CheckoutPage() {
           router.push(`/orders/${completeData.orderId}/confirmation`);
           return;
         } else {
-          throw new Error(completeData.error || "Failed to complete order with store credit.");
+          throw new Error(completeData.error || "Failed to complete free/coupon order.");
         }
       }
 

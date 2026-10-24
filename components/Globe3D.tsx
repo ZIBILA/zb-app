@@ -4,8 +4,17 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { getCountryCentroid } from "@/lib/country-centroids";
 
-// Dynamic import of Globe component from react-globe.gl (CSR only)
-const Globe = dynamic(() => import("react-globe.gl"), { ssr: false });
+// Dynamic import of Globe component from react-globe.gl (CSR only with ref forwarding)
+const Globe = dynamic(
+  () =>
+    import("react-globe.gl").then((mod) => {
+      const Component = mod.default;
+      return function GlobeInner({ forwardedRef, ...props }: any) {
+        return <Component ref={forwardedRef} {...props} />;
+      };
+    }),
+  { ssr: false }
+);
 
 export interface VisitorPoint {
   countryCode: string;
@@ -174,7 +183,7 @@ export default function Globe3D({ points = [], countries = {}, unknownCount = 0 
   return (
     <div ref={containerRef} className="relative w-full aspect-square flex items-center justify-center select-none overflow-hidden rounded-2xl">
       <Globe
-        ref={globeEl}
+        forwardedRef={globeEl}
         width={dimensions.width}
         height={dimensions.height}
         backgroundColor="rgba(0, 0, 0, 0)"

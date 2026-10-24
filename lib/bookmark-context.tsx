@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { ShopifyProduct } from "./shopify-admin";
 import { useSession } from "next-auth/react";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -228,8 +228,21 @@ export function BookmarkProvider({ children }: { children: React.ReactNode }) {
     }
   }, [bookmarks, status]);
 
+  const value = useMemo(
+    () => ({
+      bookmarks,
+      addBookmark,
+      removeBookmark,
+      isBookmarked,
+      toggleBookmark,
+      isOpen,
+      setIsOpen,
+    }),
+    [bookmarks, addBookmark, removeBookmark, isBookmarked, toggleBookmark, isOpen]
+  );
+
   return (
-    <BookmarkContext.Provider value={{ bookmarks, addBookmark, removeBookmark, isBookmarked, toggleBookmark, isOpen, setIsOpen }}>
+    <BookmarkContext.Provider value={value}>
       {children}
     </BookmarkContext.Provider>
   );

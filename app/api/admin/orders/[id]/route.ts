@@ -755,9 +755,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         // Module 3: Automatic Order Email Webhook Trigger (Non-blocking / Fire-and-forget)
         try {
           const localApiUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.zicabella.com'}/api/orders/status-update`;
-          const apiSecret = process.env.INTERNAL_API_SECRET || 'ZB_INTERNAL_SECRET_987654321';
+          const apiSecret = process.env.INTERNAL_API_SECRET;
           
-          prisma.order.findUnique({
+          if (!apiSecret) {
+            console.warn('[Admin Order Status Trigger] INTERNAL_API_SECRET not set — skipping email webhook');
+          } else prisma.order.findUnique({
             where: { id: updated.id },
             include: {
               customer: true,

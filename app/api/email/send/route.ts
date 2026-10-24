@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sendMail } from '@/lib/mailer';
 import prisma from '@/lib/db';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const data = await req.json();
     const { templateId, subject, htmlBody, recipients, scheduledAt } = data;
 
@@ -90,6 +93,9 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Send email error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }

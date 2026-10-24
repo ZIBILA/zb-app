@@ -62,9 +62,9 @@ export async function POST(
     // Module 3: Automatic Order Delivered Email Webhook Trigger (Non-blocking / Fire-and-forget)
     try {
       const localApiUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.zicabella.com'}/api/orders/status-update`;
-      const apiSecret = process.env.INTERNAL_API_SECRET || 'ZB_INTERNAL_SECRET_987654321';
+      const apiSecret = process.env.INTERNAL_API_SECRET;
       
-      if (updated.customer && updated.customer.email) {
+      if (apiSecret && updated.customer && updated.customer.email) {
         const payload = {
           orderId: updated.id,
           newStatus: 'delivered',
