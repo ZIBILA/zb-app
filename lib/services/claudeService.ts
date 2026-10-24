@@ -158,6 +158,62 @@ export const ZICA_TOOLS: ClaudeTool[] = [
       properties: {},
     },
   },
+  {
+    name: "update_order_address",
+    description: "Update shipping address (and optional phone) on the customer's order BEFORE AWB generation. Collect complete name, street, city, state, 6-digit pincode, and 10-digit Indian mobile. Fails after AWB exists.",
+    input_schema: {
+      type: "object",
+      properties: {
+        order_number: { type: "string", description: "Order number such as ZB81000 or #ZB71909" },
+        name: { type: "string" },
+        phone: { type: "string" },
+        address1: { type: "string", description: "House/flat + street" },
+        address2: { type: "string", description: "Landmark / area" },
+        city: { type: "string" },
+        state: { type: "string" },
+        pincode: { type: "string" },
+        landmark: { type: "string" },
+      },
+      required: ["order_number"],
+    },
+  },
+  {
+    name: "update_order_phone",
+    description: "Update delivery phone on the customer's order BEFORE AWB generation. Requires a valid 10-digit Indian mobile. Fails after AWB exists.",
+    input_schema: {
+      type: "object",
+      properties: {
+        order_number: { type: "string" },
+        phone: { type: "string" },
+      },
+      required: ["order_number", "phone"],
+    },
+  },
+  {
+    name: "update_order_size",
+    description: "Change product size on the customer's order BEFORE AWB generation. Validates stock. If the order has multiple items, pass product_title. Fails after AWB exists.",
+    input_schema: {
+      type: "object",
+      properties: {
+        order_number: { type: "string" },
+        new_size: { type: "string" },
+        product_title: { type: "string" },
+        item_id: { type: "string" },
+      },
+      required: ["order_number", "new_size"],
+    },
+  },
+  {
+    name: "get_order_tracking",
+    description: "Fetch live tracking for a customer's order: AWB, courier, status, ETA, tracking URL. Use when the customer asks where their order is.",
+    input_schema: {
+      type: "object",
+      properties: {
+        order_number: { type: "string" },
+      },
+      required: ["order_number"],
+    },
+  },
 ];
 
 /**

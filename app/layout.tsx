@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
-import Script from "next/script";
 import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
@@ -325,9 +324,8 @@ export default async function RootLayout({
             }}
           />
         )}
-        <Script
+        <script
           id="third-party-pixels-loader"
-          strategy="lazyOnload"
           dangerouslySetInnerHTML={{
             __html: `
               (function () {
@@ -337,10 +335,17 @@ export default async function RootLayout({
                   s.src = src;
                   (document.head || document.body).appendChild(s);
                 }
-                if (window.__zbGtmId) inject('https://www.googletagmanager.com/gtm.js?id=' + window.__zbGtmId);
-                if (window.__zbLoadMetaPixel) inject('https://connect.facebook.net/en_US/fbevents.js');
-                if (window.__zbLoadSnapPixel) inject('https://sc-static.net/scevent.min.js');
-                if (window.__zbLoadOpenAiPixel) inject('https://bzrcdn.openai.com/sdk/oaiq.min.js');
+                function load() {
+                  if (window.__zbGtmId) inject('https://www.googletagmanager.com/gtm.js?id=' + window.__zbGtmId);
+                  if (window.__zbLoadMetaPixel) inject('https://connect.facebook.net/en_US/fbevents.js');
+                  if (window.__zbLoadSnapPixel) inject('https://sc-static.net/scevent.min.js');
+                  if (window.__zbLoadOpenAiPixel) inject('https://bzrcdn.openai.com/sdk/oaiq.min.js');
+                }
+                if (document.readyState === 'complete') {
+                  setTimeout(load, 1);
+                } else {
+                  window.addEventListener('load', function () { setTimeout(load, 1); });
+                }
               })();
             `,
           }}

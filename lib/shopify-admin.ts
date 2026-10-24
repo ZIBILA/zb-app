@@ -608,6 +608,42 @@ export async function updateOrderTags(orderId: string, tags: string, noteAttribu
   return data.order;
 }
 
+/** Update shipping/billing address and/or phone on an existing Shopify order. */
+export async function updateShopifyOrderAddress(
+  orderId: string,
+  address: {
+    first_name?: string;
+    last_name?: string;
+    address1?: string;
+    address2?: string;
+    city?: string;
+    province?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+  }
+): Promise<ShopifyOrder> {
+  const numericId = String(orderId).replace(/\D/g, '');
+  const addr: Record<string, string> = {};
+  for (const [k, v] of Object.entries(address)) {
+    if (v) addr[k] = String(v);
+  }
+  if (addr.phone) {
+    const e164 = toE164(addr.phone);
+    if (e164) addr.phone = e164;
+  }
+  const body: any = {
+    order: {
+      id: parseInt(numericId, 10),
+      shipping_address: addr,
+      billing_address: addr,
+      ...(addr.phone ? { phone: addr.phone } : {}),
+    },
+  };
+  const data = await shopifyPatch<{ order: ShopifyOrder }>(`orders/${numericId}.json`, body);
+  return data.order;
+}
+
 // ─── Customers ───────────────────────────────────────────────────────
 
 export interface ShopifyCustomer {

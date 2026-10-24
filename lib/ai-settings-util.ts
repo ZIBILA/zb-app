@@ -68,12 +68,13 @@ export function getAISettings(): ZicaAISettings {
         "get_fabric_inventory", "get_low_stock_products", "create_reorder_request",
         "get_orders_summary", "update_order_status", "get_returns_exchanges", "get_vendors",
         "get_cost_ledger", "send_push_notification", "send_email_notification",
-        "get_payment_details", "get_shipment_details", "get_ai_action_log", "get_app_user_chats"
+        "get_payment_details", "get_shipment_details", "get_ai_action_log", "get_app_user_chats",
+        "update_order_address", "update_order_phone", "update_order_size", "get_order_tracking"
       ],
       allowedPages: ["dashboard", "manufacturing", "inventory", "orders", "customers", "marketing", "settings", "webhooks"]
     },
     user: {
-      enabledTools: ["get_shipment_details", "get_payment_details", "get_orders_summary"],
+      enabledTools: ["get_shipment_details", "get_payment_details", "get_orders_summary", "update_order_address", "update_order_phone", "update_order_size", "get_order_tracking"],
       allowedPages: ["shop", "collections", "cart", "orders", "profile", "support"],
       restrictToOwnData: true
     },
