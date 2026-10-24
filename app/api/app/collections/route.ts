@@ -36,7 +36,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ collections: flat }, {
       headers: {
-        'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+        'Cache-Control': 'no-store, max-age=0, must-revalidate',
         'Access-Control-Allow-Origin': '*',
       },
     });

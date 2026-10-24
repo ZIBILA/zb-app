@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, Reorder } from 'framer-motion';
 import Image from 'next/image';
+import { CollectionPlacementEditor } from '@/components/admin/CollectionPlacementEditor';
 
 interface SettingsData {
   id: string;
@@ -802,28 +803,15 @@ export default function WebStorefrontSettingsPage() {
                 <div className="flex items-center justify-between border-b border-foreground/[0.03] pb-2">
                    <div>
                       <p className="text-[11px] font-semibold text-foreground tracking-tight">Header Navigation</p>
-                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Links displayed in web header</span>
+                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Drag to reorder links in the web header</span>
                    </div>
                    <span className="text-[9px] font-semibold text-foreground/50 uppercase tracking-widest">{safeParseArray(settings.enabledCollectionsHeader).length} Selected</span>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                   {allCollections.map(c => {
-                      const active = safeParseArray(settings.enabledCollectionsHeader).includes(c.handle);
-                      return (
-                         <button 
-                            key={c.id}
-                            onClick={() => {
-                               const current = safeParseArray(settings.enabledCollectionsHeader);
-                               const next = active ? current.filter((h: any) => h !== c.handle) : [...current, c.handle];
-                               set('enabledCollectionsHeader')(JSON.stringify(next));
-                            }}
-                            className={`px-3 py-1.5 rounded-md text-[10px] font-semibold uppercase tracking-widest transition-colors border ${active ? 'bg-foreground text-background border-transparent' : 'bg-background text-foreground/50 border-foreground/[0.05] hover:border-foreground/20'}`}
-                         >
-                            {c.title}
-                         </button>
-                      );
-                   })}
-                </div>
+                <CollectionPlacementEditor
+                  collections={allCollections}
+                  value={settings.enabledCollectionsHeader || '[]'}
+                  onChange={set('enabledCollectionsHeader')}
+                />
              </div>
 
              {/* Homepage Carousel Collections */}
@@ -831,28 +819,15 @@ export default function WebStorefrontSettingsPage() {
                 <div className="flex items-center justify-between border-b border-foreground/[0.03] pb-2">
                    <div>
                       <p className="text-[11px] font-semibold text-foreground tracking-tight">Homepage Carousel</p>
-                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Collections displayed in homepage sliders</span>
+                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Drag to reorder homepage collection sliders</span>
                    </div>
                    <span className="text-[9px] font-semibold text-foreground/50 uppercase tracking-widest">{safeParseArray(settings.enabledCollectionsPage).length} Selected</span>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                   {allCollections.map(c => {
-                      const active = safeParseArray(settings.enabledCollectionsPage).includes(c.handle);
-                      return (
-                         <button 
-                            key={c.id}
-                            onClick={() => {
-                               const current = safeParseArray(settings.enabledCollectionsPage);
-                               const next = active ? current.filter((h: any) => h !== c.handle) : [...current, c.handle];
-                               set('enabledCollectionsPage')(JSON.stringify(next));
-                            }}
-                            className={`px-3 py-1.5 rounded-md text-[10px] font-semibold uppercase tracking-widest transition-colors border ${active ? 'bg-foreground text-background border-transparent' : 'bg-background text-foreground/50 border-foreground/[0.05] hover:border-foreground/20'}`}
-                         >
-                            {c.title}
-                         </button>
-                      );
-                   })}
-                </div>
+                <CollectionPlacementEditor
+                  collections={allCollections}
+                  value={settings.enabledCollectionsPage || '[]'}
+                  onChange={set('enabledCollectionsPage')}
+                />
              </div>
 
              {/* Mobile & Footer Collections */}
@@ -860,28 +835,15 @@ export default function WebStorefrontSettingsPage() {
                 <div className="flex items-center justify-between border-b border-foreground/[0.03] pb-2">
                    <div>
                       <p className="text-[11px] font-semibold text-foreground tracking-tight">Mobile & Footer Menu</p>
-                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Quick links in sidebar and footer</span>
+                      <span className="text-[8px] text-foreground/45 uppercase tracking-widest">Drag to reorder sidebar, footer, and mobile app menus</span>
                    </div>
                    <span className="text-[9px] font-semibold text-foreground/50 uppercase tracking-widest">{safeParseArray(settings.enabledCollectionsMenu).length} Selected</span>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                   {allCollections.map(c => {
-                      const active = safeParseArray(settings.enabledCollectionsMenu).includes(c.handle);
-                      return (
-                         <button 
-                            key={c.id}
-                            onClick={() => {
-                               const current = safeParseArray(settings.enabledCollectionsMenu);
-                               const next = active ? current.filter((h: any) => h !== c.handle) : [...current, c.handle];
-                               set('enabledCollectionsMenu')(JSON.stringify(next));
-                            }}
-                            className={`px-3 py-1.5 rounded-md text-[10px] font-semibold uppercase tracking-widest transition-colors border ${active ? 'bg-foreground text-background border-transparent' : 'bg-background text-foreground/50 border-foreground/[0.05] hover:border-foreground/20'}`}
-                         >
-                            {c.title}
-                         </button>
-                      );
-                   })}
-                </div>
+                <CollectionPlacementEditor
+                  collections={allCollections}
+                  value={settings.enabledCollectionsMenu || '[]'}
+                  onChange={set('enabledCollectionsMenu')}
+                />
              </div>
           </div>
         </SettingsGroup>

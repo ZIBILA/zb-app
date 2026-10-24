@@ -65,7 +65,8 @@ export async function POST(req: NextRequest) {
 
     console.log("[Admin Collections] Successfully updated shop:", shop.id);
 
-    // Force revalidation of storefront pages
+    const { refreshStorefront } = await import('@/lib/storefrontRefresh');
+    refreshStorefront();
     revalidatePath("/");
     revalidatePath("/collections/[handle]", "page");
     revalidatePath("/api/shopify/collections");

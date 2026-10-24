@@ -206,8 +206,9 @@ export async function PATCH(req: Request) {
     const updatedSettings = await updateShopSettings(data);
 
     try {
+      const { refreshStorefront } = await import('@/lib/storefrontRefresh');
+      refreshStorefront();
       revalidatePath('/');
-      // Shop All / collection pages read their order + visibility from these settings.
       revalidatePath('/collections');
       revalidatePath('/collections/[handle]', 'page');
       revalidatePath('/products/[id]', 'page');

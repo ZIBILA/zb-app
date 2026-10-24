@@ -943,16 +943,24 @@ export async function fetchEnabledCollections(location: 'header' | 'page' | 'men
       return allCollections;
     }
 
-    const enabledHandles: string[] = JSON.parse(jsonValue).map((h: string) => h.trim().toLowerCase());
+    const enabledHandles: string[] = Array.from(
+      new Set(
+        JSON.parse(jsonValue)
+          .map((h: string) => String(h || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    );
 
     if (enabledHandles.length === 0) {
       return [];
     }
 
-    return allCollections.filter((c: any) => {
-      const handle = c.handle?.trim().toLowerCase();
-      return enabledHandles.includes(handle);
-    });
+    const byHandle = new Map(
+      allCollections.map((c: any) => [String(c.handle || '').trim().toLowerCase(), c])
+    );
+    return enabledHandles
+      .map((handle) => byHandle.get(handle))
+      .filter((c): c is ShopifyCollection => !!c);
   } catch (e) {
     // Database connection failed, return all collections as fallback
     return allCollections;
