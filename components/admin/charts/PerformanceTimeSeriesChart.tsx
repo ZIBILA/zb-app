@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "@/components/admin/lazy-recharts";
@@ -34,7 +35,7 @@ function formatChartDate(dateStr: string, granularity: string): string {
   return d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
 }
 
-export default function PerformanceTimeSeriesChart({
+export default memo(function PerformanceTimeSeriesChart({
   data,
   granularity,
   activeChart,
@@ -102,4 +103,4 @@ export default function PerformanceTimeSeriesChart({
       </AreaChart>
     </ResponsiveContainer>
   );
-}
+});

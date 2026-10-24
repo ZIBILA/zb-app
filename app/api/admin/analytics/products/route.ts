@@ -23,7 +23,10 @@ async function handler(req: Request) {
 
     const now = new Date();
     const startDate = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
-    const rawEnd = to ? new Date(to) : now;
+    let rawEnd = to ? new Date(to) : now;
+    if (to && to.length === 10) {
+      rawEnd.setHours(23, 59, 59, 999);
+    }
     const endDate = rawEnd > now ? now : rawEnd;
     const dateFilter = { gte: startDate, lte: endDate };
 

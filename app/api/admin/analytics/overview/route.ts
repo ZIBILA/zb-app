@@ -24,11 +24,29 @@ function pLimit(concurrency: number) {
 
 // ─── Canonical status sets (Item 1) ─────────────────────────────
 // Only these paymentStatus values count toward realized revenue & order counts.
-// 'pending', 'open', 'authorized' are explicitly excluded — they are not yet money-in.
-const REALIZED_PAYMENT_STATUSES = ['paid', 'partially_paid', 'cod_upfront_paid', 'cod'] as const;
+// Exclude failed, unpaid, and payment-pending orders.
+// Include only successfully paid orders and COD orders where the upfront payment has been successfully received.
+const REALIZED_PAYMENT_STATUSES = [
+  'paid',
+  'PAID',
+  'success',
+  'SUCCESS',
+  'cod_upfront_paid',
+  'partially_paid',
+] as const;
 
 // Orders with these status values are excluded from all revenue/order metrics.
-const EXCLUDED_ORDER_STATUSES = ['cancelled', 'payment_failed', 'pending', 'draft', 'abandoned', 'FAILED', 'CANCELLED', 'payment_pending'] as const;
+const EXCLUDED_ORDER_STATUSES = [
+  'cancelled',
+  'CANCELLED',
+  'payment_failed',
+  'failed',
+  'FAILED',
+  'draft',
+  'abandoned',
+  'pending',
+  'payment_pending',
+] as const;
 
 // Valid platform values for allow-list validation (Item 6)
 const VALID_PLATFORMS = ['web', 'app'] as const;
@@ -57,15 +75,16 @@ async function handler(req: Request) {
     const from = searchParams.get('from');
     const to = searchParams.get('to');
     const rawPlatform = searchParams.get('platform'); // 'web' | 'app' | null (all)
-    const bypassCache = searchParams.get('bypassCache') === 'true';
 
-    // Validate platform against allow-list (Item 6 — kill SQL injection)
+    // Validate platform against allow-list
     const platform = rawPlatform && (VALID_PLATFORMS as readonly string[]).includes(rawPlatform) ? rawPlatform : null;
 
     const now = new Date();
-    const startDate = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    // Clamp endDate to 'now' when preset's `to` is in the future (Item 3)
-    const rawEnd = to ? new Date(to) : now;
+    const startDate = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+    let rawEnd = to ? new Date(to) : now;
+    if (to && to.length === 10) {
+      rawEnd.setHours(23, 59, 59, 999);
+    }
     const endDate = rawEnd > now ? now : rawEnd;
 
     const data = await cachedAnalytics(
@@ -81,52 +100,35 @@ async function handler(req: Request) {
 
     // Platform → orderType mapping
     const orderTypeFilter = platform === 'app'
-      ? { orderType: { in: ['MOBILE', 'MOBILE_APP'] } }
+      ? { orderType: { in: ['MOBILE', 'MOBILE_APP', 'APP'] } }
       : platform === 'web'
-        ? { orderType: { in: ['WEB_STORE', 'REGULAR'] } }
+        ? { orderType: { in: ['WEB_STORE', 'REGULAR', 'EXCHANGE'] } }
         : {};
 
     const platformFilter = platform ? { platform } : {};
 
-    // ── Shared base WHERE for all realized-revenue queries (Item 1) ──
-    const realizedBaseWhere = {
-      paymentStatus: { in: [...REALIZED_PAYMENT_STATUSES] },
-      status: { notIn: [...EXCLUDED_ORDER_STATUSES] },
-      ...orderTypeFilter,
-    };
-
     // ── Platform SQL conditions for raw queries ──
     let orderTypeSql = '';
-    if (platform === 'web') orderTypeSql = `AND "orderType" IN ('WEB_STORE', 'REGULAR')`;
-    else if (platform === 'app') orderTypeSql = `AND "orderType" IN ('MOBILE', 'MOBILE_APP')`;
+    if (platform === 'web') orderTypeSql = `AND "orderType" IN ('WEB_STORE', 'REGULAR', 'EXCHANGE')`;
+    else if (platform === 'app') orderTypeSql = `AND "orderType" IN ('MOBILE', 'MOBILE_APP', 'APP')`;
 
-    const realizedPaymentSql = `AND "paymentStatus" IN ('paid', 'partially_paid', 'cod_upfront_paid', 'cod')`;
-    const excludedStatusSql = `AND "status" NOT IN ('cancelled', 'payment_failed', 'pending', 'draft', 'abandoned', 'FAILED', 'CANCELLED', 'payment_pending')`;
-
-    // ────────────────────────────────────────────────────────────────────
-    // OPTIMIZATION: 2-Phase Execution to prevent pool exhaustion
-    // Phase 1: Fast transactional model aggregates (Order, Cart, Logins)
-    //   → Run through pLimit(4) to cap at 4 concurrent DB queries
-    // Phase 2: Targeted analytical queries on analytics tables
-    // ────────────────────────────────────────────────────────────────────
+    const realizedPaymentSql = `AND "paymentStatus" IN ('paid', 'PAID', 'success', 'SUCCESS', 'cod_upfront_paid', 'partially_paid')`;
+    const excludedStatusSql = `AND "status" NOT IN ('cancelled', 'CANCELLED', 'payment_failed', 'failed', 'FAILED', 'draft', 'abandoned', 'pending', 'payment_pending')`;
+    const draftExclusionSql = `AND "internal_order_number" NOT LIKE 'ZBPF%' AND NOT ("internal_order_number" LIKE 'ZBPP%' AND "paymentStatus" IN ('pending', 'payment_pending', 'failed', 'payment_failed'))`;
 
     const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
-    const limit = pLimit(4);
 
-    // ── Shared cart predicates (FIX 3 — match abandoned-carts page) ──
+    // ── Shared cart predicates ──
     const cartPlatformFilter = platform === 'app'
       ? { source: 'mobile_app' }
       : platform === 'web'
         ? { source: 'webstore' }
         : {};
 
-    // ── PHASE 1: Quick Prisma aggregates (Orders, Carts, Logins, Customers) ──
+    // ── PHASE 1: Consolidated Single-Pass Orders & Cart Aggregates ──
     const [
-      revenueAgg,
-      prevRevenueAgg,
-      refundAgg,
-      statusCounts,
-      paymentBreakdown,
+      orderMetricsRaw,
+      prevOrderAggRaw,
       returnedCount,
       totalLogins,
       prevTotalLogins,
@@ -136,52 +138,52 @@ async function handler(req: Request) {
       abandonedCarts,
       convertedCarts,
       totalCarts,
-      platformOrderBreakdown,
       activeVisitors,
     ]: any = await Promise.all([
-      limit(() => prisma.order.aggregate({
-        where: { createdAt: dateFilter, ...realizedBaseWhere },
-        _sum: { totalPrice: true, subtotalPrice: true, discountAmount: true },
-        _count: true,
-      })),
-      limit(() => prisma.order.aggregate({
-        where: { createdAt: prevDateFilter, ...realizedBaseWhere },
-        _sum: { totalPrice: true },
-        _count: true,
-      })),
-      limit(() => prisma.order.aggregate({
-        where: {
-          createdAt: dateFilter,
-          refundStatus: { in: ['refunded', 'partial_refund'] },
-          ...orderTypeFilter,
-        },
-        _sum: { totalPrice: true },
-        _count: true,
-      })),
-      limit(() => prisma.order.groupBy({
-        by: ['status'],
-        where: { createdAt: dateFilter, ...orderTypeFilter },
-        _count: true,
-      })),
-      limit(() => prisma.order.groupBy({
-        by: ['paymentMethod'],
-        where: { createdAt: dateFilter, ...realizedBaseWhere },
-        _count: true,
-        _sum: { totalPrice: true },
-      })),
-      limit(() => prisma.return.count({
+      // 1. Single consolidated order aggregation for current period
+      prisma.$queryRawUnsafe(`
+        SELECT
+          status,
+          "paymentStatus",
+          "orderType",
+          "paymentMethod",
+          "refund_status" AS "refundStatus",
+          COUNT(*) AS count,
+          COALESCE(SUM("totalPrice"), 0) AS total_price,
+          COALESCE(SUM("subtotalPrice"), 0) AS subtotal_price,
+          COALESCE(SUM("discountAmount"), 0) AS discount_amount
+        FROM "Order"
+        WHERE "createdAt" >= $1 AND "createdAt" <= $2
+          ${draftExclusionSql}
+          ${orderTypeSql}
+        GROUP BY status, "paymentStatus", "orderType", "paymentMethod", "refund_status"
+      `, startDate, endDate),
+
+      // 2. Fast previous period realized revenue & orders
+      prisma.$queryRawUnsafe(`
+        SELECT
+          COUNT(*) AS count,
+          COALESCE(SUM("totalPrice"), 0) AS total_price
+        FROM "Order"
+        WHERE "createdAt" >= $1 AND "createdAt" <= $2
+          ${realizedPaymentSql}
+          ${excludedStatusSql}
+          ${draftExclusionSql}
+          ${orderTypeSql}
+      `, prevStart, prevEnd),
+
+      prisma.return.count({
         where: { requestedAt: dateFilter, status: { in: ['APPROVED', 'COMPLETED'] } },
-      })),
-      limit(() => prisma.appLogin.count({
+      }),
+      prisma.appLogin.count({
         where: { createdAt: dateFilter, status: { in: ['LOGGED_IN', 'SUCCESS', 'ACCOUNT_CREATED'] } },
-      })),
-      limit(() => prisma.appLogin.count({
+      }),
+      prisma.appLogin.count({
         where: { createdAt: prevDateFilter, status: { in: ['LOGGED_IN', 'SUCCESS', 'ACCOUNT_CREATED'] } },
-      })),
-      limit(() => prisma.customer.count({ where: { createdAt: dateFilter } })),
-      limit(() => prisma.customer.count({ where: { createdAt: prevDateFilter } })),
-      // FIX 3: Use shared cart conversion predicates (match abandoned-carts page)
-      limit(() => prisma.cart.count({
+      }),
+      prisma.customer.count({ where: { createdAt: dateFilter } }),
+      prisma.customer.count({ where: { createdAt: prevDateFilter } }),
+      prisma.cart.count({
         where: {
           status: 'active',
           convertedOrderId: null,
@@ -190,30 +192,20 @@ async function handler(req: Request) {
           createdAt: dateFilter,
           ...cartPlatformFilter,
         },
-      })),
-      limit(() => prisma.cart.count({
+      }),
+      prisma.cart.count({
         where: abandonedCartWhere(dateFilter, new Date(now.getTime() - 30 * 60 * 1000), cartPlatformFilter),
-      })),
-      limit(() => prisma.cart.count({
+      }),
+      prisma.cart.count({
         where: convertedCartWhere(dateFilter, cartPlatformFilter),
-      })),
-      limit(() => prisma.cart.count({ where: { createdAt: dateFilter, status: { notIn: ['merged', 'expired'] }, ...cartPlatformFilter } })),
-      limit(() => prisma.order.groupBy({
-        by: ['orderType'],
-        where: {
-          createdAt: dateFilter,
-          paymentStatus: { in: [...REALIZED_PAYMENT_STATUSES] },
-          status: { notIn: [...EXCLUDED_ORDER_STATUSES] },
-        },
-        _count: true,
-        _sum: { totalPrice: true },
-      })),
-      limit(() => prisma.analyticsSession.count({
+      }),
+      prisma.cart.count({ where: { createdAt: dateFilter, status: { notIn: ['merged', 'expired'] }, ...cartPlatformFilter } }),
+      prisma.analyticsSession.count({
         where: { lastActiveAt: { gte: fiveMinAgo }, ...platformFilter },
-      })),
+      }),
     ]);
 
-    // ── PHASE 2: Heavy Analytical Raw Queries (Only 5 concurrent connections) ──
+    // ── PHASE 2: Heavy Analytical Raw Queries ──
     const platformCondition = platform ? `AND platform = $3` : '';
     const queryArgs: any[] = platform ? [startDate, endDate, platform] : [startDate, endDate];
     const prevQueryArgs: any[] = platform ? [prevStart, prevEnd, platform] : [prevStart, prevEnd];
@@ -266,6 +258,7 @@ async function handler(req: Request) {
           AND "customerId" IS NOT NULL
           ${realizedPaymentSql}
           ${excludedStatusSql}
+          ${draftExclusionSql}
           ${orderTypeSql}
       `, prevStart, prevEnd) as Promise<any[]>,
 
@@ -282,7 +275,7 @@ async function handler(req: Request) {
         GROUP BY event_name
       `, ...queryArgs) as Promise<any[]>,
 
-      // 5. Current sessions & visitors grouped by platform (single pass gives both platform split AND totals)
+      // 5. Current sessions & visitors grouped by platform
       prisma.$queryRawUnsafe(`
         SELECT
           platform,
@@ -294,18 +287,70 @@ async function handler(req: Request) {
       `, startDate, endDate) as Promise<any[]>,
     ]);
 
-    // ── Derive revenue metrics ──
-    const totalRevenue = revenueAgg._sum.totalPrice || 0;
-    const grossSales = revenueAgg._sum.subtotalPrice || totalRevenue;
-    const totalDiscounts = revenueAgg._sum.discountAmount || 0;
-    const totalOrders = revenueAgg._count;
+    // ── Derive revenue & order metrics from consolidated Order aggregate ──
+    let totalRevenue = 0;
+    let grossSales = 0;
+    let totalDiscounts = 0;
+    let totalOrders = 0;
+    let totalRefunds = 0;
+    let refundedOrders = 0;
+    let cancelledOrders = 0;
+    const statusMap = new Map<string, number>();
+    const paymentMap = new Map<string, { count: number; revenue: number }>();
+    let webOrderCount = 0, webRevenue = 0, appOrderCount = 0, appRevenue = 0;
+
+    for (const r of (orderMetricsRaw as any[])) {
+      const cnt = Number(r.count || 0);
+      const rev = Number(r.total_price || 0);
+      const sub = Number(r.subtotal_price || 0);
+      const disc = Number(r.discount_amount || 0);
+      const isRealized = (REALIZED_PAYMENT_STATUSES as readonly string[]).includes(r.paymentStatus) &&
+        !(EXCLUDED_ORDER_STATUSES as readonly string[]).includes(r.status);
+
+      if (isRealized) {
+        totalRevenue += rev;
+        grossSales += (sub > 0 ? sub : rev);
+        totalDiscounts += disc;
+        totalOrders += cnt;
+
+        const pm = r.paymentMethod || 'other';
+        const existingPm = paymentMap.get(pm) || { count: 0, revenue: 0 };
+        paymentMap.set(pm, {
+          count: existingPm.count + cnt,
+          revenue: Math.round((existingPm.revenue + rev) * 100) / 100,
+        });
+
+        if (['WEB_STORE', 'REGULAR', 'EXCHANGE'].includes(r.orderType)) {
+          webOrderCount += cnt;
+          webRevenue += rev;
+        } else if (['MOBILE', 'MOBILE_APP', 'APP'].includes(r.orderType)) {
+          appOrderCount += cnt;
+          appRevenue += rev;
+        }
+      }
+
+      if (['refunded', 'partial_refund'].includes(r.refundStatus)) {
+        totalRefunds += rev;
+        refundedOrders += cnt;
+      }
+      if (r.status === 'cancelled' || r.status === 'CANCELLED') {
+        cancelledOrders += cnt;
+      }
+
+      statusMap.set(r.status, (statusMap.get(r.status) || 0) + cnt);
+    }
+
     const aov = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-    const prevRevenue = prevRevenueAgg._sum.totalPrice || 0;
-    const prevOrders = prevRevenueAgg._count;
-    const totalRefunds = refundAgg._sum.totalPrice || 0;
     const netRevenue = totalRevenue - totalRefunds;
-    const refundedOrders = refundAgg._count;
-    const cancelledOrders = statusCounts.find((s: any) => s.status === 'cancelled')?._count || 0;
+    const prevRevenue = Number(prevOrderAggRaw[0]?.total_price || 0);
+    const prevOrders = Number(prevOrderAggRaw[0]?.count || 0);
+
+    const statusBreakdown = Array.from(statusMap.entries()).map(([status, count]) => ({ status, count }));
+    const paymentBreakdown = Array.from(paymentMap.entries()).map(([method, val]) => ({
+      method,
+      count: val.count,
+      revenue: val.revenue,
+    }));
 
     // ── Derive customer metrics ──
     const totalCustomersCount = Number(customerStatsRaw[0]?.total_customers || 0);
@@ -324,8 +369,8 @@ async function handler(req: Request) {
         appVisitors = Number(row.visitors || 0);
       }
     }
-    const sessionCount = webSessions + appSessions;
-    const uniqueVisitorsCount = Math.max(webVisitors, appVisitors, 1);
+    const sessionCount = platform === 'web' ? webSessions : platform === 'app' ? appSessions : (webSessions + appSessions);
+    const uniqueVisitorsCount = platform === 'web' ? webVisitors : platform === 'app' ? appVisitors : Math.max(webVisitors, appVisitors, 1);
     const prevSessionCount = Number(prevSessionStatsRaw[0]?.sessions || 0);
     const prevUniqueVisitorsCount = Number(prevSessionStatsRaw[0]?.visitors || Math.round(prevSessionCount * 0.75));
 
@@ -337,20 +382,6 @@ async function handler(req: Request) {
     const checkoutStarted = getEventCount('begin_checkout');
     const paymentInitiated = getEventCount('payment_initiated');
     const purchases = getEventCount('purchase');
-
-    // ── Derive platform split orders ──
-    const webOrderTypes = ['WEB_STORE', 'REGULAR'];
-    const appOrderTypes = ['MOBILE', 'MOBILE_APP'];
-    let webOrderCount = 0, webRevenue = 0, appOrderCount = 0, appRevenue = 0;
-    for (const row of platformOrderBreakdown) {
-      if (webOrderTypes.includes(row.orderType)) {
-        webOrderCount += row._count;
-        webRevenue += row._sum.totalPrice || 0;
-      } else if (appOrderTypes.includes(row.orderType)) {
-        appOrderCount += row._count;
-        appRevenue += row._sum.totalPrice || 0;
-      }
-    }
 
     // ─── DERIVED RATES ───────────────────────────────────────────
     const conversionRate = sessionCount > 0 ? (purchases / sessionCount) * 100 : 0;
@@ -382,12 +413,8 @@ async function handler(req: Request) {
         returned: returnedCount,
         refunded: refundedOrders,
         change: pctChange(totalOrders, prevOrders),
-        statusBreakdown: statusCounts.map((s: any) => ({ status: s.status, count: s._count })),
-        paymentBreakdown: paymentBreakdown.map((p: any) => ({
-          method: p.paymentMethod || 'unknown',
-          count: p._count,
-          revenue: Math.round((p._sum.totalPrice || 0) * 100) / 100,
-        })),
+        statusBreakdown,
+        paymentBreakdown,
       },
       customers: {
         total: totalCustomersCount,
