@@ -24,6 +24,8 @@ import {
   CreditCard
 } from "lucide-react";
 
+import { formatCommissionRate } from "@/lib/affiliate/rate";
+import ApproveAffiliateModal, { type ApproveAffiliateTarget } from "@/components/admin/ApproveAffiliateModal";
 export default function AffiliateDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -36,6 +38,9 @@ export default function AffiliateDetailPage() {
   // Rate edit state
   const [isEditingRate, setIsEditingRate] = useState(false);
   const [newRatePercent, setNewRatePercent] = useState<number>(10);
+  const [approvingAffiliate, setApprovingAffiliate] = useState<ApproveAffiliateTarget | null>(null);
+  const [approveSubmitting, setApproveSubmitting] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
 
   // Bank reveal state
   const [revealedBank, setRevealedBank] = useState<any>(null);
@@ -48,7 +53,7 @@ export default function AffiliateDetailPage() {
       if (res.ok) {
         const data = await res.json();
         setAffiliate(data.affiliate);
-        setNewRatePercent(Math.round((data.affiliate.commissionRate || 0.1) * 100));
+        setNewRatePercent(Number(((data.affiliate.commissionRate || 0.1) * 100).toFixed(2)));
       }
     } catch (err) {
       console.error("Error loading affiliate:", err);
@@ -88,14 +93,38 @@ export default function AffiliateDetailPage() {
     }
   };
 
-  const handleApprove = async () => {
-    if (!confirm("Approve this affiliate partnership?")) return;
+  const openApprove = () => {
+    if (!affiliate) return;
+    setApproveError(null);
+    setApprovingAffiliate({
+      id: affiliate.id,
+      name: affiliate.displayName || affiliate.customer?.name || "Unnamed",
+      code: affiliate.code,
+      commissionRate: affiliate.commissionRate,
+      reactivate: affiliate.status === "SUSPENDED",
+    });
+  };
+
+  const handleApproveSubmit = async (commissionRate: number) => {
+    setApproveSubmitting(true);
+    setApproveError(null);
     try {
-      const res = await fetch(`/api/admin/affiliates/${id}/approve`, { method: "POST" });
-      if (res.ok) fetchDetail();
-      else alert("Failed to approve");
+      const res = await fetch(`/api/admin/affiliates/${id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commissionRate }),
+      });
+      if (res.ok) {
+        setApprovingAffiliate(null);
+        fetchDetail();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setApproveError(err.error || "Failed to approve");
+      }
     } catch (e: any) {
-      alert(e.message);
+      setApproveError(e.message || "Failed to approve");
+    } finally {
+      setApproveSubmitting(false);
     }
   };
 
@@ -208,7 +237,7 @@ export default function AffiliateDetailPage() {
         <div className="flex items-center gap-2">
           {affiliate.status === "PENDING" && (
             <button
-              onClick={handleApprove}
+              onClick={openApprove}
               className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors"
             >
               Approve Creator
@@ -226,7 +255,7 @@ export default function AffiliateDetailPage() {
 
           {affiliate.status === "SUSPENDED" && (
             <button
-              onClick={handleApprove}
+              onClick={openApprove}
               className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors"
             >
               Reactivate Partnership
@@ -286,6 +315,7 @@ export default function AffiliateDetailPage() {
                 type="number"
                 min={0}
                 max={100}
+                step={0.01}
                 value={newRatePercent}
                 onChange={(e) => setNewRatePercent(Number(e.target.value))}
                 className="w-16 px-2 py-1 rounded bg-zinc-950 border border-zinc-700 text-sm font-bold text-white"
@@ -299,7 +329,7 @@ export default function AffiliateDetailPage() {
               </button>
             </div>
           ) : (
-            <div className="text-2xl font-bold text-white">{(affiliate.commissionRate * 100).toFixed(0)}%</div>
+            <div className="text-2xl font-bold text-white">{formatCommissionRate(affiliate.commissionRate)}</div>
           )}
           <div className="text-xs text-zinc-400 mt-1">
             Total Clicks: {affiliate.totalClicks.toLocaleString("en-IN")}
@@ -489,6 +519,14 @@ export default function AffiliateDetailPage() {
           </table>
         </div>
       </div>
+
+      <ApproveAffiliateModal
+        target={approvingAffiliate}
+        submitting={approveSubmitting}
+        error={approveError}
+        onCancel={() => setApprovingAffiliate(null)}
+        onConfirm={handleApproveSubmit}
+      />
     </div>
   );
 }

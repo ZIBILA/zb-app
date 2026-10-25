@@ -15,35 +15,34 @@ function randomString(length: number): string {
   return result;
 }
 
+const AFFILIATE_CODE_MAX = 99999;
+
 /**
- * Generates a unique collision-checked affiliate code (e.g. "ZBSNEHA7X" or "ZB9X4R2")
+ * Next sequential affiliate code: "ZB" + 5 digits (ZB10001, ZB10002, ...).
+ * Numbers come from the zb_affiliate_code_seq Postgres sequence, so concurrent registrations
+ * never get the same number; a taken code (e.g. created by hand) is skipped.
  */
-export async function generateUniqueAffiliateCode(nameHint?: string | null): Promise<string> {
-  let cleanHint = '';
-  if (nameHint) {
-    cleanHint = nameHint
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .slice(0, 5);
-  }
-
+export async function generateUniqueAffiliateCode(): Promise<string> {
   for (let attempt = 0; attempt < 10; attempt++) {
-    const suffix = randomString(4);
-    const candidate = cleanHint ? `ZB${cleanHint}${suffix}`.slice(0, 10) : `ZB${randomString(6)}`;
+    const rows = (await prisma.$queryRawUnsafe(
+      `SELECT nextval('zb_affiliate_code_seq') AS seq_val`
+    )) as Array<{ seq_val: bigint | number }>;
+    const seqVal = Number(rows[0].seq_val);
+    if (seqVal > AFFILIATE_CODE_MAX) {
+      throw new Error('Affiliate code range ZB10001–ZB99999 is exhausted');
+    }
+    const candidate = `ZB${seqVal}`;
 
-    // Exact indexed equality lookup
     const existing = await prisma.affiliate.findUnique({
       where: { code: candidate },
       select: { id: true },
     });
-
     if (!existing) {
       return candidate;
     }
   }
 
-  // Fallback with timestamp randomness
-  return `ZB${Date.now().toString(36).toUpperCase().slice(-6)}`;
+  throw new Error('Could not allocate a unique affiliate code');
 }
 
 /**

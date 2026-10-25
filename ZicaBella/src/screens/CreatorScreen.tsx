@@ -426,7 +426,7 @@ export default function CreatorScreen() {
                   {formatPrice(affiliate.lifetimeEarnings || 0)}
                 </Typography>
                 <Typography size={7} color={colors.textMuted} style={{ marginTop: 12 }}>
-                  Commission Rate: {affiliate.commissionRate || 10}%
+                  Commission Rate: {Number(((affiliate.commissionRate || 0.1) * 100).toFixed(2))}%
                 </Typography>
               </View>
             </View>

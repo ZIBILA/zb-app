@@ -51,8 +51,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Generate unique affiliate code
-    const code = await generateUniqueAffiliateCode(displayName || customer.name);
+    // Next sequential affiliate code (ZB + 5 digits)
+    const code = await generateUniqueAffiliateCode();
 
     // Create affiliate row with PENDING status
     const affiliate = await prisma.$transaction(async (tx: any) => {
