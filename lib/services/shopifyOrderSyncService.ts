@@ -3,6 +3,7 @@ import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrd
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
 import { toE164 } from '@/lib/shopify-phone';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { INV_DEDUCTED_TAG, withInventoryTag } from '@/lib/inventoryPolicy';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -418,6 +419,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
     resolvedMethodTag.split(',').map(t => t.trim()).filter(Boolean).forEach(t => mergedTags.add(t));
     mergedTags.add(`zb-order-${universalOrderNumber}`);
     mergedTags.add(`zb_uid:${universalOrderNumber}`);
+    mergedTags.add(INV_DEDUCTED_TAG);
 
     if (order.status === 'approved' || options?.preserveAppTags) {
       mergedTags.add('Approved');
@@ -457,6 +459,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       ...(emailToUse && emailToUse.includes('@') ? { email: emailToUse } : {}),
       send_receipt: false,
       send_fulfillment_receipt: false,
+      inventory_behaviour: 'decrement_obeying_policy',
       financial_status: shopifyFinancialStatus,
       note: isCod
         ? `COD Order from ${isApp ? 'Mobile App' : 'Web Store'} - ₹${codUpfrontPaid} upfront fee paid via Razorpay (Payment ID: ${order.razorpayPaymentId || 'N/A'}) | InternalOrderId: ${order.id}`
@@ -594,6 +597,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         shopifyOrderName,
         shopifySyncStatus: 'synced',
         shopifySyncError: null,
+        tags: withInventoryTag(order.tags, INV_DEDUCTED_TAG),
       },
     });
 

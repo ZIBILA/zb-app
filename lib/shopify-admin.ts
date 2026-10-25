@@ -587,9 +587,16 @@ export async function findShopifyOrderByInternalNumber(internalOrderNumber: stri
   return null;
 }
 
-export async function cancelOrder(orderId: string, reason = 'customer'): Promise<any> {
+export async function cancelOrder(
+  orderId: string,
+  reason = 'customer',
+  opts?: { restock?: boolean }
+): Promise<any> {
   try {
-    const data = await shopifyPost<any>(`orders/${orderId}/cancel.json`, { reason });
+    const data = await shopifyPost<any>(`orders/${orderId}/cancel.json`, {
+      reason,
+      restock: opts?.restock !== false,
+    });
     return data;
   } catch (e) {
     console.error(`[Shopify Admin] Error cancelling order ${orderId}:`, e);
@@ -1818,6 +1825,118 @@ export async function fetchLocations(): Promise<ShopifyLocation[]> {
   return data.locations;
 }
 
+function numericShopifyResourceId(id: string | number): number {
+  const n = parseInt(String(id).split("/").pop() || "", 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Invalid Shopify id: ${id}`);
+  }
+  return n;
+}
+
+export async function fetchInventoryLevelsForItem(inventoryItemId: string): Promise<ShopifyInventoryLevel[]> {
+  const data = await shopifyFetch<{ inventory_levels: ShopifyInventoryLevel[] }>(
+    "inventory_levels.json",
+    {
+      inventory_item_ids: String(numericShopifyResourceId(inventoryItemId)),
+      limit: "50",
+    }
+  );
+  return data.inventory_levels || [];
+}
+
+export async function connectInventoryLevel(
+  inventoryItemId: string,
+  locationId: string
+): Promise<ShopifyInventoryLevel | null> {
+  try {
+    const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
+      "inventory_levels/connect.json",
+      {
+        inventory_item_id: numericShopifyResourceId(inventoryItemId),
+        location_id: numericShopifyResourceId(locationId),
+        relocate_if_necessary: true,
+      }
+    );
+    return data.inventory_level || null;
+  } catch (e) {
+    console.warn("[Shopify Admin] inventory_levels/connect failed:", (e as Error).message);
+    return null;
+  }
+}
+
+async function resolveLocationForInventoryItem(
+  inventoryItemId: string,
+  preferredLocationId?: string
+): Promise<string> {
+  const itemId = String(numericShopifyResourceId(inventoryItemId));
+  const levels = await fetchInventoryLevelsForItem(itemId).catch(() => [] as ShopifyInventoryLevel[]);
+  const preferred =
+    preferredLocationId && preferredLocationId !== "0"
+      ? String(numericShopifyResourceId(preferredLocationId))
+      : "";
+
+  if (preferred && levels.some((level) => String(level.location_id) === preferred)) {
+    return preferred;
+  }
+  if (levels[0]?.location_id) return String(levels[0].location_id);
+
+  const locations = await fetchLocations();
+  const match = preferred ? locations.find((l) => String(l.id) === preferred) : null;
+  const active = match || locations.find((l) => l.active) || locations[0];
+  if (!active) throw new Error("No Shopify location found");
+  await connectInventoryLevel(itemId, String(active.id));
+  return String(active.id);
+}
+
+async function adjustInventoryViaGraphql(
+  inventoryItemId: string,
+  locationId: string,
+  delta: number
+): Promise<ShopifyInventoryLevel> {
+  const itemNum = numericShopifyResourceId(inventoryItemId);
+  const locNum = numericShopifyResourceId(locationId);
+  const data = await shopifyGraphqlFetch<{
+    inventoryAdjustQuantities?: {
+      userErrors?: { message?: string }[];
+    };
+  }>(
+    `mutation InventoryAdjust($input: InventoryAdjustQuantitiesInput!) {
+      inventoryAdjustQuantities(input: $input) {
+        userErrors { field message }
+      }
+    }`,
+    {
+      input: {
+        reason: "correction",
+        name: "available",
+        changes: [
+          {
+            inventoryItemId: `gid://shopify/InventoryItem/${itemNum}`,
+            locationId: `gid://shopify/Location/${locNum}`,
+            delta,
+          },
+        ],
+      },
+    }
+  );
+
+  const errors = data.inventoryAdjustQuantities?.userErrors || [];
+  if (errors.length) {
+    throw new Error(errors.map((e) => e.message).filter(Boolean).join("; ") || "GraphQL inventory adjust failed");
+  }
+
+  const levels = await fetchInventoryLevelsForItem(String(itemNum)).catch(() => [] as ShopifyInventoryLevel[]);
+  const level = levels.find((l) => String(l.location_id) === String(locNum)) || levels[0];
+  return (
+    level || {
+      inventory_item_id: itemNum,
+      location_id: locNum,
+      available: 0,
+      updated_at: new Date().toISOString(),
+    }
+  );
+}
+
 // ─── Count helpers ───────────────────────────────────────────────────
 
 export async function fetchOrdersCount(): Promise<number> {
@@ -1846,15 +1965,26 @@ export async function adjustInventoryLevel(
   locationId: string,
   delta: number
 ): Promise<ShopifyInventoryLevel> {
-  const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
-    'inventory_levels/adjust.json',
-    {
-      inventory_item_id: parseInt(inventoryItemId, 10),
-      location_id: parseInt(locationId, 10),
-      available_adjustment: delta,
-    }
-  );
-  return data.inventory_level;
+  const itemId = String(numericShopifyResourceId(inventoryItemId));
+  const resolvedLocationId = await resolveLocationForInventoryItem(itemId, locationId);
+
+  try {
+    const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
+      "inventory_levels/adjust.json",
+      {
+        inventory_item_id: numericShopifyResourceId(itemId),
+        location_id: numericShopifyResourceId(resolvedLocationId),
+        available_adjustment: delta,
+      }
+    );
+    if (data.inventory_level) return data.inventory_level;
+  } catch (restErr) {
+    const message = String((restErr as Error)?.message || restErr);
+    if (!message.includes("404") && !message.includes("Not Found")) throw restErr;
+    await connectInventoryLevel(itemId, resolvedLocationId);
+  }
+
+  return adjustInventoryViaGraphql(itemId, resolvedLocationId, delta);
 }
 
 /**
@@ -1865,11 +1995,13 @@ export async function setInventoryLevel(
   locationId: string,
   quantity: number
 ): Promise<ShopifyInventoryLevel> {
+  const itemId = String(numericShopifyResourceId(inventoryItemId));
+  const resolvedLocationId = await resolveLocationForInventoryItem(itemId, locationId);
   const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
-    'inventory_levels/set.json',
+    "inventory_levels/set.json",
     {
-      inventory_item_id: parseInt(inventoryItemId, 10),
-      location_id: parseInt(locationId, 10),
+      inventory_item_id: numericShopifyResourceId(itemId),
+      location_id: numericShopifyResourceId(resolvedLocationId),
       available: quantity,
     }
   );

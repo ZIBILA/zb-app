@@ -131,11 +131,8 @@ export default function InventoryPage() {
         }),
       });
 
-      if (!res.ok) {
-        await fetch("/api/shopify/sync", { method: "POST" });
-      }
-
       if (res.ok) {
+        invalidateAdminCache("/api/shopify/products");
         const data = await res.json();
         const newQty = data.inventoryLevel?.available ?? (variant.inventory_quantity + delta);
         setProducts((prev) =>

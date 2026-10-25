@@ -140,14 +140,30 @@ export async function POST(req: Request) {
       console.warn('[Cancel Order Route] Affiliate reversal warning:', affErr.message);
     }
 
-    // 3. Try to cancel in Shopify if shopifyOrderId exists
+    // 3. Cancel in Shopify (restock) and restore unit SKUs without double-counting
+    let shopifyRestocked = false;
     if (order.shopifyOrderId) {
       try {
-        await cancelShopifyOrder(order.shopifyOrderId.replace(/^#/, ''), reason || 'customer');
+        await cancelShopifyOrder(order.shopifyOrderId.replace(/^#/, ''), reason || 'customer', { restock: true });
+        shopifyRestocked = true;
       } catch (e) {
         console.error('[Cancel Order] Shopify cancellation failed:', e);
-        // We continue even if Shopify fail, as we already marked it cancelled in our DB
       }
+    }
+    try {
+      const { restoreOrderSkus } = await import('@/lib/services/skuService');
+      const { INV_RESTORED_TAG, withInventoryTag } = await import('@/lib/inventoryPolicy');
+      await restoreOrderSkus(orderId, 'CANCEL_RESTORE', 'Customer (Cancel)', {
+        adjustShopify: !shopifyRestocked,
+      });
+      if (shopifyRestocked) {
+        await prisma.order.update({
+          where: { id: orderId },
+          data: { tags: withInventoryTag(order.tags, INV_RESTORED_TAG) },
+        });
+      }
+    } catch (skuErr) {
+      console.error('[Cancel Order] SKU restoration failed:', skuErr);
     }
 
     // 3. Automatic Order Email Webhook Trigger (Non-blocking)

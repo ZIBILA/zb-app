@@ -380,18 +380,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       console.error('[AdminRefundApprove] Coupon cashback reversal warning:', cashbackErr?.message);
     }
 
-    // 6. Restock SKUs if applicable (best effort — the release itself is already committed)
-    try {
-      const { restoreSkuToStock } = await import('@/lib/services/skuService');
-      const itemsToRestock = isRequestGroup ? returnRequest!.returns : [standaloneReturn!];
-      for (const ret of itemsToRestock) {
-        if (ret.sku) {
-          await restoreSkuToStock(ret.sku, 'RETURN_RESTOCK', `Admin Approved Refund (${user.email || 'Admin'})`);
-        }
-      }
-    } catch (skuErr: any) {
-      console.error('[AdminRefundApprove] SKU restock warning:', skuErr?.message);
-    }
+    // 6. Inventory restock happens on return QC pass (received + quality check), not on refund release.
 
     // 7. Shopify Refund Sync if shopifyOrderId exists (best effort)
     if (order.shopifyOrderId) {
@@ -408,7 +397,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             refundLineItems.push({
               line_item_id: parseInt(matchingLineItem.shopifyLineItemId, 10),
               quantity: item.quantity || 1,
-              restock_type: 'return'
+              restock_type: 'no_restock'
             });
           }
         }

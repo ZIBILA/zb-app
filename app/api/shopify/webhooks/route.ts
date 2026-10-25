@@ -404,6 +404,22 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
     }
   });
 
+  if (honorShopifyCancel && existingLocalOrder?.id) {
+    try {
+      const { restoreOrderSkus } = await import('@/lib/services/skuService');
+      const { INV_RESTORED_TAG, withInventoryTag } = await import('@/lib/inventoryPolicy');
+      await restoreOrderSkus(existingLocalOrder.id, 'CANCEL_RESTORE', 'Shopify (Cancelled)', {
+        adjustShopify: false,
+      });
+      await prisma.order.update({
+        where: { id: existingLocalOrder.id },
+        data: { tags: withInventoryTag(existingLocalOrder.tags, INV_RESTORED_TAG) },
+      });
+    } catch (skuErr) {
+      console.error('[Webhook] SKU restore on Shopify cancel failed:', skuErr);
+    }
+  }
+
   // Sync Fulfillments / Tracking Details to Shipment table in DB
   if (orderData.fulfillments && Array.isArray(orderData.fulfillments) && orderData.fulfillments.length > 0) {
     for (const f of orderData.fulfillments) {

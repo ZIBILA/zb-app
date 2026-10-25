@@ -251,7 +251,8 @@ export async function markSkuStatus(
 export async function restoreSkuToStock(
   sku: string,
   actionType: string,
-  staffName?: string
+  staffName?: string,
+  opts?: { adjustShopify?: boolean }
 ): Promise<boolean> {
   if (!isCustomSku(sku)) return false;
 
@@ -277,7 +278,13 @@ export async function restoreSkuToStock(
     include: { inventory: true }
   });
 
-  const { beforeStock, afterStock } = await adjustProductInventory(skuRec.product_id, variantInvItemId, +1);
+  const adjustShopify = opts?.adjustShopify !== false;
+  const { beforeStock, afterStock } = adjustShopify
+    ? await adjustProductInventory(skuRec.product_id, variantInvItemId, +1)
+    : {
+        beforeStock: dbProduct?.inventory?.[0]?.stockQuantity ?? 0,
+        afterStock: dbProduct?.inventory?.[0]?.stockQuantity ?? 0,
+      };
 
   await createScanRecord({
     productId: skuRec.product_id,
@@ -302,7 +309,8 @@ export async function restoreSkuToStock(
 export async function restoreOrderSkus(
   orderId: string,
   actionType: string,
-  staffName?: string
+  staffName?: string,
+  opts?: { adjustShopify?: boolean }
 ): Promise<number> {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -318,7 +326,7 @@ export async function restoreOrderSkus(
 
   for (const item of order.items) {
     if (item.sku && isCustomSku(item.sku)) {
-      const restored = await restoreSkuToStock(item.sku, actionType, staffName);
+      const restored = await restoreSkuToStock(item.sku, actionType, staffName, opts);
       if (restored) restoredCount++;
     }
   }
