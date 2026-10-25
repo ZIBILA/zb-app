@@ -778,6 +778,10 @@ async function handleRefundWebhook(shop: string, refundData: any) {
   });
   if (!order) return;
 
+  // Refunds released from our Refund Management are already tracked on the request itself;
+  // echoing them back would create a duplicate ₹0 "refunded" row in the refund queue.
+  if (String(refundData.note || '').startsWith('Admin approved refund')) return;
+
   const refundLineItems =
     refundData.refund_line_items && Array.isArray(refundData.refund_line_items)
       ? refundData.refund_line_items

@@ -473,7 +473,12 @@ export default function ExchangesPage() {
                         {req.priceDifference === 0
                           ? "Paid"
                           : req.priceDifference < 0
-                            ? "Store Credit"
+                            ? ({
+                                refund_original_pending: "Refund to original · pending",
+                                refund_pending: "Refund processing",
+                                refunded_original: "Refunded to original payment",
+                                refund_failed: "Refund failed",
+                              } as Record<string, string>)[req.paymentStatus] || "Store Credit"
                             : (req.paymentStatus || "").replace(/_/g, " ")
                         }
                       </div>

@@ -404,27 +404,92 @@ export async function POST(req: Request) {
         });
 
         if (order) {
+          const newRefundStatus =
+            eventType === 'refund.processed' ? 'completed' :
+            eventType === 'refund.failed' ? 'failed' : 'processing';
+
           await prisma.order.update({
             where: { id: order.id },
             data: {
               paymentStatus: eventType === 'refund.processed' ? 'refunded' :
                              eventType === 'refund.failed' ? 'paid' : 'partial_refund',
+              refundStatus: newRefundStatus,
+              refundError: eventType === 'refund.failed' ? (refund?.error_description || 'Refund failed at Razorpay') : null,
             },
           });
 
-          if (order.returns.length > 0) {
+          // Update only the request this refund was issued for (tagged in notes at approval time).
+          const requestId: string | undefined = refund?.notes?.refundRequestId || refund?.notes?.exchangeRequestId;
+          const processed = eventType === 'refund.processed';
+          const failed = eventType === 'refund.failed';
+
+          if (requestId) {
+            const reqRow = await prisma.returnRequest.findUnique({ where: { id: requestId }, select: { id: true, orderId: true } });
+            if (reqRow && reqRow.orderId === order.id) {
+              await prisma.returnRequest.updateMany({
+                where: { id: requestId, status: 'refund_pending' },
+                data: {
+                  status: processed ? 'refunded' : failed ? 'refund_failed' : 'refund_pending',
+                  refundReleasedAt: processed ? new Date() : undefined,
+                },
+              });
+              await prisma.return.updateMany({
+                where: { returnRequestId: requestId, refundStatus: { in: ['PROCESSING', 'PENDING'] } },
+                data: {
+                  refundStatus: processed ? 'COMPLETED' : failed ? 'FAILED' : 'PROCESSING',
+                  status: processed ? 'REFUNDED' : undefined,
+                },
+              });
+            }
             await prisma.return.updateMany({
-              where: {
-                orderId: order.id,
-                status: { in: ['APPROVED', 'COMPLETED'] },
-              },
+              where: { id: requestId, orderId: order.id, refundStatus: 'PROCESSING' },
               data: {
-                refundStatus: refundStatus.toUpperCase(),
+                refundStatus: processed ? 'COMPLETED' : failed ? 'FAILED' : 'PROCESSING',
+                status: processed ? 'REFUNDED' : undefined,
               },
+            });
+            await prisma.exchangeRequest.updateMany({
+              where: { id: requestId, orderId: order.id, paymentStatus: 'refund_pending' },
+              data: { paymentStatus: processed ? 'refunded_original' : failed ? 'refund_failed' : 'refund_pending' },
+            });
+            await prisma.exchange.updateMany({
+              where: { exchangeRequestId: requestId, paymentStatus: 'refund_pending' },
+              data: { paymentStatus: processed ? 'refunded' : failed ? 'refund_failed' : 'refund_pending' },
             });
           }
 
-          paymentLog('info', 'webhook', { message: `Refund ${refund.id} for Order ${order.id} is ${refundStatus}` });
+          // Settle the refund's Payment row (created as 'processing' at approval). Amount is matched
+          // exactly in paise-precision so ₹499.50 refunds dedupe correctly.
+          if ((processed || failed) && refund?.amount) {
+            const refundAmountInRupees = Number(refund.amount) / 100;
+            const inFlight = await prisma.payment.findFirst({
+              where: { orderId: order.id, type: 'refund', status: 'processing', amount: refundAmountInRupees },
+            });
+            if (inFlight) {
+              await prisma.payment.update({
+                where: { id: inFlight.id },
+                data: { status: processed ? 'completed' : 'failed' },
+              });
+            } else if (processed) {
+              const alreadyRecorded = await prisma.payment.findFirst({
+                where: { orderId: order.id, type: 'refund', status: 'completed', amount: refundAmountInRupees },
+              });
+              if (!alreadyRecorded) {
+                await prisma.payment.create({
+                  data: {
+                    orderId: order.id,
+                    customerId: order.customerId,
+                    amount: refundAmountInRupees,
+                    type: 'refund',
+                    status: 'completed',
+                    gateway: 'razorpay',
+                  },
+                });
+              }
+            }
+          }
+
+          paymentLog('info', 'webhook', { message: `Refund ${refund?.id} for Order ${order.id} is ${refundStatus}` });
 
           await prisma.webhookEvent.update({
             where: { id: webhookRecord.id },

@@ -156,6 +156,10 @@ async function GET_impl(req: Request) {
           createdAt: r.createdAt,
           items: enrichedItems,
           ...live,
+          // The logistics stage maps "refunded" to "received"; show the real outcome instead.
+          ...(String(r.status || '').toLowerCase() === 'refunded'
+            ? { liveStage: 'refunded', liveStageLabel: 'Refunded' }
+            : {}),
         };
       })
     );
