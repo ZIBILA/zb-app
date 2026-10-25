@@ -89,6 +89,13 @@ export async function POST(req: Request) {
     const rawDiscountCode = body.discountCode || body.discount_code || null;
     const rawDiscountAmount = Number(body.discountAmount || body.discount_amount || 0);
 
+    // Enforce the coupon's Prepaid Only / Prepaid & COD rule on the server — never trust the app UI.
+    {
+      const { getAppDiscountApplicabilityError } = await import('@/lib/appDiscounts');
+      const discountRuleError = await getAppDiscountApplicabilityError({ code: rawDiscountCode, paymentMethod });
+      if (discountRuleError) return jsonError(discountRuleError, 400);
+    }
+
     const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
     const configuredCodFee = paymentMethod === 'COD' ? await getConfiguredCodUpfrontAmount() : 0;
     // Always use dashboard fee — never trust client for the locked amount

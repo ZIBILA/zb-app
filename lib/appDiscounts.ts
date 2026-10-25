@@ -54,6 +54,27 @@ function prepaidNamed(code: string, applicability?: string | null): boolean {
   );
 }
 
+const PREPAID_ONLY_ERROR = 'This coupon is only valid for prepaid orders';
+const COD_ONLY_ERROR = 'This coupon is only valid for COD orders';
+
+/** App Discount row: PREPAID_ONLY (set in Mobile App Specific Settings) blocks COD. */
+function discountApplicabilityError(discount: { applicability?: string | null }, isCOD: boolean): string | null {
+  return discount.applicability === 'PREPAID_ONLY' && isCOD ? PREPAID_ONLY_ERROR : null;
+}
+
+/** Web store coupon rules as used by the app (unchanged web behaviour). */
+function couponApplicabilityError(
+  code: string,
+  coupon: { applicability?: string | null; autoApply?: boolean | null },
+  isCOD: boolean
+): string | null {
+  if (prepaidNamed(code, coupon.applicability) && !coupon.autoApply && code !== 'PREPAID10' && isCOD) {
+    return PREPAID_ONLY_ERROR;
+  }
+  if (coupon.applicability === 'COD_ONLY' && !isCOD) return COD_ONLY_ERROR;
+  return null;
+}
+
 type ValidateOk = { ok: true; discount: AppDiscountResult };
 type ValidateFail = { ok: false; error: string; status: number };
 export type ValidateOutcome = ValidateOk | ValidateFail;
@@ -95,12 +116,10 @@ export async function validateAppDiscount(opts: {
         status: 400,
       };
     }
-    if (prepaidNamed(code) && isCOD && code !== 'PREPAID10' && !discount.autoApply) {
-      return {
-        ok: false,
-        error: 'This coupon is only valid for prepaid orders',
-        status: 400,
-      };
+    // Explicit rule chosen in Marketing → Discounts → Mobile App Specific Settings.
+    const discountRuleError = discountApplicabilityError(discount, isCOD);
+    if (discountRuleError) {
+      return { ok: false, error: discountRuleError, status: 400 };
     }
 
     const discountAmount = calcAmount(
@@ -118,7 +137,7 @@ export async function validateAppDiscount(opts: {
         discountAmount,
         autoApply: !!discount.autoApply,
         isSecure: !!discount.isSecure,
-        applicability: prepaidNamed(code) ? 'PREPAID_ONLY' : 'ALL',
+        applicability: discount.applicability === 'PREPAID_ONLY' ? 'PREPAID_ONLY' : 'ALL',
         source: 'discount',
       },
     };
@@ -151,19 +170,9 @@ export async function validateAppDiscount(opts: {
     };
   }
 
-  if (prepaidNamed(code, coupon.applicability) && !coupon.autoApply && code !== 'PREPAID10' && isCOD) {
-    return {
-      ok: false,
-      error: 'This coupon is only valid for prepaid orders',
-      status: 400,
-    };
-  }
-  if (coupon.applicability === 'COD_ONLY' && !isCOD) {
-    return {
-      ok: false,
-      error: 'This coupon is only valid for COD orders',
-      status: 400,
-    };
+  const couponRuleError = couponApplicabilityError(code, coupon, isCOD);
+  if (couponRuleError) {
+    return { ok: false, error: couponRuleError, status: 400 };
   }
 
   let type = coupon.discountType;
@@ -262,4 +271,27 @@ export async function pickBestAutoApplyDiscount(opts: {
 
   validated.sort((a, b) => b.discountAmount - a.discountAmount);
   return validated[0] || null;
+}
+
+/**
+ * Backend guard for app order creation: a coupon code that the app sends with an order must be
+ * allowed for that order's payment method (e.g. a Prepaid Only code on a COD order is refused).
+ * Only the applicability rule is enforced here; unknown codes are left to existing behaviour.
+ * Returns an error message, or null when the order may proceed.
+ */
+export async function getAppDiscountApplicabilityError(opts: {
+  code?: string | null;
+  paymentMethod?: string | null;
+}): Promise<string | null> {
+  const code = String(opts.code || '').toUpperCase().trim();
+  if (!code) return null;
+  const isCOD = isCodPayment(opts.paymentMethod);
+
+  const discount = await prisma.discount.findUnique({ where: { code } });
+  if (discount) return discountApplicabilityError(discount, isCOD);
+
+  const coupon = await prisma.webStoreCoupon.findFirst({ where: { code, isActive: true } });
+  if (coupon) return couponApplicabilityError(code, coupon, isCOD);
+
+  return null;
 }

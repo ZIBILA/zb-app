@@ -973,6 +973,8 @@ export default function CheckoutPage() {
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponDiscount, setCouponDiscount] = useState(0);
   const [couponMessage, setCouponMessage] = useState("");
+  // Why a code the customer entered was refused; kept visible even if an auto-apply promo replaces it.
+  const [couponNotice, setCouponNotice] = useState("");
   const [couponValid, setCouponValid] = useState(false);
   const [applyAsStoreCredit, setApplyAsStoreCredit] = useState(false);
   const [cashbackAmount, setCashbackAmount] = useState(0);
@@ -1394,6 +1396,7 @@ export default function CheckoutPage() {
 
       setCouponMessage(data.message);
       if (data.valid) {
+        if (!isAuto) setCouponNotice("");
         setCouponValid(true);
         const discount = Number(data.discount) || 0;
         const earned = Number(data.cashbackAmount) || 0;
@@ -1419,11 +1422,13 @@ export default function CheckoutPage() {
         setApplyAsStoreCredit(false);
         setCashbackAmount(0);
         if (!isAuto) {
+          setCouponNotice(`${codeToValidate.toUpperCase().trim()}: ${data.message || "This code cannot be applied."}`);
           setIsManualCoupon(false);
         }
       }
     } catch {
       setCouponMessage("Unable to validate coupon.");
+      if (!isAuto) setCouponNotice("Unable to validate coupon. Please try again.");
       setCouponValid(false);
       setApplyAsStoreCredit(false);
       setCashbackAmount(0);
@@ -1437,6 +1442,7 @@ export default function CheckoutPage() {
 
   const handleRemoveCoupon = () => {
     setIsManualCoupon(true);
+    setCouponNotice("");
     setCouponCode("");
     setCouponDiscount(0);
     setCouponMessage("");
@@ -2408,7 +2414,7 @@ export default function CheckoutPage() {
                 placeholder="Enter code"
                 aria-label="Discount Code"
                 value={couponCode}
-                onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                onChange={(e) => { setCouponCode(e.target.value.toUpperCase()); setCouponNotice(""); }}
                 className="w-full h-8 px-2.5 rounded-lg bg-foreground/[0.02] border border-foreground/5 text-foreground text-[9px] font-mono tracking-wider placeholder:text-foreground/20 uppercase focus:border-foreground/20 focus:outline-none transition-all"
               />
               <button
@@ -2422,6 +2428,13 @@ export default function CheckoutPage() {
             </div>
           )}
         </div>
+
+        {couponNotice && (
+          <div role="alert" className="flex items-start gap-1.5 -mt-1 px-1 text-[9px] font-medium text-red-400">
+            <AlertCircle className="w-3 h-3 shrink-0 mt-px" />
+            <span>{couponNotice}</span>
+          </div>
+        )}
 
         {/* Available Offers */}
         {!couponValid && activeCoupons.length > 0 && (

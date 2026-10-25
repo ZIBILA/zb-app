@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   Tag, Plus, Trash2, Calendar, Percent, Banknote, 
   Search, Filter, ChevronRight, X, CheckCircle2,
-  AlertCircle, Sparkles, Clock, ShieldCheck, Edit2, Smartphone, Monitor
+  AlertCircle, Sparkles, Clock, ShieldCheck, Edit2, Smartphone, Monitor,
+  ChevronDown
 } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -30,6 +31,7 @@ interface AppSettings {
   value: number;
   minOrderAmount: number;
   maxDiscount?: number | null;
+  applicability?: string;
   cashbackEnabled: boolean;
   cashbackType: string;
   cashbackValue: number;
@@ -90,6 +92,7 @@ export default function UnifiedDiscountsPage() {
   const [appDiscountValue, setAppDiscountValue] = useState("");
   const [appMinOrderAmount, setAppMinOrderAmount] = useState("0");
   const [appMaxDiscount, setAppMaxDiscount] = useState("");
+  const [appApplicability, setAppApplicability] = useState("ALL"); // ALL (prepaid & COD), PREPAID_ONLY
   const [appCashbackEnabled, setAppCashbackEnabled] = useState(false);
   const [appCashbackType, setAppCashbackType] = useState("percentage");
   const [appCashbackValue, setAppCashbackValue] = useState("");
@@ -159,6 +162,7 @@ export default function UnifiedDiscountsPage() {
     setAppDiscountType("percentage");
     setAppDiscountValue("");
     setAppMinOrderAmount("0");
+    setAppApplicability("ALL");
     setAppMaxDiscount("");
     setAppCashbackEnabled(false);
     setAppCashbackType("percentage");
@@ -224,6 +228,7 @@ export default function UnifiedDiscountsPage() {
       setAppDiscountType(app.type);
       setAppDiscountValue(String(app.value));
       setAppMinOrderAmount(String(app.minOrderAmount));
+      setAppApplicability(app.applicability === "PREPAID_ONLY" ? "PREPAID_ONLY" : "ALL");
       setAppMaxDiscount(app.maxDiscount ? String(app.maxDiscount) : "");
       setAppCashbackEnabled(!!app.cashbackEnabled);
       setAppCashbackType(app.cashbackType || "percentage");
@@ -233,6 +238,7 @@ export default function UnifiedDiscountsPage() {
       setAppDiscountType("percentage");
       setAppDiscountValue("");
       setAppMinOrderAmount("0");
+    setAppApplicability("ALL");
       setAppMaxDiscount("");
       setAppCashbackEnabled(false);
       setAppCashbackType("percentage");
@@ -280,6 +286,7 @@ export default function UnifiedDiscountsPage() {
       value: parseFloat(appDiscountValue || "0"),
       minOrderAmount: parseFloat(appMinOrderAmount || "0"),
       maxDiscount: appMaxDiscount ? parseFloat(appMaxDiscount) : null,
+      applicability: appApplicability,
       cashbackEnabled: appCashbackEnabled,
       cashbackType: appCashbackType,
       cashbackValue: parseFloat(appCashbackValue || "0")
@@ -529,6 +536,9 @@ export default function UnifiedDiscountsPage() {
                             <div className="flex flex-wrap gap-2 text-foreground/80 font-medium">
                               <span className="bg-foreground/5 px-2 py-0.5 rounded text-[10px]">
                                 {campaign.appSettings.type === "percentage" ? `${campaign.appSettings.value}%` : `₹${campaign.appSettings.value}`} Off
+                              </span>
+                              <span className="bg-foreground/5 px-2 py-0.5 rounded text-[10px]">
+                                {campaign.appSettings.applicability === "PREPAID_ONLY" ? "Prepaid only" : "Prepaid & COD"}
                               </span>
                               {campaign.appSettings.maxDiscount && (
                                 <span className="bg-foreground/5 px-2 py-0.5 rounded text-[10px]">Max off: ₹{campaign.appSettings.maxDiscount}</span>
@@ -798,16 +808,19 @@ export default function UnifiedDiscountsPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-3">
                           <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Applicability Filter</label>
+                          <div className="relative">
                           <select
                             value={webstoreApplicability}
                             onChange={(e) => setWebstoreApplicability(e.target.value)}
-                            className="w-full bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
+                            className="w-full appearance-none cursor-pointer bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl pl-6 pr-12 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
                           >
                             <option value="ALL" className="bg-[#0e0e0e]">Prepaid & COD (Universal)</option>
                             <option value="PREPAID_ONLY" className="bg-[#0e0e0e]">Prepaid Orders Only</option>
                             <option value="COD_ONLY" className="bg-[#0e0e0e]">COD Orders Only</option>
                             <option value="CUSTOM_RATES" className="bg-[#0e0e0e]">Custom Rates (Prepaid vs COD)</option>
                           </select>
+                          <ChevronDown className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/40" />
+                          </div>
                         </div>
 
                         <div className="flex items-center pt-8">
@@ -987,6 +1000,24 @@ export default function UnifiedDiscountsPage() {
                             placeholder={appDiscountType === "fixed" ? "N/A" : "Infinite"}
                             className="w-full bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground disabled:opacity-20"
                           />
+                        </div>
+                      </div>
+
+                      {/* Applicability setting */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-3">
+                          <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Applicability Filter</label>
+                          <div className="relative">
+                          <select
+                            value={appApplicability}
+                            onChange={(e) => setAppApplicability(e.target.value)}
+                            className="w-full appearance-none cursor-pointer bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl pl-6 pr-12 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
+                          >
+                            <option value="ALL" className="bg-[#0e0e0e]">Prepaid & COD</option>
+                            <option value="PREPAID_ONLY" className="bg-[#0e0e0e]">Prepaid Only</option>
+                          </select>
+                          <ChevronDown className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/40" />
+                          </div>
                         </div>
                       </div>
 

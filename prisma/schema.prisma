@@ -1220,6 +1220,8 @@ model Discount {
   cashbackValue   Float     @default(0)
   autoApply       Boolean   @default(false) @map("auto_apply")
   isSecure        Boolean   @default(false) @map("is_secure")
+  /// ALL = prepaid & COD, PREPAID_ONLY = prepaid orders only (mobile app checkout).
+  applicability   String    @default("ALL")
 
   @@index([code])
   @@index([isActive])

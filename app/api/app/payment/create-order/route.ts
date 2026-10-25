@@ -89,6 +89,18 @@ export async function POST(req: Request) {
     }
 
     const isCod = String(orderData?.paymentMethod || '').toUpperCase() === 'COD';
+
+    // Enforce the coupon's Prepaid Only / Prepaid & COD rule before any payment order is created.
+    {
+      const { getAppDiscountApplicabilityError } = await import('@/lib/appDiscounts');
+      const discountRuleError = await getAppDiscountApplicabilityError({
+        code: orderData?.discountCode || orderData?.discount_code,
+        paymentMethod: orderData?.paymentMethod,
+      });
+      if (discountRuleError) {
+        return NextResponse.json({ error: discountRuleError }, { status: 400, headers: corsHeaders });
+      }
+    }
     const { isCodAllowedForCountry, resolveCheckoutCountry, COD_INDIA_ONLY_ERROR } = await import('@/lib/cod-availability');
     const appCountry = resolveCheckoutCountry({
       displayCountry: orderData?.displayCountry || orderData?.countryCode,
