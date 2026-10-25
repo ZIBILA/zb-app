@@ -74,7 +74,7 @@ export async function GET(
           select: { id: true, shopifyProductId: true },
         })
       : [];
-    const localProductIds = new Set(localProducts.map((p) => p.id));
+    const localProductIds = new Set(localProducts.map((p: any) => p.id));
 
     const createdAt =
       from || to
@@ -135,14 +135,14 @@ export async function GET(
     };
 
     const mapped = orders
-      .map((order) => {
+      .map((order: any) => {
         const matchingItems = (order.items || []).filter(itemBelongs);
         if (matchingItems.length === 0) return null;
         return slimOrder(order, matchingItems);
       })
       .filter(Boolean);
 
-    const revenue = mapped.reduce((sum, order: any) => sum + Number(order.totalPrice || 0), 0);
+    const revenue = mapped.reduce((sum: number, order: any) => sum + Number(order.totalPrice || 0), 0);
 
     const shop = await prisma.shop.findFirst({
       select: { collectionProductOrders: true },

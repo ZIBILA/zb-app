@@ -788,7 +788,7 @@ async function fetchCollectionProductCounts(): Promise<Map<string, number>> {
   let cursor: string | null = null;
 
   for (let page = 0; page < 10; page++) {
-    const data = await shopifyGraphqlFetch<{
+    const data: any = await shopifyGraphqlFetch<{
       collections?: {
         pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
         nodes?: Array<{
