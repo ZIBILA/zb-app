@@ -759,33 +759,101 @@ export interface ShopifyCollection {
   updated_at: string;
   body_html: string | null;
   image: { src: string } | null;
+  /** Product count from Admin GraphQL `productsCount`. REST list payloads omit this. */
+  products_count?: number;
+  productsCount?: number;
 }
 
 const CATALOG_FETCH_OPTS = { cacheMode: 'catalog' as const };
+const CATALOG_TTL_MS = 60 * 1000;
+
+function parseGraphqlProductsCount(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) return raw;
+  if (raw && typeof raw === "object" && "count" in raw) {
+    const n = Number((raw as { count?: unknown }).count);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+
+async function fetchCollectionProductCounts(): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  let cursor: string | null = null;
+
+  for (let page = 0; page < 10; page++) {
+    const data = await shopifyGraphqlFetch<{
+      collections?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: Array<{
+          id?: string;
+          handle?: string;
+          productsCount?: { count?: number } | number | null;
+        }>;
+      };
+    }>(
+      `query CollectionProductCounts($cursor: String) {
+        collections(first: 250, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id handle productsCount { count } }
+        }
+      }`,
+      { cursor },
+      { cacheMode: "catalog", ttlMs: CATALOG_TTL_MS }
+    );
+
+    for (const node of data.collections?.nodes || []) {
+      const n = parseGraphqlProductsCount(node.productsCount);
+      if (n === null) continue;
+      const restId = String(node.id || "").split("/").pop();
+      if (restId) counts.set(restId, n);
+      if (node.handle) counts.set(node.handle, n);
+    }
+
+    if (!data.collections?.pageInfo?.hasNextPage) break;
+    cursor = data.collections.pageInfo.endCursor || null;
+    if (!cursor) break;
+  }
+
+  return counts;
+}
 
 export async function fetchCollections(limit = 250): Promise<ShopifyCollection[]> {
   try {
-    const [data, data2] = await Promise.all([
-      shopifyFetch<{ custom_collections: ShopifyCollection[] }>(
+    const [custom, smart, countMap] = await Promise.all([
+      shopifyFetchAll<ShopifyCollection>(
         'custom_collections.json',
         { limit: String(limit) },
-        CATALOG_FETCH_OPTS
-      ).catch(() => ({ custom_collections: [] })),
-      shopifyFetch<{ smart_collections: ShopifyCollection[] }>(
+        'custom_collections',
+        CATALOG_TTL_MS,
+        'catalog'
+      ).catch(() => [] as ShopifyCollection[]),
+      shopifyFetchAll<ShopifyCollection>(
         'smart_collections.json',
         { limit: String(limit) },
-        CATALOG_FETCH_OPTS
-      ).catch(() => ({ smart_collections: [] })),
+        'smart_collections',
+        CATALOG_TTL_MS,
+        'catalog'
+      ).catch(() => [] as ShopifyCollection[]),
+      fetchCollectionProductCounts().catch((e) => {
+        console.warn("[Shopify Admin] Collection product counts unavailable:", (e as Error)?.message || e);
+        return new Map<string, number>();
+      }),
     ]);
-    
-    const all = [...(data?.custom_collections || []), ...(data2?.smart_collections || [])];
-    
-    // Deduplicate by handle
-    const seen = new Set();
-    return all.filter(c => {
+
+    const all = [...custom, ...smart];
+    const seen = new Set<string>();
+    return all.filter((c) => {
       if (!c || !c.handle) return false;
       if (seen.has(c.handle)) return false;
       seen.add(c.handle);
+      const counted = countMap.get(String(c.id)) ?? countMap.get(c.handle);
+      if (counted !== undefined) {
+        c.products_count = counted;
+        c.productsCount = counted;
+      } else {
+        delete c.products_count;
+        delete c.productsCount;
+      }
       return true;
     });
   } catch (e) {
@@ -826,12 +894,6 @@ async function fetchCollectionsStrict(limit = 250): Promise<ShopifyCollection[]>
     return true;
   });
 }
-
-/**
- * Memory TTL for catalog pages. Webhooks call refreshStorefront() which clears this
- * immediately; Next Data Cache uses revalidate+tag for cross-request savings.
- */
-const CATALOG_TTL_MS = 60 * 1000;
 
 /**
  * EVERY product the live storefront may show: all pages from Shopify, active + published only.
@@ -887,12 +949,15 @@ export async function loadOrderConfig() {
 }
 
 export async function fetchProductsByCollectionId(collectionId: string | number, limit = 250): Promise<ShopifyProduct[]> {
-  const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
+  const products = await shopifyFetchAll<ShopifyProduct>(
     `collections/${collectionId}/products.json`,
     { limit: String(limit) },
-    CATALOG_FETCH_OPTS
+    'products',
+    CATALOG_TTL_MS,
+    'catalog'
   );
-  return data.products;
+  const seen = new Set<number>();
+  return products.filter((p) => p && !seen.has(p.id) && (seen.add(p.id), true));
 }
 
 /**

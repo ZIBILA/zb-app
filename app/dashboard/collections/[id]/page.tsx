@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -35,8 +35,7 @@ interface Order {
   paymentStatus: string;
   fulfillmentStatus: string;
   customer: {
-    firstName: string | null;
-    lastName: string | null;
+    name: string | null;
     email: string | null;
   } | null;
   items: {
@@ -61,25 +60,43 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadedRef = useRef(false);
+  const fetchAbortRef = useRef<AbortController | null>(null);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   
   const [activeTab, setActiveTab] = useState<"products" | "orders">("products");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<string>("custom");
+  const [datePreset, setDatePreset] = useState<"today" | "yesterday" | "last7" | "month" | "custom">("last7");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [stats, setStats] = useState({ totalProducts: 0, totalOrders: 0, totalSales: 0 });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  const fetchData = useCallback(async () => {
+    fetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    fetchAbortRef.current = ac;
 
-  async function fetchData() {
+    if (loadedRef.current) setRefreshing(true);
+    else setLoading(true);
+
     try {
-      const res = await fetch(`/api/admin/collections/${params.id}`);
+      const qs = new URLSearchParams({ range: datePreset });
+      if (datePreset === "custom") {
+        if (customFrom) qs.set("from", customFrom);
+        if (customTo) qs.set("to", customTo);
+      }
+      const res = await fetch(`/api/admin/collections/${params.id}?${qs.toString()}`, {
+        signal: ac.signal,
+      });
       const data = await res.json();
       if (res.ok) {
+        loadedRef.current = true;
         setCollection(data.collection);
-        
-        const sortedProducts = [...data.products];
+
+        const sortedProducts = [...(data.products || [])];
         const customOrder: string[] = data.customOrder || [];
         if (customOrder.length > 0) {
           const orderMap = new Map<string, number>();
@@ -90,18 +107,34 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
             return aIdx - bIdx;
           });
         }
-        
+
         setProducts(sortedProducts);
         setOrders(data.orders || []);
+        if (data.stats) {
+          setStats({
+            totalProducts: data.stats.totalProducts ?? sortedProducts.length,
+            totalOrders: data.stats.totalOrders ?? (data.orders || []).length,
+            totalSales: data.stats.totalSales ?? 0,
+          });
+        }
       } else {
         console.error("Failed to load collection details:", data.error);
       }
     } catch (err) {
+      if ((err as { name?: string })?.name === "AbortError") return;
       console.error("Fetch collection details error:", err);
     } finally {
-      setLoading(false);
+      if (fetchAbortRef.current === ac) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }
+  }, [params.id, datePreset, customFrom, customTo]);
+
+  useEffect(() => {
+    if (datePreset === "custom" && (!customFrom || !customTo)) return;
+    fetchData();
+  }, [fetchData, datePreset, customFrom, customTo]);
 
   const handleSortChange = (type: string) => {
     setSortBy(type);
@@ -169,20 +202,12 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
       o =>
         (o.shopifyOrderName && o.shopifyOrderName.toLowerCase().includes(query)) ||
         (o.customer &&
-          ((o.customer.firstName && o.customer.firstName.toLowerCase().includes(query)) ||
-            (o.customer.lastName && o.customer.lastName.toLowerCase().includes(query)) ||
+          ((o.customer.name && o.customer.name.toLowerCase().includes(query)) ||
             (o.customer.email && o.customer.email.toLowerCase().includes(query))))
     );
   }, [orders, searchQuery]);
 
-  const stats = useMemo(() => {
-    const totalProducts = products.length;
-    const totalOrders = orders.length;
-    const totalSales = orders.reduce((sum, o) => sum + o.totalPrice, 0);
-    return { totalProducts, totalOrders, totalSales };
-  }, [products, orders]);
-
-  if (loading) {
+  if (loading && !collection) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
         <Loader2 className="w-5 h-5 text-foreground/40 animate-spin" />
@@ -286,10 +311,58 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
         </div>
       </div>
 
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {([
+            { id: "today" as const, label: "Today" },
+            { id: "yesterday" as const, label: "Yesterday" },
+            { id: "last7" as const, label: "Last 7 Days" },
+            { id: "month" as const, label: "This Month" },
+            { id: "custom" as const, label: "Custom Range" },
+          ]).map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setDatePreset(opt.id)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+                datePreset === opt.id
+                  ? "bg-foreground text-background border-foreground"
+                  : "border-foreground/[0.08] text-foreground/50 hover:text-foreground/80"
+              }`}
+            >
+              {refreshing && datePreset === opt.id && (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              )}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {datePreset === "custom" && (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="glass-input text-[11px] py-1.5 px-2 !rounded-lg"
+            />
+            <span className="text-[11px] text-foreground/40">to</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="glass-input text-[11px] py-1.5 px-2 !rounded-lg"
+            />
+          </div>
+        )}
+      </div>
+      <p className="text-[10px] text-foreground/40 -mt-3">
+        Revenue and order count include only successful prepaid and COD-upfront payments for this period. Failed, pending, and unpaid orders are excluded.
+      </p>
+
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: "Total Products", value: stats.totalProducts, icon: Package, color: "text-foreground" },
-          { label: "Total Orders", value: stats.totalOrders, icon: ShoppingCart, color: "text-amber-500" },
+          { label: "Successful Orders", value: stats.totalOrders, icon: ShoppingCart, color: "text-amber-500" },
           {
             label: "Collection Revenue",
             value: new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(stats.totalSales),
@@ -297,14 +370,19 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
             color: "text-emerald-500",
           },
         ].map((stat) => (
-          <div key={stat.label} className="glass-panel !rounded-xl px-5 py-4 flex items-center justify-between">
-            <div>
+          <div key={stat.label} className="glass-panel !rounded-xl px-5 py-4 flex items-center justify-between relative overflow-hidden">
+            {refreshing && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/55 backdrop-blur-[1px]">
+                <Loader2 className="w-4 h-4 text-foreground/50 animate-spin" />
+              </div>
+            )}
+            <div className={refreshing ? "opacity-40" : ""}>
               <p className="text-[10px] font-medium text-foreground/40 uppercase tracking-wider mb-1">
                 {stat.label}
               </p>
               <p className={`text-xl font-bold ${stat.color}`}>{stat.value}</p>
             </div>
-            <div className="w-10 h-10 rounded-lg bg-foreground/[0.02] border border-foreground/[0.04] flex items-center justify-center">
+            <div className={`w-10 h-10 rounded-lg bg-foreground/[0.02] border border-foreground/[0.04] flex items-center justify-center ${refreshing ? "opacity-40" : ""}`}>
               <stat.icon className="w-4 h-4 text-foreground/40" />
             </div>
           </div>
@@ -315,7 +393,7 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
         <div className="flex gap-4">
           {[
             { id: "products", label: `Products (${products.length})` },
-            { id: "orders", label: `Orders (${orders.length})` },
+            { id: "orders", label: `Orders (${stats.totalOrders})` },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -491,9 +569,7 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
             ) : (
               <div className="divide-y divide-foreground/[0.03]">
                 {filteredOrders.map((order) => {
-                  const customerName = order.customer
-                    ? `${order.customer.firstName || ""} ${order.customer.lastName || ""}`.trim()
-                    : "Walk-in Customer";
+                  const customerName = order.customer?.name?.trim() || "Walk-in Customer";
                   
                   return (
                     <div
@@ -535,7 +611,7 @@ export default function CollectionDetailsPage({ params }: { params: { id: string
                       </div>
                       <div className="flex justify-center">
                         <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide border ${
-                          order.paymentStatus?.toLowerCase() === "paid"
+                          ["paid", "cod_upfront_paid", "success", "captured"].includes(String(order.paymentStatus || "").toLowerCase())
                             ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
                             : "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20"
                         }`}>

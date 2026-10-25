@@ -21,7 +21,11 @@ export async function GET() {
     const menu = shop?.enabledCollectionsMenu ? JSON.parse(shop.enabledCollectionsMenu) : allHandles;
 
     return NextResponse.json({
-      allCollections,
+      allCollections: allCollections.map((c) => ({
+        ...c,
+        productsCount: Number(c.productsCount ?? c.products_count ?? 0) || 0,
+        products_count: Number(c.products_count ?? c.productsCount ?? 0) || 0,
+      })),
       enabled: {
         header,
         page,
