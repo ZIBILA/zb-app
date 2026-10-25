@@ -89,6 +89,15 @@ export async function POST(req: Request) {
     }
 
     const isCod = String(orderData?.paymentMethod || '').toUpperCase() === 'COD';
+    const { isCodAllowedForCountry, resolveCheckoutCountry, COD_INDIA_ONLY_ERROR } = await import('@/lib/cod-availability');
+    const appCountry = resolveCheckoutCountry({
+      displayCountry: orderData?.displayCountry || orderData?.countryCode,
+      currency,
+      address: orderData?.shippingAddress || orderData?.shipping_address,
+    });
+    if (isCod && !isCodAllowedForCountry(appCountry)) {
+      return NextResponse.json({ error: COD_INDIA_ONLY_ERROR }, { status: 400, headers: corsHeaders });
+    }
     const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
     const configuredCodFee = isCod ? await getConfiguredCodUpfrontAmount() : 0;
 

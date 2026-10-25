@@ -87,7 +87,6 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/dashboard/live-carts",
     "/dashboard/app-logins",
     "/dashboard/payments/razorpay",
-    "/dashboard/global-store",
   ],
   SETTINGS: ["/dashboard/settings"],
   ADMIN_USERS: ["/dashboard/admin-users"],
@@ -377,8 +376,8 @@ export default withAuth(
       // Admin API mappings for middleware double-guard
       "/api/admin/users": "ADMIN_USERS",
       "/api/admin/audit-logs": "ADMIN_USERS",
-      "/dashboard/global-store": "INTEGRATIONS",
-      "/api/admin/global-store": "INTEGRATIONS",
+      "/dashboard/global-store": "STOREFRONT",
+      "/api/admin/global-store": "STOREFRONT",
       "/dashboard/affiliates": "AFFILIATES",
       "/api/admin/affiliates": "AFFILIATES",
     };

@@ -96,6 +96,7 @@ const MODULE_PAGES: Record<string, { name: string; href: string }[]> = {
     { name: "Promo Coupons", href: "/dashboard/webstore/coupons" },
     { name: "Web App Logins", href: "/dashboard/webstore/logins" },
     { name: "Preferences", href: "/dashboard/webstore-settings/preferences" },
+    { name: "Global Store", href: "/dashboard/global-store" },
   ],
   COMMUNITY: [
     { name: "Admin Chat Room", href: "/dashboard/community/chat" },

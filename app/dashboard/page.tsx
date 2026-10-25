@@ -132,6 +132,7 @@ const PAGE_NAMES: Record<string, string> = {
   "/web-store/coupons": "Promo Coupons",
   "/web-store/logins": "Customer Logins Feed",
   "/dashboard/webstore-settings/preferences": "Store Preferences",
+  "/dashboard/global-store": "Global Store",
   "/dashboard/community/chat": "Chat Console",
   "/dashboard/community": "Community Feed",
   "/dashboard/blogs": "Blog Editor",

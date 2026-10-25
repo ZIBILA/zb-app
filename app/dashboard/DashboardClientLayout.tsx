@@ -267,7 +267,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Live Carts", href: "/dashboard/live-carts", icon: ShoppingCart, module: 'INTEGRATIONS' },
     { name: "App Login Logs", href: "/dashboard/app-logins", icon: History, module: 'INTEGRATIONS' },
     { name: "Razorpay", href: "/dashboard/payments/razorpay", icon: CreditCard, module: 'INTEGRATIONS' },
-    { name: "Global Store", href: "/dashboard/global-store", icon: Globe, module: 'INTEGRATIONS' },
   ];
 
   const marketingNav = [

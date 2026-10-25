@@ -67,6 +67,15 @@ export async function POST(req: Request) {
     // Normalize payment status — never trust client "paid" without Razorpay capture proof
     let paymentStatus = (body.paymentStatus || body.financial_status || 'pending').toLowerCase();
     const isCod = paymentMethod === 'COD';
+    const { isCodAllowedForCountry, resolveCheckoutCountry, COD_INDIA_ONLY_ERROR } = await import('@/lib/cod-availability');
+    const appCountry = resolveCheckoutCountry({
+      displayCountry: body.displayCountry || body.countryCode,
+      currency: body.currency,
+      address: shippingAddress,
+    });
+    if (isCod && !isCodAllowedForCountry(appCountry)) {
+      return jsonError(COD_INDIA_ONLY_ERROR, 400);
+    }
     const clientClaimsPaid =
       paymentStatus === 'paid' ||
       paymentStatus === 'captured' ||

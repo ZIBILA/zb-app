@@ -220,6 +220,7 @@ export default function CheckoutPage() {
   const isInternational = Boolean(
     globalStoreEnabled && countryCode !== "IN" && countryConfig && !countryConfig.isBase
   );
+  const codAllowed = !isInternational;
 
   const fmtAmount = useCallback(
     (basePriceINR: number): string => {
@@ -947,12 +948,16 @@ export default function CheckoutPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Ensure paymentMethod is either PAYNOW or COD
+  // Ensure paymentMethod is either PAYNOW or COD (COD is India-only)
   useEffect(() => {
+    if (!codAllowed && paymentMethod === "COD") {
+      setPaymentMethod("PAYNOW");
+      return;
+    }
     if (paymentMethod !== "PAYNOW" && paymentMethod !== "COD") {
       setPaymentMethod("PAYNOW");
     }
-  }, [paymentMethod]);
+  }, [paymentMethod, codAllowed]);
 
   const shipping = 0;
 
@@ -1655,6 +1660,13 @@ export default function CheckoutPage() {
     }
     paymentLockRef.current = true;
 
+    if (paymentMethod === "COD" && !codAllowed) {
+      paymentLockRef.current = false;
+      setPaymentMethod("PAYNOW");
+      setError("Cash on Delivery is only available for orders in India. Please pay in full.");
+      return;
+    }
+
     setLoading(true);
     setError("");
 
@@ -2153,10 +2165,10 @@ export default function CheckoutPage() {
         {(() => {
           const availableMethods = [
             { id: "PAYNOW" as PaymentMethod, label: "PAY NOW" },
-            { id: "COD" as PaymentMethod, label: "COD" }
+            ...(codAllowed ? [{ id: "COD" as PaymentMethod, label: "COD" }] : []),
           ];
           return (
-            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-foreground/[0.03] border border-foreground/5 mb-4">
+            <div className={`${availableMethods.length > 1 ? "grid grid-cols-2" : "grid grid-cols-1"} gap-1 p-1 rounded-xl bg-foreground/[0.03] border border-foreground/5 mb-4`}>
               {availableMethods.map((method) => {
                 const isActive = paymentMethod === method.id;
                 return (
