@@ -139,9 +139,10 @@ export default async function Home() {
   const heroTitle      = nullIfEmpty(s?.heroTitle);
   const heroSubtitle   = nullIfEmpty(s?.heroSubtitle);
   const heroButtonText = nullIfEmpty(s?.heroButtonText);
-  const heroImage      = s?.heroImage       || "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?q=80&w=2070&auto=format&fit=crop";
-  // Prefer CMS video; default to bundled webm (the .mp4 path is not in /public)
-  const heroVideo      = s?.heroVideo       || "/zb-video-heroo.webm";
+  // Hero media comes only from the CMS — no bundled/stock defaults, so a settings outage
+  // shows a plain black hero instead of an old video or placeholder image.
+  const heroImage      = s?.heroImage       || "";
+  const heroVideo      = s?.heroVideo       || "";
   const heroVideoMobile = s?.heroVideoMobile || "";
   const latestTitle    = nullIfEmpty(s?.latestCurationTitle);
   const latestSubtitle = nullIfEmpty(s?.latestCurationSubtitle);
@@ -194,11 +195,11 @@ export default async function Home() {
           <HeroVideo
             src={heroVideo}
             mobileSrc={heroVideoMobile || undefined}
-            poster={s?.heroImage || "/zb-video-hero-poster.jpg"}
+            poster={heroImage || undefined}
           />
-        ) : (
+        ) : heroImage ? (
           <NextImage src={heroImage} alt="Hero" fill priority className="object-cover" onError={handleImageError} />
-        )}
+        ) : null}
 
         {/* Glass gradient overlay at bottom */}
         <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/80 via-black/30 to-transparent pointer-events-none" />
