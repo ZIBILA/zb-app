@@ -178,13 +178,13 @@ export default function KnowledgeBaseManager() {
   return (
     <div className="space-y-6">
       {/* Top Header Controls */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800/80 backdrop-blur-md">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 rounded-2xl bg-foreground/[0.03] border border-foreground/10 backdrop-blur-md">
         <div>
-          <h2 className="text-xl font-bold text-white tracking-wide flex items-center gap-2">
-            <BookOpen className="w-5 h-5 text-amber-400" />
+          <h2 className="text-xl font-bold text-foreground tracking-wide flex items-center gap-2">
+            <BookOpen className="w-5 h-5 text-amber-700 dark:text-amber-400" />
             Support Knowledge Base
           </h2>
-          <p className="text-xs text-neutral-400 mt-1">
+          <p className="text-xs text-foreground/60 mt-1">
             Admin-editable policies & rules injected live into Zica AI support reply context.
           </p>
         </div>
@@ -201,20 +201,20 @@ export default function KnowledgeBaseManager() {
       {/* Search & Category Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/60" />
           <input
             type="text"
             placeholder="Search policies, keywords, rules..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-amber-500/50"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-foreground/[0.03] border border-foreground/10 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50"
           />
         </div>
 
         <select
           value={selectedCategory}
           onChange={(e) => setSelectedCategory(e.target.value)}
-          className="px-4 py-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800 text-xs text-neutral-300 focus:outline-none focus:border-amber-500/50"
+          className="px-4 py-2.5 rounded-xl bg-foreground/[0.03] border border-foreground/10 text-xs text-foreground/75 focus:outline-none focus:border-amber-500/50"
         >
           <option value="">All Categories ({entries.length})</option>
           {CATEGORIES.map((cat) => (
@@ -228,11 +228,11 @@ export default function KnowledgeBaseManager() {
       {/* Entries List */}
       {loading ? (
         <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-6 h-6 animate-spin text-amber-400" />
+          <Loader2 className="w-6 h-6 animate-spin text-amber-700 dark:text-amber-400" />
         </div>
       ) : filteredEntries.length === 0 ? (
-        <div className="text-center py-12 rounded-2xl border border-neutral-800/60 bg-neutral-900/30">
-          <p className="text-sm text-neutral-400">No Knowledge Base entries found.</p>
+        <div className="text-center py-12 rounded-2xl border border-foreground/10 bg-foreground/[0.02]">
+          <p className="text-sm text-foreground/60">No Knowledge Base entries found.</p>
         </div>
       ) : (
         <div className="grid gap-4">
@@ -244,31 +244,31 @@ export default function KnowledgeBaseManager() {
               animate={{ opacity: 1, y: 0 }}
               className={`p-5 rounded-2xl border transition-all ${
                 entry.isActive
-                  ? 'bg-neutral-900/70 border-neutral-800/80 hover:border-neutral-700/80'
-                  : 'bg-neutral-950/40 border-neutral-900 opacity-60'
+                  ? 'bg-foreground/[0.03] border-foreground/10 hover:border-foreground/15'
+                  : 'bg-foreground/[0.03] border-foreground/[0.06] opacity-60'
               }`}
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1.5 flex-1">
                   <div className="flex items-center gap-2.5 flex-wrap">
-                    <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                    <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20">
                       {entry.category}
                     </span>
-                    <span className="text-[10px] font-mono text-neutral-500">
+                    <span className="text-[10px] font-mono text-foreground/45">
                       Priority: {entry.priority}
                     </span>
                     {entry.isActive ? (
-                      <span className="px-2 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <span className="px-2 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
                         Active
                       </span>
                     ) : (
-                      <span className="px-2 py-0.5 rounded text-[9px] font-semibold bg-neutral-800 text-neutral-400">
+                      <span className="px-2 py-0.5 rounded text-[9px] font-semibold bg-foreground/[0.06] text-foreground/60">
                         Disabled
                       </span>
                     )}
                   </div>
 
-                  <h3 className="text-base font-bold text-neutral-100">{entry.title}</h3>
+                  <h3 className="text-base font-bold text-foreground">{entry.title}</h3>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -277,8 +277,8 @@ export default function KnowledgeBaseManager() {
                     title={entry.isActive ? 'Disable Entry' : 'Enable Entry'}
                     className={`p-2 rounded-lg border transition-colors ${
                       entry.isActive
-                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
-                        : 'bg-neutral-800 border-neutral-700 text-neutral-400 hover:bg-neutral-700'
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20'
+                        : 'bg-foreground/[0.06] border-foreground/15 text-foreground/60 hover:bg-foreground/10'
                     }`}
                   >
                     <Check className="w-3.5 h-3.5" />
@@ -286,29 +286,29 @@ export default function KnowledgeBaseManager() {
 
                   <button
                     onClick={() => openEditModal(entry)}
-                    className="p-2 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-300 hover:bg-neutral-700 transition-colors"
+                    className="p-2 rounded-lg bg-foreground/[0.06] border border-foreground/15 text-foreground/75 hover:bg-foreground/10 transition-colors"
                   >
                     <Edit2 className="w-3.5 h-3.5" />
                   </button>
 
                   <button
                     onClick={() => handleDelete(entry.id)}
-                    className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition-colors"
+                    className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 transition-colors"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
 
-              <p className="mt-3 text-xs text-neutral-300 leading-relaxed whitespace-pre-line font-sans">
+              <p className="mt-3 text-xs text-foreground/75 leading-relaxed whitespace-pre-line font-sans">
                 {entry.content}
               </p>
 
               {entry.keywords && (
-                <div className="mt-3.5 pt-3 border-t border-neutral-800/60 flex items-center gap-2 text-[10px] text-neutral-500">
-                  <Tag className="w-3 h-3 text-neutral-400" />
+                <div className="mt-3.5 pt-3 border-t border-foreground/10 flex items-center gap-2 text-[10px] text-foreground/45">
+                  <Tag className="w-3 h-3 text-foreground/60" />
                   <span>Keywords:</span>
-                  <span className="font-mono text-neutral-400">{entry.keywords}</span>
+                  <span className="font-mono text-foreground/60">{entry.keywords}</span>
                 </div>
               )}
             </motion.div>
@@ -319,21 +319,21 @@ export default function KnowledgeBaseManager() {
       {/* Edit / Create Modal */}
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-xl p-6 rounded-2xl bg-neutral-900 border border-neutral-800 shadow-2xl space-y-5"
+              className="w-full max-w-xl p-6 rounded-2xl bg-background border border-foreground/10 shadow-2xl space-y-5"
             >
-              <div className="flex items-center justify-between border-b border-neutral-800 pb-4">
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-amber-400" />
+              <div className="flex items-center justify-between border-b border-foreground/10 pb-4">
+                <h3 className="text-base font-bold text-foreground flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-700 dark:text-amber-400" />
                   {editingEntry ? 'Edit Knowledge Base Entry' : 'Create Knowledge Base Entry'}
                 </h3>
                 <button
                   onClick={() => setIsModalOpen(false)}
-                  className="p-1 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800"
+                  className="p-1 rounded-lg text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -342,13 +342,13 @@ export default function KnowledgeBaseManager() {
               <form onSubmit={handleSave} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                    <label className="block text-[11px] font-semibold text-foreground/60 mb-1">
                       Category
                     </label>
                     <select
                       value={formCategory}
                       onChange={(e) => setFormCategory(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-neutral-200 focus:outline-none focus:border-amber-500/50"
+                      className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground focus:outline-none focus:border-amber-500/50"
                     >
                       {CATEGORIES.map((cat) => (
                         <option key={cat} value={cat}>
@@ -359,20 +359,20 @@ export default function KnowledgeBaseManager() {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                    <label className="block text-[11px] font-semibold text-foreground/60 mb-1">
                       Priority (Higher = Priority Match)
                     </label>
                     <input
                       type="number"
                       value={formPriority}
                       onChange={(e) => setFormPriority(Number(e.target.value))}
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-neutral-200 focus:outline-none focus:border-amber-500/50"
+                      className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground focus:outline-none focus:border-amber-500/50"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-foreground/60 mb-1">
                     Title / Policy Header
                   </label>
                   <input
@@ -381,12 +381,12 @@ export default function KnowledgeBaseManager() {
                     placeholder="e.g. Returns & Exchange Policy (Self-Pickup vs Self-Ship)"
                     value={formTitle}
                     onChange={(e) => setFormTitle(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-amber-500/50"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-foreground/60 mb-1">
                     Policy Content / Instructions
                   </label>
                   <textarea
@@ -395,12 +395,12 @@ export default function KnowledgeBaseManager() {
                     placeholder="Write complete, plain-prose rules and guidelines for Zica AI to reference..."
                     value={formContent}
                     onChange={(e) => setFormContent(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-amber-500/50 font-sans"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50 font-sans"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                  <label className="block text-[11px] font-semibold text-foreground/60 mb-1">
                     Search Keywords (Comma-separated)
                   </label>
                   <input
@@ -408,7 +408,7 @@ export default function KnowledgeBaseManager() {
                     placeholder="e.g. return, exchange, pickup, self-ship, refund, 7 days"
                     value={formKeywords}
                     onChange={(e) => setFormKeywords(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-amber-500/50"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50"
                   />
                 </div>
 
@@ -418,18 +418,18 @@ export default function KnowledgeBaseManager() {
                     id="isActiveCheck"
                     checked={formIsActive}
                     onChange={(e) => setFormIsActive(e.target.checked)}
-                    className="rounded bg-neutral-950 border-neutral-800 text-amber-500 focus:ring-0"
+                    className="rounded bg-background border-foreground/10 text-amber-500 focus:ring-0"
                   />
-                  <label htmlFor="isActiveCheck" className="text-xs text-neutral-300">
+                  <label htmlFor="isActiveCheck" className="text-xs text-foreground/75">
                     Active (Enabled for AI Retrieval)
                   </label>
                 </div>
 
-                <div className="flex items-center justify-end gap-3 pt-4 border-t border-neutral-800">
+                <div className="flex items-center justify-end gap-3 pt-4 border-t border-foreground/10">
                   <button
                     type="button"
                     onClick={() => setIsModalOpen(false)}
-                    className="px-4 py-2 rounded-xl text-xs text-neutral-400 hover:text-white"
+                    className="px-4 py-2 rounded-xl text-xs text-foreground/60 hover:text-foreground"
                   >
                     Cancel
                   </button>

@@ -17,7 +17,7 @@ import { filterToolsForPrincipal } from "./toolAllowList";
 import { getCustomerPrompt } from "./prompts";
 import { applyOutputGuard } from "./outputGuard";
 import { stripMarkdown } from "./formatSanitizer";
-import { getRelevantKnowledgeContext } from "./knowledgeBase";
+import { getRelevantKnowledgeContext, getSupportContact } from "./knowledgeBase";
 import { executeClaudeTool } from "@/lib/services/claudeToolExecutor";
 import { ZICA_TOOLS } from "@/lib/services/claudeService";
 import { sendMail, buildSupportEmailHtml } from "@/lib/mailer";
@@ -98,27 +98,37 @@ async function sendSupportEmail({ ticket, content }: { ticket: TicketSupportReco
 // Handoff check
 // ---------------------------------------------------------------------------
 
+/** Whole-word / whole-phrase match, so "person" doesn't fire on "personal" or "agent" on "agents". */
+function containsPhrase(text: string, phrase: string): boolean {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+}
+
 function checkHandoffTriggers(
-  messages: Array<{ senderType: string }>,
+  messages: Array<{ senderType: string; createdAt?: Date | string }>,
   newContent: string
 ): { trigger: boolean; reason?: string } {
   // 1. Customer explicitly requests human agent
-  const humanKeywords = ["human", "agent", "person", "representative", "manager", "support executive", "real person", "talk to human", "speak to human", "call me"];
-  const lowerContent = newContent.toLowerCase();
-  if (humanKeywords.some(kw => lowerContent.includes(kw))) {
+  const humanKeywords = ["human", "agent", "real person", "representative", "manager", "support executive", "talk to someone", "speak to someone", "call me"];
+  if (humanKeywords.some(kw => containsPhrase(newContent, kw))) {
     return { trigger: true, reason: "Customer requested human assistance" };
   }
 
   // 2. Payment dispute / refund / chargeback keywords
-  const disputeKeywords = ["dispute", "chargeback", "legal", "consumer court", "fraud", "police", "scam", "cheat"];
-  if (disputeKeywords.some(kw => lowerContent.includes(kw))) {
+  const disputeKeywords = ["dispute", "chargeback", "legal", "consumer court", "fraud", "police", "scam", "cheat", "cheated", "cheating"];
+  if (disputeKeywords.some(kw => containsPhrase(newContent, kw))) {
     return { trigger: true, reason: "Dispute or legal complaint detected" };
   }
 
-  // 3. More than 8 AI messages without a human AGENT response
-  const aiMessageCount = messages.filter(m => m.senderType === "ZICA_AI").length;
-  const humanAgentCount = messages.filter(m => m.senderType === "AGENT").length;
-  if (aiMessageCount >= 8 && humanAgentCount === 0) {
+  // 3. 8+ AI replies in the current conversation (since the last human agent reply, within 24h)
+  // without a human — counting a ticket's whole history used to silence long-lived tickets for good.
+  const lastAgentIdx = messages.map(m => m.senderType).lastIndexOf("AGENT");
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const aiMessageCount = messages
+    .slice(lastAgentIdx + 1)
+    .filter(m => m.senderType === "ZICA_AI" && (!m.createdAt || new Date(m.createdAt).getTime() >= dayAgo))
+    .length;
+  if (aiMessageCount >= 8) {
     return { trigger: true, reason: "Maximum AI auto-replies reached without human resolution" };
   }
 
@@ -201,8 +211,10 @@ export async function processSupportTicketAIReply(ticketId: string, latestUserMe
     const ticket = await prisma.supportTicket.findUnique({
       where: { id: ticketId },
       include: {
+        // Latest 20 (desc + take), re-sorted oldest-first below. "asc + take" returned the FIRST 20,
+        // so long chats never sent the newest customer message to the model.
         messages: {
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: "desc" },
           take: 20,
         },
         customer: {
@@ -214,6 +226,9 @@ export async function processSupportTicketAIReply(ticketId: string, latestUserMe
     if (!ticket || ticket.status === "CLOSED" || ticket.status === "RESOLVED") {
       return { replied: false };
     }
+    if (ticket.messages) {
+      ticket.messages.reverse();
+    }
 
     // 2. Check per-ticket AI auto-reply toggle
     if (ticket.aiAutoReply === false) {
@@ -223,7 +238,8 @@ export async function processSupportTicketAIReply(ticketId: string, latestUserMe
     // Check handoff triggers
     const handoff = checkHandoffTriggers(ticket.messages || [], latestUserMessage);
     if (handoff.trigger) {
-      const handoffText = "Thank you for contacting Zica Bella Support. I have escalated your ticket to our human support team for personalized assistance. A human support executive will review your details and follow up with you shortly. You can also reach our support team directly via WhatsApp at +91 98765 43210 or email at support@zicabella.com.";
+      const contact = await getSupportContact();
+      const handoffText = `Thank you for contacting Zica Bella Support. I have escalated your ticket to our human support team for personalized assistance. A human support executive will review your details and follow up with you shortly. You can also reach our support team directly via WhatsApp at ${contact.whatsapp} or email at ${contact.email}.`;
       const safeHandoffText = stripMarkdown(applyOutputGuard(handoffText, "support"));
 
       await prisma.supportTicket.update({
@@ -252,7 +268,10 @@ export async function processSupportTicketAIReply(ticketId: string, latestUserMe
     const allowedTools = filterToolsForPrincipal(ZICA_TOOLS as Parameters<typeof filterToolsForPrincipal>[0], principal);
 
     // Fetch dynamic Knowledge Base policies
-    const kbContext = await getRelevantKnowledgeContext(latestUserMessage);
+    const [kbContext, contact] = await Promise.all([
+      getRelevantKnowledgeContext(latestUserMessage),
+      getSupportContact(),
+    ]);
 
     // Build enriched system prompt with customer context
     const customerName = ticket.customer?.name || ticket.guestName || 'Valued Customer';
@@ -273,8 +292,9 @@ SUPPORT REPRESENTATIVE GUIDELINES:
 - Always rely strictly on official store policies in the Knowledge Base provided below. Do NOT guess or invent exchange, shipping, or refund rules.
 - QUERY HANDLING & CLASSIFICATION:
   1. Orders, Deliveries, Returns & Size Exchanges: Use tools. For "where is my order", call get_order_tracking. For address/phone/size changes before AWB, collect complete details then call update_order_address, update_order_phone, or update_order_size. After AWB, refuse those changes.
-  2. Business/Partnership Queries: Explain politely that business proposals are managed by our brand team (support@zicabella.com or WhatsApp +91 98765 43210).
-  3. Escalations & Human Support Requests: Confirm handoff to human support team and surface our support channels (WhatsApp +91 98765 43210, Email support@zicabella.com).
+  2. Business/Partnership Queries: Explain politely that business proposals are managed by our brand team (${contact.email} or WhatsApp ${contact.whatsapp}).
+  3. Escalations & Human Support Requests: Confirm handoff to human support team and surface our support channels (WhatsApp ${contact.whatsapp}, Email ${contact.email}).
+- Only ever share the support contact details given here and in the Knowledge Base. Never use a phone number from earlier messages or examples.
 
 CRITICAL SECURITY & FORMATTING HARD RULES:
 - MUST OUTPUT CLEAN PLAIN TEXT ONLY. DO NOT USE MARKDOWN (no asterisks, hashes, hyphens, or backtick characters).
