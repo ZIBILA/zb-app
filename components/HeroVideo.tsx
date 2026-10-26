@@ -3,9 +3,6 @@
 import { useState, useRef, useEffect } from "react";
 import { VolumeX, Volume2 } from "lucide-react";
 
-/** Bundled local asset — used only if the primary URL fails to load. */
-const LOCAL_WEBM_FALLBACK = "/zb-video-heroo.webm";
-const DEFAULT_POSTER = "/zb-video-hero-poster.jpg";
 
 function guessVideoType(url: string): string | undefined {
   const path = url.split("?")[0].toLowerCase();
@@ -18,7 +15,7 @@ function guessVideoType(url: string): string | undefined {
 interface HeroVideoProps {
   src: string;
   mobileSrc?: string;
-  /** Tried only if `src` fails. Defaults to the local .webm so localhost/dev still work when the .mp4 is absent. */
+  /** Optional second source, tried only if `src` fails. No bundled default — the CMS owns the hero video. */
   fallbackSrc?: string;
   poster?: string;
   showControlOnly?: boolean;
@@ -27,18 +24,14 @@ interface HeroVideoProps {
 export default function HeroVideo({
   src,
   mobileSrc,
-  fallbackSrc = LOCAL_WEBM_FALLBACK,
+  fallbackSrc,
   poster,
   showControlOnly = false,
 }: HeroVideoProps) {
   const [isMuted, setIsMuted] = useState(true);
   const [isInView, setIsInView] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const resolvedPoster = poster || DEFAULT_POSTER;
-
-  // Prefer the local webm when the configured default .mp4 is missing from /public
-  const primarySrc =
-    src === "/zb-video-heroo.mp4" ? LOCAL_WEBM_FALLBACK : src;
+  const primarySrc = src;
 
   useEffect(() => {
     const el = videoRef.current;
@@ -90,7 +83,7 @@ export default function HeroVideo({
           loop
           playsInline
           preload="metadata"
-          poster={resolvedPoster}
+          poster={poster || undefined}
           className="w-full h-full object-cover transition-all duration-700"
         >
           {mobileSrc &&
