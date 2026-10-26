@@ -999,34 +999,29 @@ export default function CheckoutPage() {
   const codFee = isInternational ? codFeeDisplay.amount : configuredCodFee;
   const codFeeFormatted = isInternational ? codFeeDisplay.formatted : `₹${configuredCodFee.toLocaleString("en-IN")}`;
 
-  // Fetch available store credit balance (debounced — typing email/phone shouldn't spam)
+  // Fetch the logged-in customer's store credit balance (server resolves it from the session)
+  const sessionUserId = (session?.user as any)?.id as string | undefined;
   useEffect(() => {
-    const email = address.email || (session?.user as any)?.email;
-    const phone = address.phone;
-    if (!email && !phone) return;
+    if (!sessionUserId) {
+      setAvailableStoreCredit(0);
+      return;
+    }
 
-    const timer = setTimeout(async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        const params = new URLSearchParams();
-        if (email) params.set('email', email);
-        if (phone) params.set('phone', phone);
-
-        const res = await fetch(`/api/user/store-credits?${params.toString()}`);
-        if (res.ok) {
+        const res = await fetch('/api/user/store-credits');
+        if (!cancelled && res.ok) {
           const data = await res.json();
-          if (data.success && data.balance > 0) {
-            setAvailableStoreCredit(data.balance);
-          } else {
-            setAvailableStoreCredit(0);
-          }
+          setAvailableStoreCredit(data.success && data.balance > 0 ? data.balance : 0);
         }
       } catch (err) {
         console.error('[Checkout] Error fetching store credits:', err);
       }
-    }, 800);
+    })();
 
-    return () => clearTimeout(timer);
-  }, [address.email, address.phone, session]);
+    return () => { cancelled = true; };
+  }, [sessionUserId]);
 
   // Prefetch Razorpay/COD order on step 2 (serialize overlapping requests)
   useEffect(() => {
@@ -1628,10 +1623,13 @@ export default function CheckoutPage() {
   }, [activeCoupons, subtotal, paymentMethod, isManualCoupon, calculateCouponDiscount]);
 
   // Re-validate coupon when payment method or subtotal changes (ensures percentages scale with cart size and minOrderValue is re-checked)
+  // Debounced: subtotal flips several times while the cart syncs — validate once it settles.
   useEffect(() => {
-    if (couponCode) {
+    if (!couponCode) return;
+    const timer = setTimeout(() => {
       handleApplyCoupon(couponCode, paymentMethod, !isManualCoupon);
-    }
+    }, 400);
+    return () => clearTimeout(timer);
   }, [paymentMethod, subtotal]);
 
   const fireMetaAddPaymentInfo = () => {

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  try { await requireAdmin(); } catch (authErr) { return handleAuthError(authErr); }
   try {
     // 1. Core aggregates from whatsapp_messages
     const totalOutbound = await db.whatsAppMessage.count({ where: { direction: 'outbound' } });

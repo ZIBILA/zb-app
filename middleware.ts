@@ -542,7 +542,10 @@ export default withAuth(
           pathname.startsWith('/api/notifications/history') ||
           pathname.startsWith('/api/notifications/stats') ||
           pathname === '/api/send-notification' ||
-          (pathname.startsWith('/api/whatsapp') && !pathname.startsWith('/api/whatsapp/webhook')) ||
+          // Covers /api/whatsapp/* and admin /api/whatsapp-events/*; the storefront tracker is public.
+          (pathname.startsWith('/api/whatsapp') &&
+            !pathname.startsWith('/api/whatsapp/webhook') &&
+            pathname !== '/api/whatsapp-events/track') ||
           (pathname.startsWith('/api/shopify') &&
             !pathname.startsWith('/api/shopify/webhooks') &&
             !pathname.startsWith('/api/shopify/auth') &&
