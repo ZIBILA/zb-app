@@ -124,16 +124,16 @@ export async function POST(req: Request) {
     }
 
     // 100% store credit or 100% coupon/discount: there is no Razorpay payment to verify.
-    const hasDiscountCoverage = (rawDiscountAmount > 0 || couponDiscount > 0 || Boolean(rawDiscountCode));
+    const hasDiscountCoverage = (couponDiscount > 0 || Boolean(rawDiscountCode));
     const isFullStoreCreditPayment = clientClaimsPaid && !isCod && total <= 0 && appliedStoreCredits > 0;
     const isFullCouponPayment = clientClaimsPaid && !isCod && total <= 0 && hasDiscountCoverage;
     const expectedPrepaidRupees = Math.max(
       0,
-      Math.round((linesTotal - appliedStoreCredits - couponDiscount - rawDiscountAmount) * 100) / 100
+      Math.round((linesTotal - appliedStoreCredits - couponDiscount) * 100) / 100
     );
 
     if (isFullStoreCreditPayment || isFullCouponPayment) {
-      if (appliedStoreCredits + couponDiscount + rawDiscountAmount + 0.01 < linesTotal) {
+      if (appliedStoreCredits + couponDiscount + 0.01 < linesTotal) {
         return jsonError('Store credit / discount does not cover the order total', 400);
       }
       paymentStatus = 'paid';

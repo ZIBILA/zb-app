@@ -15,10 +15,15 @@ async function tryRefreshAccessToken(): Promise<boolean> {
   if (refreshInflight) return refreshInflight;
 
   refreshInflight = (async () => {
-    const { refreshToken } = useAuthStore.getState();
-    if (!refreshToken) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
+      // Yield before the token check so `finally` always runs after `refreshInflight` is assigned.
+      await Promise.resolve();
+      const { refreshToken } = useAuthStore.getState();
+      if (!refreshToken) return false;
+
       const res = await fetch(`${config.appUrl}/api/auth/mobile-refresh`, {
         method: 'POST',
         headers: {
@@ -26,6 +31,7 @@ async function tryRefreshAccessToken(): Promise<boolean> {
           Accept: 'application/json',
         },
         body: JSON.stringify({ refreshToken }),
+        signal: controller.signal,
       });
 
       if (!res.ok) return false;
@@ -35,12 +41,17 @@ async function tryRefreshAccessToken(): Promise<boolean> {
 
       useAuthStore.getState().setTokens(json.token, json.refreshToken || refreshToken);
       if (json.user) {
-        useAuthStore.setState({ user: json.user, isAuthenticated: true });
+        // Refresh returns a slim user — merge so fields like image/isCommunityMember survive.
+        useAuthStore.setState(state => ({
+          user: { ...state.user, ...json.user },
+          isAuthenticated: true,
+        }));
       }
       return true;
     } catch {
       return false;
     } finally {
+      clearTimeout(timeout);
       refreshInflight = null;
     }
   })();
@@ -98,8 +109,8 @@ export async function apiFetch<T>(
     }
 
     try {
+      // Timeout stays armed until `finally` so 401 refresh/retry fetches are bounded too.
       let response = await fetch(url, fetchOptions);
-      clearTimeout(timeout);
 
       // Handle 401 — never wipe the session on public GETs; for mutations try refresh first.
       if (response.status === 401) {
@@ -168,12 +179,12 @@ export async function apiFetch<T>(
       const result = await response.json();
       return result as T;
     } catch (err: any) {
-      clearTimeout(timeout);
       if (err.name === 'AbortError') {
         throw new Error('Request timed out. Please check your connection.');
       }
       throw err;
     } finally {
+      clearTimeout(timeout);
       if (isGet) {
         setTimeout(() => {
           delete inflightRequests[cacheKey];
