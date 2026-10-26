@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import imaps from 'imap-simple';
 import { simpleParser } from 'mailparser';
 import { resolvedSMTP } from '@/lib/mailer';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,7 @@ function hasAttachments(struct: any): boolean {
 
 export async function GET(request: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'view');
     const now = Date.now();
     if (inboxCache && now - inboxCache.timestamp < CACHE_TTL) {
       console.log('[IMAP Inbox] Returning cached inbox list');
@@ -161,6 +163,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ success: true, emails: parsedEmails });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('[IMAP Inbox Error]:', error);
 
     try {

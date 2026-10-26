@@ -36,6 +36,10 @@ const ADMIN_TOOLS = new Set([
   'get_app_user_chats',
   'get_order_by_number',
   'get_customer_profile',
+  'update_order_address',
+  'update_order_phone',
+  'update_order_size',
+  'get_order_tracking',
 ]);
 
 /** Customer tools — scoped to own data only */
@@ -48,10 +52,21 @@ const CUSTOMER_TOOLS = new Set([
   'get_my_returns',
   'get_returns_exchanges',
   'get_customer_profile',
+  'update_order_address',
+  'update_order_phone',
+  'update_order_size',
+  'get_order_tracking',
 ]);
 
-/** Guest tools — no tools at all */
-const GUEST_TOOLS = new Set<string>();
+/** Guest tools — order self-serve when they can prove the order (email/phone match) */
+const GUEST_TOOLS = new Set([
+  'get_order_by_number',
+  'get_shipment_details',
+  'get_order_tracking',
+  'update_order_address',
+  'update_order_phone',
+  'update_order_size',
+]);
 
 // ---------------------------------------------------------------------------
 // Functions

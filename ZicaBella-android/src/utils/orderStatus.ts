@@ -133,11 +133,21 @@ export function resolveOrderDisplayStatus(order: any): string {
   if (!order) return "Processing";
   
   const mainStatus = String(order.status || order.rawStatus || '').toLowerCase();
-  const fulfillmentStatus = String(order.fulfillmentStatus || '').toLowerCase();
   const cancelledBy = String(order.cancelledBy || '').toLowerCase();
   
-  // 1. Real order cancel only — ignore shipment/delivery void (that is not order cancel)
-  if (cancelledBy || mainStatus.includes('cancel') || fulfillmentStatus.includes('cancel')) {
+  // 1. Real order cancel only — never treat paid or delivered orders as cancelled
+  const payLower = String(order.paymentStatus || '').toLowerCase();
+  const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
+  const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
+
+  const isRealCancel =
+    mainStatus === 'cancelled' ||
+    mainStatus === 'canceled' ||
+    payLower === 'cancelled' ||
+    payLower === 'voided' ||
+    (Boolean(cancelledBy) && !isPaidLike && !isDeliveredOrShipped);
+
+  if (isRealCancel) {
     if (cancelledBy === 'admin') return 'Cancelled by Zica Bella';
     return 'Cancelled';
   }
@@ -195,6 +205,12 @@ export function resolveOrderDisplayStatus(order: any): string {
   }
 
   // 5. Normal Order Status Flow
-  return getOrderStatusLabel(order.deliveryStatus || order.status);
+  const safeDelivery = (order.deliveryStatus && !String(order.deliveryStatus).toLowerCase().includes('cancel'))
+    ? order.deliveryStatus
+    : null;
+  const safeMain = (order.status && !String(order.status).toLowerCase().includes('cancel'))
+    ? order.status
+    : null;
+  return getOrderStatusLabel(safeDelivery || safeMain || 'Processing');
 }
 

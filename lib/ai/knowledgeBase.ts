@@ -26,7 +26,19 @@ export const DEFAULT_KB_ENTRIES = [
 Standard delivery timeframe: 3 to 7 business days depending on location.
 Dispatch timeframe: Orders are packed and dispatched within 24 to 48 hours.
 Tracking: Once shipped, tracking details and live courier link are sent via SMS and Email.`,
-    keywords: 'shipping, delivery, dispatch, tracking, courier, delivery time, charges',
+    keywords: 'shipping, delivery, dispatch, tracking, courier, delivery time, charges, awb, where is my order',
+    priority: 10,
+  },
+  {
+    category: 'ORDER_CHANGES',
+    title: 'Pre-AWB Address, Phone & Size Changes',
+    content: `Before AWB generation, Zica AI can update the order automatically:
+- Address change: collect full name, complete street address, city, state, 6-digit pincode, and 10-digit Indian mobile, then update the order.
+- Phone change: collect a valid 10-digit Indian mobile starting with 6-9, then update the order.
+- Size change: confirm the product and new size, check stock, then update the order.
+After AWB is generated, address, phone, and size MUST NOT be changed. Direct the customer to human support for hold/RTO.
+If the customer asks "Where is my order?", fetch and share real tracking (AWB, courier, status, tracking link). Never invent an AWB.`,
+    keywords: 'address change, phone change, size change, awb, tracking, where is my order, update address, change size',
     priority: 10,
   },
   {

@@ -24,6 +24,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     });
 
     let standaloneReturn: any = null;
+    let exchangeRequest: any = null;
 
     if (!returnRequest) {
       standaloneReturn = await prisma.return.findUnique({
@@ -32,6 +33,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     if (!returnRequest && !standaloneReturn) {
+      exchangeRequest = await prisma.exchangeRequest.findUnique({
+        where: { id: refundId }
+      });
+    }
+
+    if (!returnRequest && !standaloneReturn && !exchangeRequest) {
       return NextResponse.json({ error: 'Refund request record not found.' }, { status: 404 });
     }
 
@@ -61,6 +68,22 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           reason: `REJECTED: ${rejectionReason}`
         }
       });
+    } else if (exchangeRequest) {
+      await prisma.$transaction([
+        prisma.exchangeRequest.update({
+          where: { id: refundId },
+          data: {
+            paymentStatus: 'rejected',
+            reason: `REJECTED: ${rejectionReason}`
+          }
+        }),
+        prisma.exchange.updateMany({
+          where: { exchangeRequestId: refundId },
+          data: {
+            paymentStatus: 'rejected'
+          }
+        })
+      ]);
     }
 
     return NextResponse.json({

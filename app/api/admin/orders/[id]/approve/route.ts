@@ -44,9 +44,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     // Module 3: Automatic Order Approved Email Webhook Trigger (Non-blocking / Fire-and-forget)
     try {
       const localApiUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.zicabella.com'}/api/orders/status-update`;
-      const apiSecret = process.env.INTERNAL_API_SECRET || 'ZB_INTERNAL_SECRET_987654321';
+      const apiSecret = process.env.INTERNAL_API_SECRET;
       
-      if (updatedOrder.customer && updatedOrder.customer.email) {
+      if (apiSecret && updatedOrder.customer && updatedOrder.customer.email) {
         const payload = {
           orderId: updatedOrder.id,
           newStatus: 'approved',

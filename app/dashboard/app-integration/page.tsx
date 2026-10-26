@@ -8,8 +8,16 @@ import {
   Image as ImageIcon, Undo2, ArrowLeftRight, FileText, User, Layers,
   Monitor, Heart, Palette, Navigation, MessageCircle, Shield, Clock,
   ChevronRight, Search, Filter, Save, Info, Sparkles, ChevronDown,
+  Plus, Trash2, GripVertical,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, Reorder } from 'framer-motion';
+import {
+  DEFAULT_PDP_INCL_TAXES_TEXT,
+  DEFAULT_PDP_MODEL_INFO,
+  DEFAULT_PDP_TRUST_BOXES,
+  parsePdpTrustBoxes,
+  type PdpTrustBox,
+} from '@/lib/pdp-trust-defaults';
 
 interface EndpointStatus {
   name: string;
@@ -598,6 +606,15 @@ export default function AppIntegrationPage() {
     );
   }, [allCollections, searchQuery]);
 
+  const pdpTrustBoxes = useMemo(
+    () => parsePdpTrustBoxes(settings?.pdpTrustBoxes),
+    [settings?.pdpTrustBoxes]
+  );
+
+  const setPdpTrustBoxes = (next: PdpTrustBox[]) => {
+    updateSetting('pdpTrustBoxes', JSON.stringify(next));
+  };
+
   const tabs: { key: SettingsTab; label: string; icon: any }[] = [
     { key: 'hero', label: 'Hero', icon: Smartphone },
     { key: 'layout', label: 'Home Layout', icon: Layers },
@@ -1066,6 +1083,204 @@ export default function AppIntegrationPage() {
                            </div>
                         </div>
                       </div>
+                    </div>
+
+                    <div className="space-y-6 pt-4 border-t border-foreground/5">
+                      <SectionHeader
+                        icon={Layers}
+                        title="Price & Model Line"
+                        description="Tax label under price, and default model/fit copy when a product has no custom.model_info metafield."
+                      />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-4">
+                          <SettingsToggle
+                            label="Show “Incl. taxes” under price"
+                            checked={settings.pdpShowInclTaxes !== false}
+                            onChange={(v) => updateSetting('pdpShowInclTaxes', v)}
+                          />
+                          <SettingsInput
+                            label="Incl. taxes label"
+                            value={settings.pdpInclTaxesText ?? DEFAULT_PDP_INCL_TAXES_TEXT}
+                            onChange={(v) => updateSetting('pdpInclTaxesText', v)}
+                            placeholder={DEFAULT_PDP_INCL_TAXES_TEXT}
+                          />
+                        </div>
+                        <SettingsInput
+                          label="Default model / fit line"
+                          value={settings.pdpModelInfoDefault ?? DEFAULT_PDP_MODEL_INFO}
+                          onChange={(v) => updateSetting('pdpModelInfoDefault', v)}
+                          placeholder={DEFAULT_PDP_MODEL_INFO}
+                          hint="Override per product via metafield custom.model_info"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-6 pt-4 border-t border-foreground/5">
+                      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                        <SectionHeader
+                          icon={Sparkles}
+                          title="Trust / Offer Boxes"
+                          description="2×2 grid under Add to Bag / Buy Now. Highlight = black tile (prepaid). Drag to reorder."
+                        />
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setPdpTrustBoxes(DEFAULT_PDP_TRUST_BOXES.map((b) => ({ ...b })))}
+                            className="px-3 py-2 rounded-xl text-[9px] font-bold uppercase tracking-widest border border-foreground/10 text-foreground/50 hover:text-foreground"
+                          >
+                            Reset defaults
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPdpTrustBoxes([
+                                ...pdpTrustBoxes,
+                                {
+                                  id: `box_${Date.now().toString(36)}`,
+                                  icon: 'information-circle-outline',
+                                  title: 'New benefit',
+                                  subtitle: 'Editable subtext',
+                                  variant: 'default',
+                                },
+                              ])
+                            }
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[9px] font-bold uppercase tracking-widest bg-foreground text-background"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> Add box
+                          </button>
+                        </div>
+                      </div>
+
+                      <Reorder.Group
+                        axis="y"
+                        values={pdpTrustBoxes}
+                        onReorder={setPdpTrustBoxes}
+                        className="space-y-3"
+                      >
+                        {pdpTrustBoxes.map((box) => (
+                          <Reorder.Item
+                            key={box.id}
+                            value={box}
+                            className={`rounded-2xl border p-4 ${
+                              box.variant === 'highlight'
+                                ? 'bg-foreground text-background border-foreground'
+                                : 'bg-foreground/[0.03] border-foreground/10'
+                            }`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <div className={`mt-2 cursor-grab active:cursor-grabbing ${box.variant === 'highlight' ? 'text-background/50' : 'text-foreground/30'}`}>
+                                <GripVertical className="w-4 h-4" />
+                              </div>
+                              <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                  <label className={`block text-[9px] font-bold uppercase tracking-widest mb-1.5 ${box.variant === 'highlight' ? 'text-background/50' : 'text-foreground/40'}`}>
+                                    Icon (Ionicons name or image URL)
+                                  </label>
+                                  <input
+                                    value={box.icon}
+                                    onChange={(e) =>
+                                      setPdpTrustBoxes(
+                                        pdpTrustBoxes.map((b) =>
+                                          b.id === box.id ? { ...b, icon: e.target.value } : b
+                                        )
+                                      )
+                                    }
+                                    className={`w-full rounded-xl px-3 py-2.5 text-[12px] outline-none border ${
+                                      box.variant === 'highlight'
+                                        ? 'bg-background/10 border-background/20 text-background placeholder:text-background/40'
+                                        : 'bg-background border-foreground/10 text-foreground'
+                                    }`}
+                                    placeholder="cash-outline"
+                                  />
+                                </div>
+                                <div>
+                                  <label className={`block text-[9px] font-bold uppercase tracking-widest mb-1.5 ${box.variant === 'highlight' ? 'text-background/50' : 'text-foreground/40'}`}>
+                                    Style
+                                  </label>
+                                  <select
+                                    value={box.variant}
+                                    onChange={(e) =>
+                                      setPdpTrustBoxes(
+                                        pdpTrustBoxes.map((b) =>
+                                          b.id === box.id
+                                            ? {
+                                                ...b,
+                                                variant:
+                                                  e.target.value === 'highlight' ? 'highlight' : 'default',
+                                              }
+                                            : b
+                                        )
+                                      )
+                                    }
+                                    className={`w-full rounded-xl px-3 py-2.5 text-[12px] outline-none border appearance-none ${
+                                      box.variant === 'highlight'
+                                        ? 'bg-background/10 border-background/20 text-background'
+                                        : 'bg-background border-foreground/10 text-foreground'
+                                    }`}
+                                  >
+                                    <option value="default">Grey (default)</option>
+                                    <option value="highlight">Black / white (prepaid)</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className={`block text-[9px] font-bold uppercase tracking-widest mb-1.5 ${box.variant === 'highlight' ? 'text-background/50' : 'text-foreground/40'}`}>
+                                    Title
+                                  </label>
+                                  <input
+                                    value={box.title}
+                                    onChange={(e) =>
+                                      setPdpTrustBoxes(
+                                        pdpTrustBoxes.map((b) =>
+                                          b.id === box.id ? { ...b, title: e.target.value } : b
+                                        )
+                                      )
+                                    }
+                                    className={`w-full rounded-xl px-3 py-2.5 text-[12px] font-semibold outline-none border ${
+                                      box.variant === 'highlight'
+                                        ? 'bg-background/10 border-background/20 text-background'
+                                        : 'bg-background border-foreground/10 text-foreground'
+                                    }`}
+                                  />
+                                </div>
+                                <div>
+                                  <label className={`block text-[9px] font-bold uppercase tracking-widest mb-1.5 ${box.variant === 'highlight' ? 'text-background/50' : 'text-foreground/40'}`}>
+                                    Subtext
+                                  </label>
+                                  <input
+                                    value={box.subtitle}
+                                    onChange={(e) =>
+                                      setPdpTrustBoxes(
+                                        pdpTrustBoxes.map((b) =>
+                                          b.id === box.id ? { ...b, subtitle: e.target.value } : b
+                                        )
+                                      )
+                                    }
+                                    className={`w-full rounded-xl px-3 py-2.5 text-[12px] outline-none border ${
+                                      box.variant === 'highlight'
+                                        ? 'bg-background/10 border-background/20 text-background'
+                                        : 'bg-background border-foreground/10 text-foreground'
+                                    }`}
+                                  />
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPdpTrustBoxes(pdpTrustBoxes.filter((b) => b.id !== box.id))
+                                }
+                                className={`mt-2 p-2 rounded-lg ${
+                                  box.variant === 'highlight'
+                                    ? 'text-background/50 hover:bg-background/10'
+                                    : 'text-foreground/30 hover:bg-foreground/5 hover:text-rose-500'
+                                }`}
+                                aria-label="Remove box"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </Reorder.Item>
+                        ))}
+                      </Reorder.Group>
                     </div>
                   </div>
                 )}

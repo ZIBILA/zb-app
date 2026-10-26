@@ -1,1 +1,7 @@
-<resources/>
+<resources>
+  <!--
+    Do NOT override splashscreen_background for system night mode.
+    The app initial theme on install is strictly LIGHT MODE regardless of phone's system dark mode.
+    Dark splash is selected ONLY when the user explicitly saves dark theme in the app.
+  -->
+</resources>

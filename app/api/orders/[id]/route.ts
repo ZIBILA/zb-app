@@ -255,8 +255,12 @@ export async function GET(
 
       const fulfillment = String(wso.fulfillmentStatus || "").toLowerCase();
       const delivery = String(wso.deliveryStatus || "").toLowerCase();
-      // Order cancel only — delivery/shipment cancel must not flip the whole order
-      const isCancelled = fulfillment.includes("cancel");
+      const payment = String(wso.paymentStatus || "").toLowerCase();
+      // Order cancel only — never treat voided fulfillment/shipment as order cancelled
+      const isCancelled =
+        payment === "cancelled" ||
+        payment === "canceled" ||
+        payment === "voided";
       const isDelivered = !isCancelled && (fulfillment === "delivered" || delivery === "delivered");
       const derivedStatus = isCancelled ? "cancelled" : isDelivered ? "delivered" : "active";
 

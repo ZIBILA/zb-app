@@ -19,17 +19,26 @@ export async function POST(req: NextRequest) {
     const signature = req.headers.get('x-razorpay-signature');
     const webhookSecret = process.env.RAZORPAYX_WEBHOOK_SECRET || process.env.RAZORPAY_WEBHOOK_SECRET;
 
-    // Verify signature if secret configured
-    if (webhookSecret && signature) {
-      const expectedSignature = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(rawBody)
-        .digest('hex');
-
-      if (signature !== expectedSignature) {
-        console.warn('[RazorpayX Webhook] Signature mismatch');
-        return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
-      }
+    // Fail closed: require configured secret + valid signature (timing-safe)
+    if (!webhookSecret) {
+      console.error('[RazorpayX Webhook] RAZORPAYX_WEBHOOK_SECRET / RAZORPAY_WEBHOOK_SECRET not configured');
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+    }
+    if (!signature) {
+      return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
+    }
+    const expectedSignature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSignature);
+    if (
+      sigBuf.length !== expBuf.length ||
+      !crypto.timingSafeEqual(sigBuf, expBuf)
+    ) {
+      console.warn('[RazorpayX Webhook] Signature mismatch');
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
     const payload = JSON.parse(rawBody);

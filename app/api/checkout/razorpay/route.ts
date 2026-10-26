@@ -76,6 +76,11 @@ export async function POST(req: Request) {
 
     const pmUpper = (paymentMethod || '').toUpperCase().trim();
     const isCodOrder = pmUpper === 'COD' || pmUpper.includes('COD');
+    const { isCodAllowedForCountry, resolveCheckoutCountry, COD_INDIA_ONLY_ERROR } = await import('@/lib/cod-availability');
+    const checkoutCountry = resolveCheckoutCountry({ displayCountry, currency, address });
+    if (isCodOrder && !isCodAllowedForCountry(checkoutCountry)) {
+      return NextResponse.json({ error: COD_INDIA_ONLY_ERROR }, { status: 400 });
+    }
 
     if (finalCouponCode) {
       const dbCoupon = await prisma.webStoreCoupon.findFirst({

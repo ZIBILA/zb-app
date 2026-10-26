@@ -20,7 +20,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const { status } = body;
     const returnRequestId = params.id;
 
-    const validStatuses = ['APPROVED', 'REJECTED', 'RECEIVED', 'REFUNDED', 'PICKUP_SCHEDULED', 'REFUND_PENDING'];
+    const validStatuses = ['APPROVED', 'REJECTED', 'RECEIVED', 'REFUNDED', 'PICKUP_SCHEDULED', 'REFUND_PENDING', 'QC_PASSED', 'QC_FAILED'];
     if (!status || typeof status !== 'string' || !validStatuses.includes(status.toUpperCase())) {
       return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
     }
@@ -39,8 +39,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     }
 
     const currentRequestStatus = String(returnRequest.status || '').toLowerCase();
+    const { qcStatus } = body;
     const alreadyReceived =
-      !!returnRequest.receivedAt || ['received', 'qc_passed', 'refunded'].includes(currentRequestStatus);
+      !!returnRequest.receivedAt || ['received', 'qc_passed', 'qc_failed', 'refunded'].includes(currentRequestStatus);
 
     if (['refunded', 'refund_pending'].includes(currentRequestStatus)) {
       return NextResponse.json(
@@ -89,17 +90,47 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return reqUpdate;
     });
 
-    // SKU lifecycle tracking: restore SKUs when items are physically received back
     if (lowerStatus === 'received') {
+      try {
+        const { markSkuStatus } = await import('@/lib/services/skuService');
+        for (const ret of returnRequest.returns) {
+          if (ret.sku) {
+            await markSkuStatus(ret.sku, 'RETURNED', 'RETURN_RECEIVED', 'Admin (Return Received)');
+          }
+        }
+      } catch (skuErr) {
+        console.error('[Return PATCH] SKU status on received failed:', skuErr);
+      }
+    }
+
+    const qcPassed =
+      lowerStatus === 'qc_passed' ||
+      (lowerStatus === 'received' && String(qcStatus || '').toLowerCase() === 'passed');
+
+    if (qcPassed) {
+      if (!alreadyReceived && lowerStatus !== 'received') {
+        return NextResponse.json(
+          { error: 'Quality-check restock requires the parcel to be marked received first.' },
+          { status: 400 }
+        );
+      }
       try {
         const { restoreSkuToStock } = await import('@/lib/services/skuService');
         for (const ret of returnRequest.returns) {
           if (ret.sku) {
-            await restoreSkuToStock(ret.sku, 'RETURN_RESTOCK', 'Admin (Return Received)');
+            await restoreSkuToStock(ret.sku, 'RETURN_QC_RESTOCK', 'Admin (Return QC Passed)');
           }
         }
+        await prisma.returnRequest.update({
+          where: { id: returnRequestId },
+          data: { status: 'qc_passed' },
+        });
+        await prisma.return.updateMany({
+          where: { returnRequestId },
+          data: { status: 'QC_PASSED' },
+        });
       } catch (skuErr) {
-        console.error('[Return PATCH] SKU restoration on received failed:', skuErr);
+        console.error('[Return PATCH] SKU restoration on QC failed:', skuErr);
       }
     }
 

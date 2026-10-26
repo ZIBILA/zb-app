@@ -179,6 +179,7 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
   const [metaSizeFit, setMetaSizeFit] = useState("");
   const [metaCare, setMetaCare] = useState("");
   const [metaShippingReturn, setMetaShippingReturn] = useState("");
+  const [metaModelInfo, setMetaModelInfo] = useState("");
 
   // Tab Visibility States (true = show/visible, false = hide/hidden)
   const [showDescription, setShowDescription] = useState(true);
@@ -232,6 +233,10 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
     setMetaSizeFit(shopifyRichTextToPlainText(getMetaValue("custom", "size_fit")));
     setMetaCare(shopifyRichTextToPlainText(getMetaValue("custom", "care")));
     setMetaShippingReturn(shopifyRichTextToPlainText(getMetaValue("custom", "shipping_return")));
+    setMetaModelInfo(
+      shopifyRichTextToPlainText(getMetaValue("custom", "model_info")) ||
+        getMetaValue("custom", "model_info")
+    );
 
     // Read visibility states from tags
     const tagsList = p.tags ? p.tags.split(',').map(t => t.trim().toLowerCase()) : [];
@@ -312,6 +317,7 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
             "custom.size_fit": plainTextToShopifyRichText(metaSizeFit),
             "custom.care": plainTextToShopifyRichText(metaCare),
             "custom.shipping_return": plainTextToShopifyRichText(metaShippingReturn),
+            "custom.model_info": metaModelInfo.trim(),
           },
         }),
       });
@@ -610,6 +616,21 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
                   rows={3}
                   className="w-full bg-foreground/5 px-4 py-3 rounded-xl border border-foreground/5 focus:border-foreground/20 text-left text-[13px] font-medium text-foreground outline-none transition-all duration-300 font-sans resize-y"
                 />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-foreground/40 flex items-center gap-1.5">
+                  Model / fit line <span className="text-[9px] font-normal text-foreground/30 capitalize">(custom.model_info)</span>
+                </label>
+                <input
+                  value={metaModelInfo}
+                  onChange={(e) => setMetaModelInfo(e.target.value)}
+                  placeholder={`e.g. Model is 6'0", wearing size 32 · Oversized fit, true to waist`}
+                  className="w-full bg-foreground/5 px-4 py-3 rounded-xl border border-foreground/5 focus:border-foreground/20 text-left text-[13px] font-medium text-foreground outline-none transition-all duration-300 font-sans"
+                />
+                <p className="text-[9px] text-foreground/30">
+                  Shown under size pills on the app PDP. Leave blank to use the theme default from App Integration → Product Page.
+                </p>
               </div>
 
               <div className="space-y-1.5">

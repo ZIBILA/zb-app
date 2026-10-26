@@ -131,6 +131,22 @@ export async function processOrderRefund(orderId: string, triggeredBy = 'system'
       refundAmount = order.totalPrice;
     }
 
+    // Guard against duplicate / over-refunding: check remaining refundable balance
+    try {
+      const { calculateOrderRefundLimits } = await import('@/lib/services/refundAccuracy');
+      const limits = await calculateOrderRefundLimits(order.id);
+      if (limits.maxRemainingRefundable <= 0) {
+        await prisma.order.update({
+          where: { id: order.id },
+          data: { refundStatus: 'completed' }
+        });
+        return { success: true, message: 'Already fully refunded' };
+      }
+      refundAmount = Math.min(refundAmount, limits.maxRemainingRefundable);
+    } catch (limErr) {
+      console.warn('[AutoRefund] Error checking refund limits:', limErr);
+    }
+
     if (refundAmount <= 0) {
       await prisma.order.update({
         where: { id: order.id },

@@ -87,7 +87,7 @@ export async function processWhatsAppAIReply(
     // 4. Derive principal (customer or guest) by phone lookup only
     const principal: Principal = customer
       ? { kind: "customer", customerId: customer.id, phone: customer.phone || undefined, email: customer.email || undefined }
-      : { kind: "guest" };
+      : { kind: "guest", phone: phoneNumber };
 
     // 5. Fetch recent chat history (last 10 messages)
     const recentMessages = await prisma.whatsAppMessage.findMany({
@@ -135,10 +135,10 @@ export async function processWhatsAppAIReply(
       + `\n\nChannel: WhatsApp. Keep responses concise (under 250 characters when possible). Format key details cleanly.`
       + customerContext
       + `\n\n${kbContext}`
-      + `\n\nIMPORTANT: When a customer provides an order number (like ZB-XXXX-XXXXX or #1234), use the get_order_by_number tool to look it up immediately. DO NOT output Markdown syntax (no asterisks **, no hashes #). Write in clean plain text.`;
+      + `\n\nIMPORTANT: When a customer provides an order number, use get_order_by_number. For tracking use get_order_tracking. For address/phone/size before AWB, collect complete details then use update_order_address, update_order_phone, or update_order_size. After AWB those changes are blocked. DO NOT output Markdown. Write in clean plain text.`;
 
     // Multi-round tool-use loop (up to 3 rounds for chained lookups)
-    const maxToolRounds = Math.min(3, MAX_TOOL_LOOPS);
+    const maxToolRounds = Math.min(6, MAX_TOOL_LOOPS);
     let currentMessages = [...conversationHistory];
     let finalAnswer = "";
 

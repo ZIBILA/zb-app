@@ -25,6 +25,7 @@ import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import { formatDisplayOrderNumber } from "@/lib/formatOrderNumber";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 import { LOGISTICS_FILTER_OPTIONS, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface OrderItem {
   id: string;
@@ -149,7 +150,7 @@ export default function OrdersPage() {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const fetchOrders = useCallback(async (silent = false) => {
+  const fetchOrders = useCallback(async (silent = false, targetPage?: number) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -169,20 +170,17 @@ export default function OrdersPage() {
       if (tab === 'unpaid') finalPayment = 'pending';
       if (tab === 'open') finalStatus = 'active';
 
-      const offset = (page - 1) * LIMIT;
+      const currentPage = targetPage ?? page;
+      const offset = (currentPage - 1) * LIMIT;
       const url = `/api/admin/orders?limit=${LIMIT}&offset=${offset}&status=${finalStatus}&paymentStatus=${finalPayment}&fulfillmentStatus=${finalFulfillment}&logistics=${logisticsFilter}&search=${encodeURIComponent(search)}`;
       
-      const res = await fetch(url, { signal: controller.signal });
+      const data = await cachedAdminFetch<any>(url, {
+        signal: controller.signal,
+        skipCache: silent || isRefreshing,
+        ttlMs: 30_000,
+      });
       if (controller.signal.aborted) return;
-      
-      if (res.status === 401 || res.status === 403) {
-        if (typeof window !== "undefined") {
-          window.location.href = "/dashboard/login?callbackUrl=" + encodeURIComponent(window.location.pathname);
-        }
-        return;
-      }
 
-      const data = await res.json();
       if (data.success || Array.isArray(data.orders)) {
         setOrders(data.orders || []);
         setTotal(data.total || 0);
@@ -207,6 +205,7 @@ export default function OrdersPage() {
         const err = await res.json();
         throw new Error(err.error || "Failed to update order item size");
       }
+      invalidateAdminCache('/api/admin/orders');
       setToast("Size updated successfully");
       fetchOrders(true);
     } catch (e: unknown) {
@@ -216,14 +215,26 @@ export default function OrdersPage() {
     }
   };
 
+  const isFirstRender = useRef(true);
+
+  // Single consolidated effect for filter changes
   useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      fetchOrders(false, 1);
+      return;
+    }
+
     setPage(1);
+    const timer = setTimeout(() => fetchOrders(false, 1), 250);
+    return () => clearTimeout(timer);
   }, [statusFilter, paymentFilter, fulfillmentFilter, logisticsFilter, search, tab]);
 
+  // Handle explicit page changes (pagination buttons)
   useEffect(() => {
-    const timer = setTimeout(() => fetchOrders(false), 250);
-    return () => clearTimeout(timer);
-  }, [fetchOrders]);
+    if (isFirstRender.current) return;
+    fetchOrders(false, page);
+  }, [page]);
 
   // Background refresh — keep infrequent to avoid DB/Shopify stampedes
   useEffect(() => {
@@ -474,9 +485,16 @@ export default function OrdersPage() {
                 transition={{ delay: i * 0.015 }}
                 className="group"
               >
-                <Link 
-                  href={`/dashboard/orders/${order.id}`}
-                  className="grid grid-cols-12 gap-6 items-center px-8 py-6 rounded-[2rem] hover:bg-foreground/[0.02] border border-transparent hover:border-foreground/5 transition-all duration-500"
+                <div 
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => router.push(`/dashboard/orders/${order.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      router.push(`/dashboard/orders/${order.id}`);
+                    }
+                  }}
+                  className="grid grid-cols-12 gap-6 items-center px-8 py-6 rounded-[2rem] hover:bg-foreground/[0.02] border border-transparent hover:border-foreground/5 transition-all duration-500 cursor-pointer"
                 >
                   <div className="col-span-3 flex items-center gap-5">
                     <div className="w-12 h-12 rounded-2xl bg-foreground/5 flex items-center justify-center border border-foreground/5 shadow-inner transition-colors group-hover:bg-foreground/10 group-hover:border-foreground/10">
@@ -644,7 +662,7 @@ export default function OrdersPage() {
                         <ChevronRight className="w-5 h-5 text-foreground/30" strokeWidth={2.5} />
                      </div>
                   </div>
-                </Link>
+                </div>
               </motion.div>
             );
           })}

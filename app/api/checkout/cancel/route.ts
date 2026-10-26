@@ -15,11 +15,15 @@ export async function POST(req: Request) {
     const failureReason = reason || "payment_cancelled_by_user";
     const isCancelled = failureReason === "payment_cancelled_by_user";
 
-    // 1. Update Order in Prisma if present
+    // 1. Update Order in Prisma if present (NEVER cancel already-paid or confirmed orders)
     if (razorpayOrderId || localOrderId) {
-      const whereCondition = razorpayOrderId
+      const whereCondition: any = razorpayOrderId
         ? { razorpayOrderId }
         : { id: localOrderId };
+
+      whereCondition.paymentStatus = {
+        notIn: ['paid', 'cod_upfront_paid', 'partially_paid', 'PAID', 'COD_UPFRONT_PAID', 'PARTIALLY_PAID', 'success', 'SUCCESS'],
+      };
 
       await prisma.order.updateMany({
         where: whereCondition,
@@ -33,10 +37,15 @@ export async function POST(req: Request) {
       });
     }
 
-    // 2. Update WebStoreOrder in Prisma if present
+    // 2. Update WebStoreOrder in Prisma if present (NEVER cancel already-paid orders)
     if (razorpayOrderId) {
       await prisma.webStoreOrder.updateMany({
-        where: { razorpayOrderId },
+        where: {
+          razorpayOrderId,
+          paymentStatus: {
+            notIn: ['paid', 'cod_upfront_paid', 'partially_paid', 'PAID', 'COD_UPFRONT_PAID', 'PARTIALLY_PAID', 'success', 'SUCCESS'],
+          },
+        },
         data: {
           paymentStatus: isCancelled ? "cancelled" : "failed",
           paymentFailureReason: failureReason,

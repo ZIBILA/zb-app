@@ -307,32 +307,40 @@ export async function GET(req: Request) {
       prisma.order.count({ where })
     ]);
 
-    // ─── BATCHED WEB STORE ORDER LOOKUP (ELIMINATES N+1 DB QUERIES) ───
-    const razorpayIds = orders.map((o: Record<string, unknown>) => o.razorpayOrderId as string).filter(Boolean);
-    const localIdNotes = orders.map((o: Record<string, unknown>) => `Local: ${o.id as string}`);
-    const shopifyIdNotes = orders.map((o: Record<string, unknown>) => o.shopifyOrderId ? `Shopify: ${o.shopifyOrderId as string}` : null).filter(Boolean) as string[];
+    // ─── BATCHED WEB STORE ORDER LOOKUP (INDEX-ACCELERATED) ───
+    const razorpayIds = orders.map((o: any) => o.razorpayOrderId).filter(Boolean);
+    const shopifyOrderIds = orders.map((o: any) => o.shopifyOrderId).filter(Boolean);
 
-    const orClauses: Record<string, unknown>[] = [];
+    const orClauses: Prisma.WebStoreOrderWhereInput[] = [];
     if (razorpayIds.length > 0) {
       orClauses.push({ razorpayOrderId: { in: razorpayIds } });
     }
-    localIdNotes.forEach((noteStr: string) => {
-      orClauses.push({ notes: { contains: noteStr } });
-    });
-    shopifyIdNotes.forEach((noteStr: string) => {
-      orClauses.push({ notes: { contains: noteStr } });
-    });
+    if (shopifyOrderIds.length > 0) {
+      orClauses.push({ shopifyOrderId: { in: shopifyOrderIds } });
+    }
 
     const webStoreOrders = orClauses.length > 0
-      ? await prisma.webStoreOrder.findMany({ where: { OR: orClauses as Prisma.WebStoreOrderWhereInput[] } })
+      ? await prisma.webStoreOrder.findMany({
+          where: { OR: orClauses },
+          select: {
+            id: true,
+            razorpayOrderId: true,
+            shopifyOrderId: true,
+            paymentMethod: true,
+            paymentStatus: true,
+            discountAmount: true,
+            discountCode: true,
+            codUpfrontPaid: true,
+          },
+        })
       : [];
 
-    const byRazorpayId = new Map<string, Record<string, unknown>>();
-    const byNotes = new Map<string, Record<string, unknown>>();
+    const byRazorpayId = new Map<string, any>();
+    const byShopifyId = new Map<string, any>();
 
-    webStoreOrders.forEach((wso: Record<string, unknown>) => {
-      if (wso.razorpayOrderId) byRazorpayId.set(wso.razorpayOrderId as string, wso);
-      if (wso.notes) byNotes.set(wso.notes as string, wso);
+    webStoreOrders.forEach((wso: any) => {
+      if (wso.razorpayOrderId) byRazorpayId.set(wso.razorpayOrderId, wso);
+      if (wso.shopifyOrderId) byShopifyId.set(wso.shopifyOrderId, wso);
     });
 
     const enrichedOrders = orders.map((order: Record<string, unknown>) => {
@@ -340,21 +348,8 @@ export async function GET(req: Request) {
       if (order.razorpayOrderId) {
         webStoreOrder = byRazorpayId.get(order.razorpayOrderId as string) || null;
       }
-      if (!webStoreOrder) {
-        for (const [notes, wso] of byNotes.entries()) {
-          if (notes.includes(`Local: ${order.id as string}`)) {
-            webStoreOrder = wso;
-            break;
-          }
-        }
-      }
       if (!webStoreOrder && order.shopifyOrderId) {
-        for (const [notes, wso] of byNotes.entries()) {
-          if (notes.includes(`Shopify: ${order.shopifyOrderId as string}`)) {
-            webStoreOrder = wso;
-            break;
-          }
-        }
+        webStoreOrder = byShopifyId.get(order.shopifyOrderId as string) || null;
       }
 
       const rawMethod = ((webStoreOrder?.paymentMethod as string) || (order.paymentMethod as string) || '').toLowerCase();

@@ -24,13 +24,15 @@ function getCached<T>(key: string, loader: () => Promise<T>, ttlMs = TTL_MS): Pr
   return promise;
 }
 
+const COLLECTIONS_TTL_MS = 10 * 1000;
+
 export function fetchHeaderCollections(): Promise<any[]> {
   return getCached('collections:header', async () => {
     const res = await fetch('/api/shopify/collections?location=header');
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
-  });
+  }, COLLECTIONS_TTL_MS);
 }
 
 export function fetchMenuCollections(): Promise<any[]> {
@@ -39,7 +41,7 @@ export function fetchMenuCollections(): Promise<any[]> {
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
-  });
+  }, COLLECTIONS_TTL_MS);
 }
 
 export function fetchGlobalStoreConfig(): Promise<{

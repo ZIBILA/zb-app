@@ -3,9 +3,12 @@ import { sendMail } from '@/lib/mailer';
 import { logEmail } from '@/lib/log-email';
 import { baseTemplate } from '@/lib/email-templates/base';
 import prisma from '@/lib/db';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const data = await req.json();
     const { to, subject, html, recipientName } = data;
 
@@ -114,6 +117,9 @@ export async function POST(req: NextRequest) {
 
         successCount++;
       } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
         console.error(`Failed to send email to ${recipient.email}:`, error);
         failCount++;
         errors.push(`${recipient.email}: ${error.message}`);

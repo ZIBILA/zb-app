@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { StatusBar, StyleSheet, AppState, InteractionManager } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { StatusBar, StyleSheet, AppState, InteractionManager, View } from 'react-native';
 import { useUIStore } from './src/store/uiStore';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -24,18 +24,16 @@ import { ErrorBoundary } from './src/components/ErrorBoundary';
 // Sentry initialization is disabled during local development to prevent Expo Go native module crashes.
 // It will be enabled in the final EAS build.
 
-
-// Keep the splash screen visible while we fetch resources if needed
-// SplashScreen.preventAutoHideAsync() moved inside App function
+// Keep the native splash up until the first light/dark UI frame is ready.
+// Calling this in useEffect is too late and flashes Android's black React root.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function App() {
-  useEffect(() => {
-    SplashScreen.preventAutoHideAsync().catch(() => {});
-  }, []);
-
   const [fontsLoaded] = useFonts({
     'Rocaston': require('./assets/fonts/Rocaston.ttf'),
   });
+  const [appReady, setAppReady] = useState(false);
+  const splashHiddenRef = useRef(false);
 
   const theme = useThemeStore(state => state.theme);
   const isDark = theme === 'dark';
@@ -47,20 +45,39 @@ function App() {
   const notificationResponseRef = useRef<Notifications.Subscription | null>(null);
 
   useEffect(() => {
-    if (fontsLoaded) {
-      // Hydrate cache and then hide splash
-      getCacheService().hydrate().then(() => {
-        SplashScreen.hideAsync().catch(() => {});
-      }).catch(() => {
-        SplashScreen.hideAsync().catch(() => {});
+    if (!fontsLoaded) return;
+
+    let cancelled = false;
+    getCacheService()
+      .hydrate()
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setAppReady(true);
       });
-      
-      // Defer non-critical services
-      InteractionManager.runAfterInteractions(() => {
-        NotificationService.initialize();
-      });
-    }
+
+    InteractionManager.runAfterInteractions(() => {
+      NotificationService.initialize();
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [fontsLoaded]);
+
+  const hideSplash = useCallback(() => {
+    if (splashHiddenRef.current || !appReady) return;
+    splashHiddenRef.current = true;
+    // Wait for the themed root to paint so the black RN surface never shows.
+    requestAnimationFrame(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    });
+  }, [appReady]);
+
+  useEffect(() => {
+    if (!appReady) return;
+    const fallback = setTimeout(hideSplash, 800);
+    return () => clearTimeout(fallback);
+  }, [appReady, hideSplash]);
 
   // ── Push token registration ──────────────────────────────────────────────
   // Whenever the authenticated user changes, re-register the push token.
@@ -96,10 +113,15 @@ function App() {
     };
   }, []);
 
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded || !appReady) {
+    return <View style={[styles.root, { backgroundColor: colors.background }]} />;
+  }
 
   return (
-    <GestureHandlerRootView style={styles.root}>
+    <GestureHandlerRootView
+      style={[styles.root, { backgroundColor: colors.background }]}
+      onLayout={hideSplash}
+    >
       <ErrorBoundary screenName="RootApp">
         <SafeAreaProvider>
           <StatusBar 

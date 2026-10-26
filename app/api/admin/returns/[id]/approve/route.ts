@@ -33,13 +33,17 @@ async function POST_impl(req: Request, { params }: { params: { id: string } }) {
       );
     }
 
+    const { calculateOrderRefundLimits } = await import('@/lib/services/refundAccuracy');
+    const orderLimits = await calculateOrderRefundLimits(returnRequest.orderId);
+
     const refundAmount = actualRefund !== undefined ? Number(actualRefund) : returnRequest.estimatedRefund;
-    const orderTotal = Number(returnRequest.order?.totalPrice);
     if (!Number.isFinite(refundAmount) || refundAmount < 0) {
       return NextResponse.json({ error: "Refund amount must be a valid number." }, { status: 400 });
     }
-    if (Number.isFinite(orderTotal) && orderTotal > 0 && refundAmount > orderTotal + 0.01) {
-      return NextResponse.json({ error: `Refund amount ₹${refundAmount} exceeds the order total ₹${orderTotal}.` }, { status: 400 });
+    if (refundAmount > orderLimits.maxRemainingRefundable + 0.01) {
+      return NextResponse.json({
+        error: `Refund amount ₹${refundAmount} exceeds the remaining refundable balance ₹${orderLimits.maxRemainingRefundable} for this order.`
+      }, { status: 400 });
     }
     // COD → store credit only. Prepaid always uses the customer's saved choice (no admin override).
     const refundMethod = resolveRefundMethod(

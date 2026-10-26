@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1096979225026",
+    "project_id": "zica-bella-32370",
+    "storage_bucket": "zica-bella-32370.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1096979225026:android:a5763e47dd1dfdf5331e5b",
+        "android_client_info": {
+          "package_name": "com.zicabella.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDz0zQG275zFmUinLEnlS6qE2esI5qnLZ4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

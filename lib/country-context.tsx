@@ -9,7 +9,7 @@
  * Components use `useCountryPrice(basePriceINR)` to get formatted prices.
  */
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
 import type { CountryPricingConfig, DisplayPrice } from "@/lib/global-pricing-client";
 import { formatPriceWithConfig } from "@/lib/global-pricing-client";
 
@@ -166,18 +166,29 @@ export function CountryProvider({
     [countryConfig, globalStoreEnabled]
   );
 
+  const value = useMemo(
+    () => ({
+      countryCode,
+      countryConfig,
+      globalStoreEnabled,
+      activeCountries,
+      isLoading,
+      setCountry,
+      formatPrice: formatPriceFn,
+    }),
+    [
+      countryCode,
+      countryConfig,
+      globalStoreEnabled,
+      activeCountries,
+      isLoading,
+      setCountry,
+      formatPriceFn,
+    ]
+  );
+
   return (
-    <CountryContext.Provider
-      value={{
-        countryCode,
-        countryConfig,
-        globalStoreEnabled,
-        activeCountries,
-        isLoading,
-        setCountry,
-        formatPrice: formatPriceFn,
-      }}
-    >
+    <CountryContext.Provider value={value}>
       {children}
     </CountryContext.Provider>
   );

@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server';
-import { fetchProductByHandle, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
+import { fetchProductByHandle, flattenProduct } from '@/lib/shopify-admin';
+import {
+  getCachedAppProduct,
+  getInflightAppProduct,
+  setCachedAppProduct,
+  setInflightAppProduct,
+  deleteInflightAppProduct,
+} from '@/lib/appProductCache';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +15,46 @@ export async function GET(
   { params }: { params: { handle: string } }
 ) {
   try {
-    const product = await fetchProductByHandle(params.handle);
+    const handle = params.handle;
+    const cached = getCachedAppProduct(handle);
+    if (cached) {
+      return NextResponse.json({ product: cached }, {
+        headers: {
+          'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+
+    const inflight = getInflightAppProduct(handle);
+    if (inflight) {
+      const product = await inflight;
+      if (!product) {
+        return NextResponse.json(
+          { product: null, error: 'Product not found' },
+          { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } }
+        );
+      }
+      return NextResponse.json({ product }, {
+        headers: {
+          'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+
+    const fetchPromise = (async () => {
+      const rawProduct = await fetchProductByHandle(handle);
+      if (!rawProduct) return null;
+      const flattened = await flattenProduct(rawProduct);
+      setCachedAppProduct(handle, flattened);
+      return flattened;
+    })().finally(() => {
+      deleteInflightAppProduct(handle);
+    });
+
+    setInflightAppProduct(handle, fetchPromise);
+    const product = await fetchPromise;
 
     if (!product) {
       return NextResponse.json(
@@ -17,7 +63,7 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({ product: await flattenProduct(product) }, {
+    return NextResponse.json({ product }, {
       headers: {
         'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
         'Access-Control-Allow-Origin': '*',

@@ -17,6 +17,7 @@ import {
   razorpayInit,
   isRazorpayAvailable,
   getRazorpayLoadError,
+  normalizeUPIApps,
 } from '../utils/razorpayBridge';
 import type { UPIApp as BridgeUPIApp } from '../utils/razorpayBridge';
 import { getPaymentApiBaseUrl } from '../constants/config';
@@ -26,6 +27,68 @@ import { WALLET_APPS } from '../utils/razorpayBridge';
 import { getSnapDeviceContext } from '../services/snapDeviceContext';
 
 // ── Types ────────────────────────────────────────────────────────────
+
+/** Turn nested Razorpay Custom UI errors into a short customer-facing message. */
+export function parseRazorpayError(err: any): string {
+  const fallback = 'Payment was cancelled or failed. Please try again.';
+  if (!err) return fallback;
+
+  const parseJson = (raw: unknown): any => {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  };
+
+  // Custom UI often puts the real payload in description/message as a JSON string.
+  const parsed =
+    parseJson(err?.description) ||
+    parseJson(err?.message) ||
+    parseJson(typeof err === 'string' ? err : null) ||
+    (err?.error && typeof err.error === 'object' ? err : null) ||
+    (typeof err === 'object' && err?.reason ? err : null);
+
+  const nested = parsed?.error || parsed;
+  const reason = String(nested?.reason || err?.reason || '').toLowerCase();
+  const description = String(
+    nested?.description || nested?.error_description || ''
+  ).trim();
+
+  if (reason === 'payment_cancelled' || reason === 'payment_canceled') {
+    return 'Payment was cancelled or timed out. Please try again.';
+  }
+  if (reason === 'payment_risk_check_failed') {
+    return 'Card was declined or invalid. If you are testing, please note live mode requires a real bank card. Please check your card number, expiry, and CVV, or try UPI / Netbanking.';
+  }
+  if (reason.includes('card_declined') || reason.includes('declined')) {
+    return 'Your card was declined by the bank. Please check your card details or try another card or UPI.';
+  }
+  if (reason.includes('expired_card') || description.toLowerCase().includes('expired')) {
+    return 'This card has expired. Please check the expiry date or use a valid card.';
+  }
+  if (reason.includes('incorrect_cvv') || description.toLowerCase().includes('cvv')) {
+    return 'Incorrect CVV. Please check the 3-digit security code on the back of your card.';
+  }
+  if (reason.includes('invalid_card') || description.toLowerCase().includes('invalid card')) {
+    return 'Invalid card details. Please verify your 16-digit card number and expiry date.';
+  }
+  if (description && !description.startsWith('{')) {
+    return description;
+  }
+
+  const top =
+    (typeof err?.description === 'string' && !err.description.trim().startsWith('{')
+      ? err.description
+      : null) ||
+    (typeof err?.message === 'string' && !err.message.trim().startsWith('{')
+      ? err.message
+      : null);
+  return top || fallback;
+}
 
 export type PaymentMethod = 'upi' | 'card' | 'netbanking' | 'wallet';
 
@@ -54,6 +117,10 @@ export interface PaymentResult {
 export interface PaymentSuccessData {
   paymentId: string;
   orderId: string;
+  /** Local DB order id returned by /api/app/payment/verify when available */
+  localOrderId?: string | null;
+  /** Promoted ZB… number from verify when available */
+  orderNumber?: string | null;
 }
 
 export interface UseRazorpayOptions {
@@ -251,23 +318,16 @@ export function useRazorpay(): UseRazorpayReturn {
   // Only works on real devices. Returns empty on emulators/simulators.
   const fetchInstalledUPIApps = useCallback(() => {
     setIsLoadingApps(true);
-    if (!isRazorpayAvailable()) {
-      console.warn('[useRazorpay] SDK not available:', getRazorpayLoadError());
-      setUpiApps([]);
-      setIsLoadingApps(false);
-      return;
-    }
     try {
       razorpayGetAppsWhichSupportUPI((data: BridgeUPIApp[]) => {
-        const apps = Array.isArray(data) ? data : [];
-        const availableCount = apps.filter(app => app.is_available !== false).length;
-        console.log('[useRazorpay] Installed UPI apps:', availableCount);
+        const apps = Array.isArray(data) && data.length > 0 ? data : normalizeUPIApps([]);
+        console.log('[useRazorpay] Installed UPI apps:', apps.length);
         setUpiApps(apps);
         setIsLoadingApps(false);
       });
     } catch (e) {
       console.warn('[useRazorpay] getAppsWhichSupportUPI error:', e);
-      setUpiApps([]);
+      setUpiApps(normalizeUPIApps([]));
       setIsLoadingApps(false);
     }
   }, []);
@@ -502,12 +562,11 @@ export function useRazorpay(): UseRazorpayReturn {
             setStatus('idle');
             return;
           }
-          
+
+          const friendly = parseRazorpayError(rzpErr);
           setStatus('failed');
-          setError(rzpErr?.description || rzpErr?.message || 'Payment was cancelled or failed');
-          throw new Error(
-            rzpErr?.description || rzpErr?.message || 'Payment was cancelled or failed'
-          );
+          setError(friendly);
+          throw new Error(friendly);
         }
 
         // ── Step 4: Verify signature on backend ──
@@ -578,14 +637,18 @@ export function useRazorpay(): UseRazorpayReturn {
         setSuccessData({
           paymentId: paymentData.razorpay_payment_id,
           orderId: paymentData.razorpay_order_id,
+          localOrderId: verifyJson.orderId || null,
+          orderNumber: verifyJson.orderNumber || null,
         });
         setStatus('success');
         statusRef.current = 'success';
 
       } catch (err: any) {
         if (!abortRef.current) {
-          console.error('[useRazorpay] Final Error:', err);
-          setError(err.message || 'Payment failed');
+          const friendly = parseRazorpayError(err);
+          // Log once — err.message is often already the same friendly string.
+          console.error('[useRazorpay] Final Error:', friendly);
+          setError(friendly);
           setStatus('failed');
           statusRef.current = 'failed';
 
@@ -600,7 +663,7 @@ export function useRazorpay(): UseRazorpayReturn {
                 orderId: opts.orderId || orderId || 'N/A',
                 total: opts.amount,
                 paymentMethod: method === 'upi' ? 'UPI' : method === 'card' ? 'Credit/Debit Card' : method === 'netbanking' ? 'Net Banking' : 'Wallet',
-                errorMessage: err.message || 'Payment failed',
+                errorMessage: friendly,
               }),
             }).catch(() => {});
           } catch (emailErr) {

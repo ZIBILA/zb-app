@@ -24,6 +24,8 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
+import { formatCommissionRate } from "@/lib/affiliate/rate";
+import ApproveAffiliateModal, { type ApproveAffiliateTarget } from "@/components/admin/ApproveAffiliateModal";
 interface PayoutAccount {
   id: string;
   method: string;
@@ -88,6 +90,8 @@ export default function AffiliatesDashboardPage() {
   const [rejectingAffiliateId, setRejectingAffiliateId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [submittingAction, setSubmittingAction] = useState(false);
+  const [approvingAffiliate, setApprovingAffiliate] = useState<ApproveAffiliateTarget | null>(null);
+  const [approveError, setApproveError] = useState<string | null>(null);
 
   const fetchAffiliates = useCallback(async (isSilent = false) => {
     if (!isSilent) setRefreshing(true);
@@ -140,19 +144,25 @@ export default function AffiliatesDashboardPage() {
     setTimeout(() => setCopiedCode(null), 2000);
   };
 
-  const handleApprove = async (id: string) => {
-    if (!confirm("Are you sure you want to approve this affiliate application?")) return;
+  const handleApproveSubmit = async (commissionRate: number) => {
+    if (!approvingAffiliate) return;
     setSubmittingAction(true);
+    setApproveError(null);
     try {
-      const res = await fetch(`/api/admin/affiliates/${id}/approve`, { method: "POST" });
+      const res = await fetch(`/api/admin/affiliates/${approvingAffiliate.id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commissionRate }),
+      });
       if (res.ok) {
+        setApprovingAffiliate(null);
         await fetchAffiliates(true);
       } else {
-        const err = await res.json();
-        alert(err.error || "Failed to approve affiliate");
+        const err = await res.json().catch(() => ({}));
+        setApproveError(err.error || "Failed to approve affiliate");
       }
     } catch (err: any) {
-      alert(err.message || "Failed to approve");
+      setApproveError(err.message || "Failed to approve");
     } finally {
       setSubmittingAction(false);
     }
@@ -393,7 +403,7 @@ export default function AffiliatesDashboardPage() {
                       </button>
                     </td>
                     <td className="py-3 px-4">{statusBadge(row.status)}</td>
-                    <td className="py-3 px-4 font-mono text-xs">{(row.commissionRate * 100).toFixed(0)}%</td>
+                    <td className="py-3 px-4 font-mono text-xs">{formatCommissionRate(row.commissionRate)}</td>
                     <td className="py-3 px-4 font-mono text-xs text-zinc-300">{row.totalClicks.toLocaleString("en-IN")}</td>
                     <td className="py-3 px-4 font-mono text-xs text-zinc-300">{row.totalConversions.toLocaleString("en-IN")}</td>
                     <td className="py-3 px-4 font-mono text-xs text-emerald-400 font-medium">₹{row.totalRevenue.toLocaleString("en-IN")}</td>
@@ -403,7 +413,15 @@ export default function AffiliatesDashboardPage() {
                         {row.status === "PENDING" && (
                           <>
                             <button
-                              onClick={() => handleApprove(row.id)}
+                              onClick={() => {
+                                setApproveError(null);
+                                setApprovingAffiliate({
+                                  id: row.id,
+                                  name: row.displayName || row.customer?.name || "Unnamed",
+                                  code: row.code,
+                                  commissionRate: row.commissionRate,
+                                });
+                              }}
                               disabled={submittingAction}
                               className="px-2.5 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-xs font-medium border border-emerald-500/30 transition-colors"
                             >
@@ -445,6 +463,14 @@ export default function AffiliatesDashboardPage() {
           </table>
         </div>
       </div>
+
+      <ApproveAffiliateModal
+        target={approvingAffiliate}
+        submitting={submittingAction}
+        error={approveError}
+        onCancel={() => setApprovingAffiliate(null)}
+        onConfirm={handleApproveSubmit}
+      />
 
       {/* ─── Rejection Modal ─── */}
       <AnimatePresence>

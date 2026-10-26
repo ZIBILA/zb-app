@@ -4,6 +4,7 @@ import { fetchProductById } from '@/lib/shopify-admin';
 import { extractItemVariantAndSize } from '@/lib/utils';
 import { enrichItemsWithSize, extractSize } from '@/lib/enrichSize';
 import { isRenderDevEnv } from '@/lib/isRenderDevEnv';
+import { INV_RESTORED_TAG, shopifyAlreadyDeductedForOrder, withInventoryTag } from '@/lib/inventoryPolicy';
 
 /**
  * Resolve the variant-specific inventory_item_id for a product_skus record.
@@ -314,7 +315,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     let isMobileOrder = false;
     let oldOrder = await prisma.order.findUnique({
       where: { id },
-      select: { status: true, deliveryStatus: true, customerId: true, paymentStatus: true, internalOrderNumber: true, previousOrderNumbers: true, tags: true }
+      select: { status: true, deliveryStatus: true, customerId: true, paymentStatus: true, internalOrderNumber: true, previousOrderNumbers: true, tags: true, shopifyOrderId: true }
     });
 
     if (!oldOrder) {
@@ -375,7 +376,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
                   include: { inventory: true }
                 });
                 
-                if (variantInvItemId) {
+                const skipShopify = !isMobileOrder && shopifyAlreadyDeductedForOrder(oldOrder as any);
+                if (variantInvItemId && !skipShopify) {
                   try {
                     const { adjustInventoryLevel, fetchLocations } = await import('@/lib/shopify-admin');
                     const locations = await fetchLocations();
@@ -464,7 +466,8 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
                   include: { inventory: true }
                 });
                 
-                if (variantInvItemId) {
+                const skipShopifyOut = !isMobileOrder && shopifyAlreadyDeductedForOrder(oldOrder as any);
+                if (variantInvItemId && !skipShopifyOut) {
                   try {
                     const { adjustInventoryLevel, fetchLocations } = await import('@/lib/shopify-admin');
                     const locations = await fetchLocations();
@@ -710,8 +713,28 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
       // Restore all custom SKUs assigned to this order's items back to IN_STOCK
       try {
+        let shopifyRestocked = false;
+        const full = await prisma.order.findUnique({
+          where: { id },
+          select: { shopifyOrderId: true, tags: true, paymentStatus: true, status: true },
+        });
+        if (full?.shopifyOrderId && /^\d+$/.test(String(full.shopifyOrderId))) {
+          try {
+            const { cancelOrder } = await import('@/lib/shopify-admin');
+            await cancelOrder(String(full.shopifyOrderId), 'other', { restock: true });
+            shopifyRestocked = true;
+            await prisma.order.update({
+              where: { id },
+              data: { tags: withInventoryTag(full.tags, INV_RESTORED_TAG) },
+            });
+          } catch (shopifyCancelErr) {
+            console.error('[Admin Order PATCH] Shopify cancel/restock failed:', shopifyCancelErr);
+          }
+        }
         const { restoreOrderSkus } = await import('@/lib/services/skuService');
-        const restoredCount = await restoreOrderSkus(id, 'CANCEL_RESTORE', 'Admin (Cancel)');
+        const restoredCount = await restoreOrderSkus(id, 'CANCEL_RESTORE', 'Admin (Cancel)', {
+          adjustShopify: !shopifyRestocked,
+        });
         if (restoredCount > 0) {
           console.log(`[Admin Order PATCH] Restored ${restoredCount} SKU(s) for cancelled order ${id}`);
         }
@@ -755,9 +778,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
         // Module 3: Automatic Order Email Webhook Trigger (Non-blocking / Fire-and-forget)
         try {
           const localApiUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.zicabella.com'}/api/orders/status-update`;
-          const apiSecret = process.env.INTERNAL_API_SECRET || 'ZB_INTERNAL_SECRET_987654321';
+          const apiSecret = process.env.INTERNAL_API_SECRET;
           
-          prisma.order.findUnique({
+          if (!apiSecret) {
+            console.warn('[Admin Order Status Trigger] INTERNAL_API_SECRET not set — skipping email webhook');
+          } else prisma.order.findUnique({
             where: { id: updated.id },
             include: {
               customer: true,

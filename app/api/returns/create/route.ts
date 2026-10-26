@@ -91,7 +91,17 @@ export async function POST(req: Request) {
           };
         }
         const quantity = Math.min(remainingQty, Math.max(1, Math.floor(Number(returnItem.quantity) || 1)));
-        const itemRefund = orderItem.price * quantity;
+        
+        // Calculate item refund taking into account proportional order-level discounts
+        const orderDiscount = Number(order.discountAmount || 0);
+        const orderSubtotal = Number(order.subtotalPrice || order.totalPrice || 1);
+        const discountRatio = (orderDiscount > 0 && orderSubtotal > 0)
+          ? Math.min(1, orderDiscount / orderSubtotal)
+          : 0;
+
+        const rawPrice = (orderItem.price || 0) * quantity;
+        const itemRefund = Math.max(0, Math.round(rawPrice * (1 - discountRatio) * 100) / 100);
+
         return {
           error: null,
           row: {

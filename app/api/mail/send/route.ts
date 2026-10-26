@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sendEmail } from '@/lib/mailer';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,8 @@ function checkMarketingRateLimit(countToIncrement: number): boolean {
 
 export async function POST(request: NextRequest) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const body = await request.json();
     const { to, subject, html, text, isMarketing } = body;
 
@@ -80,6 +83,9 @@ export async function POST(request: NextRequest) {
       { status: 200 }
     );
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('[Mail Send API Error]:', error);
     return NextResponse.json(
       { success: false, error: error.message || 'Failed to dispatch emails' },

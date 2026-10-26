@@ -587,7 +587,7 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
             <p className="text-xs text-zinc-400 flex items-center gap-2 font-mono">
               <span>Code: <strong className="text-white">{affiliate.code}</strong></span>
               <span>•</span>
-              <span>{(affiliate.commissionRate * 100).toFixed(0)}% Commission</span>
+              <span>{Number((affiliate.commissionRate * 100).toFixed(2))}% Commission</span>
             </p>
           </div>
         </div>

@@ -68,3 +68,15 @@ tsc_output*.txt
 # Local audit dump (large Drive export — keep out of git)
 /docs/audit
 
+# Build artifacts / local dumps (never commit)
+*.ipa
+*.xcdistributionlogs/
+ZICABELLA*/
+*.log
+**/screenshot*.png
+*.docx
+server.log
+public/uploads/*
+!public/uploads/.gitkeep
+ZicaBella-android/android/app/src/main/assets/*.bundle
+

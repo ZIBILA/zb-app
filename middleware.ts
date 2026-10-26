@@ -26,6 +26,18 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/dashboard/refunds"
   ],
   STOREFRONT: [
+    "/dashboard/webstore",
+    "/dashboard/webstore/orders",
+    "/dashboard/webstore/customers",
+    "/dashboard/webstore/abandoned-carts",
+    "/dashboard/webstore/storefront",
+    "/dashboard/webstore/merchandising",
+    "/dashboard/webstore/homepage",
+    "/dashboard/webstore/products",
+    "/dashboard/webstore/banners",
+    "/dashboard/webstore/gallery",
+    "/dashboard/webstore/coupons",
+    "/dashboard/webstore/logins",
     "/web-store",
     "/web-store/orders",
     "/web-store/customers",
@@ -75,7 +87,6 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/dashboard/live-carts",
     "/dashboard/app-logins",
     "/dashboard/payments/razorpay",
-    "/dashboard/global-store",
   ],
   SETTINGS: ["/dashboard/settings"],
   ADMIN_USERS: ["/dashboard/admin-users"],
@@ -113,11 +124,14 @@ export default withAuth(
 
     // Allow webhook / payment-provider callbacks through without auth or CSRF.
     // These are authenticated by signature headers, not browser Origin.
+    // Razorpay: only public create/verify — refund & capture require admin auth.
     if (
       pathname.startsWith('/api/webhooks') ||
       pathname.startsWith('/api/shopify/webhooks') ||
+      pathname.startsWith('/api/whatsapp/webhook') ||
       pathname.startsWith('/api/payments/webhook') ||
-      pathname.startsWith('/api/razorpay')
+      pathname === '/api/razorpay/create-order' ||
+      pathname === '/api/razorpay/verify-payment'
     ) {
       return NextResponse.next();
     }
@@ -265,9 +279,18 @@ export default withAuth(
       pathname.startsWith('/web-store') ||
       pathname.startsWith('/api/admin') ||
       pathname.startsWith('/api/web-store') ||
+      pathname.startsWith('/api/email') ||
+      pathname.startsWith('/api/mail') ||
+      pathname.startsWith('/api/marketing') ||
+      pathname.startsWith('/api/notifications/send-manual') ||
+      pathname === '/api/send-notification' ||
+      (pathname.startsWith('/api/whatsapp') && !pathname.startsWith('/api/whatsapp/webhook')) ||
+      (pathname.startsWith('/api/shopify') && !pathname.startsWith('/api/shopify/webhooks') && !pathname.startsWith('/api/shopify/auth')) ||
+      pathname === '/api/razorpay/refund' ||
+      pathname === '/api/razorpay/capture-payment' ||
       pathname === '/api/payments/refund';
 
-    if (isAdminMutationPath && ["POST", "PUT", "DELETE"].includes(req.method)) {
+    if (isAdminMutationPath && ["POST", "PUT", "DELETE", "PATCH"].includes(req.method)) {
       const origin = req.headers.get("origin");
       const referer = req.headers.get("referer");
       const currentHost = (
@@ -341,6 +364,7 @@ export default withAuth(
       "/dashboard/audit-log": "AUDIT_LOG",
       
       // Web Store CMS mappings
+      "/dashboard/webstore": "STOREFRONT",
       "/web-store": "STOREFRONT",
       "/api/web-store": "STOREFRONT",
       "/dashboard/webstore-settings": "STOREFRONT",
@@ -352,8 +376,8 @@ export default withAuth(
       // Admin API mappings for middleware double-guard
       "/api/admin/users": "ADMIN_USERS",
       "/api/admin/audit-logs": "ADMIN_USERS",
-      "/dashboard/global-store": "INTEGRATIONS",
-      "/api/admin/global-store": "INTEGRATIONS",
+      "/dashboard/global-store": "STOREFRONT",
+      "/api/admin/global-store": "STOREFRONT",
       "/dashboard/affiliates": "AFFILIATES",
       "/api/admin/affiliates": "AFFILIATES",
     };
@@ -502,10 +526,32 @@ export default withAuth(
         }
 
         // Determine if route requires NextAuth admin validation
+        const shopifyPublicGet =
+          req.method === 'GET' &&
+          (pathname.startsWith('/api/shopify/products') ||
+            pathname.startsWith('/api/shopify/collections'));
+
         const isAdminRoute =
           pathname.startsWith('/dashboard') ||
           pathname.startsWith('/web-store') ||
           pathname.startsWith('/api/admin') ||
+          pathname.startsWith('/api/email') ||
+          pathname.startsWith('/api/mail') ||
+          pathname.startsWith('/api/marketing') ||
+          pathname.startsWith('/api/notifications/send-manual') ||
+          pathname.startsWith('/api/notifications/history') ||
+          pathname.startsWith('/api/notifications/stats') ||
+          pathname === '/api/send-notification' ||
+          // Covers /api/whatsapp/* and admin /api/whatsapp-events/*; the storefront tracker is public.
+          (pathname.startsWith('/api/whatsapp') &&
+            !pathname.startsWith('/api/whatsapp/webhook') &&
+            pathname !== '/api/whatsapp-events/track') ||
+          (pathname.startsWith('/api/shopify') &&
+            !pathname.startsWith('/api/shopify/webhooks') &&
+            !pathname.startsWith('/api/shopify/auth') &&
+            !shopifyPublicGet) ||
+          pathname === '/api/razorpay/refund' ||
+          pathname === '/api/razorpay/capture-payment' ||
           (pathname.startsWith('/api/web-store') && !(pathname === '/api/web-store/banners' || pathname === '/api/web-store/gallery')) ||
           pathname === '/api/payments/refund';
 

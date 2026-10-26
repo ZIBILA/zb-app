@@ -111,13 +111,16 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (status !== "authenticated" || restoredRef.current) return;
-    restoredRef.current = true;
+    // Mark in-progress so sync waits; finalize in finally so a failed restore
+    // still unblocks sync (and a success path doesn't race ahead of the merge).
+    let cancelled = false;
 
     const restoreFromDB = async () => {
       try {
         const res = await fetch("/api/cart/me");
         if (!res.ok) return;
         const data = await res.json();
+        if (cancelled) return;
         if (data && Array.isArray(data.items) && data.items.length > 0) {
           const dbItems: CartItem[] = data.items;
           // Merge DB items with local items — keep higher quantity (Math.max),
@@ -137,17 +140,30 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (err) {
         console.error("Cart login restore failed:", err);
+      } finally {
+        if (!cancelled) restoredRef.current = true;
       }
     };
 
     restoreFromDB();
+    return () => {
+      cancelled = true;
+    };
   }, [status]);
+
+  const lastSyncedJsonRef = useRef<string | null>(null);
+  const syncDirtyRef = useRef(false);
 
   // Synchronize cart with backend on updates (debounced)
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!isLoaded) return;
     // Checkout owns contact-enriched sync — avoid duplicate /api/cart/sync there
     if (window.location.pathname.startsWith("/checkout")) return;
+
+    const payloadJson = JSON.stringify(items);
+    // Skip unchanged carts (including empty carts on every page load)
+    if (lastSyncedJsonRef.current === payloadJson) return;
 
     let deviceId = getClientCookie("zb_device_id");
     if (!deviceId) {
@@ -156,8 +172,12 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }
 
     const syncCartWithBackend = async () => {
-      if (syncInFlightRef.current) return;
+      if (syncInFlightRef.current) {
+        syncDirtyRef.current = true;
+        return;
+      }
       syncInFlightRef.current = true;
+      syncDirtyRef.current = false;
       try {
         let geoDetails = {};
         try {
@@ -203,10 +223,18 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
             ...guestContact
           })
         });
+        lastSyncedJsonRef.current = payloadJson;
       } catch (err) {
         console.error("Cart background sync failed:", err);
       } finally {
         syncInFlightRef.current = false;
+        if (syncDirtyRef.current) {
+          syncDirtyRef.current = false;
+          // Re-run with latest items after in-flight request finishes
+          setTimeout(() => {
+            lastSyncedJsonRef.current = null;
+          }, 0);
+        }
       }
     };
 
@@ -217,7 +245,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     // 1s debounce + single-flight avoids session_token unique races under rapid UI updates
     const timer = setTimeout(syncCartWithBackend, 1000);
     return () => clearTimeout(timer);
-  }, [items, status]);
+  }, [items, status, isLoaded]);
 
   const add = useCallback((item: Omit<CartItem, "id" | "quantity">) => {
     const id = cartLineId(item.productId, item.variantId, item.size);
@@ -313,8 +341,13 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     [items]
   );
 
+  const value = useMemo(
+    () => ({ items, count, subtotal, add, remove, update, clear, loadFromDB, isLoaded }),
+    [items, count, subtotal, add, remove, update, clear, loadFromDB, isLoaded]
+  );
+
   return (
-    <CartContext.Provider value={{ items, count, subtotal, add, remove, update, clear, loadFromDB, isLoaded }}>
+    <CartContext.Provider value={value}>
       {children}
     </CartContext.Provider>
   );

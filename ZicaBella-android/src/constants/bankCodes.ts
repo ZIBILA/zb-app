@@ -19,7 +19,7 @@ export const BANK_CODES: Record<string, string> = {
 /** Top banks shown in the quick-select grid */
 export const TOP_BANKS = [
   { code: 'SBIN', name: 'SBI', icon: 'https://cdn.razorpay.com/app/sbi.png' },
-  { code: 'HDFC', name: 'HDFC', icon: 'https://cdn.razorpay.com/app/hdfc.png' },
+  { code: 'HDFC', name: 'HDFC', icon: 'https://cdn.iconscout.com/icon/free/png-256/free-hdfc-icon-download-in-svg-png-gif-file-formats--bank-logos-pack-icons-282613.png' },
   { code: 'ICIC', name: 'ICICI', icon: 'https://cdn.razorpay.com/app/icici.png' },
   { code: 'UTIB', name: 'Axis', icon: 'https://cdn.razorpay.com/app/axis.png' },
   { code: 'KKBK', name: 'Kotak', icon: 'https://cdn.razorpay.com/app/kotak.png' },

@@ -175,7 +175,9 @@ async function resolveTicketPrincipal(ticket: TicketSupportRecord): Promise<Prin
     }
   }
 
-  return { kind: "guest" };
+  const guest: Principal = { kind: "guest" };
+  if (ticket.guestEmail && ticket.guestEmail !== 'Logged-in User') guest.email = ticket.guestEmail;
+  return guest;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +272,7 @@ SUPPORT REPRESENTATIVE GUIDELINES:
 - Respond with warm, professional, empathetic, and clear communication.
 - Always rely strictly on official store policies in the Knowledge Base provided below. Do NOT guess or invent exchange, shipping, or refund rules.
 - QUERY HANDLING & CLASSIFICATION:
-  1. Orders, Deliveries, Returns & Size Exchanges: Use available tools (get_order_by_number, etc.) to fetch real order data. Provide accurate status updates, pickup/self-ship rules, and size/exchange steps.
+  1. Orders, Deliveries, Returns & Size Exchanges: Use tools. For "where is my order", call get_order_tracking. For address/phone/size changes before AWB, collect complete details then call update_order_address, update_order_phone, or update_order_size. After AWB, refuse those changes.
   2. Business/Partnership Queries: Explain politely that business proposals are managed by our brand team (support@zicabella.com or WhatsApp +91 98765 43210).
   3. Escalations & Human Support Requests: Confirm handoff to human support team and surface our support channels (WhatsApp +91 98765 43210, Email support@zicabella.com).
 
@@ -317,8 +319,8 @@ CRITICAL SECURITY & FORMATTING HARD RULES:
       });
     }
 
-    // Multi-round tool-use loop (up to 3 rounds for chained lookups)
-    const maxToolRounds = Math.min(3, MAX_TOOL_LOOPS);
+    // Multi-round tool-use loop (lookup → collect → mutate)
+    const maxToolRounds = Math.min(6, MAX_TOOL_LOOPS);
     const currentMessages = [...conversationHistory];
     let finalAnswer = "";
 

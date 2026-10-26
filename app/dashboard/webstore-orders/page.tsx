@@ -1,9 +1,6 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
-import WebStoreOrdersList from "@/app/web-store/orders/page";
-
+/** Legacy path — orders live under /dashboard/webstore/orders. */
 export default function DashboardWebStoreOrdersPage() {
-  return <WebStoreOrdersList />;
+  redirect("/dashboard/webstore/orders");
 }

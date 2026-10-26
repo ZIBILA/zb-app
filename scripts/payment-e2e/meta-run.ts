@@ -296,6 +296,38 @@ async function main() {
     if (ev && c.zp) eq(`MI ${c.code}: postcode normalized`, ev.user_data.zp, [sha(c.zp)]);
   }
 
+  report.push('', '## Pricing formula — every configured country');
+  console.log('\n— pricing formula');
+  {
+    const { formatPriceWithConfig } = await import('../../lib/global-pricing-client');
+    const { isCodAllowedForCountry } = await import('../../lib/cod-availability');
+    const sampleInr = 4990;
+    for (const c of COUNTRIES) {
+      const got = formatPriceWithConfig(sampleInr, { ...c, isActive: true, sortOrder: 0 }, true);
+      const want = c.isBase ? sampleInr : Math.round(sampleInr * c.multiplier * c.exchangeRate * 100) / 100;
+      eq(`FX ${c.code}: ${sampleInr} INR → ${c.currencyCode}`, [got.amount, got.currencyCode], [want, c.currencyCode]);
+      eq(`COD ${c.code}`, isCodAllowedForCountry(c.code), c.code === 'IN');
+    }
+  }
+
+  for (const c of intl.filter((x) => x.code === 'US' || x.code === 'GB')) {
+    report.push('', `## Web ${c.code} — COD blocked`);
+    console.log(`\n— MI ${c.code} COD rejected`);
+    const conv = fx(c.code);
+    const items = inItems.map(i => ({ ...i, price: String(conv(Number(i.price))) }));
+    const subtotal = conv(3797);
+    const preRes = await preCreate.POST(new Request('https://zicabella.com/api/checkout/razorpay', {
+      method: 'POST',
+      body: JSON.stringify({ amount: subtotal, currency: c.cur, displayCountry: c.code, address: c.addr, items, subtotal, total: subtotal, paymentMethod: 'COD' }),
+      headers: browserHeaders,
+    }));
+    const preBody = await preRes.json();
+    eq(`MI ${c.code}: COD pre-create rejected`, [preRes.status, Boolean(preBody.error)], [400, true]);
+    const completeRes = await complete({ address: c.addr, items, subtotal, total: subtotal, currency: c.cur, displayCountry: c.code, paymentMethod: 'COD', codFee: 99 });
+    const completeBody = await completeRes.json();
+    eq(`MI ${c.code}: COD complete rejected`, [completeRes.status, Boolean(completeBody.error)], [400, true]);
+  }
+
   // ════════════ APP (native) ════════════
   const iosDevice = { platform: 'ios', appVersion: '1.0.2', buildNumber: '9', osVersion: '17.5', deviceModel: 'iPhone15,2', locale: 'en_IN', timezoneAbbr: 'GMT+5:30', timezone: 'Asia/Kolkata', attStatus: 'denied', idfv: '3F2504E0-4F89-11D3-9A0C-0305E82C3301' };
   const androidDevice = { platform: 'android', appVersion: '1.0.4', buildNumber: '5', osVersion: '14', deviceModel: 'SM-S918B', locale: 'en_IN', timezoneAbbr: 'GMT+5:30', timezone: 'Asia/Kolkata', madid: '38400000-8cf0-11bd-b23e-10b96e40000d' };

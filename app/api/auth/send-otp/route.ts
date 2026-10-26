@@ -90,17 +90,17 @@ export async function POST(req: Request) {
     // See: https://github.com/zica-bella/issues — OTP verification failure fix
 
     // 2. Fallback to manual SMS if Verify is not available or failed
-    // Generate cryptographically-influenced 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate cryptographically secure 6-digit OTP
+    const { randomInt } = await import("crypto");
+    const otp = String(randomInt(100000, 1000000));
     
     // Set expiry to 10 minutes from now
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    // Clean up old expired codes for this phone to prevent DB bloat
+    // Invalidate ALL prior codes for this phone (expired or not) so only the newest OTP works
     await prisma.verificationCode.deleteMany({
       where: {
         phone: { contains: digits.slice(-10) },
-        expiresAt: { lt: new Date() }
       }
     }).catch(() => {}); // Non-critical — don't block OTP send
 

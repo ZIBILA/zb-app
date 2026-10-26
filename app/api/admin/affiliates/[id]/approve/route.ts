@@ -8,8 +8,12 @@ import { triggerAffiliateEvent } from '@/lib/affiliate/pusher';
 
 export const dynamic = 'force-dynamic';
 
+// Commission is entered by the admin for each affiliate at approval (fraction: 12.5% = 0.125).
 const ApproveSchema = z.object({
-  commissionRate: z.number().min(0).max(1).optional(),
+  commissionRate: z
+    .number({ error: 'Commission rate is required (a number, e.g. 0.12 for 12%)' })
+    .gt(0, 'Commission rate must be greater than 0%')
+    .max(1, 'Commission rate cannot exceed 100%'),
 });
 
 export async function POST(
@@ -23,7 +27,13 @@ export async function POST(
 
     const rawBody = await req.json().catch(() => ({}));
     const parseResult = ApproveSchema.safeParse(rawBody);
-    const commissionRate = parseResult.success ? parseResult.data.commissionRate : undefined;
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: parseResult.error.issues[0]?.message || 'Invalid commission rate' },
+        { status: 400 }
+      );
+    }
+    const commissionRate = Math.round(parseResult.data.commissionRate * 10000) / 10000;
 
     const affiliate = await prisma.affiliate.findUnique({
       where: { id },
@@ -37,7 +47,7 @@ export async function POST(
     // Ensure code exists
     let code = affiliate.code;
     if (!code) {
-      code = await generateUniqueAffiliateCode(affiliate.displayName || affiliate.customer.name);
+      code = await generateUniqueAffiliateCode();
     }
 
     const updated = await prisma.$transaction(async (tx: any) => {
@@ -49,7 +59,7 @@ export async function POST(
           approvedAt: new Date(),
           approvedByUserId: adminUserId || null,
           rejectedReason: null,
-          ...(commissionRate !== undefined ? { commissionRate } : {}),
+          commissionRate,
         },
       });
 

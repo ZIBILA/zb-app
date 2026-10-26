@@ -1,5 +1,6 @@
 import { revalidatePath, revalidateTag } from 'next/cache';
-import { clearShopifyCache } from '@/lib/shopify-admin';
+import { clearShopifyCache, SHOPIFY_CATALOG_CACHE_TAG } from '@/lib/shopify-admin';
+import { clearAppProductCache } from '@/lib/appProductCache';
 
 /**
  * Makes the live storefront pick up catalogue / CMS changes now instead of whenever caches expire.
@@ -9,6 +10,7 @@ export function refreshStorefront(): { refreshed: string[] } {
   const refreshed: string[] = [];
   try {
     clearShopifyCache();
+    clearAppProductCache();
     refreshed.push('shopify-cache');
   } catch (e) {
     console.warn('[Storefront Refresh] cache clear failed:', e);
@@ -35,6 +37,13 @@ export function refreshStorefront(): { refreshed: string[] } {
     refreshed.push('tag:homepage');
   } catch {
     /* tag may not exist */
+  }
+  // Invalidate Next Data Cache for catalog/sitemap Admin GETs (tagged shopify-catalog).
+  try {
+    revalidateTag(SHOPIFY_CATALOG_CACHE_TAG);
+    refreshed.push(`tag:${SHOPIFY_CATALOG_CACHE_TAG}`);
+  } catch {
+    /* tag may not exist yet on first deploy */
   }
   return { refreshed };
 }

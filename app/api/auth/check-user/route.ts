@@ -32,10 +32,17 @@ export async function POST(req: Request) {
       console.error("Shopify search error:", e);
     }
 
+    // Return exists + first name only (login greeting). Never expose full name/PII.
+    const maskName = (full: string | null | undefined) => {
+      const first = String(full || "").trim().split(/\s+/)[0] || "";
+      return first || null;
+    };
+
     if (shopifyCustomer) {
+      const full = `${shopifyCustomer.first_name || ""} ${shopifyCustomer.last_name || ""}`.trim();
       return NextResponse.json({
         exists: true,
-        name: `${shopifyCustomer.first_name || ""} ${shopifyCustomer.last_name || ""}`.trim() || null
+        name: maskName(shopifyCustomer.first_name || full)
       });
     }
 
@@ -53,7 +60,7 @@ export async function POST(req: Request) {
     if (localCustomer) {
       return NextResponse.json({
         exists: true,
-        name: localCustomer.name
+        name: maskName(localCustomer.name)
       });
     }
 

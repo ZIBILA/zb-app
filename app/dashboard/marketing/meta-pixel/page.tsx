@@ -86,7 +86,6 @@ export default function MetaPixelPage() {
   const [warnings, setWarnings] = useState<any[]>([]);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [lastSyncFailed, setLastSyncFailed] = useState<string | null>(null);
-  const [autoRefreshCountdown, setAutoRefreshCountdown] = useState(AUTO_REFRESH_INTERVAL / 1000);
 
   // Connection test state
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
@@ -99,7 +98,6 @@ export default function MetaPixelPage() {
   const [logsLoading, setLogsLoading] = useState(false);
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchData = useCallback(async (isAutoRefresh = false) => {
     if (!isAutoRefresh) setLoading(true);
@@ -113,7 +111,6 @@ export default function MetaPixelPage() {
       setData(json);
       setWarnings(json._warnings || []);
       setLastSync(new Date().toISOString());
-      setAutoRefreshCountdown(AUTO_REFRESH_INTERVAL / 1000);
     } catch (err: any) {
       console.error(err);
       const errorObj =
@@ -173,21 +170,17 @@ export default function MetaPixelPage() {
     }
   }, []);
 
-  // Initial fetch + auto-refresh
+  // Initial fetch + auto-refresh (no 1s countdown ticker — that forced a re-render every second)
   useEffect(() => {
     fetchData();
 
     intervalRef.current = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       fetchData(true);
     }, AUTO_REFRESH_INTERVAL);
 
-    countdownRef.current = setInterval(() => {
-      setAutoRefreshCountdown((prev) => (prev <= 1 ? AUTO_REFRESH_INTERVAL / 1000 : prev - 1));
-    }, 1000);
-
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
-      if (countdownRef.current) clearInterval(countdownRef.current);
     };
   }, [fetchData]);
 
@@ -198,7 +191,6 @@ export default function MetaPixelPage() {
 
   const handleManualRefresh = () => {
     fetchData();
-    setAutoRefreshCountdown(AUTO_REFRESH_INTERVAL / 1000);
   };
 
   // ── Loading State ──────────────────────────
@@ -385,7 +377,7 @@ export default function MetaPixelPage() {
         </div>
         <span className="flex items-center gap-1 opacity-60">
           <Clock className="w-3 h-3" />
-          Auto-refresh in {autoRefreshCountdown}s
+          Auto-refresh every {AUTO_REFRESH_INTERVAL / 1000}s
         </span>
       </div>
 

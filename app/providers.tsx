@@ -1,22 +1,12 @@
 "use client";
 
-import { Suspense, useEffect } from 'react';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { ThemeProvider } from '../components/ThemeProvider';
 import { CartProvider } from '../lib/cart-context';
 import { BookmarkProvider } from '../lib/bookmark-context';
 import { RecentlyViewedProvider } from '../lib/recently-viewed-context';
 import { SessionProvider, signOut, useSession } from "next-auth/react";
-
-function AppBridgeWrapper({ children }: { children: React.ReactNode }) {
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    searchParams.get('host');
-  }, [searchParams]);
-
-  return <>{children}</>;
-}
 
 /** Clear soft-invalid / emptied sessions so expired admin JWTs don't keep bouncing pages. */
 function InvalidSessionCleaner() {
@@ -57,24 +47,20 @@ function SmartSessionProvider({ children }: { children: React.ReactNode }) {
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <Suspense fallback={null}>
-      <SmartSessionProvider>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem={true}
-        >
-          <CartProvider>
-            <BookmarkProvider>
-              <RecentlyViewedProvider>
-                <Suspense fallback={null}>
-                  <AppBridgeWrapper>{children}</AppBridgeWrapper>
-                </Suspense>
-              </RecentlyViewedProvider>
-            </BookmarkProvider>
-          </CartProvider>
-        </ThemeProvider>
-      </SmartSessionProvider>
-    </Suspense>
+    <SmartSessionProvider>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem={true}
+      >
+        <CartProvider>
+          <BookmarkProvider>
+            <RecentlyViewedProvider>
+              {children}
+            </RecentlyViewedProvider>
+          </BookmarkProvider>
+        </CartProvider>
+      </ThemeProvider>
+    </SmartSessionProvider>
   );
 }

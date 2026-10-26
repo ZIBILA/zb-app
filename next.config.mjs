@@ -17,6 +17,14 @@ const nextConfig = {
       },
       {
         protocol: 'https',
+        hostname: '*.shopifycdn.com',
+      },
+      {
+        protocol: 'https',
+        hostname: '*.shopifycdn.net',
+      },
+      {
+        protocol: 'https',
         hostname: '8tiahf-bk.myshopify.com',
       },
       {
@@ -97,7 +105,7 @@ const nextConfig = {
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com https://cdn.razorpay.com https://*.razorpay.com https://connect.facebook.net https://www.googletagmanager.com https://www.google-analytics.com https://ajax.googleapis.com https://maps.googleapis.com https://maps.google.com https://sc-static.net https://*.snapchat.com https://bzrcdn.openai.com",
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com https://cdn.shopify.com",
-              "img-src 'self' data: blob: https://cdn.shopify.com https://*.supabase.co https://images.unsplash.com https://www.facebook.com https://www.google-analytics.com https://www.googletagmanager.com https://flagcdn.com https://db.zicabella.com https://maps.googleapis.com https://maps.gstatic.com https://*.googleapis.com https://*.gstatic.com https://*.fbsbx.com https://*.whatsapp.net https://tr.snapchat.com https://*.snapchat.com https://bzr.openai.com https://*.razorpay.com",
+              "img-src 'self' data: blob: https://cdn.shopify.com https://*.shopify.com https://*.shopifycdn.com https://*.shopifycdn.net https://*.supabase.co https://images.unsplash.com https://www.facebook.com https://www.google-analytics.com https://www.googletagmanager.com https://flagcdn.com https://db.zicabella.com https://maps.googleapis.com https://maps.gstatic.com https://*.googleapis.com https://*.gstatic.com https://*.fbsbx.com https://*.whatsapp.net https://tr.snapchat.com https://*.snapchat.com https://bzr.openai.com https://*.razorpay.com",
               "connect-src 'self' https://*.supabase.co https://cdn.shopify.com https://api.razorpay.com https://lux.razorpay.com https://lumberjack.razorpay.com https://cdn.razorpay.com https://*.razorpay.com https://api.postalpincode.in https://connect.facebook.net https://www.facebook.com https://www.google-analytics.com https://www.googletagmanager.com https://region1.google-analytics.com wss://*.pusher.com https://sockjs.pusher.com https://maps.googleapis.com https://*.googleapis.com https://tr.snapchat.com https://*.snapchat.com https://sc-static.net https://bzr.openai.com https://bzrcdn.openai.com",
               "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.googletagmanager.com https://maps.google.com https://www.google.com https://tr.snapchat.com https://*.snapchat.com https://sc-static.net",
               "media-src 'self' blob: https://*.supabase.co https://cdn.shopify.com https://*.fbsbx.com https://*.whatsapp.net",
@@ -112,7 +120,7 @@ const nextConfig = {
         headers: [
           {
             key: 'Content-Security-Policy',
-            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com https://cdn.shopify.com; img-src 'self' data: blob: https://cdn.shopify.com https://*.supabase.co https://images.unsplash.com https://www.facebook.com https://*.fbsbx.com https://*.whatsapp.net https://unpkg.com https://*.unpkg.com; media-src 'self' data: blob: https://*.supabase.co https://cdn.shopify.com https://*.fbsbx.com https://*.whatsapp.net; connect-src 'self' https://*.supabase.co https://cdn.shopify.com https://api.razorpay.com https://connect.facebook.net https://www.facebook.com https://unpkg.com https://*.unpkg.com; frame-src 'self' https://api.razorpay.com;",
+            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com https://cdn.shopify.com; img-src 'self' data: blob: https://cdn.shopify.com https://*.shopify.com https://*.shopifycdn.com https://*.shopifycdn.net https://*.supabase.co https://images.unsplash.com https://www.facebook.com https://*.fbsbx.com https://*.whatsapp.net https://unpkg.com https://*.unpkg.com; media-src 'self' data: blob: https://*.supabase.co https://cdn.shopify.com https://*.fbsbx.com https://*.whatsapp.net; connect-src 'self' https://*.supabase.co https://cdn.shopify.com https://api.razorpay.com https://connect.facebook.net https://www.facebook.com https://unpkg.com https://*.unpkg.com; frame-src 'self' https://api.razorpay.com;",
           },
         ],
       },
@@ -150,6 +158,21 @@ const nextConfig = {
         source: '/tshirts-under-5000',
         destination: '/collections/tshirts-under-5000',
         permanent: true,
+      },
+      {
+        source: '/login/admin',
+        destination: '/dashboard/login',
+        permanent: false,
+      },
+      {
+        source: '/web-store',
+        destination: '/dashboard/webstore',
+        permanent: false,
+      },
+      {
+        source: '/web-store/:path*',
+        destination: '/dashboard/webstore/:path*',
+        permanent: false,
       },
     ];
   }

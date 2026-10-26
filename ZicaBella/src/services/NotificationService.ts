@@ -80,7 +80,8 @@ export class NotificationService {
         vibrationPattern: [0, 250, 250, 250],
         lightColor: '#000000',
         showBadge: true,
-        sound: 'default',
+        // null = system default; a string is treated as a bundled custom sound filename
+        sound: null,
       });
 
       // ── 3. Get push tokens and register with backend ─────────────────

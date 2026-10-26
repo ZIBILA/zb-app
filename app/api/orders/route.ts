@@ -251,8 +251,12 @@ export async function GET(req: Request) {
 
       const fulfillment = String(wso.fulfillmentStatus || '').toLowerCase();
       const delivery = String(wso.deliveryStatus || '').toLowerCase();
-      // Order cancel only (fulfillment) — delivery cancel is shipment void, not order cancel
-      const isCancelled = fulfillment.includes('cancel');
+      const payment = String(wso.paymentStatus || '').toLowerCase();
+      // Order cancel only — never treat voided fulfillment/shipment as order cancelled
+      const isCancelled =
+        payment === 'cancelled' ||
+        payment === 'canceled' ||
+        payment === 'voided';
       const isDelivered = !isCancelled && (fulfillment === 'delivered' || delivery === 'delivered');
       const deliveredTimestamp = wso.updatedAt || wso.createdAt;
       const diffDays = isDelivered ? Math.ceil(Math.abs(Date.now() - new Date(deliveredTimestamp).getTime()) / (1000 * 60 * 60 * 24)) : 999;

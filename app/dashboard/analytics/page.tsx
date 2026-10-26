@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, memo, useReducer } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -9,13 +9,10 @@ import {
   Activity, ShoppingCart, Target, BarChart3, Globe as GlobeIcon, Smartphone,
   Monitor, RefreshCw, CreditCard, Megaphone,
   ArrowDownRight, Percent, AlertTriangle, MapPin, Building2,
-  Flame, Sparkles, Laptop, ShieldCheck, Zap
+  Flame, Sparkles, Laptop, ShieldCheck, Zap, Calendar, Loader2
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import { motion } from "framer-motion";
+import { cachedAdminFetch } from "@/lib/adminClientCache";
 
 // Dynamic Client-Only Import of Globe3D to prevent SSR hydration mismatches
 const Globe3D = dynamic(() => import("@/components/Globe3D"), {
@@ -26,6 +23,14 @@ const Globe3D = dynamic(() => import("@/components/Globe3D"), {
     </div>
   ),
 });
+
+const PerformanceTimeSeriesChart = dynamic(
+  () => import("@/components/admin/charts/PerformanceTimeSeriesChart"),
+  {
+    ssr: false,
+    loading: () => <div className="h-full w-full min-h-[280px] animate-pulse rounded-xl bg-foreground/[0.03]" />,
+  }
+);
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -217,14 +222,6 @@ function formatNumber(val: number): string {
   return val.toLocaleString("en-IN");
 }
 
-function formatChartDate(dateStr: string, granularity: string): string {
-  const d = new Date(dateStr);
-  if (granularity === "hour") return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
-  if (granularity === "day") return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
-  if (granularity === "week") return `W${Math.ceil(d.getDate() / 7)} ${d.toLocaleDateString("en-IN", { month: "short" })}`;
-  return d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
-}
-
 const FUNNEL_LABELS: Record<string, string> = {
   page_view: "Visitors",
   view_item: "Product Views",
@@ -235,6 +232,313 @@ const FUNNEL_LABELS: Record<string, string> = {
 };
 
 const FUNNEL_COLORS = ["#6366f1", "#8b5cf6", "#a78bfa", "#c084fc", "#d946ef", "#10b981"];
+const EMPTY_POINTS: VisitorPoint[] = [];
+const EMPTY_COUNTRIES: Record<string, number> = {};
+
+// ─── Hoisted Memoized Sub-Components (Prevents unmounting & animation replays) ───────────
+
+const ChangeBadge = memo(function ChangeBadge({ value }: { value: number }) {
+  if (value === 0) return <span className="text-[10px] text-foreground/30 font-medium">—</span>;
+  const isPositive = value > 0;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${
+      isPositive ? "text-emerald-500 bg-emerald-500/10" : "text-rose-500 bg-rose-500/10"
+    }`}>
+      {isPositive ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
+      {Math.abs(value)}%
+    </span>
+  );
+});
+
+const SectionError = memo(function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex items-center justify-between p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs my-2">
+      <div className="flex items-center gap-2">
+        <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+        <span>Failed to load section: {message}</span>
+      </div>
+      <button onClick={onRetry} className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 rounded-lg text-[10px] font-semibold transition-colors">
+        Retry
+      </button>
+    </div>
+  );
+});
+
+interface KpiCardProps {
+  label: string;
+  value: string;
+  change?: number;
+  icon: any;
+  prefix?: string;
+}
+
+const KpiCard = memo(function KpiCard({ label, value, change, icon: Icon, prefix = "" }: KpiCardProps) {
+  return (
+    <div
+      className="glass-card p-5 rounded-2xl border border-foreground/5 hover:border-foreground/15 bg-gradient-to-br from-foreground/[0.01] to-foreground/[0.03] backdrop-blur-xl relative overflow-hidden group cursor-pointer transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-black/10"
+    >
+      <div className="absolute top-0 right-0 w-24 h-24 bg-foreground/[0.02] rounded-full blur-xl group-hover:bg-foreground/[0.04] transition-all duration-500" />
+      <div className="flex items-center justify-between mb-3.5 relative z-10">
+        <span className="text-[10px] font-bold text-foreground/40 uppercase tracking-wider">{label}</span>
+        <div className="p-1.5 rounded-lg bg-foreground/[0.03] group-hover:bg-foreground/5 transition-colors">
+          <Icon className="w-3.5 h-3.5 text-foreground/30 group-hover:text-foreground/60 transition-colors" />
+        </div>
+      </div>
+      <div className="flex items-baseline gap-2 relative z-10">
+        <span className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-foreground to-foreground/80 bg-clip-text">{prefix}{value}</span>
+        {change !== undefined && <ChangeBadge value={change} />}
+      </div>
+    </div>
+  );
+});
+
+const PerformanceChartSection = memo(function PerformanceChartSection({
+  charts,
+  chartsError,
+  onRetry,
+}: {
+  charts: ChartData | null;
+  chartsError: string | null;
+  onRetry: () => void;
+}) {
+  const [activeChart, setActiveChart] = useState<"revenue" | "orders" | "sessions" | "conversion" | "logins" | "newLogins">("revenue");
+
+  if (chartsError) return <SectionError message={chartsError} onRetry={onRetry} />;
+  if (!charts) return <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />;
+  if (charts.timeSeries.length === 0) return null;
+
+  return (
+    <div className="glass-card rounded-2xl border border-foreground/5 p-5">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-sm font-semibold text-foreground/70">Performance Over Time</h2>
+        <div className="flex flex-wrap gap-1 bg-foreground/[0.03] rounded-lg p-0.5 border border-foreground/5">
+          {(["revenue", "orders", "sessions", "conversion", "logins", "newLogins"] as const).map((key) => (
+            <button
+              key={key}
+              onClick={() => setActiveChart(key)}
+              className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all capitalize ${
+                activeChart === key ? "bg-foreground text-background" : "text-foreground/40 hover:text-foreground"
+              }`}
+            >
+              {key === "newLogins" ? "New Signups" : key}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="h-[280px] w-full min-w-0">
+        <PerformanceTimeSeriesChart
+          data={charts.timeSeries}
+          granularity={charts.granularity}
+          activeChart={activeChart}
+        />
+      </div>
+    </div>
+  );
+});
+
+const TopProductsSection = memo(function TopProductsSection({
+  products,
+  productsError,
+  onRetry,
+}: {
+  products: ProductsData | null;
+  productsError: string | null;
+  onRetry: () => void;
+}) {
+  const [activeProductTab, setActiveProductTab] = useState<"bestSelling" | "mostViewed" | "mostAddedToCart" | "productRates">("bestSelling");
+
+  if (productsError) return <SectionError message={productsError} onRetry={onRetry} />;
+  if (!products) return <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />;
+
+  return (
+    <div className="glass-card rounded-2xl border border-foreground/5 p-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+        <div className="flex items-center gap-2">
+          <Flame className="w-4 h-4 text-amber-500 animate-pulse" />
+          <h2 className="text-sm font-semibold text-foreground/70">Top Products & Product Conversion Performance</h2>
+        </div>
+        <div className="flex flex-wrap gap-1 bg-foreground/[0.03] rounded-lg p-0.5 border border-foreground/5">
+          {[
+            { id: "bestSelling", label: "Best Sellers" },
+            { id: "mostViewed", label: "Most Viewed" },
+            { id: "mostAddedToCart", label: "Top Carts" },
+            { id: "productRates", label: "Conversion Rates" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveProductTab(tab.id as any)}
+              className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
+                activeProductTab === tab.id ? "bg-foreground text-background shadow-sm" : "text-foreground/40 hover:text-foreground"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeProductTab !== "productRates" ? (
+        <div
+          key={activeProductTab}
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"
+        >
+          {(products[activeProductTab] as ProductMetric[]).slice(0, 8).map((prod, idx) => (
+            <div key={prod.productId || idx} className="p-3.5 rounded-xl bg-foreground/[0.02] border border-foreground/5 hover:border-foreground/10 transition-all flex items-center gap-3 group">
+              <div className="w-12 h-12 rounded-lg bg-foreground/5 shrink-0 overflow-hidden relative border border-foreground/5">
+                {prod.image ? (
+                  <Image src={prod.image} alt={prod.title} fill className="object-cover group-hover:scale-105 transition-transform" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-foreground/20">
+                    <ShoppingBag className="w-5 h-5" />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <h4 className="text-[12px] font-medium text-foreground/80 truncate mb-0.5">{prod.title}</h4>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-foreground/40">
+                    {activeProductTab === "bestSelling" ? `${prod.count} sold` : `${prod.count} events`}
+                  </span>
+                  {prod.revenue !== undefined && (
+                    <span className="text-[11px] font-semibold text-emerald-400">
+                      {formatCurrency(prod.revenue)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+          {(products[activeProductTab] as ProductMetric[]).length === 0 && (
+            <div className="col-span-4 text-center py-10 text-foreground/30 text-xs">No product analytics recorded in this period</div>
+          )}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-foreground/40 uppercase tracking-wider border-b border-foreground/5">
+                <th className="text-left py-2 pr-4 font-semibold">Product</th>
+                <th className="text-right py-2 px-2 font-semibold">Views</th>
+                <th className="text-right py-2 px-2 font-semibold">Carts</th>
+                <th className="text-right py-2 px-2 font-semibold">Purchases</th>
+                <th className="text-right py-2 px-2 font-semibold">View → Cart</th>
+                <th className="text-right py-2 pl-2 font-semibold">Cart → Purchase</th>
+              </tr>
+            </thead>
+            <tbody>
+              {products.productRates.slice(0, 10).map((r, i) => (
+                <tr key={i} className="border-b border-foreground/[0.03] hover:bg-foreground/[0.02] transition-colors">
+                  <td className="py-2.5 pr-4 font-medium text-foreground/70">{r.title}</td>
+                  <td className="text-right py-2.5 px-2 font-semibold">{formatNumber(r.views)}</td>
+                  <td className="text-right py-2.5 px-2">{formatNumber(r.addToCarts)}</td>
+                  <td className="text-right py-2.5 px-2 font-semibold">{formatNumber(r.purchases)}</td>
+                  <td className="text-right py-2.5 px-2 font-semibold text-indigo-400">{r.viewToCartRate}%</td>
+                  <td className="text-right py-2.5 pl-2 font-semibold text-emerald-400">{r.cartToPurchaseRate}%</td>
+                </tr>
+              ))}
+              {products.productRates.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="text-center py-8 text-foreground/30 text-xs">No conversion data available</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+});
+
+// ─── Data Reducer (single batched state for all analytics streams) ───────────
+// Instead of 14+ individual useState hooks that each trigger a render,
+// we batch all data updates through a single reducer dispatch.
+
+interface DataState {
+  overview: OverviewData | null;
+  charts: ChartData | null;
+  funnel: FunnelStage[] | null;
+  traffic: TrafficSource[] | null;
+  realtime: RealtimeData | null;
+  locations: LocationsData | null;
+  products: ProductsData | null;
+  cartsData: CartsData | null;
+  overviewError: string | null;
+  chartsError: string | null;
+  funnelError: string | null;
+  trafficError: string | null;
+  realtimeError: string | null;
+  locationsError: string | null;
+  productsError: string | null;
+  cartsError: string | null;
+  loading: boolean;
+  isRefreshing: boolean;
+  hasLoaded: boolean;
+  lastRefreshedAt: string;
+  consecutiveErrors: number;
+}
+
+type DataAction =
+  | { type: 'SET_LOADING'; loading: boolean }
+  | { type: 'SET_REFRESHING'; isRefreshing: boolean }
+  | { type: 'BATCH_UPDATE'; payload: Partial<DataState> }
+  | { type: 'FINISH_FETCH'; lastRefreshedAt: string }
+  | { type: 'FETCH_ERROR' }
+  | { type: 'RESET_ERRORS' };
+
+const initialDataState: DataState = {
+  overview: null,
+  charts: null,
+  funnel: null,
+  traffic: null,
+  realtime: null,
+  locations: null,
+  products: null,
+  cartsData: null,
+  overviewError: null,
+  chartsError: null,
+  funnelError: null,
+  trafficError: null,
+  realtimeError: null,
+  locationsError: null,
+  productsError: null,
+  cartsError: null,
+  loading: true,
+  isRefreshing: false,
+  hasLoaded: false,
+  lastRefreshedAt: "",
+  consecutiveErrors: 0,
+};
+
+function dataReducer(state: DataState, action: DataAction): DataState {
+  switch (action.type) {
+    case 'SET_LOADING':
+      return state.loading === action.loading ? state : { ...state, loading: action.loading };
+    case 'SET_REFRESHING':
+      return state.isRefreshing === action.isRefreshing ? state : { ...state, isRefreshing: action.isRefreshing };
+    case 'BATCH_UPDATE':
+      return { ...state, ...action.payload };
+    case 'FINISH_FETCH':
+      return {
+        ...state,
+        hasLoaded: true,
+        loading: false,
+        isRefreshing: false,
+        consecutiveErrors: 0,
+        lastRefreshedAt: action.lastRefreshedAt,
+      };
+    case 'FETCH_ERROR':
+      return {
+        ...state,
+        loading: false,
+        isRefreshing: false,
+        consecutiveErrors: state.consecutiveErrors + 1,
+      };
+    case 'RESET_ERRORS':
+      return { ...state, consecutiveErrors: 0 };
+    default:
+      return state;
+  }
+}
 
 // ─── Component ───────────────────────────────────────────
 
@@ -243,49 +547,36 @@ const POLL_INTERVAL_MS = 60_000; // 60s background poll (raised from 15s)
 const MAX_CONSECUTIVE_ERRORS = 3;  // After this many errors, back off until explicit refresh
 
 export default function AnalyticsDashboard() {
-  const [activePreset, setActivePreset] = useState(2); // Last 7 Days
+  const [activePreset, setActivePreset] = useState<number | "custom">(2); // Last 7 Days
   const [dateRange, setDateRange] = useState(DATE_PRESETS[2].getValue());
   const [platform, setPlatform] = useState<string | null>(null);
+  const [customFrom, setCustomFrom] = useState<string>("");
+  const [customTo, setCustomTo] = useState<string>("");
+  const [showCustomRangeInput, setShowCustomRangeInput] = useState<boolean>(false);
 
-  const [overview, setOverview] = useState<OverviewData | null>(null);
-  const [charts, setCharts] = useState<ChartData | null>(null);
-  const [funnel, setFunnel] = useState<FunnelStage[] | null>(null);
-  const [funnelError, setFunnelError] = useState<string | null>(null);
-  const [traffic, setTraffic] = useState<TrafficSource[] | null>(null);
-  const [trafficError, setTrafficError] = useState<string | null>(null);
-  const [realtime, setRealtime] = useState<RealtimeData | null>(null);
-  const [locations, setLocations] = useState<LocationsData | null>(null);
-  const [locationsError, setLocationsError] = useState<string | null>(null);
-  const [products, setProducts] = useState<ProductsData | null>(null);
-  const [productsError, setProductsError] = useState<string | null>(null);
-  const [cartsData, setCartsData] = useState<CartsData | null>(null);
-  const [cartsError, setCartsError] = useState<string | null>(null);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [chartsError, setChartsError] = useState<string | null>(null);
-  const [realtimeError, setRealtimeError] = useState<string | null>(null);
+  // All data in one reducer — single dispatch = single re-render
+  const [data, dispatch] = useReducer(dataReducer, initialDataState);
 
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  // Background refreshing tracked via ref (no re-render needed for a subtle indicator)
+  const isBackgroundRefreshingRef = useRef(false);
   const [isBackgroundRefreshing, setIsBackgroundRefreshing] = useState(false);
-  const [hasLoaded, setHasLoaded] = useState(false);
-  const [lastRefreshedAt, setLastRefreshedAt] = useState<string>("");
-  const [activeChart, setActiveChart] = useState<"revenue" | "orders" | "sessions" | "conversion" | "logins" | "newLogins">("revenue");
-  const [activeProductTab, setActiveProductTab] = useState<"bestSelling" | "mostViewed" | "mostAddedToCart" | "productRates">("bestSelling");
-  
+
   const abortRef = useRef<AbortController | null>(null);
   const hasLoadedRef = useRef(false);
   const fetchInFlightRef = useRef(false);
   const consecutiveErrorsRef = useRef(0);
-  const [consecutiveErrors, setConsecutiveErrors] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFetchTimeRef = useRef<number>(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const fetchAllRef = useRef<(silent?: boolean) => Promise<void>>(() => Promise.resolve());
+
+  // Store latest dateRange/platform in refs so fetchAll doesn't need them as deps
+  const dateRangeRef = useRef(dateRange);
+  const platformRef = useRef(platform);
+  useEffect(() => { dateRangeRef.current = dateRange; }, [dateRange]);
+  useEffect(() => { platformRef.current = platform; }, [platform]);
 
   // ─── Full fetch (all routes) — staggered waves to cap DB concurrency ───
-  // Wave 1 (immediate, above-the-fold): overview + realtime → clear loading spinner
-  // Wave 2 (after W1): charts + carts
-  // Wave 3 (after W2): funnel + traffic + locations + products
+  // Stable callback — does NOT recreate when dateRange/platform change
   const fetchAll = useCallback(async (silent = false) => {
     // Guard: if a fetch is already in-flight AND this is a background tick, skip
     if (silent && fetchInFlightRef.current) return;
@@ -298,204 +589,152 @@ export default function AnalyticsDashboard() {
     if (!silent) lastFetchTimeRef.current = Date.now();
 
     if (!silent && !hasLoadedRef.current) {
-      setLoading(true);
+      dispatch({ type: 'SET_LOADING', loading: true });
     } else if (!silent && hasLoadedRef.current) {
-      setIsRefreshing(true); // FIX 2: subtle indicator, don't blank the grid
+      dispatch({ type: 'SET_REFRESHING', isRefreshing: true });
     } else if (silent) {
       setIsBackgroundRefreshing(true);
     }
 
+    // Read current filter values from refs (not closure)
+    const currentDateRange = dateRangeRef.current;
+    const currentPlatform = platformRef.current;
+
     const params = new URLSearchParams({
-      from: dateRange.from.toISOString(),
-      to: dateRange.to.toISOString(),
-      ...(platform ? { platform } : {}),
+      from: currentDateRange.from.toISOString(),
+      to: currentDateRange.to.toISOString(),
+      ...(currentPlatform ? { platform: currentPlatform } : {}),
     });
 
     const handleSafeFetch = async (url: string) => {
       try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (res.status === 401) {
+        return await cachedAdminFetch(url, { signal: controller.signal, skipCache: silent, ttlMs: 45_000 });
+      } catch (e: any) {
+        if (e.name === "AbortError") throw e;
+        if (e.message?.includes("HTTP 401")) {
           if (typeof window !== "undefined") {
             window.location.href = "/dashboard/login?callbackUrl=" + encodeURIComponent(window.location.pathname);
           }
           return { error: "Unauthorized" };
         }
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          return { error: errJson.error || `HTTP ${res.status}: ${res.statusText}` };
-        }
-        return await res.json();
-      } catch (e: any) {
-        if (e.name === "AbortError") throw e;
         return { error: e.message || "Failed to load data" };
       }
     };
 
     try {
-      const fetchOverview = async () => {
-        try {
-          const res: OverviewData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/overview?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setOverviewError(res.error);
-          } else if (res) {
-            setOverview(res);
-            setOverviewError(null);
-          } else {
-            setOverviewError("Failed to fetch overview analytics");
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setOverviewError(e.message || "Failed to load overview");
-        }
-      };
-
-      const fetchRealtime = async () => {
-        try {
-          const res: RealtimeData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/realtime`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setRealtimeError(res.error);
-          } else if (res) {
-            setRealtime(res);
-            setRealtimeError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setRealtimeError(e.message || "Failed to load realtime");
-        }
-      };
-
-      const fetchCharts = async () => {
-        try {
-          const res: ChartData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/charts?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setChartsError(res.error);
-          } else if (res) {
-            setCharts(res);
-            setChartsError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setChartsError(e.message || "Failed to load charts");
-        }
-      };
-
-      const fetchCartsData = async () => {
-        try {
-          const res: CartsData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/carts?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setCartsError(res.error);
-          } else if (res) {
-            setCartsData(res);
-            setCartsError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setCartsError(e.message || "Failed to load carts");
-        }
-      };
-
-      const fetchFunnel = async () => {
-        try {
-          const res: FunnelData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/funnel?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setFunnelError(res.error);
-          } else if (res) {
-            setFunnel(res.funnel || []);
-            setFunnelError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setFunnelError(e.message || "Failed to load funnel");
-        }
-      };
-
-      const fetchTraffic = async () => {
-        try {
-          const res: TrafficData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/traffic?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setTrafficError(res.error);
-          } else if (res) {
-            setTraffic(res.sources || []);
-            setTrafficError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setTrafficError(e.message || "Failed to load traffic");
-        }
-      };
-
-      const fetchLocations = async () => {
-        try {
-          const res: LocationsData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/locations?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setLocationsError(res.error);
-          } else if (res) {
-            setLocations(res);
-            setLocationsError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setLocationsError(e.message || "Failed to load locations");
-        }
-      };
-
-      const fetchProducts = async () => {
-        try {
-          const res: ProductsData & { error?: string } = await handleSafeFetch(`/api/admin/analytics/products?${params}`);
-          if (controller.signal.aborted) return;
-          if (res?.error) {
-            setProductsError(res.error);
-          } else if (res) {
-            setProducts(res);
-            setProductsError(null);
-          }
-        } catch (e: any) {
-          if (e.name !== "AbortError") setProductsError(e.message || "Failed to load products");
-        }
-      };
-
-      // ─── Wave 1 (above-the-fold): overview + realtime ───
-      await Promise.allSettled([fetchOverview(), fetchRealtime()]);
+      // ─── Wave 1: Overview & Realtime (Priority metrics) ───
+      const [overviewRes, realtimeRes] = await Promise.allSettled([
+        handleSafeFetch(`/api/admin/analytics/overview?${params}`),
+        handleSafeFetch(`/api/admin/analytics/realtime`),
+      ]);
       if (controller.signal.aborted) return;
 
-      // Clear initial loading after Wave 1 — KPIs + realtime now visible
-      if (!hasLoadedRef.current) {
-        setLoading(false);
-        setHasLoaded(true);
+      // Build a single batch update for Wave 1
+      const wave1Update: Partial<DataState> = {};
+
+      if (overviewRes.status === "fulfilled" && overviewRes.value) {
+        const res = overviewRes.value;
+        if (res.error) {
+          wave1Update.overviewError = res.error;
+        } else if ("revenue" in res) {
+          wave1Update.overview = res;
+          wave1Update.overviewError = null;
+        } else {
+          wave1Update.overviewError = "Failed to fetch overview analytics";
+        }
+      } else {
+        wave1Update.overviewError = "Failed to load overview";
       }
 
-      // ─── Wave 2: charts + carts ───
-      await Promise.allSettled([fetchCharts(), fetchCartsData()]);
+      if (realtimeRes.status === "fulfilled" && realtimeRes.value) {
+        const res = realtimeRes.value;
+        if (res.error) {
+          wave1Update.realtimeError = res.error;
+        } else {
+          wave1Update.realtime = res;
+          wave1Update.realtimeError = null;
+        }
+      }
+
+      if (!hasLoadedRef.current) {
+        wave1Update.loading = false;
+      }
+
+      // Single dispatch for Wave 1
+      dispatch({ type: 'BATCH_UPDATE', payload: wave1Update });
+
+      // ─── Wave 2: All 6 Secondary Analytics Streams ───
+      const [chartsRes, cartsRes, funnelRes, trafficRes, locationsRes, productsRes] = await Promise.allSettled([
+        handleSafeFetch(`/api/admin/analytics/charts?${params}`),
+        handleSafeFetch(`/api/admin/analytics/carts?${params}`),
+        handleSafeFetch(`/api/admin/analytics/funnel?${params}`),
+        handleSafeFetch(`/api/admin/analytics/traffic?${params}`),
+        handleSafeFetch(`/api/admin/analytics/locations?${params}`),
+        handleSafeFetch(`/api/admin/analytics/products?${params}`),
+      ]);
       if (controller.signal.aborted) return;
 
-      // ─── Wave 3: funnel + traffic + locations + products ───
-      await Promise.allSettled([fetchFunnel(), fetchTraffic(), fetchLocations(), fetchProducts()]);
-      if (controller.signal.aborted) return;
+      // Build a single batch update for ALL Wave 2 results
+      const wave2Update: Partial<DataState> = {};
+
+      if (chartsRes.status === "fulfilled" && chartsRes.value) {
+        if (chartsRes.value.error) wave2Update.chartsError = chartsRes.value.error;
+        else { wave2Update.charts = chartsRes.value; wave2Update.chartsError = null; }
+      }
+
+      if (cartsRes.status === "fulfilled" && cartsRes.value) {
+        if (cartsRes.value.error) wave2Update.cartsError = cartsRes.value.error;
+        else { wave2Update.cartsData = cartsRes.value; wave2Update.cartsError = null; }
+      }
+
+      if (funnelRes.status === "fulfilled" && funnelRes.value) {
+        if (funnelRes.value.error) wave2Update.funnelError = funnelRes.value.error;
+        else { wave2Update.funnel = funnelRes.value.funnel || []; wave2Update.funnelError = null; }
+      }
+
+      if (trafficRes.status === "fulfilled" && trafficRes.value) {
+        if (trafficRes.value.error) wave2Update.trafficError = trafficRes.value.error;
+        else { wave2Update.traffic = trafficRes.value.sources || []; wave2Update.trafficError = null; }
+      }
+
+      if (locationsRes.status === "fulfilled" && locationsRes.value) {
+        if (locationsRes.value.error) wave2Update.locationsError = locationsRes.value.error;
+        else { wave2Update.locations = locationsRes.value; wave2Update.locationsError = null; }
+      }
+
+      if (productsRes.status === "fulfilled" && productsRes.value) {
+        if (productsRes.value.error) wave2Update.productsError = productsRes.value.error;
+        else { wave2Update.products = productsRes.value; wave2Update.productsError = null; }
+      }
 
       hasLoadedRef.current = true;
       consecutiveErrorsRef.current = 0;
-      setConsecutiveErrors(0);
-      setLastRefreshedAt(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+
+      // Single dispatch for Wave 2 + finish
+      dispatch({
+        type: 'BATCH_UPDATE',
+        payload: {
+          ...wave2Update,
+          hasLoaded: true,
+          loading: false,
+          isRefreshing: false,
+          consecutiveErrors: 0,
+          lastRefreshedAt: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        },
+      });
     } catch (err: any) {
       if (err.name === "AbortError") return;
       console.error("[Analytics] Fetch error:", err);
       consecutiveErrorsRef.current += 1;
-      setConsecutiveErrors(consecutiveErrorsRef.current);
+      dispatch({ type: 'FETCH_ERROR' });
     } finally {
       fetchInFlightRef.current = false;
-      setLoading(false);
-      setIsRefreshing(false);
       setIsBackgroundRefreshing(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateRange, platform]);
+  }, []); // Stable — reads dateRange/platform from refs
 
-  // Keep fetchAllRef in sync so debounce timer calls the latest version
-  useEffect(() => {
-    fetchAllRef.current = fetchAll;
-  }, [fetchAll]);
-
-  // ─── Lightweight fetch (realtime + overview only) — for background polling ───
+  // ─── Lightweight fetch (realtime only) — for background polling ───
   const fetchLightweight = useCallback(async () => {
     // Guard: skip if already in-flight or tab hidden
     if (fetchInFlightRef.current) return;
@@ -507,48 +746,23 @@ export default function AnalyticsDashboard() {
     fetchInFlightRef.current = true;
     setIsBackgroundRefreshing(true);
 
-    const handleSafeFetch = async (url: string) => {
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          return { error: errJson.error || `HTTP ${res.status}` };
-        }
-        return await res.json();
-      } catch (e: any) {
-        if (e.name === "AbortError") throw e;
-        return { error: e.message || "Failed to load data" };
-      }
-    };
-
     try {
-      const results = await Promise.allSettled([
-        handleSafeFetch(`/api/admin/analytics/realtime`),
-      ]);
-
+      const res = await fetch(`/api/admin/analytics/realtime`, { signal: controller.signal });
+      if (!res.ok) return;
+      const rtData = await res.json();
       if (controller.signal.aborted) return;
 
-      const getValue = (r: PromiseSettledResult<any>) => r.status === 'fulfilled' ? r.value : null;
-
-      const rtData: RealtimeData | null = getValue(results[0]);
-
       if (rtData && !rtData.error) {
-        setRealtime(rtData);
-        setRealtimeError(null);
+        dispatch({ type: 'BATCH_UPDATE', payload: { realtime: rtData, realtimeError: null } });
       }
-
       consecutiveErrorsRef.current = 0;
-      setLastRefreshedAt(new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
     } catch (err: any) {
       if (err.name === "AbortError") return;
-      console.error("[Analytics] Lightweight fetch error:", err);
-      consecutiveErrorsRef.current += 1;
     } finally {
       fetchInFlightRef.current = false;
       setIsBackgroundRefreshing(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateRange, platform]);
+  }, []);
 
   // Full fetch on filter/preset/platform changes with 800ms debounce guard
   useEffect(() => {
@@ -564,10 +778,9 @@ export default function AnalyticsDashboard() {
       lastFetchTimeRef.current = now;
       fetchAll(false);
     } else {
-      // Use fetchAllRef to avoid stale closures over dateRange/platform
       debounceTimerRef.current = setTimeout(() => {
         lastFetchTimeRef.current = Date.now();
-        fetchAllRef.current(false);
+        fetchAll(false);
       }, 800 - timeSinceLast);
     }
 
@@ -617,11 +830,46 @@ export default function AnalyticsDashboard() {
     };
   }, [fetchLightweight]);
 
-  const handlePresetChange = (index: number) => {
+  const handlePresetChange = useCallback((index: number) => {
     consecutiveErrorsRef.current = 0; // Reset backoff on explicit action
+    dispatch({ type: 'RESET_ERRORS' });
     setActivePreset(index);
+    setShowCustomRangeInput(false);
     setDateRange(DATE_PRESETS[index].getValue());
-  };
+  }, []);
+
+  const handleCustomRangeSelect = useCallback(() => {
+    setActivePreset("custom");
+    setShowCustomRangeInput(true);
+  }, []);
+
+  const handleApplyCustomRange = useCallback(() => {
+    if (!customFrom || !customTo) return;
+    consecutiveErrorsRef.current = 0;
+    dispatch({ type: 'RESET_ERRORS' });
+    const [fromY, fromM, fromD] = customFrom.split("-").map(Number);
+    const [toY, toM, toD] = customTo.split("-").map(Number);
+    const fromDate = new Date(fromY, fromM - 1, fromD, 0, 0, 0, 0);
+    const toDate = new Date(toY, toM - 1, toD, 23, 59, 59, 999);
+    setDateRange({ from: fromDate, to: toDate });
+  }, [customFrom, customTo]);
+
+  // Stable retry callback for SectionError components
+  const handleRetry = useCallback(() => fetchAll(false), [fetchAll]);
+
+  // Stable refresh callback
+  const handleRefreshNow = useCallback(() => {
+    consecutiveErrorsRef.current = 0;
+    dispatch({ type: 'RESET_ERRORS' });
+    fetchAll(false);
+  }, [fetchAll]);
+
+  // Destructure data for JSX readability (no extra re-render — same object ref)
+  const {
+    overview, charts, funnel, traffic, realtime, locations, products, cartsData,
+    overviewError, chartsError, funnelError, trafficError, realtimeError, locationsError, productsError, cartsError,
+    loading, isRefreshing, hasLoaded, lastRefreshedAt, consecutiveErrors,
+  } = data;
 
   // Globe points: prefer historical locations data, fall back to realtime
   const globePoints = useMemo<VisitorPoint[]>(() => {
@@ -631,8 +879,11 @@ export default function AnalyticsDashboard() {
     if (realtime && realtime.visitorPoints && realtime.visitorPoints.length > 0) {
       return realtime.visitorPoints;
     }
-    return [];
+    return EMPTY_POINTS;
   }, [locations, realtime]);
+
+  const realtimePoints = useMemo(() => realtime?.visitorPoints || EMPTY_POINTS, [realtime?.visitorPoints]);
+  const realtimeCountries = useMemo(() => realtime?.breakdowns?.country || EMPTY_COUNTRIES, [realtime?.breakdowns?.country]);
 
   // Realtime-only top countries/cities for the live sidebar
   const { realtimeTopCountries, realtimeTopCities } = useMemo(() => {
@@ -671,60 +922,17 @@ export default function AnalyticsDashboard() {
     return { realtimeTopCountries: countryList, realtimeTopCities: cityList };
   }, [realtime]);
 
-  // ─── Change Badge ──────────────────────────────────────
-  const ChangeBadge = ({ value }: { value: number }) => {
-    if (value === 0) return <span className="text-[10px] text-foreground/30 font-medium">—</span>;
-    const isPositive = value > 0;
-    return (
-      <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${
-        isPositive ? "text-emerald-500 bg-emerald-500/10" : "text-rose-500 bg-rose-500/10"
-      }`}>
-        {isPositive ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
-        {Math.abs(value)}%
-      </span>
-    );
-  };
-
-  // ─── Section Inline Error State ────────────────────────
-  const SectionError = ({ message, onRetry }: { message: string; onRetry: () => void }) => (
-    <div className="flex items-center justify-between p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs my-2">
-      <div className="flex items-center gap-2">
-        <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
-        <span>Failed to load section: {message}</span>
-      </div>
-      <button onClick={onRetry} className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 rounded-lg text-[10px] font-semibold transition-colors">
-        Retry
-      </button>
-    </div>
-  );
-
-  // ─── KPI Card ──────────────────────────────────────────
-  const KpiCard = ({ label, value, change, icon: Icon, prefix = "" }: {
-    label: string; value: string; change?: number; icon: any; prefix?: string;
-  }) => (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      whileHover={{ y: -4, scale: 1.01, boxShadow: "0 20px 40px rgba(0, 0, 0, 0.15)" }}
-      transition={{ type: "spring", stiffness: 300, damping: 20 }}
-      className="glass-card p-5 rounded-2xl border border-foreground/5 hover:border-foreground/15 bg-gradient-to-br from-foreground/[0.01] to-foreground/[0.03] backdrop-blur-xl relative overflow-hidden group cursor-pointer"
-    >
-      <div className="absolute top-0 right-0 w-24 h-24 bg-foreground/[0.02] rounded-full blur-xl group-hover:bg-foreground/[0.04] transition-all duration-500" />
-      <div className="flex items-center justify-between mb-3.5 relative z-10">
-        <span className="text-[10px] font-bold text-foreground/40 uppercase tracking-wider">{label}</span>
-        <div className="p-1.5 rounded-lg bg-foreground/[0.03] group-hover:bg-foreground/5 transition-colors">
-          <Icon className="w-3.5 h-3.5 text-foreground/30 group-hover:text-foreground/60 transition-colors" />
-        </div>
-      </div>
-      <div className="flex items-baseline gap-2 relative z-10">
-        <span className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-foreground to-foreground/80 bg-clip-text">{prefix}{value}</span>
-        {change !== undefined && <ChangeBadge value={change} />}
-      </div>
-    </motion.div>
-  );
+  // SectionError, ChangeBadge, and KpiCard are hoisted to module scope for render stability
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 relative">
+      {/* Top subtle shimmer loading bar */}
+      {(loading || isRefreshing) && (
+        <div className="fixed top-0 left-0 right-0 h-0.5 overflow-hidden z-50 pointer-events-none">
+          <div className="w-full h-full bg-gradient-to-r from-transparent via-indigo-500 to-transparent animate-pulse" />
+        </div>
+      )}
+
       {/* ─── Header ──────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -743,7 +951,7 @@ export default function AnalyticsDashboard() {
               Data as of <span className="text-foreground/70">{lastRefreshedAt}</span>
             </span>
           )}
-          <button onClick={() => fetchAll(false)} disabled={loading} className="p-2.5 rounded-xl bg-foreground/5 hover:bg-foreground/10 transition-colors border border-foreground/10 flex items-center gap-1.5 text-xs font-medium">
+          <button onClick={handleRetry} disabled={loading} className="p-2.5 rounded-xl bg-foreground/5 hover:bg-foreground/10 transition-colors border border-foreground/10 flex items-center gap-1.5 text-xs font-medium">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin text-indigo-400" : ""}`} />
             <span>Refresh</span>
           </button>
@@ -767,7 +975,50 @@ export default function AnalyticsDashboard() {
               {preset.label}
             </button>
           ))}
+          <button
+            onClick={handleCustomRangeSelect}
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 ${
+              activePreset === "custom"
+                ? "bg-foreground text-background shadow-sm"
+                : "text-foreground/50 hover:text-foreground hover:bg-foreground/5"
+            }`}
+          >
+            <Calendar className="w-3 h-3" />
+            <span>Custom</span>
+          </button>
         </div>
+
+        {/* Custom Date Pickers inline */}
+        {showCustomRangeInput && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="flex items-center gap-2 bg-foreground/[0.03] p-1.5 px-3 rounded-xl border border-foreground/10"
+          >
+            <Calendar className="w-3.5 h-3.5 text-foreground/40" />
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="bg-transparent text-[11px] text-foreground font-semibold focus:outline-none"
+            />
+            <span className="text-[10px] text-foreground/40 uppercase font-bold">to</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="bg-transparent text-[11px] text-foreground font-semibold focus:outline-none"
+            />
+            <button
+              onClick={handleApplyCustomRange}
+              disabled={!customFrom || !customTo || isRefreshing}
+              className="px-2.5 py-1 bg-foreground text-background rounded-lg text-[10px] font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-40 flex items-center gap-1 shadow-sm"
+            >
+              {isRefreshing ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              <span>Apply</span>
+            </button>
+          </motion.div>
+        )}
 
         {/* Platform Filter */}
         <div className="flex gap-1 bg-foreground/[0.03] rounded-xl p-1 border border-foreground/5">
@@ -778,7 +1029,7 @@ export default function AnalyticsDashboard() {
           ].map((opt) => (
             <button
               key={opt.label}
-              onClick={() => { consecutiveErrorsRef.current = 0; setPlatform(opt.value); }}
+              onClick={() => { consecutiveErrorsRef.current = 0; dispatch({ type: 'RESET_ERRORS' }); setPlatform(opt.value); }}
               className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 ${
                 platform === opt.value
                   ? "bg-foreground text-background shadow-sm"
@@ -820,7 +1071,7 @@ export default function AnalyticsDashboard() {
             <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
             <span>Analytics data may be incomplete: {overviewError}</span>
           </div>
-          <button onClick={() => fetchAll(false)} className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 rounded-lg text-[10px] font-semibold transition-colors">
+          <button onClick={handleRetry} className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 rounded-lg text-[10px] font-semibold transition-colors">
             Retry
           </button>
         </div>
@@ -833,18 +1084,27 @@ export default function AnalyticsDashboard() {
             <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
             <span>Data may be stale — background refresh failed {consecutiveErrors} times. Click Refresh to retry.</span>
           </div>
-          <button onClick={() => { consecutiveErrorsRef.current = 0; setConsecutiveErrors(0); fetchAll(false); }} className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 rounded-lg text-[10px] font-semibold transition-colors">
+          <button onClick={handleRefreshNow} className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 rounded-lg text-[10px] font-semibold transition-colors">
             Refresh Now
           </button>
         </div>
       )}
 
       {/* ─── KPI Cards / Loading Skeletons ──────────────── */}
-      {loading && !hasLoaded ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="glass-card p-5 rounded-2xl border border-foreground/5 h-24 animate-pulse bg-foreground/[0.02]" />
-          ))}
+      {!overview && !overviewError ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-xs text-foreground/40">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            Loading overview metrics…
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div
+                key={i}
+                className="glass-card p-5 rounded-2xl border border-foreground/10 h-24 bg-gradient-to-br from-foreground/[0.06] to-foreground/[0.02] animate-pulse"
+              />
+            ))}
+          </div>
         </div>
       ) : overview ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
@@ -864,18 +1124,18 @@ export default function AnalyticsDashboard() {
       ) : overviewError ? (
         <div className="p-6 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-center">
           <p className="text-sm font-medium text-rose-400">Failed to load overview metrics: {overviewError}</p>
-          <button onClick={() => fetchAll(false)} className="mt-3 px-4 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-xl text-xs font-semibold transition-colors">
+          <button onClick={handleRetry} className="mt-3 px-4 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-xl text-xs font-semibold transition-colors">
             Retry Overview
           </button>
         </div>
       ) : null}
 
       {/* ─── Top Visitor Locations ──────────────────────────── */}
-      {locationsError && <SectionError message={locationsError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !locations ? (
+      {locationsError && <SectionError message={locationsError} onRetry={handleRetry} />}
+      {!locations && !locationsError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />
       ) : locations ? (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+        <div className="glass-card rounded-2xl border border-foreground/5 p-5">
           <div className="flex items-center justify-between mb-5">
             <div className="flex items-center gap-2">
               <GlobeIcon className="w-4 h-4 text-blue-400" />
@@ -898,7 +1158,7 @@ export default function AnalyticsDashboard() {
               </div>
               <Globe3D
                 points={globePoints}
-                countries={realtime?.breakdowns?.country || {}}
+                countries={realtimeCountries}
                 unknownCount={locations.summary?.totalWithoutLocation || 0}
               />
             </div>
@@ -923,11 +1183,9 @@ export default function AnalyticsDashboard() {
                       </div>
                     </div>
                     <div className="h-1.5 bg-foreground/[0.04] rounded-full overflow-hidden">
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${Math.max(c.share, 2)}%` }}
-                        transition={{ duration: 0.6, delay: idx * 0.05 }}
-                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-400"
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-500 ease-out"
+                        style={{ width: `${Math.max(c.share, 2)}%` }}
                       />
                     </div>
                   </div>
@@ -961,11 +1219,9 @@ export default function AnalyticsDashboard() {
                       </div>
                     </div>
                     <div className="h-1.5 bg-foreground/[0.04] rounded-full overflow-hidden">
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${Math.max(c.share, 2)}%` }}
-                        transition={{ duration: 0.6, delay: idx * 0.05 }}
-                        className="h-full rounded-full bg-gradient-to-r from-purple-500 to-purple-400"
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-purple-500 to-purple-400 transition-all duration-500 ease-out"
+                        style={{ width: `${Math.max(c.share, 2)}%` }}
                       />
                     </div>
                   </div>
@@ -976,209 +1232,32 @@ export default function AnalyticsDashboard() {
               </div>
             </div>
           </div>
-        </motion.div>
+        </div>
       ) : null}
 
       {/* ─── Charts Section ──────────────────────────────── */}
-      {chartsError && <SectionError message={chartsError} onRetry={() => fetchAll(false)} />}
+      <PerformanceChartSection
+        charts={charts}
+        chartsError={chartsError}
+        onRetry={handleRetry}
+      />
 
-      {!hasLoaded && !charts ? (
-        <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-80 animate-pulse bg-foreground/[0.02]" />
-      ) : charts && charts.timeSeries.length > 0 ? (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-sm font-semibold text-foreground/70">Performance Over Time</h2>
-            <div className="flex flex-wrap gap-1 bg-foreground/[0.03] rounded-lg p-0.5 border border-foreground/5">
-              {(["revenue", "orders", "sessions", "conversion", "logins", "newLogins"] as const).map((key) => (
-                <button
-                  key={key}
-                  onClick={() => setActiveChart(key)}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all capitalize ${
-                    activeChart === key ? "bg-foreground text-background" : "text-foreground/40 hover:text-foreground"
-                  }`}
-                >
-                  {key === "newLogins" ? "New Signups" : key}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={charts.timeSeries}>
-                <defs>
-                  <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(var(--foreground))" stopOpacity={0.15} />
-                    <stop offset="100%" stopColor="hsl(var(--foreground))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--foreground) / 0.06)" />
-                <XAxis
-                  dataKey="date"
-                  tickFormatter={(v) => formatChartDate(v, charts.granularity)}
-                  tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.4)" }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: "hsl(var(--foreground) / 0.4)" }}
-                  axisLine={false}
-                  tickLine={false}
-                  tickFormatter={(v) => activeChart === "revenue" ? formatCurrency(v) : formatNumber(v)}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--foreground) / 0.1)",
-                    borderRadius: "12px",
-                    fontSize: "11px",
-                    boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
-                  }}
-                  labelFormatter={(v) => formatChartDate(v as string, charts.granularity)}
-                  formatter={(value: any) =>
-                    activeChart === "revenue" ? [formatCurrency(value), "Revenue"]
-                    : activeChart === "conversion" ? [`${value}%`, "Conversion"]
-                    : activeChart === "logins" ? [formatNumber(value), "Logins"]
-                    : activeChart === "newLogins" ? [formatNumber(value), "New Signups"]
-                    : [formatNumber(value), activeChart.charAt(0).toUpperCase() + activeChart.slice(1)]
-                  }
-                />
-                <Area
-                  type="monotone"
-                  dataKey={
-                    activeChart === "revenue" ? "revenue"
-                    : activeChart === "orders" ? "orders"
-                    : activeChart === "sessions" ? "sessions"
-                    : activeChart === "logins" ? "logins"
-                    : activeChart === "newLogins" ? "newLogins"
-                    : "conversionRate"
-                  }
-                  stroke="hsl(var(--foreground))"
-                  strokeWidth={2}
-                  fill="url(#chartGradient)"
-                  dot={false}
-                  activeDot={{ r: 4, strokeWidth: 2, fill: "hsl(var(--background))" }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </motion.div>
-      ) : null}
-
-      {productsError && <SectionError message={productsError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !products ? (
-        <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />
-      ) : products ? (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-            <div className="flex items-center gap-2">
-              <Flame className="w-4 h-4 text-amber-500 animate-pulse" />
-              <h2 className="text-sm font-semibold text-foreground/70">Top Products & Product Conversion Performance</h2>
-            </div>
-            <div className="flex flex-wrap gap-1 bg-foreground/[0.03] rounded-lg p-0.5 border border-foreground/5">
-              {[
-                { id: "bestSelling", label: "Best Sellers" },
-                { id: "mostViewed", label: "Most Viewed" },
-                { id: "mostAddedToCart", label: "Top Carts" },
-                { id: "productRates", label: "Conversion Rates" },
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveProductTab(tab.id as any)}
-                  className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
-                    activeProductTab === tab.id ? "bg-foreground text-background shadow-sm" : "text-foreground/40 hover:text-foreground"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <AnimatePresence mode="wait">
-            {activeProductTab !== "productRates" ? (
-              <motion.div
-                key={activeProductTab}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"
-              >
-                {(products[activeProductTab] as ProductMetric[]).slice(0, 8).map((prod, idx) => (
-                  <div key={prod.productId || idx} className="p-3.5 rounded-xl bg-foreground/[0.02] border border-foreground/5 hover:border-foreground/10 transition-all flex items-center gap-3 group">
-                    <div className="w-12 h-12 rounded-lg bg-foreground/5 shrink-0 overflow-hidden relative border border-foreground/5">
-                      {prod.image ? (
-                        <Image src={prod.image} alt={prod.title} fill className="object-cover group-hover:scale-105 transition-transform" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-foreground/20">
-                          <ShoppingBag className="w-5 h-5" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h4 className="text-[12px] font-medium text-foreground/80 truncate mb-0.5">{prod.title}</h4>
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-foreground/40">
-                          {activeProductTab === "bestSelling" ? `${prod.count} sold` : `${prod.count} events`}
-                        </span>
-                        {prod.revenue !== undefined && (
-                          <span className="text-[11px] font-semibold text-emerald-400">
-                            {formatCurrency(prod.revenue)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {(products[activeProductTab] as ProductMetric[]).length === 0 && (
-                  <div className="col-span-4 text-center py-10 text-foreground/30 text-xs">No product analytics recorded in this period</div>
-                )}
-              </motion.div>
-            ) : (
-              <motion.div key="rates" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="overflow-x-auto">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="text-foreground/40 uppercase tracking-wider border-b border-foreground/5">
-                      <th className="text-left py-2 pr-4 font-semibold">Product</th>
-                      <th className="text-right py-2 px-2 font-semibold">Views</th>
-                      <th className="text-right py-2 px-2 font-semibold">Carts</th>
-                      <th className="text-right py-2 px-2 font-semibold">Purchases</th>
-                      <th className="text-right py-2 px-2 font-semibold">View → Cart</th>
-                      <th className="text-right py-2 pl-2 font-semibold">Cart → Purchase</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {products.productRates.slice(0, 10).map((r, i) => (
-                      <tr key={i} className="border-b border-foreground/[0.03] hover:bg-foreground/[0.02] transition-colors">
-                        <td className="py-2.5 pr-4 font-medium text-foreground/70">{r.title}</td>
-                        <td className="text-right py-2.5 px-2 font-semibold">{formatNumber(r.views)}</td>
-                        <td className="text-right py-2.5 px-2">{formatNumber(r.addToCarts)}</td>
-                        <td className="text-right py-2.5 px-2 font-semibold">{formatNumber(r.purchases)}</td>
-                        <td className="text-right py-2.5 px-2 font-semibold text-indigo-400">{r.viewToCartRate}%</td>
-                        <td className="text-right py-2.5 pl-2 font-semibold text-emerald-400">{r.cartToPurchaseRate}%</td>
-                      </tr>
-                    ))}
-                    {products.productRates.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="text-center py-8 text-foreground/30 text-xs">No conversion data available</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
-      ) : null}
+      {/* ─── Top Products Section ────────────────────────── */}
+      <TopProductsSection
+        products={products}
+        productsError={productsError}
+        onRetry={handleRetry}
+      />
 
       {/* ─── Funnel + Real-time Row ──────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Conversion Funnel */}
         <div className="lg:col-span-1">
-          {funnelError && <SectionError message={funnelError} onRetry={() => fetchAll(false)} />}
-          {!hasLoaded && !funnel ? (
+          {funnelError && <SectionError message={funnelError} onRetry={handleRetry} />}
+          {!funnel && !funnelError ? (
             <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-96 animate-pulse bg-foreground/[0.02]" />
           ) : funnel && funnel.length > 0 && funnel.some(s => s.sessions > 0) ? (
-            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 h-full">
+            <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-full">
               <h2 className="text-sm font-semibold text-foreground/70 mb-5">Conversion Funnel</h2>
               <div className="space-y-2">
                 {funnel.map((stage, i) => {
@@ -1202,43 +1281,40 @@ export default function AnalyticsDashboard() {
                         </div>
                       </div>
                       <div className="w-full bg-foreground/[0.04] rounded-lg h-7 overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${width}%` }}
-                          transition={{ duration: 0.8, delay: i * 0.1 }}
-                          className="h-full rounded-lg flex items-center justify-end pr-2"
-                          style={{ backgroundColor: FUNNEL_COLORS[i] || FUNNEL_COLORS[0], opacity: 0.8 }}
+                        <div
+                          className="h-full rounded-lg flex items-center justify-end pr-2 transition-all duration-500 ease-out"
+                          style={{ width: `${width}%`, backgroundColor: FUNNEL_COLORS[i] || FUNNEL_COLORS[0], opacity: 0.8 }}
                         >
                           {i > 0 && stage.dropOffCount > 0 && (
                             <span className="text-[9px] text-white/80 font-medium">
                               -{formatNumber(stage.dropOffCount)}
                             </span>
                           )}
-                        </motion.div>
+                        </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
-            </motion.div>
+            </div>
           ) : funnel && funnel.length > 0 ? (
-            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 h-full">
+            <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-full">
               <h2 className="text-sm font-semibold text-foreground/70 mb-5">Conversion Funnel</h2>
               <div className="flex flex-col items-center justify-center py-12 text-foreground/20">
                 <Target className="w-8 h-8 mb-2" />
                 <span className="text-xs">No funnel data for this period</span>
               </div>
-            </motion.div>
+            </div>
           ) : null}
         </div>
 
         {/* Real-time Activity & 3D Globe */}
         <div className="lg:col-span-2">
-          {realtimeError && <SectionError message={realtimeError} onRetry={() => fetchAll(false)} />}
-          {!hasLoaded && !realtime ? (
+          {realtimeError && <SectionError message={realtimeError} onRetry={handleRetry} />}
+          {!realtime && !realtimeError ? (
             <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-96 animate-pulse bg-foreground/[0.02]" />
           ) : realtime ? (
-            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5 flex flex-col justify-between">
+            <div className="glass-card rounded-2xl border border-foreground/5 p-5 flex flex-col justify-between">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-full">
                 {/* Left Column: Metrics, Pages & Devices */}
                 <div className="flex flex-col justify-between h-full space-y-4">
@@ -1369,13 +1445,13 @@ export default function AnalyticsDashboard() {
                     <span className="text-[10px] font-bold text-foreground/50 uppercase tracking-wider">Live Geo Tracking</span>
                   </div>
                   <Globe3D
-                    points={realtime.visitorPoints || []}
-                    countries={realtime.breakdowns?.country || {}}
+                    points={realtimePoints}
+                    countries={realtimeCountries}
                     unknownCount={realtime.unknownCount || 0}
                   />
                 </div>
               </div>
-            </motion.div>
+            </div>
           ) : null}
         </div>
       </div>
@@ -1384,7 +1460,7 @@ export default function AnalyticsDashboard() {
       {overview && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Order Status Breakdown */}
-          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+          <div className="glass-card rounded-2xl border border-foreground/5 p-5">
             <h2 className="text-sm font-semibold text-foreground/70 mb-4">Order Status</h2>
             <div className="grid grid-cols-2 gap-2">
               {overview.orders.statusBreakdown.map((s) => (
@@ -1397,10 +1473,10 @@ export default function AnalyticsDashboard() {
                 <div className="col-span-2 text-center py-6 text-foreground/20 text-xs">No orders in period</div>
               )}
             </div>
-          </motion.div>
+          </div>
 
           {/* Payment Methods */}
-          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+          <div className="glass-card rounded-2xl border border-foreground/5 p-5">
             <h2 className="text-sm font-semibold text-foreground/70 mb-4">Payment Methods</h2>
             <div className="space-y-2">
               {overview.orders.paymentBreakdown.map((p) => (
@@ -1419,15 +1495,15 @@ export default function AnalyticsDashboard() {
                 <div className="text-center py-6 text-foreground/20 text-xs">No payment data</div>
               )}
             </div>
-          </motion.div>
+          </div>
         </div>
       )}
 
-      {trafficError && <SectionError message={trafficError} onRetry={() => fetchAll(false)} />}
-      {!hasLoaded && !traffic ? (
+      {trafficError && <SectionError message={trafficError} onRetry={handleRetry} />}
+      {!traffic && !trafficError ? (
         <div className="glass-card rounded-2xl border border-foreground/5 p-5 h-64 animate-pulse bg-foreground/[0.02]" />
       ) : traffic && traffic.length > 0 ? (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+        <div className="glass-card rounded-2xl border border-foreground/5 p-5">
           <h2 className="text-sm font-semibold text-foreground/70 mb-4">Traffic Sources</h2>
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
@@ -1469,12 +1545,12 @@ export default function AnalyticsDashboard() {
               </tbody>
             </table>
           </div>
-        </motion.div>
+        </div>
       ) : null}
 
       {/* ─── Platform Split ──────────────────────────────── */}
       {overview && (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+        <div className="glass-card rounded-2xl border border-foreground/5 p-5">
           <h2 className="text-sm font-semibold text-foreground/70 mb-4">Web vs App Breakdown</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {(["web", "app"] as const).map((p) => {
@@ -1511,12 +1587,12 @@ export default function AnalyticsDashboard() {
               );
             })}
           </div>
-        </motion.div>
+        </div>
       )}
 
       {/* ─── Cart Analytics Summary ──────────────────────── */}
       {overview && (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+        <div className="glass-card rounded-2xl border border-foreground/5 p-5">
           <h2 className="text-sm font-semibold text-foreground/70 mb-4">Cart Performance</h2>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {[
@@ -1532,12 +1608,12 @@ export default function AnalyticsDashboard() {
               </div>
             ))}
           </div>
-        </motion.div>
+        </div>
       )}
 
       {/* ─── Customer Breakdown ──────────────────────────── */}
       {overview && (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+        <div className="glass-card rounded-2xl border border-foreground/5 p-5">
           <h2 className="text-sm font-semibold text-foreground/70 mb-4">Customer Analytics</h2>
           <div className="grid grid-cols-3 gap-4">
             <div className="text-center p-4 rounded-xl bg-foreground/[0.03] border border-foreground/5">
@@ -1553,12 +1629,12 @@ export default function AnalyticsDashboard() {
               <div className="text-[10px] text-foreground/40 uppercase mt-1">Returning</div>
             </div>
           </div>
-        </motion.div>
+        </div>
       )}
 
       {/* ─── Sales by Mode (COD vs Prepaid) ─────────────── */}
       {overview && (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+        <div className="glass-card rounded-2xl border border-foreground/5 p-5">
           <h2 className="text-sm font-semibold text-foreground/70 mb-4">Sales by Mode</h2>
           {(() => {
             const COD_METHODS = ['cod', 'cod_upfront_paid', 'cash_on_delivery', 'cash'];
@@ -1605,14 +1681,14 @@ export default function AnalyticsDashboard() {
               </div>
             );
           })()}
-        </motion.div>
+        </div>
       )}
 
       {/* ─── Revenue by Ad Channel ─────────────────────────── */}
       {traffic && (() => {
         const paidSources = traffic.filter(s => s.isPaid);
         return (
-          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl border border-foreground/5 p-5">
+          <div className="glass-card rounded-2xl border border-foreground/5 p-5">
             <div className="flex items-center gap-2 mb-4">
               <Megaphone className="w-4 h-4 text-purple-400" />
               <h2 className="text-sm font-semibold text-foreground/70">Revenue by Ad Channel</h2>
@@ -1666,12 +1742,12 @@ export default function AnalyticsDashboard() {
                 <span className="text-[10px] mt-1 text-foreground/15">Ensure UTM tags (utm_source=openai|meta|snapchat|google|tiktok, utm_medium=cpc) are set on paid campaign links</span>
               </div>
             )}
-          </motion.div>
+          </div>
         );
       })()}
 
-      {/* ─── Empty state ─────────────────────────────────── */}
-      {!loading && !overview && !overviewError && !charts && !realtime && (
+      {/* ─── Empty state (only after the full initial fetch finishes with nothing) ─── */}
+      {hasLoaded && !loading && !isRefreshing && !isBackgroundRefreshing && !overview && !overviewError && !charts && !realtime && (
         <div className="text-center py-20">
           <BarChart3 className="w-12 h-12 mx-auto text-foreground/10 mb-4" />
           <h3 className="text-lg font-semibold text-foreground/40">No analytics data yet</h3>

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { requireAppAuth, handleAppAuthError } from '@/lib/appAuth';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,8 +17,6 @@ export async function OPTIONS() {
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const phone = url.searchParams.get('phone')?.trim();
-    const email = url.searchParams.get('email')?.trim();
     const customerId = url.searchParams.get('customerId')?.trim();
 
     // Health-check mode: return a test response for dashboard API registry
@@ -25,39 +24,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ customer: null, isHealthCheck: true }, { headers: corsHeaders });
     }
 
-    const authHeader = req.headers.get('authorization') || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const { customer: authCustomer } = await requireAppAuth(req);
 
-    // Allow specialized admin bypass for dashboard sync
-    const isAdmin = token === 'ADMIN_SESSION_BYPASS';
-
-    if (!isAdmin && (!token || token.length < 5)) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
-    }
-
-    if (!customerId && !phone && !email) {
-      return NextResponse.json(
-        { error: 'customerId, phone or email query parameter required' },
-        { status: 400, headers: corsHeaders }
-      );
-    }
-
-    const where: any = { OR: [] };
-    if (customerId) where.OR.push({ id: customerId });
-    if (phone) {
-      const phoneDigits = phone.replace(/\D/g, '');
-      const last10 = phoneDigits.slice(-10);
-      where.OR.push({ phone });
-      if (phoneDigits !== phone) where.OR.push({ phone: phoneDigits });
-      if (last10.length === 10) {
-        where.OR.push({ phoneLast10: last10 });
-        where.OR.push({ phone: { contains: last10 } });
-      }
-    }
-    if (email) where.OR.push({ email });
-
-    const customer = await prisma.customer.findFirst({
-      where,
+    const customer = await prisma.customer.findUnique({
+      where: { id: authCustomer.id },
       include: { communityMember: true },
     });
 
@@ -71,7 +41,7 @@ export async function GET(req: Request) {
 
     const freshCustomer = await prisma.customer.findUnique({
       where: { id: customer.id },
-      select: { storeCredits: true }
+      select: { storeCredits: true },
     });
 
     return NextResponse.json(
@@ -91,6 +61,7 @@ export async function GET(req: Request) {
       { headers: corsHeaders }
     );
   } catch (e: any) {
+    if (e?.statusCode === 401) return handleAppAuthError(e);
     console.error('[App API] Profile GET error:', e.message);
     return NextResponse.json({ error: e.message }, { status: 500, headers: corsHeaders });
   }
@@ -98,32 +69,11 @@ export async function GET(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
+    const { customer: authCustomer } = await requireAppAuth(req);
     const body = await req.json();
-    const { customerId, phone, email, name, image, defaultAddress } = body || {};
+    const { phone, email, name, image, defaultAddress } = body || {};
 
-    const authHeader = req.headers.get('authorization') || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-
-    // Allow specialized admin bypass for dashboard sync
-    const isAdmin = token === 'ADMIN_SESSION_BYPASS';
-
-    if (!isAdmin && (!token || token.length < 5)) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
-    }
-
-    if (!customerId && !phone && !email) {
-      return NextResponse.json(
-        { error: 'customerId, phone or email required' },
-        { status: 400, headers: corsHeaders }
-      );
-    }
-
-    const where: any = { OR: [] };
-    if (customerId) where.OR.push({ id: String(customerId) });
-    if (phone) where.OR.push({ phone: String(phone) });
-    if (email) where.OR.push({ email: String(email) });
-
-    const customer = await prisma.customer.findFirst({ where });
+    const customer = await prisma.customer.findUnique({ where: { id: authCustomer.id } });
     if (!customer) {
       return NextResponse.json({ error: 'Customer not found' }, { status: 404, headers: corsHeaders });
     }
@@ -139,8 +89,8 @@ export async function PATCH(req: Request) {
           OR: [
             ...(cleanEmail ? [{ email: cleanEmail }] : []),
             ...(phoneDigits.length === 10 ? [{ phone: { contains: phoneDigits } }] : []),
-          ]
-        }
+          ],
+        },
       });
       if (existingOther) {
         return NextResponse.json(
@@ -163,7 +113,7 @@ export async function PATCH(req: Request) {
 
     const historyData: any = { customerId: customer.id, changedBy: 'USER' };
     let hasChanges = false;
-    
+
     if (name !== undefined && String(name) !== (customer.name || '')) {
       historyData.oldName = customer.name;
       historyData.newName = String(name);
@@ -203,6 +153,7 @@ export async function PATCH(req: Request) {
       { headers: corsHeaders }
     );
   } catch (e: any) {
+    if (e?.statusCode === 401) return handleAppAuthError(e);
     console.error('[App API] Profile PATCH error:', e.message);
     return NextResponse.json({ error: e.message }, { status: 500, headers: corsHeaders });
   }

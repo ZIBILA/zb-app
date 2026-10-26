@@ -1,18 +1,19 @@
-import React, { useCallback, useState, useRef, useMemo } from 'react';
+import React, { useCallback, useState, useRef, useMemo, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Dimensions,
+  View, StyleSheet, Dimensions,
   RefreshControl, TouchableOpacity, ActivityIndicator,
-  InteractionManager
+  InteractionManager, Platform, NativeSyntheticEvent, NativeScrollEvent
 } from 'react-native';
 import Animated, { useSharedValue, useAnimatedScrollHandler, runOnJS } from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
 import { config } from '../constants/config';
 import { haptics } from '../utils/haptics';
+import { getOptimizedImageUrl } from '../utils/imageUtils';
 import ProductCard from '../components/ProductCard';
 import CollectionCarousel from '../components/CollectionCarousel';
 import HeroVideo from '../components/HeroVideo';
@@ -25,12 +26,52 @@ import MenuDrawer from '../components/MenuDrawer';
 import SpotlightSection from '../components/SpotlightSection';
 import FlipbookSection from '../components/FlipbookSection';
 import CommunitySection from '../components/CommunitySection';
-import { useAdminSettings, useFeaturedUsers } from '../hooks/useAdminFeatures';
+import { useAdminSettings } from '../hooks/useAdminFeatures';
 import { useUIStore } from '../store/uiStore';
 import { Typography } from '../components/Typography';
 import StorefrontFooter from '../components/StorefrontFooter';
 
-const { width } = Dimensions.get('window');
+const { width, height: windowHeight } = Dimensions.get('window');
+const HERO_HEIGHT = windowHeight;
+
+type VideoSlot = 'hero' | 'collections' | 'featured' | 'flipbook' | 'spotlight' | 'footer' | null;
+
+/**
+ * At most ONE live video player on screen at a time.
+ * Inactive slots render instant posters only — zero hardware codec / memory thrashing.
+ * Slot updates only on scroll settle (no state updates or player allocations during fling).
+ */
+function pickActiveSlot(scrollY: number): VideoSlot {
+  if (scrollY < HERO_HEIGHT * 0.85) return 'hero';
+  if (scrollY < HERO_HEIGHT * 1.5) return 'collections';
+  if (scrollY > HERO_HEIGHT * 2.2 && scrollY < HERO_HEIGHT * 3.4) return 'flipbook';
+  if (scrollY >= HERO_HEIGHT * 3.4 && scrollY < HERO_HEIGHT * 4.6) return 'featured';
+  if (scrollY >= HERO_HEIGHT * 4.6 && scrollY < HERO_HEIGHT * 5.6) return 'spotlight';
+  if (scrollY >= HERO_HEIGHT * 5.6) return 'footer';
+  return null;
+}
+
+const ProductGrid = React.memo(function ProductGrid({
+  items,
+  onQuickAdd,
+}: {
+  items: FlatProduct[];
+  onQuickAdd: (product: FlatProduct) => void;
+}) {
+  if (!items || items.length === 0) return null;
+  return (
+    <View style={styles.gridContainer}>
+      {items.map((product) => (
+        <View key={product.id} style={styles.gridItem}>
+          <ProductCard 
+            product={product} 
+            onQuickAdd={onQuickAdd}
+          />
+        </View>
+      ))}
+    </View>
+  );
+});
 
 const HomeScreen = React.memo(() => {
   const insets = useSafeAreaInsets();
@@ -40,28 +81,33 @@ const HomeScreen = React.memo(() => {
   const isDark = theme === 'dark';
 
   const { settings, loading: settingsLoading } = useAdminSettings();
-  const { users: communityUsers } = useFeaturedUsers(); // Pre-fetch community data early
   
-  // Ring carousel reads from admin settings instead of hardcoded values
   const ringHandle = 'accessories';
   const ringTitle = settings?.ringCarousel?.title || 'ACCESSORIES';
 
-  const heroVideoSrc = settingsLoading ? null : (settings?.hero?.video || config.heroVideoUrl);
-  const heroImageSrc = settings?.hero?.image;
-  // Use exact admin values — null/empty = show nothing
-  const heroTitle = settings?.hero?.title ?? null;
-  const heroSubtitle = settings?.hero?.subtitle ?? null;
-  const showHeroText = settings?.hero?.showText ?? true;
+  // Image first (fast paint); video mounts only after the home shell is settled.
+  const heroImageSrc =
+    settings?.hero?.image || config.heroImageUrl || null;
+  const heroVideoSrcFromSettings = settingsLoading
+    ? null
+    : (settings?.hero?.video || config.heroVideoUrl);
 
   const latestCurationTitle = settings?.latestCuration?.title ?? null;
   const latestCurationSubtitle = settings?.latestCuration?.subtitle ?? null;
 
-  const { products, loading, error, isError, refetch } = useProducts(24);
-  const { collections, refetch: refetchCollections } = useCollections(20, 'page');
-  const { products: accessories } = useCollectionByHandle(ringHandle);
+  const [renderStage1, setRenderStage1] = useState(false);
+  const [renderStage2, setRenderStage2] = useState(false);
+  const [heroVideoReady, setHeroVideoReady] = useState(false);
+  const heroVideoSrc = heroVideoReady ? heroVideoSrcFromSettings : null;
+
+  const { products, loading, isError, refetch } = useProducts(24);
+  const { collections, refetch: refetchCollections } = useCollections(renderStage1 ? 20 : 0, 'page');
+  const { products: accessories } = useCollectionByHandle(renderStage1 ? ringHandle : '');
 
   const homepageCollectionHandle = settings?.homepage?.collection ?? (settings as any)?.homepageCollection ?? null;
-  const { products: homepageCollectionProducts } = useCollectionByHandle(homepageCollectionHandle ?? "");
+  const { products: homepageCollectionProducts } = useCollectionByHandle(
+    renderStage1 && homepageCollectionHandle ? homepageCollectionHandle : ''
+  );
   const rawHomepageProducts = settings?.homepage?.products ?? (settings as any)?.homepageProducts ?? null;
 
   const specifiedHomepageIds = useMemo(() => {
@@ -97,43 +143,59 @@ const HomeScreen = React.memo(() => {
     return pool;
   }, [specifiedHomepageIds, homepageCollectionProducts, products]);
 
+  const homeGrid1 = useMemo(() => displayHomepageProducts.slice(0, 4), [displayHomepageProducts]);
+  const homeGrid2 = useMemo(() => displayHomepageProducts.slice(4, 8), [displayHomepageProducts]);
+  const homeGrid3 = useMemo(() => displayHomepageProducts.slice(12, 16), [displayHomepageProducts]);
+  const accessoriesItems = useMemo(() => (accessories || []).slice(0, Platform.OS === 'android' ? 8 : 15), [accessories]);
+
   const [refreshing, setRefreshing] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<FlatProduct | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
-  const [renderBelowFold, setRenderBelowFold] = useState(false);
 
-  React.useEffect(() => {
-    // Delay rendering heavy sections below the fold to avoid locking the UI thread and overheating on launch
-    let isCancelled = false;
-    
+  // Video player orchestration
+  const [activeSlot, setActiveSlot] = useState<VideoSlot>('hero');
+  const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (heroImageSrc) {
+      Image.prefetch(heroImageSrc).catch(() => {});
+    }
+  }, [heroImageSrc]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const t1 = setTimeout(() => {
+      if (!cancelled) setRenderStage1(true);
+    }, Platform.OS === 'android' ? 450 : 250);
+
     const task = InteractionManager.runAfterInteractions(() => {
-      if (isCancelled) return;
-      setRenderBelowFold(true);
-      
-      // Cache warm-up: Prefetch top 2 collections silently
-      if (collections && collections.length > 0) {
-        const topHandles = collections.slice(0, 2).map(c => c.handle);
-        const { apiGet } = require('../api/shopify');
-        const { ENDPOINTS } = require('../api/queries');
-        
-        topHandles.forEach(handle => {
-          apiGet(ENDPOINTS.collectionByHandle(handle), { limit: '50', fields: 'id,title,handle,priceRange,featuredImage' }).catch(() => {});
-        });
-      }
+      if (cancelled) return;
+      setRenderStage2(true);
+      // After layout/interactions settle, start hero video (image already on screen).
+      const videoDelay = Platform.OS === 'android' ? 600 : 200;
+      setTimeout(() => {
+        if (!cancelled) setHeroVideoReady(true);
+      }, videoDelay);
     });
 
-    // Safety fallback: Ensure below-fold content renders after 1.5s regardless of interactions
-    const safetyTimer = setTimeout(() => {
-      if (!isCancelled) setRenderBelowFold(true);
-    }, 1500);
+    const t2 = setTimeout(() => {
+      if (!cancelled) setRenderStage2(true);
+    }, Platform.OS === 'android' ? 1200 : 700);
+
+    // Hard fallback so video still starts if InteractionManager never fires.
+    const tVideo = setTimeout(() => {
+      if (!cancelled) setHeroVideoReady(true);
+    }, Platform.OS === 'android' ? 1800 : 900);
 
     return () => {
-      isCancelled = true;
+      cancelled = true;
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(tVideo);
       task.cancel();
-      clearTimeout(safetyTimer);
     };
-  }, [collections]);
+  }, []);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -142,26 +204,47 @@ const HomeScreen = React.memo(() => {
   }, [refetch, refetchCollections]);
 
   const scrollY = useSharedValue(0);
-  const lastScrollY = useRef(0);
+  const isTabBarVisibleShared = useSharedValue(true);
+  const lastScrollYShared = useSharedValue(0);
   const setTabBarVisible = useUIStore(s => s.setTabBarVisible);
 
-  const updateTabBar = (currentY: number) => {
-    const diff = currentY - lastScrollY.current;
-    if (Math.abs(diff) > 10) {
-      const isVisible = useUIStore.getState().isTabBarVisible;
-      if (diff > 0 && currentY > 120) {
-        if (isVisible) setTabBarVisible(false);
-      } else if (diff < -10 || currentY < 50) {
-        if (!isVisible) setTabBarVisible(true);
-      }
-      lastScrollY.current = currentY;
-    }
-  };
+  const settleScroll = useCallback((y: number) => {
+    setActiveSlot((prev) => {
+      const next = pickActiveSlot(y);
+      return prev === next ? prev : next;
+    });
+  }, []);
 
+  const scheduleSettle = useCallback((y: number) => {
+    if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current);
+    // Debounce player allocation so scrolling is never interrupted by heavy MediaCodec initialization
+    scrollEndTimer.current = setTimeout(() => settleScroll(y), Platform.OS === 'android' ? 250 : 150);
+  }, [settleScroll]);
+
+  const onScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scheduleSettle(e.nativeEvent.contentOffset.y);
+  }, [scheduleSettle]);
+
+  // Zero bridge crossing per frame — only triggers on state flip with hysteresis
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
-      scrollY.value = event.contentOffset.y;
-      runOnJS(updateTabBar)(event.contentOffset.y);
+      'worklet';
+      const currentY = event.contentOffset.y;
+      scrollY.value = currentY;
+      const diff = currentY - lastScrollYShared.value;
+
+      if (diff > 20 && currentY > 150) {
+        if (isTabBarVisibleShared.value) {
+          isTabBarVisibleShared.value = false;
+          runOnJS(setTabBarVisible)(false);
+        }
+      } else if (diff < -20 || currentY < 40) {
+        if (!isTabBarVisibleShared.value) {
+          isTabBarVisibleShared.value = true;
+          runOnJS(setTabBarVisible)(true);
+        }
+      }
+      lastScrollYShared.value = currentY;
     },
   });
 
@@ -170,37 +253,51 @@ const HomeScreen = React.memo(() => {
     setModalVisible(true);
   }, []);
 
-  const renderProductGrid = (items: FlatProduct[]) => {
-    if (!items || items.length === 0) return null;
-    return (
-      <View style={styles.gridContainer}>
-        {items.map((product) => (
-          <View key={product.id} style={styles.gridItem}>
-            <ProductCard 
-              product={product} 
-              onQuickAdd={handleQuickAdd}
-            />
-          </View>
-        ))}
-      </View>
-    );
-  };
+  const handleCloseModal = useCallback(() => setModalVisible(false), []);
+  const handleCloseMenu = useCallback(() => setMenuVisible(false), []);
+  const handleOpenMenu = useCallback(() => setMenuVisible(true), []);
+  const handleNavigateShop = useCallback(() => navigation.navigate('ShopTab'), [navigation]);
+  const handleShopAll = useCallback(() => {
+    haptics.buttonTap();
+    navigation.navigate('Collection', { handle: 'all', title: 'ALL PRODUCTS' });
+  }, [navigation]);
 
   const [isHeroMuted, setIsHeroMuted] = useState(true);
+
+  // Stop background music whenever leaving HomeScreen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setIsHeroMuted(true);
+      };
+    }, [])
+  );
 
   const toggleHeroMute = useCallback(() => {
     setIsHeroMuted(prev => !prev);
     haptics.buttonTap();
   }, []);
 
+  const isVideoActive = useCallback((slot: VideoSlot) => activeSlot === slot, [activeSlot]);
+
+  const collectionsVideoSrc = settings?.media?.collections;
+  const featuredVideoSrc = settings?.media?.featured;
+  const blueprintImageSrc = settings?.blueprint?.image || settings?.media?.featuredImage;
+  const optimizedBlueprintImage = useMemo(
+    () => blueprintImageSrc ? getOptimizedImageUrl(blueprintImageSrc, 800) : null,
+    [blueprintImageSrc]
+  );
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <GlassHeader 
-        onPressMenu={() => setMenuVisible(true)}
-        onPressCenter={toggleHeroMute}
+        onPressMenu={handleOpenMenu}
       />
       <Animated.ScrollView
         showsVerticalScrollIndicator={false}
+        removeClippedSubviews={Platform.OS === 'android'}
+        overScrollMode="never"
+        nestedScrollEnabled={true}
         refreshControl={
           <RefreshControl 
             refreshing={refreshing} 
@@ -210,6 +307,8 @@ const HomeScreen = React.memo(() => {
         }
         onScroll={scrollHandler}
         scrollEventThrottle={16}
+        onScrollEndDrag={onScrollEnd}
+        onMomentumScrollEnd={onScrollEnd}
       >
         {isError && (
           <View style={[styles.errorBanner, { backgroundColor: isDark ? 'rgba(255, 59, 48, 0.1)' : 'rgba(255, 59, 48, 0.05)', borderColor: colors.error + '40', borderWidth: 1 }]}>
@@ -224,11 +323,14 @@ const HomeScreen = React.memo(() => {
         {(heroVideoSrc || heroImageSrc) ? (
           <View style={{ position: 'relative' }}>
             <HeroVideo 
-              key={heroVideoSrc || heroImageSrc || 'hero-loading'}
+              key={heroVideoSrc || 'hero'}
               source={heroVideoSrc} 
               isMuted={isHeroMuted}
               onToggleMute={toggleHeroMute}
               imageFallback={heroImageSrc}
+              active={isVideoActive('hero')}
+              showShopAll={true}
+              onPressShopAll={handleShopAll}
             />
           </View>
         ) : null}
@@ -250,25 +352,32 @@ const HomeScreen = React.memo(() => {
                   {latestCurationSubtitle ? <Typography size={6} color={colors.textExtraLight} weight="300" style={styles.sectionTag}>{latestCurationSubtitle}</Typography> : null}
                   {latestCurationTitle ? <Typography size={8} color={colors.text} weight="700" style={styles.sectionTitle}>{latestCurationTitle}</Typography> : null}
                 </View>
-                <TouchableOpacity onPress={() => navigation.navigate('ShopTab')} style={styles.headerRight}>
+                <TouchableOpacity onPress={handleNavigateShop} style={styles.headerRight}>
                   <Typography size={7} color={colors.textExtraLight} weight="400">VIEW ALL</Typography>
                 </TouchableOpacity>
               </View>
               )}
               
               {/* ═══ PRODUCT GRID 1 ═══ */}
-              {renderProductGrid(displayHomepageProducts.slice(0, 4))}
+              <ProductGrid items={homeGrid1} onQuickAdd={handleQuickAdd} />
             </>
           )}
 
-          {renderBelowFold && (
+          {/* ═══ STAGE 1: CAROUSELS ═══ */}
+          {renderStage1 && (
             <>
               {/* ═══ ARCHIVE SECTION ═══ */}
               {settings?.archive?.show !== false && (
                 <>
-                  {settings?.media?.collections && (
+                  {collectionsVideoSrc && (
                     <View style={styles.mediaSection}>
-                       <HeroVideo key={settings.media.collections} source={settings.media.collections} height={200} borderRadius={12} />
+                       <HeroVideo 
+                         key={collectionsVideoSrc} 
+                         source={collectionsVideoSrc} 
+                         height={200} 
+                         borderRadius={12} 
+                         active={isVideoActive('collections')}
+                       />
                     </View>
                   )}
 
@@ -291,31 +400,53 @@ const HomeScreen = React.memo(() => {
               )}
 
               {/* ═══ RING COLLECTION CAROUSEL ═══ */}
-              {settings?.ringCarousel?.show !== false && (
+              {settings?.ringCarousel?.show !== false && accessoriesItems.length > 0 && (
                  <RingCarouselSection 
                   title={ringTitle} 
                   handle={ringHandle}
-                  products={(accessories || []).slice(0, 15)} 
+                  products={accessoriesItems} 
                 />
               )}
+            </>
+          )}
 
+          {/* ═══ STAGE 2: HEAVY LOWER SECTIONS ═══ */}
+          {renderStage2 && (
+            <>
               {/* ═══ FLIPBOOK SECTION ═══ */}
-              <FlipbookSection scrollY={scrollY} />
+              <FlipbookSection 
+                imgUrl={settings?.flipbook?.image ?? null}
+                videoUrl={settings?.flipbook?.video ?? null}
+                tag={settings?.flipbook?.tag ?? null}
+                title={settings?.flipbook?.title ?? null}
+                desc={settings?.flipbook?.desc ?? null}
+                scrollY={Platform.OS === 'android' ? undefined : scrollY}
+                active={isVideoActive('flipbook')}
+              />
 
               {/* ═══ PRODUCT GRID 2 ═══ */}
-              {renderProductGrid(displayHomepageProducts.slice(4, 8))}
+              <ProductGrid items={homeGrid2} onQuickAdd={handleQuickAdd} />
 
               {/* ═══ FEATURED MEDIA / BLUEPRINT ═══ */}
-              {(settings?.blueprint?.show !== false && (settings?.media?.featured || settings?.blueprint?.image)) ? (
+              {(settings?.blueprint?.show !== false && (featuredVideoSrc || blueprintImageSrc)) ? (
                 <View style={styles.blueprintSection}>
-                  {settings?.media?.featured ? (
-                   <HeroVideo key={settings.media.featured} source={settings.media.featured} height={520} borderRadius={0} />
+                  {featuredVideoSrc ? (
+                   <HeroVideo 
+                     key={featuredVideoSrc} 
+                     source={featuredVideoSrc} 
+                     height={520} 
+                     borderRadius={0} 
+                     imageFallback={blueprintImageSrc}
+                     active={isVideoActive('featured')}
+                   />
                   ) : (
                    <Image 
-                    source={settings?.blueprint?.image ? { uri: settings.blueprint.image } : require('../../assets/load-image-4.jpg')} 
+                    source={optimizedBlueprintImage ? { uri: optimizedBlueprintImage } : require('../../assets/load-image-4.jpg')} 
                     style={styles.blueprintImage} 
                     contentFit="cover" 
-                    placeholder={require('../../assets/load-image-4.jpg')}
+                    cachePolicy="memory-disk"
+                    recyclingKey={optimizedBlueprintImage || 'blueprint-default'}
+                    transition={0}
                   />
                   )}
                     <View style={styles.blueprintOverlay}>
@@ -340,16 +471,20 @@ const HomeScreen = React.memo(() => {
                 subtitle={settings?.spotlight?.subtitle ?? undefined}
                 media={settings?.spotlight?.media}
                 productIds={settings?.spotlight?.products ?? (settings as any)?.spotlightProducts ?? undefined}
+                products={displayHomepageProducts}
+                mediaActive={isVideoActive('spotlight')}
               />
 
               {/* ═══ PRODUCT GRID 3 ═══ */}
-              {displayHomepageProducts.length > 12 && renderProductGrid(displayHomepageProducts.slice(12, 16))}
+              {displayHomepageProducts.length > 12 && (
+                <ProductGrid items={homeGrid3} onQuickAdd={handleQuickAdd} />
+              )}
 
               {/* ═══ COMMUNITY SECTION ═══ */}
               <CommunitySection community={settings?.community} />
 
               {/* ═══ GLOBAL STOREFRONT FOOTER ═══ */}
-              <StorefrontFooter />
+              <StorefrontFooter mediaActive={isVideoActive('footer')} />
             </>
           )}
         </View>
@@ -361,13 +496,13 @@ const HomeScreen = React.memo(() => {
       {/* Drawers */}
       <MenuDrawer 
         visible={menuVisible} 
-        onClose={() => setMenuVisible(false)} 
+        onClose={handleCloseMenu} 
       />
       {/* Quick Add Modal */}
       <QuickAddModal 
         visible={modalVisible}
         product={selectedProduct}
-        onClose={() => setModalVisible(false)}
+        onClose={handleCloseModal}
       />
     </View>
   );
@@ -395,29 +530,6 @@ const styles = StyleSheet.create({
     marginTop: 20,
     marginBottom: 0,
     borderRadius: 8,
-  },
-  errorContainer: {
-    paddingVertical: 100,
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  errorText: {
-    fontSize: 10,
-    textAlign: 'center',
-    marginBottom: 20,
-    letterSpacing: 1,
-    lineHeight: 16,
-  },
-  retryBtn: {
-    paddingHorizontal: 24,
-    paddingVertical: 10,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  retryText: {
-    fontSize: 9,
-    fontWeight: '600',
-    letterSpacing: 2,
   },
   content: {
     paddingHorizontal: 0,
@@ -520,9 +632,4 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 4,
   },
-  footerVideoSection: {
-    marginTop: 48,
-    paddingHorizontal: 16,
-  },
 });
-

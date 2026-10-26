@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, StyleSheet, TouchableOpacity, TextInput, ScrollView,
   Dimensions, ActivityIndicator, Platform, KeyboardAvoidingView, Animated,
-  FlatList,
+  FlatList, useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,6 +17,9 @@ import { useAuthStore } from '../../store/authStore';
 import { getPaymentApiBaseUrl } from '../../constants/config';
 import { TOP_BANKS } from '../../constants/bankCodes';
 import { WALLETS } from '../../constants/walletCodes';
+import { isRazorpayAvailable } from '../../utils/razorpayBridge';
+import { getSnapDeviceContext } from '../../services/snapDeviceContext';
+import { requireValidAuth } from '../../utils/tokenUtils';
 
 const UPI_LOGOS: Record<string, string> = {
   'com.google.android.apps.nbu.paisa.user': 'https://cdn.razorpay.com/app/google_pay.png',
@@ -24,12 +27,19 @@ const UPI_LOGOS: Record<string, string> = {
   'net.one97.paytm': 'https://cdn.razorpay.com/app/paytm.png',
   'in.org.npci.upiapp': 'https://cdn.razorpay.com/app/bhim.png',
   'com.amazon.mShop.android.shopping': 'https://cdn.razorpay.com/app/amazon_pay.png',
+  'com.whatsapp': 'https://cdn.razorpay.com/app/whatsapp.png',
   'phonepe://': 'https://cdn.razorpay.com/app/phonepe.png',
   'tez://': 'https://cdn.razorpay.com/app/google_pay.png',
   'paytmmp://': 'https://cdn.razorpay.com/app/paytm.png',
+  'amazonpay://': 'https://cdn.razorpay.com/app/amazon_pay.png',
+  'whatsapp://': 'https://cdn.razorpay.com/app/whatsapp.png',
+  'google_pay': 'https://cdn.razorpay.com/app/google_pay.png',
+  'phonepe': 'https://cdn.razorpay.com/app/phonepe.png',
+  'paytm': 'https://cdn.razorpay.com/app/paytm.png',
+  'amazonpay': 'https://cdn.razorpay.com/app/amazon_pay.png',
+  'whatsapp': 'https://cdn.razorpay.com/app/whatsapp.png',
+  'bhim': 'https://cdn.razorpay.com/app/bhim.png',
 };
-
-const { width: SW } = Dimensions.get('window');
 
 function detectCardType(num: string): string {
   const n = num.replace(/\s/g, '');
@@ -52,6 +62,9 @@ export default function RazorpayPaymentScreen() {
   const { amount, orderId, razorpayKeyId, prefill, orderData } = route.params || {};
   const { clearCart, buyNowItem, setBuyNowItem } = useCartStore();
   const isDark = colors.background === '#000000';
+  const { width: windowWidth } = useWindowDimensions();
+  // Ensure 3 columns fit cleanly: ScrollView padding (20*2 = 40) + 2 gaps of 10 (20) + safety buffer (4)
+  const cardWidth = Math.floor((windowWidth - 40 - 20 - 4) / 3);
 
   const {
     status, error, successData, startPayment, reset,
@@ -84,22 +97,27 @@ export default function RazorpayPaymentScreen() {
 
   const TABS: PaymentMethod[] = ['upi', 'card', 'netbanking', 'wallet'];
   const TAB_LABELS = ['UPI', 'Card', 'Bank', 'Wallets'];
-  const tabWidth = (SW - 48) / 4;
+  const tabWidth = (windowWidth - 48) / 4;
 
-  // Fetch installed apps
+  // Fetch installed apps & ensure valid session — do NOT auto-launch webview modal
   useEffect(() => {
+    if (!requireValidAuth(nav)) return;
     fetchInstalledUPIApps();
     fetchInstalledWallets();
-  }, []);
+  }, [nav]);
 
   useEffect(() => {
     if (tab === 'upi') {
-      const firstAvailableApp = upiApps.find(app => app.is_available !== false);
-      if (firstAvailableApp && !selectedUPIApp) {
+      if (!isLoadingApps && upiApps.length === 0) {
+        setUpiSubTab('id');
+      } else {
+        const firstAvailableApp = upiApps.find(app => app.is_available !== false);
+        if (firstAvailableApp && !selectedUPIApp) {
           setSelectedUPIApp(firstAvailableApp.package_name);
+        }
       }
     }
-  }, [tab, upiApps]);
+  }, [tab, upiApps, selectedUPIApp, isLoadingApps]);
 
   useEffect(() => {
     Animated.spring(tabIndicator, { toValue: TABS.indexOf(tab) * tabWidth, friction: 8, tension: 40, useNativeDriver: true }).start();
@@ -113,28 +131,13 @@ export default function RazorpayPaymentScreen() {
     }
   }, [status]);
 
-  // ── Success/Fail animations ──
-  useEffect(() => {
-    if (status === 'success' && successData) {
-      Animated.parallel([
-        Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
-        Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-      ]).start();
-      recordOrderOnBackend(successData.paymentId, successData.orderId);
-    }
-  }, [status, successData]);
-
-  useEffect(() => {
-    if (status === 'failed') {
-      Animated.spring(failScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
-    }
-  }, [status]);
-
-  // ── Record order on backend ──
+  // ── Record order on backend (state before success effect) ──
   const [isRecording, setIsRecording] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [createdOrderNumber, setCreatedOrderNumber] = useState<string | null>(null);
+  const syncRetryRef = useRef(0);
+  const MAX_SYNC_RETRIES = 3;
 
   const recordOrderOnBackend = useCallback(async (paymentId: string, rzpOrderId: string) => {
     if (orderRecordedRef.current) return;
@@ -142,13 +145,18 @@ export default function RazorpayPaymentScreen() {
     setRecordError(null);
 
     try {
-      const token = useAuthStore.getState().token || '';
+      const auth = useAuthStore.getState();
+      const token = auth.token || '';
       const apiBase = getPaymentApiBaseUrl();
 
       if (orderData) {
         const isCod = String(orderData.paymentMethod || '').toUpperCase() === 'COD';
         const orderPayload = {
           ...orderData,
+          // Prefer logged-in customer so order appears under My Orders
+          customerId: auth.user?.id || orderData.customerId,
+          customerEmail: orderData.customerEmail || auth.user?.email,
+          customerPhone: orderData.customerPhone || auth.user?.phone,
           paymentId: paymentId,
           razorpayOrderId: rzpOrderId,
           razorpay_order_id: rzpOrderId,
@@ -179,9 +187,10 @@ export default function RazorpayPaymentScreen() {
         if (!res.ok || resJson.success === false) {
           throw new Error(resJson.error || 'Failed to sync order');
         }
-        setCreatedOrderId(resJson.orderId || resJson.id || null);
-        setCreatedOrderNumber(resJson.orderNumber || null);
+        setCreatedOrderId(resJson.orderId || resJson.id || successData?.localOrderId || null);
+        setCreatedOrderNumber(resJson.orderNumber || successData?.orderNumber || null);
         orderRecordedRef.current = true;
+        syncRetryRef.current = 0;
       } else {
         throw new Error('Missing order details for backend sync');
       }
@@ -191,9 +200,34 @@ export default function RazorpayPaymentScreen() {
       console.error('[RazorpayPayment] Error recording order:', e.message);
       setRecordError(e.message || 'Sync failed');
       setIsRecording(false);
-      setTimeout(() => recordOrderOnBackend(paymentId, rzpOrderId), 3000);
+      if (syncRetryRef.current < MAX_SYNC_RETRIES) {
+        syncRetryRef.current += 1;
+        setTimeout(() => recordOrderOnBackend(paymentId, rzpOrderId), 3000);
+      }
     }
-  }, [orderData, buyNowItem, setBuyNowItem, clearCart]);
+  }, [orderData, buyNowItem, setBuyNowItem, clearCart, amount, successData?.localOrderId, successData?.orderNumber]);
+
+  // ── Success/Fail animations ──
+  useEffect(() => {
+    if (status === 'success' && successData) {
+      Animated.parallel([
+        Animated.spring(successScale, { toValue: 1, friction: 4, useNativeDriver: true }),
+        Animated.timing(successOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+      ]).start();
+      // Prefer backend ids from verify so confirmation works even if create retries
+      if (successData.localOrderId) setCreatedOrderId(successData.localOrderId);
+      if (successData.orderNumber) setCreatedOrderNumber(successData.orderNumber);
+      recordOrderOnBackend(successData.paymentId, successData.orderId);
+    }
+  }, [status, successData]);
+
+  useEffect(() => {
+    if (status === 'failed') {
+      Animated.spring(failScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
+    }
+  }, [status]);
+
+
 
   const isPayReady = (): boolean => {
     if (!amount || Number(amount) <= 0) return false;
@@ -252,9 +286,10 @@ export default function RazorpayPaymentScreen() {
   };
 
   const goToOrders = () => {
+    const confirmationId = createdOrderId || successData?.localOrderId || orderId;
     nav.getParent()?.reset({
       index: 1,
-      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: createdOrderId || orderId, orderNumber: createdOrderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
+      routes: [{ name: 'Main' }, { name: 'OrderConfirmation', params: { orderId: confirmationId, orderNumber: createdOrderNumber || successData?.orderNumber || undefined, paymentMethod: String(orderData?.paymentMethod || '').toUpperCase() === 'COD' ? 'COD' : 'PREPAID' } }],
     });
   };
 
@@ -273,18 +308,24 @@ export default function RazorpayPaymentScreen() {
           </Animated.View>
           <Typography size={24} weight="800" color={colors.text} style={{ marginTop: 40, letterSpacing: 4 }}>PAID SUCCESSFULLY</Typography>
           <Typography size={11} color={colors.textMuted} style={{ marginTop: 12 }}>
-            {recordError ? 'Payment received. Syncing your order again.' : 'Your order has been recorded and synced.'}
+            {recordError && !createdOrderId
+              ? 'Payment received. Syncing your order again.'
+              : 'Your order has been recorded and synced.'}
           </Typography>
           
-          {isRecording ? (
+          {isRecording && !createdOrderId ? (
              <View style={{ marginTop: 32, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                <ActivityIndicator size="small" color={colors.textMuted} />
                <Typography size={10} color={colors.textMuted} weight="800">SYNCING WITH STORE...</Typography>
              </View>
-          ) : recordError && successData ? (
+          ) : recordError && successData && !createdOrderId ? (
             <TouchableOpacity
               style={[s.ctaBtn, { backgroundColor: colors.foreground, marginTop: 40 }]}
-              onPress={() => recordOrderOnBackend(successData.paymentId, successData.orderId)}
+              onPress={() => {
+                syncRetryRef.current = 0;
+                orderRecordedRef.current = false;
+                recordOrderOnBackend(successData.paymentId, successData.orderId);
+              }}
             >
               <Typography size={11} weight="800" color={colors.background} style={{ letterSpacing: 1 }}>SYNC ORDER</Typography>
             </TouchableOpacity>
@@ -387,17 +428,23 @@ export default function RazorpayPaymentScreen() {
                   ) : displayUpiApps.length === 0 ? (
                     <View style={s.emptyBox}>
                        <Typography size={10} color={colors.textMuted} style={{ textAlign: 'center', lineHeight: 18 }}>No UPI apps detected on this device.</Typography>
+                       <TouchableOpacity
+                         style={[s.subTab, { backgroundColor: colors.surface, borderColor: colors.borderLight, marginTop: 14, paddingHorizontal: 20, alignSelf: 'center' }]}
+                         onPress={() => setUpiSubTab('id')}
+                       >
+                         <Typography size={10} weight="800" color={colors.text}>PAY VIA UPI ID INSTEAD</Typography>
+                       </TouchableOpacity>
                     </View>
                   ) : (
                     <View style={s.methodGrid}>
                       {displayUpiApps.map(app => {
                         const isSelected = selectedUPIApp === app.package_name;
                         return (
-                          <TouchableOpacity key={app.package_name} style={[s.glassCard, { borderColor: isSelected ? colors.foreground : colors.borderLight }]} onPress={() => { haptics.buttonTap(); setSelectedUPIApp(app.package_name); }}>
+                          <TouchableOpacity key={app.package_name} style={[s.glassCard, { width: cardWidth, borderColor: isSelected ? colors.foreground : colors.borderLight }]} onPress={() => { haptics.buttonTap(); setSelectedUPIApp(app.package_name); }}>
                              <View style={s.glassIconContainer}>
                                <Image source={{ uri: UPI_LOGOS[app.package_name] || (app.app_icon ? (app.app_icon.startsWith('http') || app.app_icon.startsWith('data:') ? app.app_icon : `data:image/png;base64,${app.app_icon}`) : 'https://cdn.razorpay.com/app/bhim.png') }} style={s.glassIcon} contentFit="contain" />
                              </View>
-                             <Typography size={9} weight="800" color={colors.text} style={{ marginTop: 10 }}>{app.app_name.toUpperCase()}</Typography>
+                             <Typography size={8} weight="800" color={colors.text} numberOfLines={1} style={{ marginTop: 10 }}>{app.app_name.toUpperCase()}</Typography>
                              {isSelected && <View style={[s.selectedDot, { backgroundColor: colors.foreground }]} />}
                           </TouchableOpacity>
                         );
@@ -442,11 +489,11 @@ export default function RazorpayPaymentScreen() {
               <Typography size={8} weight="800" color={colors.textExtraLight} style={s.panelLabel}>POPULAR BANKS</Typography>
               <View style={s.methodGrid}>
                 {TOP_BANKS.map(bank => (
-                  <TouchableOpacity key={bank.code} style={[s.glassCard, { borderColor: selectedBank === bank.code ? colors.foreground : colors.borderLight }]} onPress={() => { haptics.buttonTap(); setSelectedBank(bank.code); }}>
+                  <TouchableOpacity key={bank.code} style={[s.glassCard, { width: cardWidth, borderColor: selectedBank === bank.code ? colors.foreground : colors.borderLight }]} onPress={() => { haptics.buttonTap(); setSelectedBank(bank.code); }}>
                     <View style={s.glassIconContainer}>
                       <Image source={{ uri: bank.icon }} style={s.glassIcon} contentFit="contain" />
                     </View>
-                    <Typography size={8} weight="700" color={colors.text} style={{ marginTop: 8 }}>{bank.name.toUpperCase()}</Typography>
+                    <Typography size={8} weight="700" color={colors.text} numberOfLines={1} style={{ marginTop: 8 }}>{bank.name.toUpperCase()}</Typography>
                     {selectedBank === bank.code && <View style={[s.selectedDot, { backgroundColor: colors.foreground }]} />}
                   </TouchableOpacity>
                 ))}
@@ -465,11 +512,11 @@ export default function RazorpayPaymentScreen() {
               ) : (
                 <View style={s.methodGrid}>
                   {filteredWallets.map(wallet => (
-                    <TouchableOpacity key={wallet.id} style={[s.glassCard, { borderColor: selectedWallet === wallet.id ? colors.foreground : colors.borderLight }]} onPress={() => { haptics.buttonTap(); setSelectedWallet(wallet.id); }}>
+                    <TouchableOpacity key={wallet.id} style={[s.glassCard, { width: cardWidth, borderColor: selectedWallet === wallet.id ? colors.foreground : colors.borderLight }]} onPress={() => { haptics.buttonTap(); setSelectedWallet(wallet.id); }}>
                       <View style={s.glassIconContainer}>
                         <Image source={{ uri: wallet.icon }} style={s.glassIcon} contentFit="contain" />
                       </View>
-                      <Typography size={9} weight="800" color={colors.text} style={{ marginTop: 8 }}>{wallet.name.toUpperCase()}</Typography>
+                      <Typography size={8} weight="800" color={colors.text} numberOfLines={1} style={{ marginTop: 8 }}>{wallet.name.toUpperCase()}</Typography>
                       {selectedWallet === wallet.id && <View style={[s.selectedDot, { backgroundColor: colors.foreground }]} />}
                     </TouchableOpacity>
                   ))}
@@ -497,8 +544,6 @@ export default function RazorpayPaymentScreen() {
           }
         </TouchableOpacity>
       </View>
-
-      {/* Remove custom processing overlay to let Razorpay's native UI handle feedback */}
     </View>
   );
 }
@@ -518,8 +563,8 @@ const s = StyleSheet.create({
   subTab: { flex: 1, height: 44, borderRadius: 15, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'transparent' },
   loadingBox: { padding: 60, alignItems: 'center' },
   emptyBox: { padding: 40, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.02)', borderRadius: 24, borderWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
-  methodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  glassCard: { width: (SW - 64) / 3, height: 105, borderRadius: 28, backgroundColor: 'rgba(255,255,255,0.02)', borderWidth: 1.5, justifyContent: 'center', alignItems: 'center', position: 'relative' },
+  methodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  glassCard: { height: 105, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.02)', borderWidth: 1.5, justifyContent: 'center', alignItems: 'center', position: 'relative' },
   glassIconContainer: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   glassIcon: { width: 30, height: 30 },
   selectedDot: { position: 'absolute', top: 10, right: 10, width: 8, height: 8, borderRadius: 4 },

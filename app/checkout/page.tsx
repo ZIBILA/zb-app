@@ -15,6 +15,10 @@ import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel
 import { metaMoneyFrom } from "@/lib/meta/money";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  buildDeliveryStreet,
+  stripLeadingHouseFromStreet,
+} from "@/lib/parseDetectedAddress";
+import {
   MapPin,
   CreditCard,
   Truck,
@@ -216,6 +220,7 @@ export default function CheckoutPage() {
   const isInternational = Boolean(
     globalStoreEnabled && countryCode !== "IN" && countryConfig && !countryConfig.isBase
   );
+  const codAllowed = !isInternational;
 
   const fmtAmount = useCallback(
     (basePriceINR: number): string => {
@@ -671,7 +676,14 @@ export default function CheckoutPage() {
           ? data.zip.replace(/\s/g, "").slice(0, 6)
           : "";
 
-        const resolvedStreet = data.street || data.landmark || (data.formattedAddress ? data.formattedAddress.split(",")[0].trim() : "");
+        // Street/locality only — never merge houseNo; Flat stays empty for manual entry
+        const resolvedStreet =
+          buildDeliveryStreet([data.street, data.landmark]) ||
+          stripLeadingHouseFromStreet(
+            data.formattedAddress
+              ? data.formattedAddress.split(",").slice(0, 3).join(",").trim()
+              : ""
+          );
 
         // Verify that meaningful address information was actually returned
         if (!data.city && !resolvedStreet && !matchedState) {
@@ -684,7 +696,7 @@ export default function CheckoutPage() {
 
         setAddress(prev => ({
           ...prev,
-          houseNo: data.houseNo || prev.houseNo,
+          houseNo: "",
           street: resolvedStreet || prev.street,
           landmark: data.landmark || prev.landmark,
           zip: validZip || prev.zip,
@@ -936,12 +948,16 @@ export default function CheckoutPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Ensure paymentMethod is either PAYNOW or COD
+  // Ensure paymentMethod is either PAYNOW or COD (COD is India-only)
   useEffect(() => {
+    if (!codAllowed && paymentMethod === "COD") {
+      setPaymentMethod("PAYNOW");
+      return;
+    }
     if (paymentMethod !== "PAYNOW" && paymentMethod !== "COD") {
       setPaymentMethod("PAYNOW");
     }
-  }, [paymentMethod]);
+  }, [paymentMethod, codAllowed]);
 
   const shipping = 0;
 
@@ -957,6 +973,8 @@ export default function CheckoutPage() {
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponDiscount, setCouponDiscount] = useState(0);
   const [couponMessage, setCouponMessage] = useState("");
+  // Why a code the customer entered was refused; kept visible even if an auto-apply promo replaces it.
+  const [couponNotice, setCouponNotice] = useState("");
   const [couponValid, setCouponValid] = useState(false);
   const [applyAsStoreCredit, setApplyAsStoreCredit] = useState(false);
   const [cashbackAmount, setCashbackAmount] = useState(0);
@@ -981,34 +999,29 @@ export default function CheckoutPage() {
   const codFee = isInternational ? codFeeDisplay.amount : configuredCodFee;
   const codFeeFormatted = isInternational ? codFeeDisplay.formatted : `₹${configuredCodFee.toLocaleString("en-IN")}`;
 
-  // Fetch available store credit balance (debounced — typing email/phone shouldn't spam)
+  // Fetch the logged-in customer's store credit balance (server resolves it from the session)
+  const sessionUserId = (session?.user as any)?.id as string | undefined;
   useEffect(() => {
-    const email = address.email || (session?.user as any)?.email;
-    const phone = address.phone;
-    if (!email && !phone) return;
+    if (!sessionUserId) {
+      setAvailableStoreCredit(0);
+      return;
+    }
 
-    const timer = setTimeout(async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        const params = new URLSearchParams();
-        if (email) params.set('email', email);
-        if (phone) params.set('phone', phone);
-
-        const res = await fetch(`/api/user/store-credits?${params.toString()}`);
-        if (res.ok) {
+        const res = await fetch('/api/user/store-credits');
+        if (!cancelled && res.ok) {
           const data = await res.json();
-          if (data.success && data.balance > 0) {
-            setAvailableStoreCredit(data.balance);
-          } else {
-            setAvailableStoreCredit(0);
-          }
+          setAvailableStoreCredit(data.success && data.balance > 0 ? data.balance : 0);
         }
       } catch (err) {
         console.error('[Checkout] Error fetching store credits:', err);
       }
-    }, 800);
+    })();
 
-    return () => clearTimeout(timer);
-  }, [address.email, address.phone, session]);
+    return () => { cancelled = true; };
+  }, [sessionUserId]);
 
   // Prefetch Razorpay/COD order on step 2 (serialize overlapping requests)
   useEffect(() => {
@@ -1378,6 +1391,7 @@ export default function CheckoutPage() {
 
       setCouponMessage(data.message);
       if (data.valid) {
+        if (!isAuto) setCouponNotice("");
         setCouponValid(true);
         const discount = Number(data.discount) || 0;
         const earned = Number(data.cashbackAmount) || 0;
@@ -1403,11 +1417,13 @@ export default function CheckoutPage() {
         setApplyAsStoreCredit(false);
         setCashbackAmount(0);
         if (!isAuto) {
+          setCouponNotice(`${codeToValidate.toUpperCase().trim()}: ${data.message || "This code cannot be applied."}`);
           setIsManualCoupon(false);
         }
       }
     } catch {
       setCouponMessage("Unable to validate coupon.");
+      if (!isAuto) setCouponNotice("Unable to validate coupon. Please try again.");
       setCouponValid(false);
       setApplyAsStoreCredit(false);
       setCashbackAmount(0);
@@ -1421,6 +1437,7 @@ export default function CheckoutPage() {
 
   const handleRemoveCoupon = () => {
     setIsManualCoupon(true);
+    setCouponNotice("");
     setCouponCode("");
     setCouponDiscount(0);
     setCouponMessage("");
@@ -1606,10 +1623,13 @@ export default function CheckoutPage() {
   }, [activeCoupons, subtotal, paymentMethod, isManualCoupon, calculateCouponDiscount]);
 
   // Re-validate coupon when payment method or subtotal changes (ensures percentages scale with cart size and minOrderValue is re-checked)
+  // Debounced: subtotal flips several times while the cart syncs — validate once it settles.
   useEffect(() => {
-    if (couponCode) {
+    if (!couponCode) return;
+    const timer = setTimeout(() => {
       handleApplyCoupon(couponCode, paymentMethod, !isManualCoupon);
-    }
+    }, 400);
+    return () => clearTimeout(timer);
   }, [paymentMethod, subtotal]);
 
   const fireMetaAddPaymentInfo = () => {
@@ -1644,6 +1664,13 @@ export default function CheckoutPage() {
     }
     paymentLockRef.current = true;
 
+    if (paymentMethod === "COD" && !codAllowed) {
+      paymentLockRef.current = false;
+      setPaymentMethod("PAYNOW");
+      setError("Cash on Delivery is only available for orders in India. Please pay in full.");
+      return;
+    }
+
     setLoading(true);
     setError("");
 
@@ -1666,15 +1693,16 @@ export default function CheckoutPage() {
       const fullStreet = [address.houseNo, address.street, address.landmark].filter(Boolean).join(", ");
       const checkoutAddress = { ...address, street: fullStreet };
 
-      // Case 1: 100% Store Credit Payment (finalTotal === 0)
-      if (finalTotal === 0 && appliedStoreCredit > 0) {
-        console.log("[Checkout] Completing order with 100% Store Credit");
+      // Case 1: ₹0 payable — 100% store credit and/or 100% coupon (no Razorpay)
+      if (finalTotal === 0 && (appliedStoreCredit > 0 || (couponValid && couponDiscount > 0))) {
+        const zeroPayMethod = appliedStoreCredit > 0 ? "store_credit" : "coupon";
+        console.log(`[Checkout] Completing ₹0 order via ${zeroPayMethod}`);
         const completeRes = await fetch("/api/checkout/complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             address: checkoutAddress,
-            paymentMethod: "store_credit",
+            paymentMethod: zeroPayMethod,
             items,
             total: 0,
             subtotal,
@@ -1706,7 +1734,7 @@ export default function CheckoutPage() {
           router.push(`/orders/${completeData.orderId}/confirmation`);
           return;
         } else {
-          throw new Error(completeData.error || "Failed to complete order with store credit.");
+          throw new Error(completeData.error || "Failed to complete free/coupon order.");
         }
       }
 
@@ -2141,10 +2169,10 @@ export default function CheckoutPage() {
         {(() => {
           const availableMethods = [
             { id: "PAYNOW" as PaymentMethod, label: "PAY NOW" },
-            { id: "COD" as PaymentMethod, label: "COD" }
+            ...(codAllowed ? [{ id: "COD" as PaymentMethod, label: "COD" }] : []),
           ];
           return (
-            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-foreground/[0.03] border border-foreground/5 mb-4">
+            <div className={`${availableMethods.length > 1 ? "grid grid-cols-2" : "grid grid-cols-1"} gap-1 p-1 rounded-xl bg-foreground/[0.03] border border-foreground/5 mb-4`}>
               {availableMethods.map((method) => {
                 const isActive = paymentMethod === method.id;
                 return (
@@ -2384,7 +2412,7 @@ export default function CheckoutPage() {
                 placeholder="Enter code"
                 aria-label="Discount Code"
                 value={couponCode}
-                onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                onChange={(e) => { setCouponCode(e.target.value.toUpperCase()); setCouponNotice(""); }}
                 className="w-full h-8 px-2.5 rounded-lg bg-foreground/[0.02] border border-foreground/5 text-foreground text-[9px] font-mono tracking-wider placeholder:text-foreground/20 uppercase focus:border-foreground/20 focus:outline-none transition-all"
               />
               <button
@@ -2398,6 +2426,13 @@ export default function CheckoutPage() {
             </div>
           )}
         </div>
+
+        {couponNotice && (
+          <div role="alert" className="flex items-start gap-1.5 -mt-1 px-1 text-[9px] font-medium text-red-400">
+            <AlertCircle className="w-3 h-3 shrink-0 mt-px" />
+            <span>{couponNotice}</span>
+          </div>
+        )}
 
         {/* Available Offers */}
         {!couponValid && activeCoupons.length > 0 && (

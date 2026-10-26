@@ -31,7 +31,8 @@ const createMockPrismaClient = (reason: string) => {
       }
       const mockReturn = (targetProp: string) => {
         if (targetProp === 'count') return 0;
-        if (targetProp === 'findMany') return [];
+        if (targetProp === 'findMany' || targetProp === 'groupBy') return [];
+        if (targetProp === 'aggregate') return { _count: 0, _sum: {}, _avg: {}, _min: {}, _max: {} };
         return { 
           id: 'mock_id', 
           shopifyId: 'mock_shopify_id', 
@@ -109,8 +110,26 @@ const prismaClientSingleton = () => {
     // Connection Pool Configuration:
     // Sized for Supabase pooler — keep modest so concurrent dashboard polls don't starve.
     const poolMax = process.env.PG_POOL_MAX ? parseInt(process.env.PG_POOL_MAX) : 8;
+
+    // Apply statement_timeout via connection options (not pool.on('connect') SET).
+    // A fire-and-forget SET raced with Prisma's first query on the same client and
+    // triggered: "Calling client.query() when the client is already executing a query".
+    const withStatementTimeout = (url: string): string => {
+      if (/statement_timeout/i.test(url)) return url;
+      const setting = '-c statement_timeout=12000';
+      // Prefer %20 over URLSearchParams'+' so libpq option parsing stays reliable.
+      const sep = url.includes('?') ? '&' : '?';
+      if (/[?&]options=/.test(url)) {
+        return url.replace(/([?&]options=)([^&]*)/, (_m, prefix: string, value: string) => {
+          const decoded = decodeURIComponent(value.replace(/\+/g, ' '));
+          return `${prefix}${encodeURIComponent(`${decoded} ${setting}`.trim())}`;
+        });
+      }
+      return `${url}${sep}options=${encodeURIComponent(setting)}`;
+    };
+
     const pool = new Pool({
-      connectionString: pgUrl,
+      connectionString: withStatementTimeout(pgUrl),
       ssl: { 
         rejectUnauthorized: false 
       },
@@ -118,11 +137,6 @@ const prismaClientSingleton = () => {
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 8_000,
       allowExitOnIdle: true,
-    });
-
-    // Set statement_timeout on every new connection (12s cap)
-    pool.on('connect', (client) => {
-      client.query('SET statement_timeout = 12000').catch(() => {});
     });
 
     pool.on('error', (err) => {
@@ -296,6 +310,10 @@ export const DEFAULT_SHOP_SETTINGS = {
   showCare: true,
   showSizeFit: true,
   showDetails: true,
+  pdpTrustBoxes: '[{"id":"cod","icon":"cash-outline","title":"COD available","subtitle":"₹99 now, rest on delivery","variant":"default"},{"id":"prepaid","icon":"pricetag-outline","title":"10% off on prepaid","subtitle":"+ 10% cashback as store credit","variant":"highlight"},{"id":"delivery","icon":"truck-outline","title":"Delivery in 3–7 days","subtitle":"Dispatched in 24–48 hrs","variant":"default"},{"id":"returns","icon":"refresh-outline","title":"15-day easy return/exchange","subtitle":"No questions asked","variant":"default"}]',
+  pdpInclTaxesText: 'Incl. taxes',
+  pdpShowInclTaxes: true,
+  pdpModelInfoDefault: "Model is 6'0\", wearing size 32 · Oversized fit, true to waist",
   showTreeText: true,
   communityMinOrders: 1,
   communityAgeRestricted: true,

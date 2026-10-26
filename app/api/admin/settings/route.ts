@@ -50,6 +50,10 @@ function envSettings() {
     showCare: true,
     showSizeFit: true,
     showDetails: true,
+    pdpTrustBoxes: '[{"id":"cod","icon":"cash-outline","title":"COD available","subtitle":"₹99 now, rest on delivery","variant":"default"},{"id":"prepaid","icon":"pricetag-outline","title":"10% off on prepaid","subtitle":"+ 10% cashback as store credit","variant":"highlight"},{"id":"delivery","icon":"truck-outline","title":"Delivery in 3–7 days","subtitle":"Dispatched in 24–48 hrs","variant":"default"},{"id":"returns","icon":"refresh-outline","title":"15-day easy return/exchange","subtitle":"No questions asked","variant":"default"}]',
+    pdpInclTaxesText: 'Incl. taxes',
+    pdpShowInclTaxes: true,
+    pdpModelInfoDefault: "Model is 6'0\", wearing size 32 · Oversized fit, true to waist",
     pdpBackground: '',
     instagramUrl: '',
     appleUrl: '',
@@ -149,6 +153,7 @@ export async function PATCH(req: Request) {
       'blueprintTitle', 'blueprintSubtitle', 'showHeroText', 'showLatestCuration',
       'showArchive', 'showBlueprint', 'showProductVideo', 'showSizeChart',
       'showBrand', 'showShippingReturn', 'showCare', 'showSizeFit', 'showDetails',
+      'pdpTrustBoxes', 'pdpInclTaxesText', 'pdpShowInclTaxes', 'pdpModelInfoDefault',
       'pdpBackground', 'instagramUrl', 'appleUrl', 'spotifyUrl', 'youtubeUrl',
       'featuredMedia', 'featuredMediaImage', 'featuredMediaMobile', 'featuredMediaImageMobile',
       'collectionsMedia', 'collectionsMediaMobile', 'kineticMeshProducts',
@@ -171,7 +176,8 @@ export async function PATCH(req: Request) {
       'showHeroText', 'showLatestCuration', 'showArchive', 'showBlueprint',
       'showProductVideo', 'showSizeChart', 'showBrand', 'showShippingReturn',
       'showCare', 'showSizeFit', 'showDetails', 'showTreeText', 'showCommunity',
-      'communityAgeRestricted', 'communityWhatsAppEnabled', 'showRingCarousel'
+      'communityAgeRestricted', 'communityWhatsAppEnabled', 'showRingCarousel',
+      'pdpShowInclTaxes'
     ];
 
     const data: any = {};
@@ -200,8 +206,9 @@ export async function PATCH(req: Request) {
     const updatedSettings = await updateShopSettings(data);
 
     try {
+      const { refreshStorefront } = await import('@/lib/storefrontRefresh');
+      refreshStorefront();
       revalidatePath('/');
-      // Shop All / collection pages read their order + visibility from these settings.
       revalidatePath('/collections');
       revalidatePath('/collections/[handle]', 'page');
       revalidatePath('/products/[id]', 'page');

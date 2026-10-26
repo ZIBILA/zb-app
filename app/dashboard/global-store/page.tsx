@@ -227,9 +227,9 @@ export default function GlobalStoreAdminPage() {
         <div className="p-6 pb-2 flex items-center justify-between border-b border-foreground/5">
           <div>
             <h3 className="text-sm font-semibold">Configured Countries & Pricing Rules</h3>
-            <p className="text-xs text-foreground/50 mt-0.5">
-              Formula: Local Price = round(Base INR × Multiplier × Exchange Rate, 2)
-            </p>
+              <p className="text-xs text-foreground/50 mt-0.5">
+                Formula: Local Price = round(Base INR × Multiplier × Exchange Rate, 2). India: Prepaid + COD. All other countries: Prepaid only.
+              </p>
           </div>
           {hasChanges && (
             <span className="text-xs text-amber-500 font-medium animate-pulse">
@@ -248,6 +248,7 @@ export default function GlobalStoreAdminPage() {
                 <th className="py-3 px-4">Multiplier</th>
                 <th className="py-3 px-4">Exchange Rate (INR → Local)</th>
                 <th className="py-3 px-4">Example (₹4,990)</th>
+                <th className="py-3 px-4">Payments</th>
                 <th className="py-3 px-4 text-center">Status</th>
               </tr>
             </thead>
@@ -255,9 +256,7 @@ export default function GlobalStoreAdminPage() {
               {countries.map((c) => {
                 const samplePriceINR = 4990;
                 const sampleConverted = (
-                  samplePriceINR *
-                  c.multiplier *
-                  c.exchangeRate
+                  Math.round(samplePriceINR * c.multiplier * c.exchangeRate * 100) / 100
                 ).toFixed(2);
 
                 return (
@@ -313,6 +312,9 @@ export default function GlobalStoreAdminPage() {
                       {c.isBase
                         ? "₹4,990"
                         : `${c.currencySymbol}${sampleConverted} ${c.currencyCode}`}
+                    </td>
+                    <td className="py-3.5 px-4 text-[10px] font-semibold uppercase tracking-wider text-foreground/60">
+                      {c.isBase || c.code === "IN" ? "Prepaid + COD" : "Prepaid only"}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       {c.isBase ? (

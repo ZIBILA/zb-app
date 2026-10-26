@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Loader2, ArrowLeft, Check, X, Clock, Package, TruckIcon, CheckCircle2, XCircle, CreditCard, AlertTriangle, RefreshCw, User, MapPin, Mail, Phone, ExternalLink } from "lucide-react";
+import { Loader2, ArrowLeft, Check, X, Clock, Package, TruckIcon, CheckCircle2, XCircle, CreditCard, AlertTriangle, RefreshCw, User, MapPin, Mail, Phone, ExternalLink, ClipboardCheck } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import VariantBadge from "@/components/admin/VariantBadge";
@@ -36,6 +36,8 @@ const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string;
   rejected: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "Rejected" },
   pickup_scheduled: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "Pickup Scheduled" },
   received: { color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20", label: "Received" },
+  qc_passed: { color: "text-cyan-500", bg: "bg-cyan-500/10", border: "border-cyan-500/20", label: "QC Passed" },
+  qc_failed: { color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20", label: "QC Failed" },
   refunded: { color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "Refunded" },
   requested: { color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Requested" },
   in_transit: { color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20", label: "In Transit" },
@@ -279,7 +281,8 @@ export default function ReturnDetailPage() {
     hasAwb: !!data.reverseAwb,
     carrierStatus: data.carrierStatus,
   });
-  const isReceived = !!data.receivedAt || ["received", "qc_passed", "refund_pending"].includes(currentStatus);
+  const isReceived = !!data.receivedAt || ["received", "qc_passed", "qc_failed", "refund_pending"].includes(currentStatus);
+  const isQcPassed = currentStatus === "qc_passed";
   const releaseLabel =
     codOrder || returnItems[0]?.refundMethod === "store_credit" ? "Release Store Credit" : "Release Refund";
   const isRejected = currentStatus === "rejected";
@@ -644,7 +647,26 @@ export default function ReturnDetailPage() {
                   Confirm Parcel Received
                 </button>
               )}
-              {isReceived && currentStatus !== "refunded" && (
+              {isReceived && !isQcPassed && currentStatus !== "refunded" && currentStatus !== "qc_failed" && (
+                <>
+                  <button
+                    onClick={() => handleStatusUpdate("qc_passed")}
+                    disabled={!!actionLoading}
+                    className="w-full py-2.5 bg-cyan-500 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {actionLoading === "qc_passed" ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardCheck className="w-3.5 h-3.5" />}
+                    QC Passed — Restock
+                  </button>
+                  <button
+                    onClick={() => handleStatusUpdate("qc_failed")}
+                    disabled={!!actionLoading}
+                    className="w-full py-2.5 border border-rose-500/20 text-rose-500 rounded-lg text-[9px] font-bold uppercase tracking-widest disabled:opacity-50"
+                  >
+                    {actionLoading === "qc_failed" ? <Loader2 className="w-3 h-3 animate-spin" /> : "QC Failed"}
+                  </button>
+                </>
+              )}
+              {isQcPassed && currentStatus !== "refunded" && (
                 <button
                   onClick={handleReleaseRefund}
                   disabled={!!actionLoading}

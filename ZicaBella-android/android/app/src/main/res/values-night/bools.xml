@@ -1,0 +1,4 @@
+<resources>
+  <!-- Keep system bars light-icon rules tied to explicit splash themes, not system night. -->
+  <bool name="light_system_bars">true</bool>
+</resources>

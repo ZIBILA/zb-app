@@ -49,13 +49,13 @@ function asObject(raw: unknown): Record<string, any> {
 export function isSparseShippingAddress(raw: unknown): boolean {
   const a = asObject(raw);
   const line = String(
-    a.street || a.address1 || a.line1 || [a.houseNo, a.street, a.landmark].filter(Boolean).join(', ') || ''
+    a.address1 || a.line1 || a.street || [a.houseNo || a.flat, a.street, a.landmark].filter(Boolean).join(', ') || ''
   ).trim();
   return line.length < 3;
 }
 
 /**
- * Flatten web (houseNo/street/landmark), mobile (line1/line2), and Shopify-style
+ * Flatten web (houseNo/street/landmark), mobile (line1/line2/flat), and Shopify-style
  * (address1/address2) fields into one Shopify-ready address.
  */
 export function normalizeOrderShippingAddress(
@@ -72,7 +72,7 @@ export function normalizeOrderShippingAddress(
     a = { ...a, ...asObject(a.shippingAddress) };
   }
 
-  const houseNo = String(a.houseNo || '').trim();
+  const houseNo = String(a.houseNo || a.flat || a.flatNo || a.building || '').trim();
   const rawStreet = String(a.street || '').trim();
   const primaryLine = String(a.address1 || a.line1 || '').trim();
   const landmark = String(a.landmark || a.apartment || '').trim();
@@ -82,10 +82,17 @@ export function normalizeOrderShippingAddress(
   if (rawStreet && houseNo && rawStreet.toLowerCase().includes(houseNo.toLowerCase())) {
     // Already merged by checkout/customerService — don't double-prefix houseNo
     address1 = rawStreet;
-  } else if (houseNo || rawStreet || primaryLine) {
-    address1 = [houseNo, rawStreet || primaryLine].filter(Boolean).join(', ');
-  } else {
+  } else if (primaryLine && houseNo && primaryLine.toLowerCase().includes(houseNo.toLowerCase())) {
+    // Already merged in primaryLine (e.g. from mobile app DeliveryAddressScreen)
     address1 = primaryLine;
+  } else if (houseNo && (rawStreet || primaryLine)) {
+    address1 = [houseNo, rawStreet || primaryLine].filter(Boolean).join(', ');
+  } else if (primaryLine) {
+    address1 = primaryLine;
+  } else if (rawStreet) {
+    address1 = [houseNo, rawStreet].filter(Boolean).join(', ');
+  } else {
+    address1 = houseNo;
   }
 
   // Append landmark to address1 only when street wasn't already a full merge that includes it

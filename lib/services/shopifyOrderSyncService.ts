@@ -3,6 +3,7 @@ import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrd
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
 import { toE164 } from '@/lib/shopify-phone';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { INV_DEDUCTED_TAG, withInventoryTag } from '@/lib/inventoryPolicy';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -418,6 +419,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
     resolvedMethodTag.split(',').map(t => t.trim()).filter(Boolean).forEach(t => mergedTags.add(t));
     mergedTags.add(`zb-order-${universalOrderNumber}`);
     mergedTags.add(`zb_uid:${universalOrderNumber}`);
+    mergedTags.add(INV_DEDUCTED_TAG);
 
     if (order.status === 'approved' || options?.preserveAppTags) {
       mergedTags.add('Approved');
@@ -433,24 +435,49 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       });
     }
 
+    const isPaidLocally =
+      order.paymentStatus === 'paid' ||
+      order.paymentStatus === 'cod_upfront_paid' ||
+      order.paymentStatus === 'partially_paid';
+    const orderTotal = Number(order.totalPrice || 0);
+    const isZeroPaidOrder = isPaidLocally && orderTotal <= 0.009;
+    // ₹0 paid (100% coupon / store credit) must be created as paid on Shopify or
+    // Shopify auto-cancels the unpaid mirror and webhooks used to flip local status.
+    const shopifyFinancialStatus = isCod
+      ? 'partially_paid'
+      : isPaidLocally
+        ? 'paid'
+        : 'pending';
+    const paymentMethodLabel = isCod
+      ? 'COD'
+      : isZeroPaidOrder
+        ? (order.discountCode ? 'COUPON' : order.paymentMethod || 'STORE_CREDIT')
+        : 'PREPAID';
+
     const shopifyOrderPayload: any = {
       line_items: shopifyLineItems,
       ...(emailToUse && emailToUse.includes('@') ? { email: emailToUse } : {}),
       send_receipt: false,
       send_fulfillment_receipt: false,
-      financial_status: isCod ? 'partially_paid' : (order.paymentStatus === 'paid' ? 'paid' : 'pending'),
+      inventory_behaviour: 'decrement_obeying_policy',
+      financial_status: shopifyFinancialStatus,
       note: isCod
         ? `COD Order from ${isApp ? 'Mobile App' : 'Web Store'} - ₹${codUpfrontPaid} upfront fee paid via Razorpay (Payment ID: ${order.razorpayPaymentId || 'N/A'}) | InternalOrderId: ${order.id}`
-        : `Paid via Razorpay from ${isApp ? 'Mobile App' : 'Web Store'} (Payment ID: ${order.razorpayPaymentId || 'N/A'}) | InternalOrderId: ${order.id}`,
+        : isZeroPaidOrder
+          ? `₹0 paid order from ${isApp ? 'Mobile App' : 'Web Store'} (${paymentMethodLabel}${order.discountCode ? `: ${order.discountCode}` : ''}) | InternalOrderId: ${order.id}`
+          : `Paid via Razorpay from ${isApp ? 'Mobile App' : 'Web Store'} (Payment ID: ${order.razorpayPaymentId || 'N/A'}) | InternalOrderId: ${order.id}`,
       tags: Array.from(mergedTags).join(', '),
       note_attributes: [
         { name: 'internal_order_number', value: universalOrderNumber },
-        { name: 'payment_method', value: isCod ? 'COD' : 'PREPAID' },
+        { name: 'payment_method', value: paymentMethodLabel },
         { name: 'razorpay_payment_id', value: order.razorpayPaymentId || '' },
         ...(isCod ? [
           { name: 'cod_upfront_fee', value: String(codUpfrontPaid) },
           { name: 'cod_balance_due', value: codBalanceDue.toFixed(2) },
         ] : []),
+        ...(isZeroPaidOrder && order.discountCode
+          ? [{ name: 'discount_code', value: String(order.discountCode) }]
+          : []),
       ],
       total_tax: 0,
       currency: order.currency || 'INR',
@@ -510,24 +537,50 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         gateway: 'razorpay',
         authorization: order.razorpayPaymentId || `cod_upfront_${Date.now()}`,
       }];
-    } else if (order.paymentStatus === 'paid' || (order.paymentMethod !== 'COD' && order.paymentMethod !== 'cod' && Number(order.totalPrice || 0) > 0)) {
+    } else if (isZeroPaidOrder) {
+      // Manual ₹0 sale so Shopify marks the order paid (Razorpay gateway with 0.00 is unreliable).
       shopifyOrderPayload.transactions = [{
         kind: 'sale',
         status: 'success',
-        amount: Number(order.totalPrice || 0).toFixed(2),
+        amount: '0.00',
+        currency: order.currency || 'INR',
+        gateway: 'manual',
+        authorization: order.discountCode
+          ? `coupon_${order.discountCode}_${Date.now()}`
+          : `zero_paid_${Date.now()}`,
+      }];
+    } else if (order.paymentStatus === 'paid' || (order.paymentMethod !== 'COD' && order.paymentMethod !== 'cod' && orderTotal > 0)) {
+      shopifyOrderPayload.transactions = [{
+        kind: 'sale',
+        status: 'success',
+        amount: orderTotal.toFixed(2),
         currency: order.currency || 'INR',
         gateway: 'razorpay',
         authorization: order.razorpayPaymentId || `razorpay_${Date.now()}`,
       }];
     }
 
-    // Add discount code if present
-    if (order.discountCode && Number(order.discountAmount) > 0) {
+    // Always attach discount codes for coupon / free orders so Shopify totals match local ₹0.
+    const discountAmount = Number(order.discountAmount || 0);
+    if (order.discountCode && discountAmount > 0) {
       shopifyOrderPayload.discount_codes = [{
         code: order.discountCode,
-        amount: Number(order.discountAmount).toFixed(2),
+        amount: discountAmount.toFixed(2),
         type: 'fixed_amount',
       }];
+    } else if (isZeroPaidOrder && orderTotal <= 0.009) {
+      // Fallback: derive discount from line totals when discountAmount was not persisted.
+      const lineSum = shopifyLineItems.reduce(
+        (sum: number, li: any) => sum + Number(li.price || 0) * Number(li.quantity || 1),
+        0
+      );
+      if (lineSum > 0) {
+        shopifyOrderPayload.discount_codes = [{
+          code: order.discountCode || 'ZERO_TOTAL',
+          amount: lineSum.toFixed(2),
+          type: 'fixed_amount',
+        }];
+      }
     }
 
     const createdOrder = await createOrder(shopifyOrderPayload, {
@@ -544,6 +597,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         shopifyOrderName,
         shopifySyncStatus: 'synced',
         shopifySyncError: null,
+        tags: withInventoryTag(order.tags, INV_DEDUCTED_TAG),
       },
     });
 
@@ -718,29 +772,6 @@ export async function pullAndSyncShopifyOrder(
       }
     }
 
-    if (o.cancelled_at) {
-      fulfillmentStatus = 'cancelled';
-      deliveryStatus = 'cancelled';
-    }
-
-    // Extract primary tracking details
-    let primaryTrackingNumber: string | null = null;
-    let primaryCourier: string | null = null;
-    let primaryTrackingUrl: string | null = null;
-
-    if (Array.isArray(o.fulfillments) && o.fulfillments.length > 0) {
-      for (const f of o.fulfillments) {
-        const tn = f.tracking_number || (Array.isArray(f.tracking_numbers) ? f.tracking_numbers[0] : null);
-        if (tn) {
-          primaryTrackingNumber = String(tn);
-          primaryCourier = f.tracking_company || f.courier || 'Standard Express';
-          primaryTrackingUrl = f.tracking_url || (Array.isArray(f.tracking_urls) ? f.tracking_urls[0] : null)
-            || `https://zicabella.shiprocket.co/tracking/${tn}`;
-          break;
-        }
-      }
-    }
-
     // 1. Locate master Order
     let order: any = null;
     if (options?.localOrderId) {
@@ -760,6 +791,50 @@ export async function pullAndSyncShopifyOrder(
         where: { internalOrderNumber: extractedNumber },
         include: { shipments: true },
       }).catch(() => null);
+    }
+
+    if (o.cancelled_at) {
+      const { shouldHonorShopifyOrderCancel } = await import('@/lib/services/orderLifecycleService');
+      const decision = shouldHonorShopifyOrderCancel(order, {
+        financial_status: o.financial_status,
+        cancelled_at: o.cancelled_at,
+        cancel_reason: o.cancel_reason,
+      });
+      if (decision.honor) {
+        fulfillmentStatus = 'cancelled';
+        deliveryStatus = 'cancelled';
+      } else {
+        console.warn(
+          `[ShopifyOrderSync] Ignoring Shopify cancel for paid local order ` +
+            `${order?.internalOrderNumber || order?.id} (reason=${decision.reason})`
+        );
+        deliveryStatus =
+          order?.deliveryStatus && !String(order.deliveryStatus).toLowerCase().includes('cancel')
+            ? order.deliveryStatus
+            : 'pending';
+        fulfillmentStatus =
+          order?.fulfillmentStatus && !String(order.fulfillmentStatus).toLowerCase().includes('cancel')
+            ? order.fulfillmentStatus
+            : 'unfulfilled';
+      }
+    }
+
+    // Extract primary tracking details
+    let primaryTrackingNumber: string | null = null;
+    let primaryCourier: string | null = null;
+    let primaryTrackingUrl: string | null = null;
+
+    if (Array.isArray(o.fulfillments) && o.fulfillments.length > 0) {
+      for (const f of o.fulfillments) {
+        const tn = f.tracking_number || (Array.isArray(f.tracking_numbers) ? f.tracking_numbers[0] : null);
+        if (tn) {
+          primaryTrackingNumber = String(tn);
+          primaryCourier = f.tracking_company || f.courier || 'Standard Express';
+          primaryTrackingUrl = f.tracking_url || (Array.isArray(f.tracking_urls) ? f.tracking_urls[0] : null)
+            || `https://zicabella.shiprocket.co/tracking/${tn}`;
+          break;
+        }
+      }
     }
 
     // 2. Locate WebStoreOrder
