@@ -162,12 +162,5 @@ export async function fetchBestAutoApplyPromo(opts: {
     // ignore
   }
 
-  // Fallback 10% auto-applied discount calculated from total subtotal
-  return {
-    code: 'PREPAID10',
-    type: 'percentage',
-    value: 10,
-    discountAmount: Math.round((subtotal * 10) / 100),
-    autoApply: true,
-  };
+  return null;
 }

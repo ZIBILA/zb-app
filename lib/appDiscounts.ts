@@ -273,6 +273,42 @@ export async function pickBestAutoApplyDiscount(opts: {
   return validated[0] || null;
 }
 
+/** ₹ slack for client/server rounding differences on the coupon amount. */
+const DISCOUNT_AMOUNT_TOLERANCE = 1;
+
+/**
+ * Backend guard for app checkout: re-validate the coupon the app sends (exists, active, dates,
+ * usage limit, min order, payment-method rule) and refuse a discountAmount larger than the coupon
+ * gives on the server-priced order amount. A smaller claimed amount is allowed (customer pays more).
+ */
+export async function verifyAppOrderDiscount(opts: {
+  code?: string | null;
+  claimedAmount?: number | string | null;
+  orderAmount: number;
+  paymentMethod?: string | null;
+}): Promise<{ ok: true; discountAmount: number } | { ok: false; error: string }> {
+  const code = String(opts.code || '').trim();
+  const claimed = Math.max(0, Number(opts.claimedAmount) || 0);
+
+  if (!code) {
+    return claimed > 0
+      ? { ok: false, error: 'Discount amount requires a valid discount code' }
+      : { ok: true, discountAmount: 0 };
+  }
+
+  const result = await validateAppDiscount({
+    code,
+    orderAmount: opts.orderAmount,
+    paymentMethod: opts.paymentMethod,
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+
+  if (claimed > result.discount.discountAmount + DISCOUNT_AMOUNT_TOLERANCE) {
+    return { ok: false, error: 'Discount amount does not match this coupon. Please re-apply the code.' };
+  }
+  return { ok: true, discountAmount: claimed };
+}
+
 /**
  * Backend guard for app order creation: a coupon code that the app sends with an order must be
  * allowed for that order's payment method (e.g. a Prepaid Only code on a COD order is refused).

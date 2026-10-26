@@ -90,17 +90,6 @@ export async function POST(req: Request) {
 
     const isCod = String(orderData?.paymentMethod || '').toUpperCase() === 'COD';
 
-    // Enforce the coupon's Prepaid Only / Prepaid & COD rule before any payment order is created.
-    {
-      const { getAppDiscountApplicabilityError } = await import('@/lib/appDiscounts');
-      const discountRuleError = await getAppDiscountApplicabilityError({
-        code: orderData?.discountCode || orderData?.discount_code,
-        paymentMethod: orderData?.paymentMethod,
-      });
-      if (discountRuleError) {
-        return NextResponse.json({ error: discountRuleError }, { status: 400, headers: corsHeaders });
-      }
-    }
     const { isCodAllowedForCountry, resolveCheckoutCountry, COD_INDIA_ONLY_ERROR } = await import('@/lib/cod-availability');
     const appCountry = resolveCheckoutCountry({
       displayCountry: orderData?.displayCountry || orderData?.countryCode,
@@ -113,25 +102,47 @@ export async function POST(req: Request) {
     const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
     const configuredCodFee = isCod ? await getConfiguredCodUpfrontAmount() : 0;
 
-    // Prepaid: reprice line items from Shopify when possible so Razorpay isn't opened for ₹1.
-    let prepaidCharge = amountRupees;
-    if (!isCod && Array.isArray(orderData?.lineItems) && orderData.lineItems.length > 0) {
+    // Reprice line items from Shopify when possible (null = reprice unavailable).
+    const lineItems = Array.isArray(orderData?.lineItems) ? orderData.lineItems : [];
+    let pricedSubtotal: number | null = null;
+    if (lineItems.length > 0) {
       try {
         const { fetchVariantPriceMap, sumLineItemsWithAuthoritativePrices } = await import(
           '@/lib/shopify-variant-prices'
         );
         const priceMap = await fetchVariantPriceMap(
-          orderData.lineItems.map((li: any) => String(li?.variantId || li?.variant_id || ''))
+          lineItems.map((li: any) => String(li?.variantId || li?.variant_id || ''))
         );
         if (priceMap.size > 0) {
-          const priced = sumLineItemsWithAuthoritativePrices(orderData.lineItems, priceMap);
-          const credits = Math.max(0, Number(orderData.appliedStoreCredits || 0));
-          const discount = Math.max(0, Number(orderData.discountAmount || orderData.discount_amount || 0));
-          prepaidCharge = Math.max(0, Math.round((priced.subtotal - credits - discount) * 100) / 100);
+          pricedSubtotal = sumLineItemsWithAuthoritativePrices(lineItems, priceMap).subtotal;
         }
       } catch (e: any) {
-        console.warn('[MobileCheckout] Prepaid reprice failed:', e?.message);
+        console.warn('[MobileCheckout] Reprice failed:', e?.message);
       }
+    }
+
+    // Re-validate the coupon and its amount before any payment order is created.
+    {
+      const clientLinesTotal = lineItems.reduce(
+        (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
+      const { verifyAppOrderDiscount } = await import('@/lib/appDiscounts');
+      const discountCheck = await verifyAppOrderDiscount({
+        code: orderData?.discountCode || orderData?.discount_code,
+        claimedAmount: orderData?.discountAmount ?? orderData?.discount_amount,
+        orderAmount: pricedSubtotal ?? clientLinesTotal,
+        paymentMethod: orderData?.paymentMethod,
+      });
+      if (!discountCheck.ok) {
+        return NextResponse.json({ error: discountCheck.error }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // Prepaid: use the repriced subtotal when available so Razorpay isn't opened for ₹1.
+    let prepaidCharge = amountRupees;
+    if (!isCod && pricedSubtotal !== null) {
+      const credits = Math.max(0, Number(orderData.appliedStoreCredits || 0));
+      const discount = Math.max(0, Number(orderData.discountAmount || orderData.discount_amount || 0));
+      prepaidCharge = Math.max(0, Math.round((pricedSubtotal - credits - discount) * 100) / 100);
     }
     if (!isCod && prepaidCharge <= 0) {
       return NextResponse.json(

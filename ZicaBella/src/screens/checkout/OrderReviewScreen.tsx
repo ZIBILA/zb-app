@@ -118,6 +118,8 @@ export default function OrderReviewScreen() {
 
   // Manual promo sticky until user removes it (don't let auto-apply overwrite).
   const manualPromoRef = React.useRef(false);
+  const appliedDiscountRef = React.useRef(appliedDiscount);
+  appliedDiscountRef.current = appliedDiscount;
 
   // ─── Auto-apply best coupon for COD or prepaid ───
   // Uses storefront coupons (live on prod) + PREPAID10 fallback — not only /discounts/active.
@@ -142,6 +144,10 @@ export default function OrderReviewScreen() {
           setAppliedDiscount(best);
           setPromoCode(best.code);
           setPromoError(null);
+        } else if (appliedDiscountRef.current?.autoApply) {
+          // Nothing qualifies for this payment method — drop the previously auto-applied promo.
+          setAppliedDiscount(null);
+          setPromoCode('');
         }
       } catch (e) {
         console.warn('[OrderReview] auto-apply failed:', e);

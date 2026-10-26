@@ -89,13 +89,6 @@ export async function POST(req: Request) {
     const rawDiscountCode = body.discountCode || body.discount_code || null;
     const rawDiscountAmount = Number(body.discountAmount || body.discount_amount || 0);
 
-    // Enforce the coupon's Prepaid Only / Prepaid & COD rule on the server — never trust the app UI.
-    {
-      const { getAppDiscountApplicabilityError } = await import('@/lib/appDiscounts');
-      const discountRuleError = await getAppDiscountApplicabilityError({ code: rawDiscountCode, paymentMethod });
-      if (discountRuleError) return jsonError(discountRuleError, 400);
-    }
-
     const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import('@/lib/cod-upfront');
     const configuredCodFee = paymentMethod === 'COD' ? await getConfiguredCodUpfrontAmount() : 0;
     // Always use dashboard fee — never trust client for the locked amount
@@ -121,6 +114,19 @@ export async function POST(req: Request) {
       }
     } catch (priceErr: any) {
       console.warn('[App API] Variant reprice failed; using client line totals:', priceErr?.message);
+    }
+
+    // Re-validate the coupon and its amount on the server — never trust the app's discount.
+    // A paid order refused here still completes via the Razorpay webhook on its pending row.
+    {
+      const { verifyAppOrderDiscount } = await import('@/lib/appDiscounts');
+      const discountCheck = await verifyAppOrderDiscount({
+        code: rawDiscountCode,
+        claimedAmount: couponDiscount,
+        orderAmount: linesTotal,
+        paymentMethod,
+      });
+      if (!discountCheck.ok) return jsonError(discountCheck.error, 400);
     }
 
     // 100% store credit or 100% coupon/discount: there is no Razorpay payment to verify.

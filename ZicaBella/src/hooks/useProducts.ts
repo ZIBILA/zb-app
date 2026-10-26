@@ -300,7 +300,8 @@ export function useProducts(count = 24) {
 
 export function useProductByHandle(handle: string, initialProduct?: FlatProduct | null) {
   const cacheKey = `product_detail_${handle}`;
-  const initial = (handle ? apiCache.get(cacheKey)?.data : null) || initialProduct || null;
+  // apiCache holds the raw `{ product }` response from cachedFetch — normalize before use.
+  const initial = (handle ? extractProduct(apiCache.get(cacheKey)?.data) : null) || initialProduct || null;
   const [product, setProduct] = useState<FlatProduct | null>(initial);
   const [loading, setLoading] = useState(!initial);
   const [error, setError] = useState<string | null>(null);
@@ -309,7 +310,7 @@ export function useProductByHandle(handle: string, initialProduct?: FlatProduct 
   useEffect(() => {
     if (!handle) return;
     const currentKey = `product_detail_${handle}`;
-    const memCached = apiCache.get(currentKey)?.data || initialProduct || null;
+    const memCached = extractProduct(apiCache.get(currentKey)?.data) || initialProduct || null;
 
     if (memCached) {
       setProduct(memCached);
