@@ -4,53 +4,64 @@ import { isPrivateIP } from "@/lib/ip-geo";
 import { clientIpFromHeaders } from "@/lib/client-ip";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
-// ── Unknown collection handles → a real 404 ─────────────────────────────────
+// ── Unknown collection / product handles → a real 404 ───────────────────────
 // The app streams every page behind app/loading.tsx, so a notFound() thrown in a
-// collection page, its metadata or its layout only yields a "soft 404" (200 +
-// not-found UI). Rewriting an unknown handle to an unmatched path makes Next answer
-// with the branded not-found page and a 404 status. Handles come from
-// /api/collections/handles (ISR 120 s) and are cached here per instance for 5 min;
-// any failure fails open (no rewrite).
-const COLLECTION_HANDLES_TTL_MS = 5 * 60_000;
-const COLLECTION_HANDLES_RETRY_MS = 60_000;
-let collectionHandlesCache: { set: Set<string> | null; validUntil: number; status: string } = { set: null, validUntil: 0, status: 'init' };
-let collectionHandlesInflight: Promise<Set<string> | null> | null = null;
+// page, its metadata or its layout only yields a "soft 404" (200 + not-found UI).
+// Rewriting an unknown handle to an unmatched path makes Next answer with the
+// branded not-found page and a 404 status. Handles come from
+// /api/collections/handles and /api/products/handles (ISR 120 s), fetched through
+// the app's own listener first (no Cloudflare in the way) and cached here per
+// instance for 5 min; any failure fails open (no rewrite).
+const HANDLES_TTL_MS = 5 * 60_000;
+const HANDLES_RETRY_MS = 60_000;
+type HandleKind = 'collections' | 'products';
+const handleCaches: Record<HandleKind, { set: Set<string> | null; validUntil: number; status: string; inflight: Promise<Set<string> | null> | null }> = {
+  collections: { set: null, validUntil: 0, status: 'init', inflight: null },
+  products: { set: null, validUntil: 0, status: 'init', inflight: null },
+};
 
 /** The app's own listener first (no Cloudflare / WAF in the way), then the public origin. */
-function collectionHandleSources(nextUrl: URL): string[] {
+function handleSources(nextUrl: URL): string[] {
   const port = (typeof process !== 'undefined' && process.env?.PORT) || nextUrl.port || '3000';
   const sources = [`http://127.0.0.1:${port}`];
   if (!/^(127\.0\.0\.1|localhost)$/.test(nextUrl.hostname)) sources.push(nextUrl.origin);
   return sources;
 }
 
-async function knownCollectionHandles(nextUrl: URL): Promise<Set<string> | null> {
-  const now = Date.now();
-  if (now < collectionHandlesCache.validUntil) return collectionHandlesCache.set;
-  if (!collectionHandlesInflight) {
-    collectionHandlesInflight = (async () => {
+async function knownHandles(kind: HandleKind, nextUrl: URL): Promise<Set<string> | null> {
+  const c = handleCaches[kind];
+  if (Date.now() < c.validUntil) return c.set;
+  if (!c.inflight) {
+    c.inflight = (async () => {
       const failures: string[] = [];
-      for (const base of collectionHandleSources(nextUrl)) {
+      for (const base of handleSources(nextUrl)) {
         try {
-          const res = await fetch(`${base}/api/collections/handles`, { signal: AbortSignal.timeout(2500), cache: 'no-store', headers: { accept: 'application/json' } });
+          const res = await fetch(`${base}/api/${kind}/handles`, { signal: AbortSignal.timeout(2500), cache: 'no-store', headers: { accept: 'application/json' } });
           const data = res.ok ? await res.json().catch(() => null) : null;
           const handles: unknown = data?.handles;
           if (Array.isArray(handles) && handles.length) {
-            collectionHandlesCache = { set: new Set(handles.map(h => String(h).toLowerCase())), validUntil: Date.now() + COLLECTION_HANDLES_TTL_MS, status: 'ok' };
-            collectionHandlesInflight = null;
-            return collectionHandlesCache.set;
+            c.set = new Set(handles.map(h => String(h).toLowerCase())); c.validUntil = Date.now() + HANDLES_TTL_MS; c.status = 'ok';
+            c.inflight = null;
+            return c.set;
           }
           failures.push(`${res.status}`);
         } catch (e: any) {
           failures.push(String(e?.name || e?.message || 'error').slice(0, 24));
         }
       }
-      collectionHandlesCache = { set: null, validUntil: Date.now() + COLLECTION_HANDLES_RETRY_MS, status: `unavailable:${failures.join(',')}` };
-      collectionHandlesInflight = null;
+      c.set = null; c.validUntil = Date.now() + HANDLES_RETRY_MS; c.status = `unavailable:${failures.join(',')}`;
+      c.inflight = null;
       return null;
     })();
   }
-  return collectionHandlesInflight;
+  return c.inflight;
+}
+
+/** Same normalisation as fetchProductByHandle: last path segment, ".json" stripped, lowercase. */
+function productKey(raw: string): string {
+  let v = raw;
+  try { v = decodeURIComponent(raw); } catch { /* keep raw */ }
+  return v.trim().replace(/\.json$/i, '').replace(/^\/+|\/+$/g, '').split('/').pop()?.toLowerCase() || '';
 }
 
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
@@ -225,19 +236,20 @@ export default withAuth(
                          !pathname.startsWith('/api/admin') &&
                          !pathname.startsWith('/api/webhooks');
 
-    // /collections/<unknown-handle> → 404 (see knownCollectionHandles above). 'all' is virtual.
-    // x-zb-handles on collection pages says whether the handle list was available (post-deploy check).
+    // /collections/<unknown> and /products/<unknown> → 404 (see knownHandles above).
+    // 'all' is a virtual collection. x-zb-handles on these pages says whether the
+    // handle list was available (post-deploy check).
     let collectionCheckHeader = '';
-    const collectionMatch = isStorefront && req.method === 'GET' ? pathname.match(/^\/collections\/([^/]+)\/?$/) : null;
-    if (collectionMatch) {
-      let handle = '';
-      try { handle = decodeURIComponent(collectionMatch[1]).trim().toLowerCase(); } catch { handle = collectionMatch[1].toLowerCase(); }
-      if (handle && handle !== 'all') {
-        const known = await knownCollectionHandles(req.nextUrl);
-        if (known && !known.has(handle)) {
-          return NextResponse.rewrite(new URL('/__collection-not-found', req.url));
+    const handleMatch = isStorefront && req.method === 'GET' ? pathname.match(/^\/(collections|products)\/([^/]+)\/?$/) : null;
+    if (handleMatch) {
+      const kind = handleMatch[1] as HandleKind;
+      const key = kind === 'products' ? productKey(handleMatch[2]) : productKey(handleMatch[2]);
+      if (key && !(kind === 'collections' && key === 'all')) {
+        const known = await knownHandles(kind, req.nextUrl);
+        if (known && !known.has(key)) {
+          return NextResponse.rewrite(new URL(`/__${kind}-not-found`, req.url));
         }
-        collectionCheckHeader = known ? 'ok' : collectionHandlesCache.status;
+        collectionCheckHeader = known ? 'ok' : handleCaches[kind].status;
       }
     }
 
