@@ -1853,6 +1853,30 @@ export default function CheckoutPage() {
       });
       if (optionError) throw new Error(optionError);
 
+      // Snap ADD_BILLING: a returning customer who picked a saved address reaches this
+      // point without handleProceed or a payment-method click, so nothing has fired it
+      // yet. Same moment as Meta's AddPaymentInfo below; the once-guard keeps it single.
+      if (!paymentInfoFired) {
+        const snapNameParts = (address.name || "").trim().split(/\s+/);
+        trackSnapAddBilling(
+          subtotal,
+          'INR', // subtotal is the INR base amount (cart prices are INR)
+          {
+            country: address.countryCode || address.country,
+            st: address.state,
+            ct: address.city,
+            zp: address.zip,
+            fn: snapNameParts[0] || undefined,
+            ln: snapNameParts.length > 1 ? snapNameParts.slice(1).join(" ") : undefined,
+            em: address.email || undefined,
+            ph: address.phone || undefined,
+          },
+          snapCartPayload(items).ids,
+          snapCartPayload(items).numItems,
+          snapCartPayload(items).contents
+        );
+        setPaymentInfoFired(true);
+      }
       // Meta AddPaymentInfo: the shopper is now actually paying (Razorpay opens next).
       fireMetaAddPaymentInfo();
 
