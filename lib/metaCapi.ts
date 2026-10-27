@@ -15,7 +15,7 @@ import {
   isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash, isPlaceholderZipHash,
 } from './tracking/placeholder-identity';
 
-import { resolveMetaServerPixelId, metaPixelIdProblem } from './meta/config';
+import { resolveMetaServerPixelId, metaPixelIdProblem, isMetaProductionSite } from './meta/config';
 import { ldUFields } from './meta/consent';
 
 // '' when Meta tracking is off on this deployment (see lib/meta/config.ts): every
@@ -29,7 +29,18 @@ if (process.env.NODE_ENV === 'production') {
   const problem = metaPixelIdProblem();
   if (problem) console.error('[Meta CAPI][ALERT] pixel configuration:', problem);
 }
-const TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE;
+// META_TEST_EVENT_CODE turns every CAPI event into an Events Manager "test event":
+// Meta shows it in the Test Events tab and never counts it for ads reporting or
+// optimisation. Left set on the live site it would silently void every real
+// conversion — and the ledger would still mark each Purchase as sent, so those
+// sales could never be re-sent once the code was removed. It is therefore
+// honoured only off the live site (dev / staging / preview builds).
+const TEST_EVENT_CODE_RAW = (process.env.META_TEST_EVENT_CODE || '').trim();
+const TEST_CODE_ON_LIVE_SITE = !!TEST_EVENT_CODE_RAW && process.env.NODE_ENV === 'production' && isMetaProductionSite();
+const TEST_EVENT_CODE = TEST_EVENT_CODE_RAW && !TEST_CODE_ON_LIVE_SITE ? TEST_EVENT_CODE_RAW : '';
+if (TEST_CODE_ON_LIVE_SITE) {
+  console.error('[Meta CAPI][ALERT] META_TEST_EVENT_CODE is set on the live site and is IGNORED: a test code would turn every real conversion into a test event. Unset it, or test from a staging deployment.');
+}
 
 /**
  * Compute the reported value for Meta events. Returns full real value for all events.
