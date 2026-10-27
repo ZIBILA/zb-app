@@ -90,7 +90,9 @@ export function captureSnapClickId(): string | null {
   const urlParams = new URLSearchParams(window.location.search);
   const scCid = urlParams.get('ScCid') || urlParams.get('sccid') || urlParams.get('sc_click_id');
   if (scCid) {
-    setClientCookie('ScCid', scCid, 90);
+    // middleware.ts already set this value as an HTTP cookie (full 90 days on Safari);
+    // rewriting the same value from script would replace it with a 24 h-capped one.
+    if (getClientCookie('ScCid') !== scCid) setClientCookie('ScCid', scCid, 90);
     return scCid;
   }
   return getClientCookie('ScCid');

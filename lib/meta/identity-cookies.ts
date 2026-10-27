@@ -1,7 +1,8 @@
 /**
  * Server-side (HTTP) identity cookies for Meta matching: _fbp, _fbc and
  * zb_external_id, minted and refreshed by middleware.ts on every storefront
- * page request.
+ * page request — plus Snap's ScCid click id and _scid cookie, kept alive the
+ * same way (Snap attributes clicks for 28 days; Safari would cap them at 24 h / 7 d).
  *
  * Why the server sets them: Safari's Intelligent Tracking Prevention caps cookies
  * written through document.cookie at 7 days, and at 24 hours when the page was
@@ -21,10 +22,16 @@
 export const FBP_COOKIE = '_fbp';
 export const FBC_COOKIE = '_fbc';
 export const EXTERNAL_ID_COOKIE = 'zb_external_id';
+/** Snapchat click id (`?ScCid=` on ad clicks) and Snap's own first-party cookie, kept alive the same way. */
+export const SC_CLICK_ID_COOKIE = 'ScCid';
+export const SCID_COOKIE = '_scid';
 
 /** Meta recommends 90 days for _fbp / _fbc; the external id follows the client's 365 days. */
 export const FBP_FBC_MAX_AGE_S = 90 * 24 * 60 * 60;
 export const EXTERNAL_ID_MAX_AGE_S = 365 * 24 * 60 * 60;
+/** Snap attributes clicks for up to 28 days; 90 days matches the client-side cookie. _scid lives 13 months. */
+export const SC_CLICK_ID_MAX_AGE_S = 90 * 24 * 60 * 60;
+export const SCID_MAX_AGE_S = 395 * 24 * 60 * 60;
 /**
  * Unchanged values are re-set (full max-age, HTTP) at most this often, tracked by
  * a small HttpOnly marker cookie: well inside Safari's 24 h / 7 d caps, and no
@@ -39,6 +46,8 @@ const FBC_RE = /^fb\.\d\.\d{10,13}\..+$/;
 /** A click id as Meta issues it: URL-safe characters only, never modified. */
 const FBCLID_RE = /^[A-Za-z0-9_-]{1,512}$/;
 const EXTERNAL_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+/** A Snap click id / _scid value as Snap issues them (URL-safe, used verbatim). */
+const SC_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 
 export interface IdentityCookieInput {
   /** Current request cookies (raw values). */
@@ -47,6 +56,10 @@ export interface IdentityCookieInput {
   externalId?: string | null;
   /** `?fbclid=` from the request URL, if any. */
   fbclid?: string | null;
+  /** Snap: current ScCid cookie, `?ScCid=` from the URL, and Snap's own _scid cookie. */
+  scCid?: string | null;
+  scClickParam?: string | null;
+  scid?: string | null;
   nowMs: number;
   /** Random UUID source (crypto.randomUUID in the edge runtime). */
   uuid: () => string;
@@ -122,6 +135,22 @@ export function planMetaIdentityCookies(input: IdentityCookieInput): IdentityCoo
     out.push({ name: EXTERNAL_ID_COOKIE, value: ext, maxAge: EXTERNAL_ID_MAX_AGE_S, changed: false });
   } else {
     out.push({ name: EXTERNAL_ID_COOKIE, value: mintExternalId(input.uuid), maxAge: EXTERNAL_ID_MAX_AGE_S, changed: true });
+  }
+
+  // ScCid: a fresh click id in the URL wins; otherwise refresh the stored one. Same
+  // Safari reasoning as _fbc — the client-side cookie (lib/snapPixel.ts) is capped at
+  // 24 h on exactly the ad-click landings that carry it.
+  const scParam = input.scClickParam && SC_ID_RE.test(input.scClickParam) ? input.scClickParam : null;
+  const existingSc = input.scCid && SC_ID_RE.test(input.scCid) ? input.scCid : null;
+  if (scParam && scParam !== existingSc) {
+    out.push({ name: SC_CLICK_ID_COOKIE, value: scParam, maxAge: SC_CLICK_ID_MAX_AGE_S, changed: true });
+  } else if (existingSc) {
+    out.push({ name: SC_CLICK_ID_COOKIE, value: existingSc, maxAge: SC_CLICK_ID_MAX_AGE_S, changed: false });
+  }
+  // _scid is written by Snap's own script (document.cookie, so Safari-capped); re-set
+  // with its current value so sc_cookie1 keeps matching across the 7-day cliff.
+  if (input.scid && SC_ID_RE.test(input.scid)) {
+    out.push({ name: SCID_COOKIE, value: input.scid, maxAge: SCID_MAX_AGE_S, changed: false });
   }
 
   return out;

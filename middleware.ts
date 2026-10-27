@@ -200,8 +200,9 @@ export default withAuth(
       ? (req.nextUrl.searchParams.get('ref') || req.nextUrl.searchParams.get('aff'))?.trim()
       : null;
 
-    // Meta identity cookies (_fbp, _fbc from ?fbclid, zb_external_id) are minted and
-    // refreshed here as HTTP cookies on storefront page loads: Safari caps
+    // Meta identity cookies (_fbp, _fbc from ?fbclid, zb_external_id) and Snap's
+    // ScCid (?ScCid) / _scid are minted and refreshed here as HTTP cookies on
+    // storefront page loads: Safari caps
     // script-written cookies at 7 days (24 h after an fbclid landing), HTTP cookies
     // it does not. Same names, domain and values the client code writes, so the
     // Pixel SDK and the client simply find them present. See lib/meta/identity-cookies.ts.
@@ -223,6 +224,9 @@ export default withAuth(
           fbc: req.cookies.get('_fbc')?.value,
           externalId: req.cookies.get('zb_external_id')?.value,
           fbclid: req.nextUrl.searchParams.get('fbclid'),
+          scCid: req.cookies.get('ScCid')?.value,
+          scClickParam: req.nextUrl.searchParams.get('ScCid') || req.nextUrl.searchParams.get('sccid'),
+          scid: req.cookies.get('_scid')?.value,
           nowMs: Date.now(),
           uuid: () => crypto.randomUUID(),
         });

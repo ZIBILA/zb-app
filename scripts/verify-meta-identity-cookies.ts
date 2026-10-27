@@ -70,6 +70,19 @@ const byName = (plan: ReturnType<typeof planMetaIdentityCookies>) => Object.from
   check('malformed external id re-minted', p.zb_external_id?.value === 'zb.' + uuid());
 }
 
+// 6b. Snap: a ?ScCid= landing mints the click-id cookie; an existing one is refreshed; _scid is re-set.
+{
+  const p = byName(planMetaIdentityCookies({ nowMs: now, uuid, random, scClickParam: 'ScCidABC123_xyz' }));
+  check('ScCid minted from the URL (90 d)', p.ScCid?.value === 'ScCidABC123_xyz' && p.ScCid.changed === true && p.ScCid.maxAge === 90 * 86400);
+  const r = byName(planMetaIdentityCookies({ nowMs: now, uuid, random, scCid: 'ScCidABC123_xyz', scid: '9cc9f404-a7d6-42ef-b3a9-c11983131522' }));
+  check('existing ScCid refreshed unchanged', r.ScCid?.value === 'ScCidABC123_xyz' && r.ScCid.changed === false);
+  check('_scid re-set with its own value (395 d)', r._scid?.value === '9cc9f404-a7d6-42ef-b3a9-c11983131522' && r._scid.maxAge === 395 * 86400);
+  const n = byName(planMetaIdentityCookies({ nowMs: now, uuid, random, scClickParam: 'new-click-id-0001', scCid: 'ScCidABC123_xyz' }));
+  check('a new ScCid in the URL replaces the stored one', n.ScCid?.value === 'new-click-id-0001' && n.ScCid.changed === true);
+  const bad = byName(planMetaIdentityCookies({ nowMs: now, uuid, random, scClickParam: 'bad id', scCid: '<x>', scid: 'y' }));
+  check('malformed Snap ids ignored', bad.ScCid === undefined && bad._scid === undefined);
+}
+
 // 7. Cookie domain matches lib/metaPixel.ts setClientCookie (last two labels; none for localhost / IPs).
 check('domain: zicabella.com → zicabella.com', identityCookieDomain('zicabella.com') === 'zicabella.com');
 check('domain: www.zicabella.com → zicabella.com', identityCookieDomain('www.zicabella.com:443') === 'zicabella.com');
