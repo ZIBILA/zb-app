@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { sendSnapEvent } from '@/lib/snap-capi';
+import { sendSnapEvent, isEventTimeSendable } from '@/lib/snap-capi';
 import { isSnapExcludedPath, snapStorefrontHosts } from '@/lib/snap/config';
 import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
 import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
@@ -174,7 +174,10 @@ export async function POST(req: NextRequest) {
     const result = await sendSnapEvent({
       eventName: body.eventName,
       eventId: body.eventId,
-      eventTime: body.eventTime,
+      // The browser clock is trusted only inside Snap's window (7 days back, 5 min
+      // ahead); a device with a wrong clock gets the server's receive time instead of
+      // having every one of its server events dropped.
+      eventTime: isEventTimeSendable(body.eventTime) ? body.eventTime : Date.now(),
       eventSourceUrl: body.eventSourceUrl,
       userAgent: body.userAgent || req.headers.get('user-agent') || '',
       ipAddress: ip,
