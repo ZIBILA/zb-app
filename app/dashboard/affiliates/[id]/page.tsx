@@ -173,7 +173,7 @@ export default function AffiliateDetailPage() {
 
   if (loading) {
     return (
-      <div className="p-12 text-center text-zinc-500">
+      <div className="p-12 text-center text-foreground/50">
         <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
         Loading creator profile...
       </div>
@@ -182,7 +182,7 @@ export default function AffiliateDetailPage() {
 
   if (!affiliate) {
     return (
-      <div className="p-8 text-center text-zinc-400">
+      <div className="p-8 text-center text-foreground/60">
         Affiliate not found.
         <div className="mt-4">
           <Link href="/dashboard/affiliates" className="text-sm text-emerald-400 underline">
@@ -196,21 +196,21 @@ export default function AffiliateDetailPage() {
   const defaultAccount = affiliate.payoutAccounts?.find((a: any) => a.isDefault) || affiliate.payoutAccounts?.[0];
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 text-zinc-100">
+    <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 text-foreground">
       {/* ─── Back & Header ─── */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800/80 pb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-foreground/10 pb-5">
         <div>
           <Link
             href="/dashboard/affiliates"
-            className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white mb-2 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs text-foreground/60 hover:text-foreground mb-2 transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back to Affiliates
           </Link>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight text-white">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
               {affiliate.displayName || affiliate.customer?.name || "Affiliate Creator"}
             </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-semibold bg-zinc-800 border border-zinc-700 text-zinc-200">
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-semibold bg-foreground/[0.06] border border-foreground/15 text-foreground">
               {affiliate.code}
             </span>
             {affiliate.status === "APPROVED" && (
@@ -224,13 +224,13 @@ export default function AffiliateDetailPage() {
               </span>
             )}
             {affiliate.status === "SUSPENDED" && (
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-zinc-700/30 text-zinc-400 border border-zinc-700/40">
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-foreground/[0.08] text-foreground/60 border border-foreground/15">
                 Suspended
               </span>
             )}
           </div>
-          <p className="text-xs text-zinc-400 mt-1">
-            Customer ID: <code className="text-zinc-300">{affiliate.customerId}</code> • Joined: {new Date(affiliate.appliedAt).toLocaleDateString("en-IN")}
+          <p className="text-xs text-foreground/60 mt-1">
+            Customer ID: <code className="text-foreground/80">{affiliate.customerId}</code> • Joined: {new Date(affiliate.appliedAt).toLocaleDateString("en-IN")}
           </p>
         </div>
 
@@ -247,7 +247,7 @@ export default function AffiliateDetailPage() {
           {affiliate.status === "APPROVED" && (
             <button
               onClick={handleSuspend}
-              className="px-3.5 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
+              className="px-3.5 py-2 rounded-lg bg-foreground/[0.06] hover:bg-foreground/10 border border-foreground/15 text-xs font-medium text-foreground/80 transition-colors"
             >
               Suspend Partnership
             </button>
@@ -266,45 +266,45 @@ export default function AffiliateDetailPage() {
 
       {/* ─── Financial & Performance KPIs ─── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium uppercase mb-1">
+        <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10">
+          <div className="flex items-center justify-between text-foreground/60 text-xs font-medium uppercase mb-1">
             <span>Available Balance</span>
             <Wallet className="w-4 h-4 text-emerald-400" />
           </div>
-          <div className="text-2xl font-bold text-white">₹{affiliate.availableBalance.toLocaleString("en-IN")}</div>
-          <div className="text-xs text-zinc-400 mt-1">
+          <div className="text-2xl font-bold text-foreground">₹{affiliate.availableBalance.toLocaleString("en-IN")}</div>
+          <div className="text-xs text-foreground/60 mt-1">
             Pending Hold: ₹{affiliate.pendingEarnings.toLocaleString("en-IN")}
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium uppercase mb-1">
+        <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10">
+          <div className="flex items-center justify-between text-foreground/60 text-xs font-medium uppercase mb-1">
             <span>Lifetime Earnings</span>
             <TrendingUp className="w-4 h-4 text-blue-400" />
           </div>
-          <div className="text-2xl font-bold text-white">₹{affiliate.lifetimeEarnings.toLocaleString("en-IN")}</div>
-          <div className="text-xs text-zinc-400 mt-1">
+          <div className="text-2xl font-bold text-foreground">₹{affiliate.lifetimeEarnings.toLocaleString("en-IN")}</div>
+          <div className="text-xs text-foreground/60 mt-1">
             Paid Out: ₹{affiliate.paidOut.toLocaleString("en-IN")}
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium uppercase mb-1">
+        <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10">
+          <div className="flex items-center justify-between text-foreground/60 text-xs font-medium uppercase mb-1">
             <span>Attributed Revenue</span>
             <CreditCard className="w-4 h-4 text-amber-400" />
           </div>
-          <div className="text-2xl font-bold text-white">₹{affiliate.totalRevenue.toLocaleString("en-IN")}</div>
-          <div className="text-xs text-zinc-400 mt-1">
+          <div className="text-2xl font-bold text-foreground">₹{affiliate.totalRevenue.toLocaleString("en-IN")}</div>
+          <div className="text-xs text-foreground/60 mt-1">
             {affiliate.totalConversions} conversions
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium uppercase mb-1">
+        <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10">
+          <div className="flex items-center justify-between text-foreground/60 text-xs font-medium uppercase mb-1">
             <span>Commission Rate</span>
             <button
               onClick={() => setIsEditingRate(!isEditingRate)}
-              className="text-zinc-400 hover:text-white"
+              className="text-foreground/60 hover:text-foreground"
             >
               <Edit2 className="w-3.5 h-3.5" />
             </button>
@@ -318,7 +318,7 @@ export default function AffiliateDetailPage() {
                 step={0.01}
                 value={newRatePercent}
                 onChange={(e) => setNewRatePercent(Number(e.target.value))}
-                className="w-16 px-2 py-1 rounded bg-zinc-950 border border-zinc-700 text-sm font-bold text-white"
+                className="w-16 px-2 py-1 rounded bg-background border border-foreground/15 text-sm font-bold text-foreground"
               />
               <span className="text-xs font-bold">%</span>
               <button
@@ -329,9 +329,9 @@ export default function AffiliateDetailPage() {
               </button>
             </div>
           ) : (
-            <div className="text-2xl font-bold text-white">{formatCommissionRate(affiliate.commissionRate)}</div>
+            <div className="text-2xl font-bold text-foreground">{formatCommissionRate(affiliate.commissionRate)}</div>
           )}
-          <div className="text-xs text-zinc-400 mt-1">
+          <div className="text-xs text-foreground/60 mt-1">
             Total Clicks: {affiliate.totalClicks.toLocaleString("en-IN")}
           </div>
         </div>
@@ -339,14 +339,14 @@ export default function AffiliateDetailPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* ─── Payout Account & Security Card ─── */}
-        <div className="lg:col-span-1 p-5 rounded-xl bg-zinc-900/50 border border-zinc-800/80 space-y-4">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+        <div className="lg:col-span-1 p-5 rounded-xl bg-foreground/[0.03] border border-foreground/10 space-y-4">
+          <div className="flex items-center justify-between border-b border-foreground/10 pb-3">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Wallet className="w-4 h-4 text-emerald-400" />
               Payout Account
             </h3>
             {defaultAccount && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono">
+              <span className="text-[10px] px-2 py-0.5 rounded bg-foreground/[0.06] text-foreground/80 font-mono">
                 {defaultAccount.method}
               </span>
             )}
@@ -355,43 +355,43 @@ export default function AffiliateDetailPage() {
           {defaultAccount ? (
             <div className="space-y-3 text-sm">
               <div>
-                <span className="text-xs text-zinc-500 block">Account Holder</span>
-                <span className="font-medium text-zinc-200">{defaultAccount.accountHolderName}</span>
+                <span className="text-xs text-foreground/50 block">Account Holder</span>
+                <span className="font-medium text-foreground">{defaultAccount.accountHolderName}</span>
               </div>
 
               {defaultAccount.method === "BANK" ? (
                 <>
                   <div>
-                    <span className="text-xs text-zinc-500 block">Bank Name</span>
-                    <span className="text-zinc-200">{defaultAccount.bankName || "—"}</span>
+                    <span className="text-xs text-foreground/50 block">Bank Name</span>
+                    <span className="text-foreground">{defaultAccount.bankName || "—"}</span>
                   </div>
                   <div>
-                    <span className="text-xs text-zinc-500 block">Account Number</span>
-                    <span className="font-mono text-zinc-200">
+                    <span className="text-xs text-foreground/50 block">Account Number</span>
+                    <span className="font-mono text-foreground">
                       {revealedBank ? revealedBank.accountNumber : `••••••••${defaultAccount.last4}`}
                     </span>
                   </div>
                   {revealedBank && (
                     <div>
-                      <span className="text-xs text-zinc-500 block">IFSC Code</span>
+                      <span className="text-xs text-foreground/50 block">IFSC Code</span>
                       <span className="font-mono text-emerald-400">{revealedBank.ifsc}</span>
                     </div>
                   )}
                 </>
               ) : (
                 <div>
-                  <span className="text-xs text-zinc-500 block">UPI ID</span>
-                  <span className="font-mono text-zinc-200">
+                  <span className="text-xs text-foreground/50 block">UPI ID</span>
+                  <span className="font-mono text-foreground">
                     {revealedBank ? revealedBank.upiId : `***${defaultAccount.last4}`}
                   </span>
                 </div>
               )}
 
-              <div className="pt-2 border-t border-zinc-800">
+              <div className="pt-2 border-t border-foreground/10">
                 <button
                   onClick={handleRevealBank}
                   disabled={isRevealingBank}
-                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-800 text-xs font-medium text-amber-400 border border-amber-500/20 transition-colors"
+                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-foreground/[0.05] hover:bg-foreground/[0.06] text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-500/20 transition-colors"
                 >
                   {revealedBank ? (
                     <>
@@ -403,20 +403,20 @@ export default function AffiliateDetailPage() {
                     </>
                   )}
                 </button>
-                <p className="text-[10px] text-zinc-500 text-center mt-1.5 flex items-center justify-center gap-1">
+                <p className="text-[10px] text-foreground/50 text-center mt-1.5 flex items-center justify-center gap-1">
                   <ShieldAlert className="w-3 h-3 text-amber-500" /> Action logged to security audit
                 </p>
               </div>
             </div>
           ) : (
-            <p className="text-sm text-zinc-500 italic">No payout account linked yet.</p>
+            <p className="text-sm text-foreground/50 italic">No payout account linked yet.</p>
           )}
         </div>
 
         {/* ─── Links Card ─── */}
-        <div className="lg:col-span-2 p-5 rounded-xl bg-zinc-900/50 border border-zinc-800/80 space-y-4">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+        <div className="lg:col-span-2 p-5 rounded-xl bg-foreground/[0.03] border border-foreground/10 space-y-4">
+          <div className="flex items-center justify-between border-b border-foreground/10 pb-3">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <MousePointerClick className="w-4 h-4 text-blue-400" />
               Trackable Links ({affiliate.links?.length || 0})
             </h3>
@@ -424,7 +424,7 @@ export default function AffiliateDetailPage() {
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="text-zinc-500 border-b border-zinc-800 uppercase text-[10px]">
+              <thead className="text-foreground/50 border-b border-foreground/10 uppercase text-[10px]">
                 <tr>
                   <th className="pb-2">Short Link</th>
                   <th className="pb-2">Target</th>
@@ -434,12 +434,12 @@ export default function AffiliateDetailPage() {
                   <th className="pb-2 text-right">Copy</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-zinc-800/50 text-zinc-300">
+              <tbody className="divide-y divide-foreground/10 text-foreground/80">
                 {affiliate.links?.map((l: any) => (
-                  <tr key={l.id} className="hover:bg-zinc-800/20">
-                    <td className="py-2.5 font-mono text-zinc-200">/r/{l.slug}</td>
+                  <tr key={l.id} className="hover:bg-foreground/[0.05]">
+                    <td className="py-2.5 font-mono text-foreground">/r/{l.slug}</td>
                     <td className="py-2.5">
-                      <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px]">{l.targetType}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-foreground/[0.06] text-[10px]">{l.targetType}</span>
                     </td>
                     <td className="py-2.5 font-mono">{l.clicks}</td>
                     <td className="py-2.5 font-mono">{l.conversions}</td>
@@ -447,7 +447,7 @@ export default function AffiliateDetailPage() {
                     <td className="py-2.5 text-right">
                       <button
                         onClick={() => handleCopyLink(l.slug)}
-                        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white"
+                        className="p-1 rounded hover:bg-foreground/[0.06] text-foreground/60 hover:text-foreground"
                         title="Copy full URL"
                       >
                         {copiedSlug === l.slug ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -462,15 +462,15 @@ export default function AffiliateDetailPage() {
       </div>
 
       {/* ─── Referrals Ledger Feed ─── */}
-      <div className="p-5 rounded-xl bg-zinc-900/50 border border-zinc-800/80 space-y-4">
-        <h3 className="text-sm font-semibold text-white flex items-center gap-2 border-b border-zinc-800 pb-3">
+      <div className="p-5 rounded-xl bg-foreground/[0.03] border border-foreground/10 space-y-4">
+        <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 border-b border-foreground/10 pb-3">
           <CreditCard className="w-4 h-4 text-emerald-400" />
           Recent Referrals & Commissions ({affiliate.referrals?.length || 0})
         </h3>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="text-zinc-500 border-b border-zinc-800 uppercase text-[10px]">
+            <thead className="text-foreground/50 border-b border-foreground/10 uppercase text-[10px]">
               <tr>
                 <th className="pb-2">Date</th>
                 <th className="pb-2">Order #</th>
@@ -481,18 +481,18 @@ export default function AffiliateDetailPage() {
                 <th className="pb-2">Hold Until</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800/50 text-zinc-300">
+            <tbody className="divide-y divide-foreground/10 text-foreground/80">
               {affiliate.referrals?.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-zinc-500">
+                  <td colSpan={7} className="py-6 text-center text-foreground/50">
                     No referrals recorded yet.
                   </td>
                 </tr>
               ) : (
                 affiliate.referrals?.map((r: any) => (
-                  <tr key={r.id} className="hover:bg-zinc-800/20">
-                    <td className="py-2.5 text-zinc-400">{new Date(r.createdAt).toLocaleDateString("en-IN")}</td>
-                    <td className="py-2.5 font-mono text-zinc-200">
+                  <tr key={r.id} className="hover:bg-foreground/[0.05]">
+                    <td className="py-2.5 text-foreground/60">{new Date(r.createdAt).toLocaleDateString("en-IN")}</td>
+                    <td className="py-2.5 font-mono text-foreground">
                       {r.order?.internalOrderNumber || (r.order?.shopifyOrderId ? `#${r.order.shopifyOrderId}` : `#ZB${r.orderId.slice(-5).toUpperCase()}`)}
                     </td>
                     <td className="py-2.5 font-mono">₹{r.orderTotal.toLocaleString("en-IN")}</td>
@@ -509,7 +509,7 @@ export default function AffiliateDetailPage() {
                         {r.status}
                       </span>
                     </td>
-                    <td className="py-2.5 text-zinc-400">
+                    <td className="py-2.5 text-foreground/60">
                       {r.holdUntil ? new Date(r.holdUntil).toLocaleDateString("en-IN") : "—"}
                     </td>
                   </tr>

@@ -833,6 +833,72 @@ export default function DashboardOverview() {
     return () => window.removeEventListener("realtime-sync", handleSyncEvent);
   }, [hasDashboardHome, fetchOverview]);
 
+  // Hooks must run on every render — keep these above the early returns below. Placed after them,
+  // they were skipped while the session loaded, crashing with "Rendered more hooks than during the
+  // previous render" right after login.
+  // ─── Stat KPI Cards (Requirements A & B) ───
+  const statCards = useMemo(() => [
+    {
+      name: "Revenue",
+      value: `₹${(stats?.totalRevenue || 0).toLocaleString("en-IN")}`,
+      subtext: `${platform === "all" ? "Omnichannel" : platform === "web" ? "Web Store" : "Mobile App"} • Paid & COD upfront`,
+      icon: Activity,
+    },
+    {
+      name: "Orders",
+      value: String(stats?.totalOrders || 0),
+      subtext: `${platform === "all" ? "All" : platform === "web" ? "Web" : "App"} realized orders`,
+      icon: ShoppingCart,
+    },
+    {
+      name: "Customers",
+      value: String(stats?.totalCustomers || 0),
+      subtext: platform === "all" ? "Total store accounts" : `${platform.toUpperCase()} customers`,
+      icon: Users,
+    },
+    {
+      name: "Low Stock",
+      value: String(stats?.lowStockItems || 0),
+      subtext: "Global warehouse items < 10 units",
+      icon: PackageSearch,
+    },
+  ], [stats, platform]);
+
+  // ─── Service Summary Cards (Requirements C & D) ───
+  const serviceCards = useMemo(() => [
+    {
+      name: "Pending Returns",
+      value: String(serviceSummary?.pendingReturns || 0),
+      total: `${serviceSummary?.totalReturns || 0} ${platform !== "all" ? platform.toUpperCase() + " " : ""}total`,
+      badge: (serviceSummary?.receivedReturns || 0) > 0 ? `${serviceSummary?.receivedReturns} received` : null,
+      icon: Undo2,
+      color: "text-amber-500",
+      bg: "bg-amber-500/10",
+      href: "/dashboard/returns",
+    },
+    {
+      name: "Pending Exchanges",
+      value: String(serviceSummary?.pendingExchanges || 0),
+      total: `${serviceSummary?.totalExchanges || 0} ${platform !== "all" ? platform.toUpperCase() + " " : ""}total`,
+      badge: null,
+      icon: ArrowLeftRight,
+      color: "text-blue-500",
+      bg: "bg-blue-500/10",
+      href: "/dashboard/exchanges",
+    },
+    {
+      name: "Pending Refunds",
+      value: String(serviceSummary?.pendingRefunds || 0),
+      total: `₹${Math.round(serviceSummary?.totalPendingRefundAmount || 0).toLocaleString("en-IN")}`,
+      isCurrency: true,
+      badge: null,
+      icon: CreditCard,
+      color: "text-emerald-500",
+      bg: "bg-emerald-500/10",
+      href: "/dashboard/refunds",
+    },
+  ], [serviceSummary, platform]);
+
   if (!session) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
@@ -930,68 +996,6 @@ export default function DashboardOverview() {
     );
   }
 
-  // ─── Stat KPI Cards (Requirements A & B) ───
-  const statCards = useMemo(() => [
-    {
-      name: "Revenue",
-      value: `₹${(stats?.totalRevenue || 0).toLocaleString("en-IN")}`,
-      subtext: `${platform === "all" ? "Omnichannel" : platform === "web" ? "Web Store" : "Mobile App"} • Paid & COD upfront`,
-      icon: Activity,
-    },
-    {
-      name: "Orders",
-      value: String(stats?.totalOrders || 0),
-      subtext: `${platform === "all" ? "All" : platform === "web" ? "Web" : "App"} realized orders`,
-      icon: ShoppingCart,
-    },
-    {
-      name: "Customers",
-      value: String(stats?.totalCustomers || 0),
-      subtext: platform === "all" ? "Total store accounts" : `${platform.toUpperCase()} customers`,
-      icon: Users,
-    },
-    {
-      name: "Low Stock",
-      value: String(stats?.lowStockItems || 0),
-      subtext: "Global warehouse items < 10 units",
-      icon: PackageSearch,
-    },
-  ], [stats, platform]);
-
-  // ─── Service Summary Cards (Requirements C & D) ───
-  const serviceCards = useMemo(() => [
-    {
-      name: "Pending Returns",
-      value: String(serviceSummary?.pendingReturns || 0),
-      total: `${serviceSummary?.totalReturns || 0} ${platform !== "all" ? platform.toUpperCase() + " " : ""}total`,
-      badge: (serviceSummary?.receivedReturns || 0) > 0 ? `${serviceSummary?.receivedReturns} received` : null,
-      icon: Undo2,
-      color: "text-amber-500",
-      bg: "bg-amber-500/10",
-      href: "/dashboard/returns",
-    },
-    {
-      name: "Pending Exchanges",
-      value: String(serviceSummary?.pendingExchanges || 0),
-      total: `${serviceSummary?.totalExchanges || 0} ${platform !== "all" ? platform.toUpperCase() + " " : ""}total`,
-      badge: null,
-      icon: ArrowLeftRight,
-      color: "text-blue-500",
-      bg: "bg-blue-500/10",
-      href: "/dashboard/exchanges",
-    },
-    {
-      name: "Pending Refunds",
-      value: String(serviceSummary?.pendingRefunds || 0),
-      total: `₹${Math.round(serviceSummary?.totalPendingRefundAmount || 0).toLocaleString("en-IN")}`,
-      isCurrency: true,
-      badge: null,
-      icon: CreditCard,
-      color: "text-emerald-500",
-      bg: "bg-emerald-500/10",
-      href: "/dashboard/refunds",
-    },
-  ], [serviceSummary, platform]);
 
 
 

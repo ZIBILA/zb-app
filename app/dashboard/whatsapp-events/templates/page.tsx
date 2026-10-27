@@ -355,7 +355,7 @@ export default function TemplatesManagerPage() {
                               <img src={imgUrl} alt="Template Header Product" className="w-full h-full object-cover" />
                               <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex flex-col justify-end p-2">
                                 <span className="text-[7px] text-emerald-400 font-bold uppercase tracking-wider font-mono">Premium Heavyweight Fit</span>
-                                <span className="text-[9px] font-bold text-white tracking-wide truncate">Zica Bella® Limited Capsule</span>
+                                <span className="text-[9px] font-bold text-foreground tracking-wide truncate">Zica Bella® Limited Capsule</span>
                               </div>
                             </div>
                           );

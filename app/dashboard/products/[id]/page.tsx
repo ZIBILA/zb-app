@@ -857,10 +857,10 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
                     onChange={(e) => setStatus(e.target.value)}
                     className="w-full bg-foreground/5 px-4 py-3 rounded-xl border border-foreground/5 focus:border-foreground/20 text-left text-[13px] font-medium text-foreground outline-none transition-all duration-300 appearance-none cursor-pointer capitalize"
                   >
-                    <option value="active" className="text-black bg-white">
+                    <option value="active" className="text-background bg-foreground">
                       Active
                     </option>
-                    <option value="draft" className="text-black bg-white">
+                    <option value="draft" className="text-background bg-foreground">
                       Draft
                     </option>
                   </select>

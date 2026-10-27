@@ -12,7 +12,6 @@ import { ArrowUp, Loader2, Sparkles, ShieldCheck, Package, RefreshCw, Ruler, Hea
 
 const LIVE_CHAT_SUBJECT = 'Live Chat Support';
 const GUEST_TICKET_KEY = 'zb_support_ticket_id';
-const GUEST_DETAILS_KEY = 'zb_support_guest';
 
 /** Server-side receipt shown on ticket creation — noise in a chat view (the AI skips it too). */
 const isReceiptMessage = (m: any) =>
@@ -100,7 +99,6 @@ function SupportPageContent() {
   // false once the ticket is handed to a human (AI stops replying) — shown to the customer
   const [aiAutoReply, setAiAutoReply] = useState(true);
   const [newMessage, setNewMessage] = useState('');
-  const [guest, setGuest] = useState({ name: '', email: '' });
 
   const loadedForCustomerRef = useRef<string | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -113,7 +111,6 @@ function SupportPageContent() {
   const sessionCustomerId: string | undefined =
     (session as any)?.customer?.id || (session?.user as any)?.id || undefined;
   const visibleMessages = chatMessages.filter((m) => !isReceiptMessage(m));
-  const needsGuestDetails = status === 'unauthenticated' && !ticketId;
 
   const messagesSignature = useCallback(
     (list: any[]) => list.map((m) => `${m.id}:${m.senderType}:${String(m.content || '').length}`).join('|'),
@@ -130,15 +127,11 @@ function SupportPageContent() {
     });
   }, []);
 
-  // URL params + saved guest details
+  // URL params
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('platform') === 'mobile' || params.get('app') === 'true') setIsMobileApp(true);
     setOrderIdParam(params.get('orderId'));
-    try {
-      const saved = localStorage.getItem(GUEST_DETAILS_KEY);
-      if (saved) setGuest(JSON.parse(saved));
-    } catch {}
   }, []);
 
   const applyTicket = useCallback((t: any) => {
@@ -162,10 +155,34 @@ function SupportPageContent() {
       setFetchingTicket(true);
       try {
         if (isLoggedIn) {
-          // Latest unfinished ticket — handed-off tickets are IN_PROGRESS and must be resumed, not replaced
+          // A chat started as a guest in this browser: attach it to the account so it continues here
+          let guestTicketId: string | null = null;
+          try {
+            guestTicketId = localStorage.getItem(GUEST_TICKET_KEY);
+          } catch {}
+          if (guestTicketId) {
+            const claim = await fetch('/api/support/tickets/claim', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ticketId: guestTicketId }),
+            }).catch(() => null);
+            if (claim && (claim.status === 403 || claim.status === 404)) {
+              // Belongs to another account (shared device) or no longer exists — don't reuse it
+              guestTicketId = null;
+              try {
+                localStorage.removeItem(GUEST_TICKET_KEY);
+              } catch {}
+            }
+          }
+
+          // Resume the guest chat if still open, else the latest unfinished ticket.
+          // Handed-off tickets are IN_PROGRESS and must be resumed, not replaced.
           const res = await fetch(`/api/support/tickets?customerId=${sessionCustomerId}`);
           const data = await res.json();
-          const active = (data.tickets || []).find((t: any) => t.status === 'OPEN' || t.status === 'IN_PROGRESS');
+          const isActive = (t: any) => t.status === 'OPEN' || t.status === 'IN_PROGRESS';
+          const tickets: any[] = data.tickets || [];
+          const active =
+            tickets.find((t) => t.id === guestTicketId && isActive(t)) || tickets.find(isActive);
           if (active) applyTicket(active);
         } else {
           const savedId = localStorage.getItem(GUEST_TICKET_KEY);
@@ -173,7 +190,9 @@ function SupportPageContent() {
             const res = await fetch(`/api/support/tickets?ticketId=${savedId}`);
             const data = await res.json();
             const t = data.tickets?.[0];
-            if (t && t.status !== 'CLOSED' && t.status !== 'RESOLVED') applyTicket(t);
+            // A ticket already attached to an account (e.g. after logout on a shared device) isn't resumed as a guest
+            if (t && !t.customerId && t.status !== 'CLOSED' && t.status !== 'RESOLVED') applyTicket(t);
+            else localStorage.removeItem(GUEST_TICKET_KEY);
           }
         }
       } catch (e) {
@@ -253,10 +272,6 @@ function SupportPageContent() {
   const sendMessage = async (text: string) => {
     const content = text.trim();
     if (!content || sendingMessage) return;
-    if (needsGuestDetails && (!guest.name.trim() || !/^\S+@\S+\.\S+$/.test(guest.email.trim()))) {
-      setSendError('Please add your name and email so our team can follow up.');
-      return;
-    }
 
     setSendError(null);
     setNewMessage('');
@@ -281,18 +296,13 @@ function SupportPageContent() {
     try {
       if (!ticketId) {
         // First message starts the conversation (the server replies with the AI answer inline)
-        if (needsGuestDetails) {
-          try {
-            localStorage.setItem(GUEST_DETAILS_KEY, JSON.stringify(guest));
-          } catch {}
-        }
         const res = await fetch('/api/support/tickets', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             customerId: sessionCustomerId || null,
-            guestName: isLoggedIn ? session?.user?.name || 'Customer' : guest.name.trim(),
-            guestEmail: isLoggedIn ? session?.user?.email || 'Logged-in User' : guest.email.trim(),
+            guestName: isLoggedIn ? session?.user?.name || 'Customer' : 'Guest',
+            guestEmail: isLoggedIn ? session?.user?.email || 'Logged-in User' : undefined,
             subject: orderIdParam ? `Order Support #${orderIdParam.slice(-8).toUpperCase()}` : LIVE_CHAT_SUBJECT,
             content,
             priority: orderIdParam ? 'HIGH' : 'MEDIUM',
@@ -316,7 +326,7 @@ function SupportPageContent() {
           ticketId,
           content,
           senderType: 'USER',
-          senderName: session?.user?.name || guest.name || 'Customer',
+          senderName: session?.user?.name || 'Guest',
           clientGeo: getStoredClientGeo(),
         }),
       });
@@ -425,28 +435,6 @@ function SupportPageContent() {
             </p>
           )}
 
-          {needsGuestDetails && (
-            <div className="mb-2 grid grid-cols-2 gap-2">
-              {/* 16px font: iOS Safari zooms into inputs smaller than 16px */}
-              <input
-                type="text"
-                value={guest.name}
-                onChange={(e) => setGuest((g) => ({ ...g, name: e.target.value }))}
-                placeholder="Your name"
-                autoComplete="name"
-                className="w-full px-4 py-2.5 rounded-2xl bg-foreground/[0.05] border border-foreground/10 text-[16px] md:text-sm text-foreground placeholder:text-foreground/40 outline-none focus:border-foreground/25"
-              />
-              <input
-                type="email"
-                value={guest.email}
-                onChange={(e) => setGuest((g) => ({ ...g, email: e.target.value }))}
-                placeholder="Email"
-                autoComplete="email"
-                className="w-full px-4 py-2.5 rounded-2xl bg-foreground/[0.05] border border-foreground/10 text-[16px] md:text-sm text-foreground placeholder:text-foreground/40 outline-none focus:border-foreground/25"
-              />
-            </div>
-          )}
-
           <form
             onSubmit={onSubmit}
             className="flex items-end gap-2 p-2 pl-4 rounded-[26px] bg-foreground/[0.05] border border-foreground/10 focus-within:border-foreground/25 transition-colors"
@@ -477,9 +465,8 @@ function SupportPageContent() {
           <p className="pt-2 text-center text-[11px] text-foreground/45">
             {sendError ? (
               <span className="text-red-600 dark:text-red-400">{sendError}</span>
-            ) : needsGuestDetails ? (
+            ) : status === 'unauthenticated' ? (
               <>
-                Have an account?{' '}
                 <button
                   type="button"
                   onClick={() => router.push('/login?callbackUrl=/support')}
@@ -487,7 +474,7 @@ function SupportPageContent() {
                 >
                   Sign in
                 </button>{' '}
-                to see your chat history.
+                for order status and account help. This chat continues after you log in.
               </>
             ) : (
               'Zica AI can make mistakes. Our team reviews every conversation.'

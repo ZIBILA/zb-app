@@ -224,20 +224,20 @@ export default function AffiliatesDashboardPage() {
       case "REJECTED":
         return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20"><XCircle className="w-3 h-3" /> Rejected</span>;
       case "SUSPENDED":
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-zinc-700/30 text-zinc-400 border border-zinc-700/40"><Ban className="w-3 h-3" /> Suspended</span>;
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-foreground/[0.08] text-foreground/60 border border-foreground/15"><Ban className="w-3 h-3" /> Suspended</span>;
     }
   };
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 text-zinc-100">
+    <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 text-foreground">
       {/* ─── Header ─── */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800/80 pb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-foreground/10 pb-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-            <Users className="w-6 h-6 text-zinc-300" />
+          <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
+            <Users className="w-6 h-6 text-foreground/80" />
             Affiliate & Creator Program
           </h1>
-          <p className="text-sm text-zinc-400 mt-1">
+          <p className="text-sm text-foreground/60 mt-1">
             Manage creator partnerships, review applications, and audit performance metrics.
           </p>
         </div>
@@ -245,7 +245,7 @@ export default function AffiliatesDashboardPage() {
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard/affiliates/withdrawals"
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-sm font-medium text-zinc-200 transition-colors"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-background hover:bg-foreground/[0.06] border border-foreground/10 text-sm font-medium text-foreground transition-colors"
           >
             <Wallet className="w-4 h-4 text-emerald-400" />
             Payout Queue
@@ -259,7 +259,7 @@ export default function AffiliatesDashboardPage() {
           <button
             onClick={() => fetchAffiliates()}
             disabled={refreshing}
-            className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition-colors"
+            className="p-2 rounded-lg bg-background hover:bg-foreground/[0.06] border border-foreground/10 text-foreground/60 hover:text-foreground transition-colors"
             title="Refresh"
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
@@ -270,48 +270,48 @@ export default function AffiliatesDashboardPage() {
       {/* ─── Summary Metric Cards ─── */}
       {metrics && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-zinc-400 mb-2">
+          <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-foreground/60 mb-2">
               <span className="text-xs font-medium uppercase tracking-wider">Creators</span>
-              <Users className="w-4 h-4 text-zinc-400" />
+              <Users className="w-4 h-4 text-foreground/60" />
             </div>
-            <div className="text-2xl font-bold text-white">{metrics.approvedCreators}</div>
-            <div className="text-xs text-zinc-400 mt-1 flex items-center gap-1.5">
+            <div className="text-2xl font-bold text-foreground">{metrics.approvedCreators}</div>
+            <div className="text-xs text-foreground/60 mt-1 flex items-center gap-1.5">
               <span className="text-amber-400">{metrics.pendingApplications} pending</span>
               <span>•</span>
               <span>{metrics.totalCreators} total</span>
             </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-zinc-400 mb-2">
+          <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-foreground/60 mb-2">
               <span className="text-xs font-medium uppercase tracking-wider">Traffic & Clicks</span>
               <MousePointerClick className="w-4 h-4 text-blue-400" />
             </div>
-            <div className="text-2xl font-bold text-white">{metrics.totalClicks.toLocaleString("en-IN")}</div>
-            <div className="text-xs text-zinc-400 mt-1">
+            <div className="text-2xl font-bold text-foreground">{metrics.totalClicks.toLocaleString("en-IN")}</div>
+            <div className="text-xs text-foreground/60 mt-1">
               Attributed short-link visits
             </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-zinc-400 mb-2">
+          <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-foreground/60 mb-2">
               <span className="text-xs font-medium uppercase tracking-wider">Attributed Revenue</span>
               <TrendingUp className="w-4 h-4 text-emerald-400" />
             </div>
-            <div className="text-2xl font-bold text-white">₹{metrics.totalRevenue.toLocaleString("en-IN")}</div>
+            <div className="text-2xl font-bold text-foreground">₹{metrics.totalRevenue.toLocaleString("en-IN")}</div>
             <div className="text-xs text-emerald-400 mt-1">
               {metrics.totalConversions} conversions
             </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800/80 backdrop-blur-sm">
-            <div className="flex items-center justify-between text-zinc-400 mb-2">
+          <div className="p-4 rounded-xl bg-foreground/[0.03] border border-foreground/10 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-foreground/60 mb-2">
               <span className="text-xs font-medium uppercase tracking-wider">Creator Balance</span>
               <Wallet className="w-4 h-4 text-amber-400" />
             </div>
-            <div className="text-2xl font-bold text-white">₹{metrics.availableBalance.toLocaleString("en-IN")}</div>
-            <div className="text-xs text-zinc-400 mt-1">
+            <div className="text-2xl font-bold text-foreground">₹{metrics.availableBalance.toLocaleString("en-IN")}</div>
+            <div className="text-xs text-foreground/60 mt-1">
               Pending: ₹{metrics.pendingEarnings.toLocaleString("en-IN")} • Paid: ₹{metrics.totalPaidOut.toLocaleString("en-IN")}
             </div>
           </div>
@@ -319,7 +319,7 @@ export default function AffiliatesDashboardPage() {
       )}
 
       {/* ─── Filter & Search Bar ─── */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-zinc-900/40 p-2.5 rounded-xl border border-zinc-800/80">
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-foreground/[0.03] p-2.5 rounded-xl border border-foreground/10">
         <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto">
           {[
             { id: "ALL", label: "All Creators" },
@@ -343,22 +343,22 @@ export default function AffiliatesDashboardPage() {
         </div>
 
         <div className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/50" />
           <input
             type="text"
             placeholder="Search code, email, phone..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-sm text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-700"
+            className="w-full pl-9 pr-3 py-1.5 rounded-lg bg-background border border-foreground/10 text-sm text-foreground placeholder:text-foreground/50 focus:outline-none focus:border-foreground/15"
           />
         </div>
       </div>
 
       {/* ─── Affiliates Table ─── */}
-      <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-xl overflow-hidden shadow-sm">
+      <div className="bg-foreground/[0.03] border border-foreground/10 rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm text-zinc-300">
-            <thead className="bg-zinc-900/80 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800">
+          <table className="w-full text-left text-sm text-foreground/80">
+            <thead className="bg-foreground/[0.03] text-[11px] font-semibold text-foreground/60 uppercase tracking-wider border-b border-foreground/10">
               <tr>
                 <th className="py-3 px-4">Creator / Customer</th>
                 <th className="py-3 px-4">Code</th>
@@ -371,41 +371,41 @@ export default function AffiliatesDashboardPage() {
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800/60">
+            <tbody className="divide-y divide-foreground/10">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-zinc-500">
+                  <td colSpan={9} className="py-12 text-center text-foreground/50">
                     <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />
                     Loading creators...
                   </td>
                 </tr>
               ) : affiliates.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-zinc-500">
+                  <td colSpan={9} className="py-12 text-center text-foreground/50">
                     No affiliates found matching the selected filter.
                   </td>
                 </tr>
               ) : (
                 affiliates.map((row) => (
-                  <tr key={row.id} className="hover:bg-zinc-800/30 transition-colors">
+                  <tr key={row.id} className="hover:bg-foreground/[0.05] transition-colors">
                     <td className="py-3 px-4">
-                      <div className="font-medium text-white">{row.displayName || row.customer?.name || "Unnamed"}</div>
-                      <div className="text-xs text-zinc-400">{row.customer?.email || row.customer?.phone || "—"}</div>
+                      <div className="font-medium text-foreground">{row.displayName || row.customer?.name || "Unnamed"}</div>
+                      <div className="text-xs text-foreground/60">{row.customer?.email || row.customer?.phone || "—"}</div>
                     </td>
                     <td className="py-3 px-4">
                       <button
                         onClick={() => handleCopyCode(row.code)}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 border border-zinc-700 font-mono text-xs text-zinc-200 hover:bg-zinc-700 transition-colors"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-foreground/[0.06] border border-foreground/15 font-mono text-xs text-foreground hover:bg-foreground/10 transition-colors"
                         title="Click to copy code"
                       >
                         {row.code}
-                        {copiedCode === row.code ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-zinc-400" />}
+                        {copiedCode === row.code ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-foreground/60" />}
                       </button>
                     </td>
                     <td className="py-3 px-4">{statusBadge(row.status)}</td>
                     <td className="py-3 px-4 font-mono text-xs">{formatCommissionRate(row.commissionRate)}</td>
-                    <td className="py-3 px-4 font-mono text-xs text-zinc-300">{row.totalClicks.toLocaleString("en-IN")}</td>
-                    <td className="py-3 px-4 font-mono text-xs text-zinc-300">{row.totalConversions.toLocaleString("en-IN")}</td>
+                    <td className="py-3 px-4 font-mono text-xs text-foreground/80">{row.totalClicks.toLocaleString("en-IN")}</td>
+                    <td className="py-3 px-4 font-mono text-xs text-foreground/80">{row.totalConversions.toLocaleString("en-IN")}</td>
                     <td className="py-3 px-4 font-mono text-xs text-emerald-400 font-medium">₹{row.totalRevenue.toLocaleString("en-IN")}</td>
                     <td className="py-3 px-4 font-mono text-xs text-amber-300 font-medium">₹{row.availableBalance.toLocaleString("en-IN")}</td>
                     <td className="py-3 px-4 text-right whitespace-nowrap">
@@ -441,7 +441,7 @@ export default function AffiliatesDashboardPage() {
                           <button
                             onClick={() => handleSuspend(row.id)}
                             disabled={submittingAction}
-                            className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+                            className="px-2.5 py-1 rounded bg-foreground/[0.06] hover:bg-foreground/10 text-foreground/80 text-xs font-medium transition-colors"
                           >
                             Suspend
                           </button>
@@ -449,7 +449,7 @@ export default function AffiliatesDashboardPage() {
 
                         <Link
                           href={`/dashboard/affiliates/${row.id}`}
-                          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+                          className="p-1.5 rounded hover:bg-foreground/[0.06] text-foreground/60 hover:text-foreground transition-colors"
                           title="View Detail"
                         >
                           <ChevronRight className="w-4 h-4" />
@@ -480,36 +480,36 @@ export default function AffiliatesDashboardPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl"
+              className="bg-background border border-foreground/10 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl"
             >
-              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <div className="flex items-center justify-between border-b border-foreground/10 pb-3">
+                <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
                   <XCircle className="w-5 h-5 text-rose-400" />
                   Reject Affiliate Application
                 </h3>
                 <button
                   onClick={() => setRejectingAffiliateId(null)}
-                  className="text-zinc-500 hover:text-white transition-colors"
+                  className="text-foreground/50 hover:text-foreground transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-medium text-zinc-400">Reason for rejection</label>
+                <label className="text-xs font-medium text-foreground/60">Reason for rejection</label>
                 <textarea
                   rows={3}
                   placeholder="e.g. Account does not meet minimum active order history requirements."
                   value={rejectionReason}
                   onChange={(e) => setRejectionReason(e.target.value)}
-                  className="w-full p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
+                  className="w-full p-2.5 rounded-lg bg-background border border-foreground/10 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-foreground/15"
                 />
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   onClick={() => setRejectingAffiliateId(null)}
-                  className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
+                  className="px-3.5 py-1.5 rounded-lg bg-foreground/[0.06] hover:bg-foreground/10 text-xs font-medium text-foreground/80 transition-colors"
                 >
                   Cancel
                 </button>

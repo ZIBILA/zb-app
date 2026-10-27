@@ -384,7 +384,7 @@ function PushNotificationsContent() {
                     <div className="flex-1 bg-[url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=2564&auto=format&fit=crop')] bg-cover pt-28 px-8 relative">
                         <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
                         
-                        <div className="flex flex-col items-center mb-20 space-y-2 opacity-90 relative z-10 text-white">
+                        <div className="flex flex-col items-center mb-20 space-y-2 opacity-90 relative z-10 text-foreground">
                             <span className="text-7xl font-extralight tracking-tighter">12:00</span>
                             <span className="text-[12px] font-black uppercase tracking-[0.4em] opacity-60">Monday, May 14</span>
                         </div>
@@ -398,7 +398,7 @@ function PushNotificationsContent() {
                                       initial={{ y: 30, opacity: 0, scale: 0.9 }}
                                       animate={{ y: 0, opacity: 1, scale: 1 }}
                                       exit={{ y: -20, opacity: 0, scale: 0.9 }}
-                                      className="bg-white/10 backdrop-blur-3xl border border-white/10 p-6 rounded-[2.5rem] shadow-2xl flex flex-col gap-4 text-white"
+                                      className="bg-foreground/10 backdrop-blur-3xl border border-foreground/10 p-6 rounded-[2.5rem] shadow-2xl flex flex-col gap-4 text-foreground"
                                   >
                                       <div className="flex items-center gap-4">
                                           <div className="w-11 h-11 rounded-2xl bg-white flex items-center justify-center shadow-lg">
@@ -406,27 +406,27 @@ function PushNotificationsContent() {
                                           </div>
                                           <div className="flex-1 overflow-hidden">
                                               <div className="flex justify-between items-center mb-0.5">
-                                                  <span className="text-[9px] font-black uppercase tracking-widest text-white/40">Zica Bella App</span>
+                                                  <span className="text-[9px] font-black uppercase tracking-widest text-foreground/40">Zica Bella App</span>
                                                   <span className="text-[9px] font-bold opacity-30">now</span>
                                               </div>
                                               <h3 className="text-[14px] font-black leading-tight truncate">{title || "Notification Preview"}</h3>
                                           </div>
                                       </div>
                                       
-                                      <p className="text-[13px] leading-snug text-white/70 font-medium line-clamp-2">
+                                      <p className="text-[13px] leading-snug text-foreground/70 font-medium line-clamp-2">
                                           {body || "Your message payload will manifest here..."}
                                       </p>
 
                                       {imageUrl && (
-                                          <div className="w-full aspect-[16/9] rounded-2xl bg-white/5 overflow-hidden mt-1 border border-white/10">
+                                          <div className="w-full aspect-[16/9] rounded-2xl bg-foreground/5 overflow-hidden mt-1 border border-foreground/10">
                                               <img src={imageUrl} alt="Preview" className="w-full h-full object-cover" />
                                           </div>
                                       )}
                                   </motion.div>
                               ) : (
                                 <div className="flex flex-col items-center gap-4 opacity-20 py-10">
-                                   <div className="w-16 h-1 rounded-full bg-white/30" />
-                                   <p className="text-[10px] font-black uppercase tracking-widest text-white text-center">Awaiting Transmission...</p>
+                                   <div className="w-16 h-1 rounded-full bg-foreground/30" />
+                                   <p className="text-[10px] font-black uppercase tracking-widest text-foreground text-center">Awaiting Transmission...</p>
                                 </div>
                               )}
                           </AnimatePresence>
@@ -434,17 +434,17 @@ function PushNotificationsContent() {
 
                         {/* Bottom UI */}
                         <div className="absolute bottom-12 inset-x-0 flex justify-between px-12 relative z-10">
-                            <div className="w-14 h-14 rounded-full bg-white/10 backdrop-blur-xl flex items-center justify-center border border-white/5 shadow-2xl">
-                                <ImageIcon className="w-6 h-6 text-white" />
+                            <div className="w-14 h-14 rounded-full bg-foreground/10 backdrop-blur-xl flex items-center justify-center border border-foreground/5 shadow-2xl">
+                                <ImageIcon className="w-6 h-6 text-foreground" />
                             </div>
-                            <div className="w-14 h-14 rounded-full bg-white/10 backdrop-blur-xl flex items-center justify-center border border-white/5 shadow-2xl">
-                                <Smartphone className="w-6 h-6 text-white" />
+                            <div className="w-14 h-14 rounded-full bg-foreground/10 backdrop-blur-xl flex items-center justify-center border border-foreground/5 shadow-2xl">
+                                <Smartphone className="w-6 h-6 text-foreground" />
                             </div>
                         </div>
                     </div>
                     
                     {/* Home Indicator */}
-                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-36 h-1.5 bg-white/20 rounded-full z-20" />
+                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-36 h-1.5 bg-foreground/20 rounded-full z-20" />
                 </div>
             </div>
 

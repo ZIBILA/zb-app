@@ -357,7 +357,7 @@ export default function WebStoreGalleryCMS() {
                   
                   {/* Status & Position Badge */}
                   <div className="absolute top-3 left-3 flex items-center gap-2">
-                    <span className="bg-black/70 backdrop-blur-md text-white text-xs font-bold px-2.5 py-1 rounded-lg border border-white/10">
+                    <span className="bg-black/70 backdrop-blur-md text-white text-xs font-bold px-2.5 py-1 rounded-lg border border-foreground/10">
                       #{img.position}
                     </span>
                     <span
@@ -372,12 +372,12 @@ export default function WebStoreGalleryCMS() {
                   </div>
 
                   {/* Quick Move Buttons */}
-                  <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-black/80 backdrop-blur-md p-1 rounded-lg border border-white/15">
+                  <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-black/80 backdrop-blur-md p-1 rounded-lg border border-foreground/15">
                     <button
                       onClick={() => handleMove(idx, "up")}
                       disabled={idx === 0}
                       title="Move Up"
-                      className="p-1 text-zinc-300 hover:text-white disabled:opacity-30"
+                      className="p-1 text-foreground/80 hover:text-foreground disabled:opacity-30"
                     >
                       <ArrowUp className="w-3.5 h-3.5" />
                     </button>
@@ -385,7 +385,7 @@ export default function WebStoreGalleryCMS() {
                       onClick={() => handleMove(idx, "down")}
                       disabled={idx === filteredImages.length - 1}
                       title="Move Down"
-                      className="p-1 text-zinc-300 hover:text-white disabled:opacity-30"
+                      className="p-1 text-foreground/80 hover:text-foreground disabled:opacity-30"
                     >
                       <ArrowDown className="w-3.5 h-3.5" />
                     </button>

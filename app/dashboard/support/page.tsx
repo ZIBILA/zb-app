@@ -191,7 +191,7 @@ export default function SupportDashboard() {
       case 'IN_PROGRESS': return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
       case 'RESOLVED': return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
       case 'CLOSED': return 'bg-foreground/5 text-foreground/40 border-foreground/10';
-      default: return 'bg-gray-500/10 text-gray-500 border-gray-500/20';
+      default: return 'bg-foreground/30 text-foreground/50 border-foreground/30';
     }
   };
 

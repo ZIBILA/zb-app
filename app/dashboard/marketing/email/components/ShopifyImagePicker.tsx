@@ -126,7 +126,7 @@ export default function ShopifyImagePicker({ onSelect, onClose }: { onSelect: (u
                       </div>
                     ))}
                     {filteredProducts.length === 0 && !loading && (
-                      <div className="col-span-full py-10 text-center text-gray-500 text-sm">No products found</div>
+                      <div className="col-span-full py-10 text-center text-foreground/50 text-sm">No products found</div>
                     )}
                   </div>
                 )}

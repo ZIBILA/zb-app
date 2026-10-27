@@ -37,12 +37,7 @@ async function normalizeTicketIdentity(ticket: TicketWithCustomer) {
         where: { email: { equals: ticket.guestEmail, mode: 'insensitive' } },
         select: { id: true, name: true, email: true, phone: true },
       });
-      if (customer && ticket.id) {
-        prisma.supportTicket.update({
-          where: { id: ticket.id },
-          data: { customerId: customer.id },
-        }).catch(() => {});
-      }
+      // Display only: never persist the link — a typed email doesn't prove account ownership
     } catch {}
   }
 
@@ -121,14 +116,14 @@ export async function GET(req: NextRequest) {
     const requestedCustomerId = url.searchParams.get('customerId');
     const requestedGuestEmail = url.searchParams.get('guestEmail');
 
-    const referer = req.headers.get('referer') || '';
-    const isDashboard = referer.includes('/dashboard/') || req.nextUrl.pathname.startsWith('/api/admin/');
+    // Admin access comes only from a real admin session (resolvePrincipal). A Referer containing
+    // "/dashboard/" used to count too — it's client-controlled, so anyone could read any ticket.
 
     const where: Record<string, unknown> = {};
     if (ticketId) where.id = ticketId;
     if (status) where.status = status;
 
-    if (principal.kind === 'admin' || isDashboard) {
+    if (principal.kind === 'admin') {
       if (requestedCustomerId) where.customerId = requestedCustomerId;
       if (requestedGuestEmail) where.guestEmail = requestedGuestEmail;
     } else if (principal.kind === 'customer') {
@@ -142,13 +137,16 @@ export async function GET(req: NextRequest) {
         where.customerId = principal.customerId;
       }
     } else {
-      // Guest requests: allow fetching if specific ticketId, customerId, or guestEmail requested
+      // Guest requests: only an unowned ticket by its (unguessable) id.
+      // Fetching by guestEmail is not allowed — emails are guessable and exposed whole chat histories.
       if (ticketId) {
         where.id = ticketId;
+        // Once a guest chat belongs to an account, reading it requires that customer's login
+        where.customerId = null;
       } else if (requestedCustomerId) {
+        // TODO: remove once app builds that send the Bearer token are widely installed —
+        // older app versions fetch their tickets here without auth.
         where.customerId = requestedCustomerId;
-      } else if (requestedGuestEmail) {
-        where.guestEmail = requestedGuestEmail;
       } else {
         return NextResponse.json({ tickets: [] });
       }
@@ -192,34 +190,39 @@ export async function POST(req: NextRequest) {
         if (!guestName) guestName = customer.name || undefined;
         if (!guestEmail) guestEmail = customer.email || undefined;
       }
-    } else if (rawGuestEmail && rawGuestEmail !== 'Logged-in User') {
-      const existingCustomer = await prisma.customer.findFirst({
-        where: { email: { equals: rawGuestEmail, mode: 'insensitive' } },
-        select: { id: true, name: true, email: true },
+    } else if (body.customerId && rawGuestEmail) {
+      // Older app builds create tickets without an auth token but send the user's id + email.
+      // Attach only when BOTH match the same account (an email alone is guessable).
+      // TODO: remove once app builds that send the Bearer token are widely installed.
+      const appCustomer = await prisma.customer.findUnique({
+        where: { id: String(body.customerId) },
+        select: { id: true, email: true },
       });
-      if (existingCustomer) {
-        targetCustomerId = existingCustomer.id;
-        if (!guestName) guestName = existingCustomer.name || undefined;
-        if (!guestEmail) guestEmail = existingCustomer.email || undefined;
+      if (appCustomer?.email && appCustomer.email.toLowerCase() === String(rawGuestEmail).trim().toLowerCase()) {
+        targetCustomerId = appCustomer.id;
       }
     }
+    // Guests are never matched to an account by a typed email alone — that let anyone read (and post
+    // into) another customer's open ticket. A web guest chat is attached to an account when that
+    // customer logs in on the same browser (POST /api/support/tickets/claim).
 
-    if (!subject || !content || (!targetCustomerId && (!guestName || !guestEmail))) {
+    if (!subject || !content) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+    // Guests can chat without giving a name or email (they continue via the ticket id in their browser)
+    if (!targetCustomerId && !guestName) guestName = 'Guest';
 
     const cleanSubject = subject.trim();
     const targetSubjectLower = cleanSubject.toLowerCase();
 
     // -------------------------------------------------------------------------
-    // Deduplication check: existing OPEN / IN_PROGRESS ticket with same subject
+    // Deduplication check: the logged-in customer's own OPEN / IN_PROGRESS ticket with the same subject.
+    // Guests always get a new ticket (they continue it via the ticket id saved in their browser).
     // -------------------------------------------------------------------------
-    const existingTickets = await prisma.supportTicket.findMany({
+    const existingTickets = !targetCustomerId ? [] : await prisma.supportTicket.findMany({
       where: {
         status: { in: ['OPEN', 'IN_PROGRESS'] },
-        ...(targetCustomerId
-          ? { OR: [{ customerId: targetCustomerId }, ...(guestEmail ? [{ guestEmail: { equals: guestEmail, mode: 'insensitive' as const } }] : [])] }
-          : { guestEmail: { equals: guestEmail, mode: 'insensitive' as const } }),
+        customerId: targetCustomerId,
       },
       include: {
         customer: { select: { id: true, name: true, email: true, phone: true } },

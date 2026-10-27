@@ -572,7 +572,7 @@ export default function AbandonedCartsPage() {
               <Clock className="w-3 h-3" />
               <span>Today</span>
               <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
-                followupFilter === "today" ? "bg-white/20 text-white" : "bg-foreground/10 text-foreground/75"
+                followupFilter === "today" ? "bg-foreground/20 text-foreground" : "bg-foreground/10 text-foreground/75"
               }`}>
                 {stats?.followupsTodayCount || 0}
               </span>
@@ -588,7 +588,7 @@ export default function AbandonedCartsPage() {
               <Calendar className="w-3 h-3" />
               <span>Tomorrow</span>
               <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
-                followupFilter === "tomorrow" ? "bg-white/20 text-white" : "bg-foreground/10 text-foreground/75"
+                followupFilter === "tomorrow" ? "bg-foreground/20 text-foreground" : "bg-foreground/10 text-foreground/75"
               }`}>
                 {stats?.followupsTomorrowCount || 0}
               </span>

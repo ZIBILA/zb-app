@@ -362,7 +362,7 @@ export default function InventoryScannerPage() {
                         <button
                           type="submit"
                           disabled={manualBarcode.trim().length < 1}
-                          className="px-5 py-3 bg-[#007AFF] hover:bg-[#0062CC] text-white text-[11px] font-black uppercase tracking-widest rounded-xl transition-colors shadow-lg shadow-[#007AFF]/20 disabled:opacity-40"
+                          className="px-5 py-3 bg-[#007AFF] hover:bg-[#0062CC] text-foreground text-[11px] font-black uppercase tracking-widest rounded-xl transition-colors shadow-lg shadow-[#007AFF]/20 disabled:opacity-40"
                         >
                           Submit
                         </button>
@@ -473,7 +473,7 @@ export default function InventoryScannerPage() {
                         </button>
                         <button 
                           onClick={handleSync} 
-                          className="inline-flex items-center gap-2 px-8 py-4 bg-[#34C759] text-white rounded-2xl text-[12px] font-bold uppercase tracking-[0.15em] hover:scale-105 active:scale-95 transition-all shadow-lg shadow-[#34C759]/20"
+                          className="inline-flex items-center gap-2 px-8 py-4 bg-[#34C759] text-foreground rounded-2xl text-[12px] font-bold uppercase tracking-[0.15em] hover:scale-105 active:scale-95 transition-all shadow-lg shadow-[#34C759]/20"
                         >
                           <Zap className="w-4 h-4" strokeWidth={2.5} />
                           Confirm

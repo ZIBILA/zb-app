@@ -78,7 +78,7 @@ export default function CampaignAnalyticsPage() {
       case "sending": return "border-blue-500/20 text-blue-500 bg-blue-500/10 animate-pulse";
       case "scheduled": return "border-amber-500/20 text-amber-500 bg-amber-500/10";
       case "paused": return "border-violet-500/20 text-violet-500 bg-violet-500/10";
-      case "cancelled": return "border-zinc-500/20 text-zinc-500 bg-zinc-500/10";
+      case "cancelled": return "border-foreground/30 text-foreground/50 bg-foreground/30";
       default: return "border-rose-500/20 text-rose-500 bg-rose-500/10";
     }
   };

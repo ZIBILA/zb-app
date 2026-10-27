@@ -18,6 +18,124 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
+/** Every creator's current payout account — masked; full details via the audit-logged reveal endpoint. */
+function SavedPayoutAccounts() {
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [revealed, setRevealed] = useState<Record<string, any>>({});
+  const [revealing, setRevealing] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/affiliates/payout-accounts");
+      if (res.ok) setAccounts((await res.json()).accounts || []);
+    } catch (err) {
+      console.error("Error fetching payout accounts:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const reveal = async (affiliateId: string) => {
+    setRevealing(affiliateId);
+    try {
+      const res = await fetch(`/api/admin/affiliates/${affiliateId}/reveal-bank`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.account) setRevealed((r) => ({ ...r, [affiliateId]: data.account }));
+      else alert(data.error || "Could not reveal bank details");
+    } finally {
+      setRevealing(null);
+    }
+  };
+
+  return (
+    <div className="bg-foreground/[0.03] border border-foreground/10 rounded-xl overflow-hidden shadow-sm">
+      <div className="px-4 py-3 border-b border-foreground/10 flex items-center gap-2">
+        <CreditCard className="w-4 h-4 text-emerald-400" />
+        <h2 className="text-sm font-semibold text-foreground">Saved Payout Accounts</h2>
+        <span className="text-xs text-foreground/50">({accounts.length})</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm text-foreground/80">
+          <thead className="bg-foreground/[0.03] text-[11px] font-semibold text-foreground/60 uppercase tracking-wider border-b border-foreground/10">
+            <tr>
+              <th className="py-3 px-4">Creator</th>
+              <th className="py-3 px-4">Account Holder</th>
+              <th className="py-3 px-4">Bank</th>
+              <th className="py-3 px-4">Account Number</th>
+              <th className="py-3 px-4">IFSC</th>
+              <th className="py-3 px-4">Saved</th>
+              <th className="py-3 px-4 text-right">Details</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-foreground/10">
+            {loading ? (
+              <tr>
+                <td colSpan={7} className="py-10 text-center text-foreground/50">
+                  <RefreshCw className="w-4 h-4 animate-spin mx-auto" />
+                </td>
+              </tr>
+            ) : accounts.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="py-10 text-center text-foreground/50 text-xs">
+                  No creator has saved bank details yet.
+                </td>
+              </tr>
+            ) : (
+              accounts.map((a) => {
+                const full = revealed[a.affiliate.id];
+                const isUpi = a.method === "UPI";
+                return (
+                  <tr key={a.id} className="hover:bg-foreground/[0.05]">
+                    <td className="py-3 px-4">
+                      <Link href={`/dashboard/affiliates/${a.affiliate.id}`} className="text-foreground hover:underline">
+                        {a.affiliate.name || a.affiliate.code}
+                      </Link>
+                      <div className="text-[11px] text-foreground/50">{a.affiliate.code}</div>
+                    </td>
+                    <td className="py-3 px-4">{a.accountHolderName}</td>
+                    <td className="py-3 px-4">{isUpi ? "UPI (legacy)" : a.bankName || "—"}</td>
+                    <td className="py-3 px-4 font-mono">
+                      {full ? (isUpi ? full.upiId : full.accountNumber) : `••••${a.last4 || ""}`}
+                    </td>
+                    <td className="py-3 px-4 font-mono">{full ? full.ifsc || "—" : "•••••••••••"}</td>
+                    <td className="py-3 px-4 text-xs text-foreground/60">{new Date(a.updatedAt).toLocaleString()}</td>
+                    <td className="py-3 px-4 text-right">
+                      {full ? (
+                        <button
+                          onClick={() => navigator.clipboard?.writeText(`${full.accountHolderName}\n${full.accountNumber || full.upiId}\n${full.ifsc || ""}`)}
+                          className="px-2.5 py-1 rounded bg-foreground/[0.06] hover:bg-foreground/10 text-foreground/80 text-xs font-medium transition-colors"
+                        >
+                          Copy
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => reveal(a.affiliate.id)}
+                          disabled={revealing === a.affiliate.id}
+                          className="px-2.5 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-medium border border-emerald-500/30 transition-colors disabled:opacity-50"
+                        >
+                          {revealing === a.affiliate.id ? "Revealing…" : "Reveal"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="px-4 py-2.5 text-[11px] text-foreground/50 border-t border-foreground/10">
+        Full details are decrypted only on Reveal, and every reveal is recorded in the audit log.
+      </p>
+    </div>
+  );
+}
+
 export default function AffiliateWithdrawalsPage() {
   const [withdrawals, setWithdrawals] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,15 +258,15 @@ export default function AffiliateWithdrawalsPage() {
   const statusBadge = (status: string) => {
     switch (status) {
       case "PAID":
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><CheckCircle2 className="w-3 h-3" /> Paid</span>;
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"><CheckCircle2 className="w-3 h-3" /> Paid</span>;
       case "REQUESTED":
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20"><Clock className="w-3 h-3" /> Requested</span>;
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20"><Clock className="w-3 h-3" /> Requested</span>;
       case "APPROVED":
       case "PROCESSING":
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20"><Clock className="w-3 h-3" /> {status}</span>;
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-blue-500/10 text-blue-700 dark:text-blue-400 border border-blue-500/20"><Clock className="w-3 h-3" /> {status}</span>;
       case "REJECTED":
       case "FAILED":
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20"><XCircle className="w-3 h-3" /> {status}</span>;
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20"><XCircle className="w-3 h-3" /> {status}</span>;
       default:
         return <span className="text-zinc-400 text-xs">{status}</span>;
     }
@@ -157,19 +275,19 @@ export default function AffiliateWithdrawalsPage() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6 text-zinc-100">
       {/* ─── Header ─── */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800/80 pb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-foreground/10 pb-5">
         <div>
           <Link
             href="/dashboard/affiliates"
-            className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white mb-2 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs text-foreground/60 hover:text-foreground mb-2 transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back to Affiliates
           </Link>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
             <Wallet className="w-6 h-6 text-emerald-400" />
             Affiliate Payout Queue
           </h1>
-          <p className="text-sm text-zinc-400 mt-1">
+          <p className="text-sm text-foreground/60 mt-1">
             Review creator withdrawal requests, execute payouts, and enter manual bank transfer UTR references.
           </p>
         </div>
@@ -177,14 +295,14 @@ export default function AffiliateWithdrawalsPage() {
         <button
           onClick={() => fetchWithdrawals()}
           disabled={refreshing}
-          className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition-colors"
+          className="p-2 rounded-lg bg-background hover:bg-foreground/[0.06] border border-foreground/10 text-foreground/60 hover:text-foreground transition-colors"
         >
           <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
         </button>
       </div>
 
       {/* ─── Filters ─── */}
-      <div className="flex items-center gap-1.5 bg-zinc-900/40 p-2.5 rounded-xl border border-zinc-800/80 overflow-x-auto">
+      <div className="flex items-center gap-1.5 bg-foreground/[0.03] p-2.5 rounded-xl border border-foreground/10 overflow-x-auto">
         {[
           { id: "REQUESTED", label: "Requested (Action Needed)" },
           { id: "APPROVED", label: "Approved (Awaiting UTR)" },
@@ -198,8 +316,8 @@ export default function AffiliateWithdrawalsPage() {
             onClick={() => setStatusFilter(tab.id)}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
               statusFilter === tab.id
-                ? "bg-zinc-800 text-white shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
+                ? "bg-foreground/[0.06] text-foreground shadow-sm"
+                : "text-foreground/60 hover:text-foreground hover:bg-foreground/[0.05]"
             }`}
           >
             {tab.label}
@@ -208,10 +326,10 @@ export default function AffiliateWithdrawalsPage() {
       </div>
 
       {/* ─── Table ─── */}
-      <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-xl overflow-hidden shadow-sm">
+      <div className="bg-zinc-900/50 border border-foreground/10 rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-zinc-300">
-            <thead className="bg-zinc-900/80 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800">
+            <thead className="bg-zinc-900/80 text-[11px] font-semibold text-foreground/60 uppercase tracking-wider border-b border-zinc-800">
               <tr>
                 <th className="py-3 px-4">Creator</th>
                 <th className="py-3 px-4">Requested At</th>
@@ -222,7 +340,7 @@ export default function AffiliateWithdrawalsPage() {
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800/60">
+            <tbody className="divide-y divide-foreground/10">
               {loading ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-zinc-500">
@@ -244,7 +362,7 @@ export default function AffiliateWithdrawalsPage() {
                       <td className="py-3 px-4">
                         <Link
                           href={`/dashboard/affiliates/${w.affiliate?.id}`}
-                          className="font-medium text-white hover:underline flex items-center gap-1.5"
+                          className="font-medium text-foreground hover:underline flex items-center gap-1.5"
                         >
                           {w.affiliate?.displayName || w.affiliate?.customer?.name || "Creator"}
                           <span className="font-mono text-xs text-zinc-400">({w.affiliate?.code})</span>
@@ -273,15 +391,15 @@ export default function AffiliateWithdrawalsPage() {
                             </div>
                           </div>
                         ) : (
-                          <span className="text-zinc-500 italic">No account</span>
+                          <span className="text-foreground/50 italic">No account</span>
                         )}
                       </td>
                       <td className="py-3 px-4">{statusBadge(w.status)}</td>
-                      <td className="py-3 px-4 font-mono text-xs text-zinc-300">
+                      <td className="py-3 px-4 font-mono text-xs text-foreground/80">
                         {w.payoutRef ? (
                           <span className="text-emerald-400">{w.payoutRef}</span>
                         ) : (
-                          <span className="text-zinc-600">—</span>
+                          <span className="text-foreground/40">—</span>
                         )}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
@@ -314,7 +432,7 @@ export default function AffiliateWithdrawalsPage() {
                                 setRejectItem(w);
                                 setRejectReason("");
                               }}
-                              className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+                              className="px-2.5 py-1 rounded bg-foreground/[0.06] hover:bg-foreground/10 text-foreground/80 text-xs font-medium transition-colors"
                             >
                               Reject
                             </button>
@@ -330,6 +448,9 @@ export default function AffiliateWithdrawalsPage() {
         </div>
       </div>
 
+      {/* ─── Saved creator bank details (submitted from the Creator tab) ─── */}
+      <SavedPayoutAccounts />
+
       {/* ─── Mark Paid Modal ─── */}
       <AnimatePresence>
         {markPaidItem && (
@@ -338,34 +459,34 @@ export default function AffiliateWithdrawalsPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl"
+              className="bg-background border border-foreground/10 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl"
             >
-              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <div className="flex items-center justify-between border-b border-foreground/10 pb-3">
+                <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                   Settle Withdrawal (Mark Paid)
                 </h3>
                 <button
                   onClick={() => setMarkPaidItem(null)}
-                  className="text-zinc-500 hover:text-white"
+                  className="text-foreground/50 hover:text-foreground"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 space-y-1 text-xs">
+              <div className="p-3 rounded-lg bg-background border border-foreground/10 space-y-1 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Creator:</span>
-                  <span className="text-white font-medium">{markPaidItem.affiliate?.displayName} ({markPaidItem.affiliate?.code})</span>
+                  <span className="text-foreground/50">Creator:</span>
+                  <span className="text-foreground font-medium">{markPaidItem.affiliate?.displayName} ({markPaidItem.affiliate?.code})</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Amount:</span>
+                  <span className="text-foreground/50">Amount:</span>
                   <span className="text-emerald-400 font-bold">₹{markPaidItem.amount.toLocaleString("en-IN")}</span>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-medium text-zinc-400">
+                <label className="text-xs font-medium text-foreground/60">
                   Bank UTR / IMPS / UPI Reference Number *
                 </label>
                 <input
@@ -373,9 +494,9 @@ export default function AffiliateWithdrawalsPage() {
                   placeholder="e.g. UTR123456789012"
                   value={utrNumber}
                   onChange={(e) => setUtrNumber(e.target.value)}
-                  className="w-full p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 font-mono text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
+                  className="w-full p-2.5 rounded-lg bg-background border border-foreground/10 font-mono text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-foreground/15"
                 />
-                <p className="text-[11px] text-zinc-500">
+                <p className="text-[11px] text-foreground/50">
                   Recording the UTR finalizes the ledger hold as DEBIT and marks the withdrawal settled.
                 </p>
               </div>
@@ -383,7 +504,7 @@ export default function AffiliateWithdrawalsPage() {
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   onClick={() => setMarkPaidItem(null)}
-                  className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
+                  className="px-3.5 py-1.5 rounded-lg bg-foreground/[0.06] hover:bg-foreground/10 text-xs font-medium text-foreground/80 transition-colors"
                 >
                   Cancel
                 </button>
@@ -408,40 +529,40 @@ export default function AffiliateWithdrawalsPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl"
+              className="bg-background border border-foreground/10 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl"
             >
-              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <div className="flex items-center justify-between border-b border-foreground/10 pb-3">
+                <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
                   <XCircle className="w-5 h-5 text-rose-400" />
                   Reject Withdrawal Request
                 </h3>
                 <button
                   onClick={() => setRejectItem(null)}
-                  className="text-zinc-500 hover:text-white"
+                  className="text-foreground/50 hover:text-foreground"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <p className="text-xs text-zinc-400">
-                Rejecting this request will release the <strong className="text-white">₹{rejectItem.amount.toLocaleString("en-IN")}</strong> hold back to the creator&apos;s available balance.
+              <p className="text-xs text-foreground/60">
+                Rejecting this request will release the <strong className="text-foreground">₹{rejectItem.amount.toLocaleString("en-IN")}</strong> hold back to the creator&apos;s available balance.
               </p>
 
               <div className="space-y-2">
-                <label className="text-xs font-medium text-zinc-400">Rejection Reason *</label>
+                <label className="text-xs font-medium text-foreground/60">Rejection Reason *</label>
                 <textarea
                   rows={3}
                   placeholder="e.g. Bank IFSC code mismatch. Please re-enter your account details."
                   value={rejectReason}
                   onChange={(e) => setRejectReason(e.target.value)}
-                  className="w-full p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
+                  className="w-full p-2.5 rounded-lg bg-background border border-foreground/10 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-foreground/15"
                 />
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   onClick={() => setRejectItem(null)}
-                  className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
+                  className="px-3.5 py-1.5 rounded-lg bg-foreground/[0.06] hover:bg-foreground/10 text-xs font-medium text-foreground/80 transition-colors"
                 >
                   Cancel
                 </button>
