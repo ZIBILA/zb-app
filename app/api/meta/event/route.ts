@@ -236,7 +236,9 @@ export async function POST(req: NextRequest) {
           const looked = await lookupIpGeo(ip, req);
           cc = looked && !looked.isDevFallback ? String(looked.countryCode || '').toUpperCase() : '';
         }
-        if (!/^[A-Z]{2}$/.test(cc) || CONSENT_REGIONS.has(cc)) {
+        // Held only for a visitor known to be in a consent region. An unresolvable
+        // country fails open, as the browser side does (lib/meta/consent-client.ts).
+        if (/^[A-Z]{2}$/.test(cc) && CONSENT_REGIONS.has(cc)) {
           return NextResponse.json({ success: true, skipped: true, reason: 'consent_pending' });
         }
       }
