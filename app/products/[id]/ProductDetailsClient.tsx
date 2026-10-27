@@ -308,8 +308,12 @@ export default function ProductDetailsClient({
     const fire = () => {
       if (metaViewContentFiredFor.current === key) return;
       metaViewContentFiredFor.current = key;
-      const variantId = product.variants?.[0]?.id?.toString() || key;
-      trackViewContent(variantId, product.title, metaMoney.amount(parseFloat(product.variants?.[0]?.price || "0")), metaMoney.currency, product.product_type);
+      // The variant the shopper is looking at when the event fires (a size picked
+      // during the price-config wait), else the first one — so content_ids / value
+      // agree with the AddToCart that follows for the same item.
+      const shown = product.variants?.find((v) => v.option1 === selectedSizeRef.current) || product.variants?.[0];
+      const variantId = shown?.id?.toString() || key;
+      trackViewContent(variantId, product.title, metaMoney.amount(parseFloat(shown?.price || "0")), metaMoney.currency, product.product_type);
     };
     const cookieCountry = (typeof document !== "undefined" && document.cookie.match(/(?:^|; )zb_country=([^;]*)/)?.[1]) || "";
     if (!countryLoading || !cookieCountry || cookieCountry.toUpperCase() === "IN") { fire(); return; }
@@ -319,6 +323,8 @@ export default function ProductDetailsClient({
   }, [product.id, countryLoading]);
 
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
+  const selectedSizeRef = useRef<string | null>(null);
+  selectedSizeRef.current = selectedSize;
   const [activeTab, setActiveTab] = useState<string>("details");
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [showSizeChart, setShowSizeChart] = useState(false);
