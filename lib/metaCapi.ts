@@ -38,6 +38,8 @@ if (process.env.NODE_ENV === 'production') {
 const TEST_EVENT_CODE_RAW = (process.env.META_TEST_EVENT_CODE || '').trim();
 const TEST_CODE_ON_LIVE_SITE = !!TEST_EVENT_CODE_RAW && process.env.NODE_ENV === 'production' && isMetaProductionSite();
 const TEST_EVENT_CODE = TEST_EVENT_CODE_RAW && !TEST_CODE_ON_LIVE_SITE ? TEST_EVENT_CODE_RAW : '';
+/** true when a test event code is in effect (never on the live site): gates verbose diagnostics. */
+export const META_TEST_MODE = !!TEST_EVENT_CODE;
 if (TEST_CODE_ON_LIVE_SITE) {
   console.error('[Meta CAPI][ALERT] META_TEST_EVENT_CODE is set on the live site and is IGNORED: a test code would turn every real conversion into a test event. Unset it, or test from a staging deployment.');
 }
@@ -56,7 +58,7 @@ export function getReportedValue(eventName: string, realValue: number | undefine
  * Logs are server-side only — never sent to Meta or the client.
  */
 function validateEventPayload(eventName: string, customData: Record<string, any> | undefined): void {
-  if (process.env.NODE_ENV === 'production' && !process.env.META_TEST_EVENT_CODE) return;
+  if (process.env.NODE_ENV === 'production' && !META_TEST_MODE) return;
 
   const eventsRequiringValue = ['Purchase', 'InitiateCheckout'];
   if (!eventsRequiringValue.includes(eventName)) return;
@@ -253,7 +255,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
 
   // Dev-only assertion: if the upstream userData had no em/ph, verify the key
   // is fully absent from cleanedUserData (not present as an empty array/string).
-  if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
+  if (process.env.NODE_ENV !== 'production' || META_TEST_MODE) {
     for (const piiKey of ['em', 'ph'] as const) {
       if (!payload.userData?.[piiKey] && piiKey in cleanedUserData) {
         console.warn(
@@ -270,7 +272,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
 
   // Dev-only: log reported value for Purchase and InitiateCheckout events
   if (['Purchase', 'InitiateCheckout'].includes(payload.eventName) && cleanedCustomData.value !== undefined) {
-    if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
+    if (process.env.NODE_ENV !== 'production' || META_TEST_MODE) {
       console.log(`[Meta CAPI DEBUG] ${payload.eventName} — reportedValue=${cleanedCustomData.value}, currency=${cleanedCustomData.currency || 'NOT SET'}`);
     }
   }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sendCapiEvent, getReportedValue } from '@/lib/metaCapi';
+import { sendCapiEvent, getReportedValue, META_TEST_MODE } from '@/lib/metaCapi';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/app/api/auth/[...nextauth]/options';
 import prisma from '@/lib/db';
@@ -43,7 +43,10 @@ const EXPLICIT_IDENTITY_EVENTS = new Set(['Lead', 'Subscribe', 'CompleteRegistra
 const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
 // Per event, in the event currency. Funnel events only (Purchase is server-authoritative);
 // a forged InitiateCheckout above this is dropped rather than fed to Meta's optimisation.
+// Low-unit currencies (an ordinary cart is already millions of IDR / VND) get a higher cap.
 const MAX_VALUE = 1_000_000;
+const LOW_UNIT_CURRENCIES = new Set(['IDR', 'VND', 'KRW', 'JPY', 'HUF', 'CLP', 'COP', 'PYG', 'LAK', 'MMK', 'UZS', 'IRR', 'LBP', 'SLL', 'TZS', 'UGX', 'KHR', 'MNT', 'NGN', 'PKR', 'LKR']);
+const maxValueFor = (currency: unknown): number => (typeof currency === 'string' && LOW_UNIT_CURRENCIES.has(currency.toUpperCase()) ? MAX_VALUE * 1000 : MAX_VALUE);
 const MAX_LIST = 100;
 
 function allowedHosts(): Set<string> {
@@ -75,8 +78,10 @@ function sanitizeCustomData(cd: unknown): Record<string, any> | undefined {
   const out: Record<string, any> = { ...(cd as Record<string, any>) };
   if (out.value !== undefined) {
     const v = Number(out.value);
-    if (!Number.isFinite(v) || v < 0 || v > MAX_VALUE) delete out.value;
-    else out.value = v;
+    if (!Number.isFinite(v) || v < 0 || v > maxValueFor(out.currency)) {
+      console.warn(`[Meta CAPI Route] value dropped: ${String(out.value).slice(0, 32)} ${String(out.currency || '').slice(0, 3)} is out of range`);
+      delete out.value;
+    } else out.value = v;
   }
   if (out.currency !== undefined && !(typeof out.currency === 'string' && /^[A-Za-z]{3}$/.test(out.currency))) {
     delete out.currency;
@@ -107,7 +112,7 @@ const dedupTracker = new Map<string, { ids: Set<string>; firstSeen: number }>();
 function checkDuplicatePii(field: string, hashedValue: string | undefined, externalId: string | undefined): void {
   if (!hashedValue || !externalId) return;
   // Only run in dev or when test event code is set
-  if (process.env.NODE_ENV === 'production' && !process.env.META_TEST_EVENT_CODE) return;
+  if (process.env.NODE_ENV === 'production' && !META_TEST_MODE) return;
 
   const key = `${field}:${hashedValue}`;
   const now = Date.now();
@@ -336,7 +341,7 @@ export async function POST(req: NextRequest) {
       const reportedValue = getReportedValue(eventName, realValue);
       if (reportedValue !== undefined && reportedValue !== realValue) {
         // Dev-only: log both values for internal debugging (never sent to Meta or client)
-        if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
+        if (process.env.NODE_ENV !== 'production' || META_TEST_MODE) {
           console.log(`[Meta CAPI Route] ${eventName} value adjustment — realValue=${realValue}, reportedValue=${reportedValue}, currency=${adjustedCustomData.currency || 'NOT SET'}`);
         }
         adjustedCustomData.value = reportedValue;
@@ -370,7 +375,7 @@ export async function POST(req: NextRequest) {
       // hashed and stored all session PII in cookies (email, phone, name, DOB, address).
       const mergedUserData = buildServerUserData({
         client_ip_address: ip,
-        client_user_agent: userData?.client_user_agent || userAgent,
+        client_user_agent: req.headers.get('user-agent') || userData?.client_user_agent || userAgent,
         fbp: userData?.fbp || fbp,
         fbc: userData?.fbc || fbc,
         external_id: userData?.external_id || externalId,
@@ -492,7 +497,7 @@ export async function POST(req: NextRequest) {
     // body for reliability, since server-side cookie access can fail on edge/CDN.
     const mergedUserData = buildServerUserData({
       client_ip_address: ip,
-      client_user_agent: userData?.client_user_agent || userAgent,
+      client_user_agent: req.headers.get('user-agent') || userData?.client_user_agent || userAgent,
       fbp: userData?.fbp || fbp,
       fbc: userData?.fbc || fbc,
       // Logged-in: the stable customer id (one person across devices, sessions and
@@ -551,7 +556,9 @@ export async function POST(req: NextRequest) {
         delete mergedUserData.fn;
         delete mergedUserData.ln;
       }
-      delete mergedUserData.db;
+      // DOB stays when it is the visitor's own bound cookie (the Pixel stub sends the
+      // same bound hash, so the halves agree); fb_login_id is logged-in-only.
+      if (!cookiePiiBound) delete mergedUserData.db;
       delete mergedUserData.fb_login_id;
 
       // Identity the shopper typed / verified for THIS event is kept (newsletter email on
