@@ -1,15 +1,14 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator, Animated, Alert, Modal, Pressable, InteractionManager
+  View, StyleSheet, ScrollView, TouchableOpacity, Dimensions, ActivityIndicator, Animated, Modal, Pressable, NativeSyntheticEvent, NativeScrollEvent, InteractionManager
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import { useNavigation, useRoute, RouteProp, useIsFocused } from '@react-navigation/native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { GlassView, GlassBackdrop } from '../components/GlassView';
 import { Image } from 'expo-image';
 import OptimizedImage from '../components/OptimizedImage';
-import Carousel from 'react-native-reanimated-carousel';
 import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
 import { haptics } from '../utils/haptics';
@@ -28,10 +27,74 @@ import { SizeChartModal } from '../components/SizeChartModal';
 import { config } from '../constants/config';
 import QuickAddModal from '../components/QuickAddModal';
 import { FlatProduct } from '../api/types';
+import { requireValidAuth } from '../utils/tokenUtils';
+import { useAdminSettings } from '../hooks/useAdminFeatures';
 
-import { resolveImageUrl } from '../utils/imageUtils';
+import { getOptimizedImageUrl, resolveImageArray, resolveImageUrl } from '../utils/imageUtils';
+
+type PdpTrustBox = {
+  id: string;
+  icon: string;
+  title: string;
+  subtitle: string;
+  variant?: 'default' | 'highlight';
+};
+
+const DEFAULT_TRUST_BOXES: PdpTrustBox[] = [
+  { id: 'cod', icon: 'cash-outline', title: 'COD available', subtitle: '₹99 now, rest on delivery', variant: 'default' },
+  { id: 'prepaid', icon: 'pricetag-outline', title: '10% off on prepaid', subtitle: '+ 10% cashback as store credit', variant: 'highlight' },
+  { id: 'delivery', icon: 'truck-outline', title: 'Delivery in 3–7 days', subtitle: 'Dispatched in 24–48 hrs', variant: 'default' },
+  { id: 'returns', icon: 'refresh-outline', title: '15-day easy return/exchange', subtitle: 'No questions asked', variant: 'default' },
+];
+
+function isHttpIcon(icon: string) {
+  return /^https?:\/\//i.test(icon) || icon.startsWith('data:');
+}
+
+/** Map trust-box icon keys to the screenshot set (banknote, tag, truck, refresh). */
+function resolveTrustIcon(icon: string): { set: 'ion' | 'mci'; name: string } | null {
+  const key = String(icon || '').trim();
+  if (!key) return null;
+  // Legacy bicycle → truck (matches website delivery icon)
+  if (key === 'bicycle-outline') return { set: 'mci', name: 'truck-outline' };
+  const map: Record<string, { set: 'ion' | 'mci'; name: string }> = {
+    'cash-outline': { set: 'ion', name: 'cash-outline' },
+    banknote: { set: 'ion', name: 'cash-outline' },
+    'pricetag-outline': { set: 'ion', name: 'pricetag-outline' },
+    tag: { set: 'ion', name: 'pricetag-outline' },
+    'tag-outline': { set: 'mci', name: 'tag-outline' },
+    'truck-outline': { set: 'mci', name: 'truck-outline' },
+    'truck-delivery-outline': { set: 'mci', name: 'truck-delivery-outline' },
+    truck: { set: 'mci', name: 'truck-outline' },
+    'refresh-outline': { set: 'ion', name: 'refresh-outline' },
+    'refresh-cw': { set: 'ion', name: 'refresh-outline' },
+    sync: { set: 'ion', name: 'sync-outline' },
+  };
+  if (map[key]) return map[key];
+  if (key.startsWith('truck')) return { set: 'mci', name: key };
+  return { set: 'ion', name: key };
+}
+
+function TrustBoxIcon({ icon, color }: { icon: string; color: string }) {
+  if (isHttpIcon(icon)) {
+    return <Image source={{ uri: icon }} style={styles.trustIconImg} contentFit="contain" />;
+  }
+  const resolved = resolveTrustIcon(icon);
+  if (!resolved) return null;
+  if (resolved.set === 'mci') {
+    return <MaterialCommunityIcons name={resolved.name as any} size={18} color={color} />;
+  }
+  return <Ionicons name={resolved.name as any} size={18} color={color} />;
+}
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const HERO_HEIGHT = SCREEN_H * 0.72;
+const HERO_IMAGE_WIDTH = Math.min(900, Math.round(SCREEN_W * 2));
+const THUMB_WIDTH = 110;
+const THUMB_GAP = 10;
+const THUMB_ITEM_WIDTH = THUMB_WIDTH + THUMB_GAP;
+const THUMB_IMAGE_WIDTH = 240;
+const MOOD_IMAGE_WIDTH = Math.min(900, Math.round(SCREEN_W * 2));
 
 /**
  * Custom ImageViewerModal for premium zooming experience
@@ -151,18 +214,199 @@ const curatedStyles = StyleSheet.create({
   },
 });
 
+/**
+ * Product video: player mounts on first Play (faster PDP load). Pause keeps the
+ * player mounted so resume continues from the same position; unmounts on leave.
+ */
+function LiveProductVideo({
+  videoUrl,
+  isMuted,
+  isPlaying,
+  onToggleMute,
+  onTogglePlay,
+}: {
+  videoUrl: string;
+  isMuted: boolean;
+  isPlaying: boolean;
+  onToggleMute: () => void;
+  onTogglePlay: () => void;
+}) {
+  const player = useVideoPlayer(videoUrl, (p) => {
+    p.loop = true;
+    p.muted = isMuted;
+    if (isPlaying) p.play();
+  });
+
+  useEffect(() => {
+    if (!player) return;
+    player.muted = isMuted;
+  }, [isMuted, player]);
+
+  useEffect(() => {
+    if (!player) return;
+    try {
+      if (isPlaying) player.play();
+      else player.pause();
+    } catch {
+      /* */
+    }
+  }, [isPlaying, player]);
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        nativeControls={false}
+        contentFit="cover"
+      />
+      <View style={styles.videoOverlay} pointerEvents="none" />
+      <Pressable
+        onPress={() => {
+          haptics.buttonTap();
+          onTogglePlay();
+        }}
+        style={StyleSheet.absoluteFill}
+      />
+      {!isPlaying && (
+        <View style={styles.playButton} pointerEvents="none">
+          <Ionicons name="play" size={28} color="#FFF" style={{ marginLeft: 3 }} />
+        </View>
+      )}
+      <Pressable
+        onPress={() => {
+          haptics.buttonTap();
+          onToggleMute();
+        }}
+        hitSlop={12}
+        style={({ pressed }) => [styles.soundButton, { opacity: pressed ? 0.6 : 1 }]}
+      >
+        <Ionicons
+          name={isMuted ? 'volume-mute-outline' : 'volume-medium-outline'}
+          size={20}
+          color="#FFF"
+        />
+      </Pressable>
+    </View>
+  );
+}
+
+function ProductVideoSection({
+  videoUrl,
+  posterUri,
+  isDark,
+}: {
+  videoUrl: string;
+  posterUri?: string | null;
+  isDark: boolean;
+}) {
+  const [hasStarted, setHasStarted] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const isFocused = useIsFocused();
+  const isAppActive = useUIStore((s) => s.isAppActive);
+
+  useEffect(() => {
+    setHasStarted(false);
+    setIsPlaying(false);
+  }, [videoUrl]);
+
+  useEffect(() => {
+    if (!isFocused || !isAppActive) {
+      // Leaving PDP: unload player to free decoder
+      setIsPlaying(false);
+      setHasStarted(false);
+    }
+  }, [isFocused, isAppActive]);
+
+  const startPlayback = () => {
+    haptics.buttonTap();
+    setHasStarted(true);
+    setIsPlaying(true);
+  };
+
+  return (
+    <View
+      style={[
+        styles.videoWrapper,
+        { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' },
+      ]}
+    >
+      {hasStarted ? (
+        <LiveProductVideo
+          videoUrl={videoUrl}
+          isMuted={isMuted}
+          isPlaying={isPlaying}
+          onToggleMute={() => setIsMuted((m) => !m)}
+          onTogglePlay={() => setIsPlaying((playing) => !playing)}
+        />
+      ) : (
+        <Pressable onPress={startPlayback} style={StyleSheet.absoluteFill}>
+          {posterUri ? (
+            <Image
+              source={{ uri: posterUri }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+            />
+          ) : null}
+          <View style={styles.videoOverlay} pointerEvents="none" />
+          <View style={styles.playButton} pointerEvents="none">
+            <Ionicons name="play" size={28} color="#FFF" style={{ marginLeft: 3 }} />
+          </View>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 export default function ProductDetailScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const route = useRoute<RouteProp<RootStackParamList, 'ProductDetail'>>();
-  const { handle } = route.params || { handle: '' };
+  const { handle, initialProduct } = route.params || { handle: '', initialProduct: undefined };
   const colors = useColors();
   const theme = useThemeStore((state) => state.theme);
   const isDark = theme === 'dark';
 
-  const { product, loading } = useProductByHandle(handle);
-  const { products: allProducts, loading: recommendedLoading } = useProducts(24);
+  const { product, loading } = useProductByHandle(handle, initialProduct);
+  // Defer curated-pairs catalog fetch until after first paint / interactions
+  const [loadRecommendations, setLoadRecommendations] = useState(false);
+  const { products: allProducts, loading: recommendedLoading } = useProducts(loadRecommendations ? 24 : 0);
+  const { settings: adminSettings } = useAdminSettings();
+
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      setLoadRecommendations(true);
+    });
+    return () => task.cancel();
+  }, [handle]);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
+  const pdpSettings = adminSettings?.pdp;
+  const trustBoxes: PdpTrustBox[] = useMemo(() => {
+    const raw = pdpSettings?.trustBoxes;
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw
+        .map((b: any, i: number) => ({
+          id: String(b?.id || `box_${i}`),
+          icon: String(b?.icon || 'information-circle-outline'),
+          title: String(b?.title || '').trim(),
+          subtitle: String(b?.subtitle || '').trim(),
+          variant: (b?.variant === 'highlight' ? 'highlight' : 'default') as 'default' | 'highlight',
+        }))
+        .filter((b: PdpTrustBox) => Boolean(b.title));
+    }
+    return DEFAULT_TRUST_BOXES;
+  }, [pdpSettings?.trustBoxes]);
+
+  const showInclTaxes = pdpSettings?.showInclTaxes !== false;
+  const inclTaxesText = (pdpSettings?.inclTaxesText || 'Incl. taxes').trim();
+  const modelInfoLine = useMemo(() => {
+    const fromProduct = String(product?.modelInfo || '').trim();
+    if (fromProduct) return fromProduct;
+    return String(pdpSettings?.modelInfoDefault || "Model is 6'0\", wearing size 32 · Oversized fit, true to waist").trim();
+  }, [product?.modelInfo, pdpSettings?.modelInfoDefault]);
   
   // Randomly shuffle products for "Curated Pairs" on each visit
   const recommended = useMemo(() => {
@@ -187,62 +431,88 @@ export default function ProductDetailScreen() {
   const [viewerVisible, setViewerVisible] = useState(false);
 
   const mainScrollRef = useRef<ScrollView>(null);
-  const carouselRef = useRef<any>(null);
-  const thumbnailCarouselRef = useRef<any>(null);
+  const heroScrollRef = useRef<ScrollView>(null);
+  const thumbnailScrollRef = useRef<ScrollView>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const [showMinimalSticky, setShowMinimalSticky] = useState(false);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<FlatProduct | null>(null);
   const [quickAddVisible, setQuickAddVisible] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
   const [isStickySizeExpanded, setIsStickySizeExpanded] = useState(false);
   const [moodBoardImages, setMoodBoardImages] = useState<string[]>([]);
 
-  // Fetch mood board images (same API as webstore PDP, with gallery fallback)
+  // Reset scroll + selection when opening another product (push or same-screen param update).
+  useEffect(() => {
+    setActiveImageIndex(0);
+    setSelectedSize(null);
+    setSelectedColor(null);
+    setActiveTab('DESCRIPTION');
+    setSizeError(false);
+    setIsDescriptionExpanded(false);
+    setIsStickySizeExpanded(false);
+    setShowMinimalSticky(false);
+    setMoodBoardImages([]);
+    scrollY.setValue(0);
+    const jumpTop = () => {
+      mainScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+      heroScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+      thumbnailScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+    };
+    jumpTop();
+    // Second pass after layout/content swap so we don't stay parked mid-page.
+    const t = setTimeout(jumpTop, 50);
+    return () => clearTimeout(t);
+  }, [handle, product?.id]);
+
+  // Fetch mood board after first paint — parallel ID lookup (was 3 sequential ~0.7s each)
   useEffect(() => {
     if (!product) return;
     const rawId = (product.id || '').toString();
     const numericId = rawId.replace(/^gid:\/\/shopify\/Product\//i, '');
     const BASE_URL = config.appUrl.replace(/\/$/, '');
-
     let isMounted = true;
 
-    const tryFetch = async () => {
-      // 1. Try DB lookup by numericId, rawId, and handle
-      const idsToTry = [numericId, rawId, product.handle].filter(Boolean);
-
-      for (const idToTry of idsToTry) {
-        try {
-          const res = await fetch(`${BASE_URL}/api/mood-board?productId=${encodeURIComponent(idToTry!)}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (isMounted && Array.isArray(data.images) && data.images.length > 0) {
-              setMoodBoardImages(data.images.filter(Boolean));
-              return;
-            }
-          }
-        } catch (e) {}
-      }
-
-      // 2. Fallback: if no custom mood board in DB, use product gallery images
-      if (isMounted) {
-        let galleryImages: string[] = [];
-        if (product.images && Array.isArray(product.images) && product.images.length > 0) {
-          galleryImages = product.images.filter(Boolean);
-        } else if (product.featuredImage) {
-          galleryImages = [product.featuredImage];
-        }
-
-        if (galleryImages.length > 0) {
-          setMoodBoardImages(galleryImages.slice(0, 5));
-        }
-      }
+    const galleryFallback = () => {
+      if (!isMounted) return;
+      const galleryImages =
+        product.images && Array.isArray(product.images) && product.images.length > 0
+          ? product.images.filter(Boolean)
+          : product.featuredImage
+            ? [product.featuredImage]
+            : [];
+      if (galleryImages.length > 0) setMoodBoardImages(galleryImages.slice(0, 5));
     };
 
-    tryFetch();
+    const task = InteractionManager.runAfterInteractions(() => {
+      const idsToTry = [...new Set([numericId, rawId, product.handle].filter(Boolean))];
+
+      Promise.all(
+        idsToTry.map(async (idToTry) => {
+          try {
+            const res = await fetch(
+              `${BASE_URL}/api/mood-board?productId=${encodeURIComponent(idToTry!)}`
+            );
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (Array.isArray(data.images) && data.images.length > 0) {
+              return data.images.filter(Boolean) as string[];
+            }
+          } catch {
+            /* */
+          }
+          return null;
+        })
+      ).then((results) => {
+        if (!isMounted) return;
+        const hit = results.find((r) => r && r.length > 0);
+        if (hit) setMoodBoardImages(hit);
+        else galleryFallback();
+      });
+    });
 
     return () => {
       isMounted = false;
+      task.cancel();
     };
   }, [product?.id, product?.handle, product?.images, product?.featuredImage]);
 
@@ -268,39 +538,11 @@ export default function ProductDetailScreen() {
   const setWishlistOpen = useUIStore(s => s.setWishlistOpen);
   const { addProduct: recordVisit, recentProducts } = useRecentStore();
 
-  const player = useVideoPlayer(product?.productVideo ?? null, (player) => {
-    player.loop = false;
-    player.muted = true;
-  });
-
-  const isFocused = useNavigation().isFocused();
-
-  const isAppActive = useUIStore(s => s.isAppActive);
-
-  useEffect(() => {
-    if (!player) return;
-    if (!isFocused || !isAppActive) {
-      player.pause();
-    } else {
-      // Small delay to ensure smooth transition
-      const task = InteractionManager.runAfterInteractions(() => {
-        player.play();
-      });
-      return () => task.cancel();
-    }
-  }, [isFocused, isAppActive, player]);
-
-  useEffect(() => {
-    if (player) {
-      player.muted = isMuted;
-    }
-  }, [isMuted, player]);
-
   const options = useMemo(() => {
     if (!product) return { sizes: [], colors: [] };
     const sizesSet = new Set<string>();
     const colorsSet = new Set<string>();
-    product.variants.forEach(v => {
+    (product.variants || []).forEach(v => {
       if (v.size) sizesSet.add(v.size);
       if (v.color) colorsSet.add(v.color);
     });
@@ -324,7 +566,10 @@ export default function ProductDetailScreen() {
   useEffect(() => {
     if (options.sizes.length === 1) setSelectedSize(options.sizes[0]);
     if (options.colors.length > 0) setSelectedColor(options.colors[0]);
-    if (product) recordVisit(product);
+    // Only record visits that can render a proper Recently Viewed card
+    if (product?.featuredImage || (product?.images && product.images.length > 0)) {
+      recordVisit(product);
+    }
   }, [options, product, recordVisit]);
 
   const requireSize = (): boolean => {
@@ -342,19 +587,12 @@ export default function ProductDetailScreen() {
     if (addingLockRef.current) return;
     if (!requireSize()) return;
 
-    if (!isAuthenticated) {
-      haptics.buttonTap();
-      Alert.alert('Sign In Required', 'Please sign in to add products to your bag and access your cart.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign In', onPress: () => navigation.navigate('Auth') }
-      ]);
-      return;
-    }
-
-    const variant = product.variants.find(v => 
+    const variants = product.variants || [];
+    const variant = variants.find(v => 
       (v.size === selectedSize || !v.size) && 
       (v.color === selectedColor || !v.color)
-    ) || product.variants.find(v => v.size === selectedSize) || product.variants[0];
+    ) || variants.find(v => v.size === selectedSize) || variants[0];
+    if (!variant) return;
     
     addingLockRef.current = true;
     addItem({
@@ -376,10 +614,12 @@ export default function ProductDetailScreen() {
     if (!product) return;
     if (!requireSize()) return;
     
-    const variant = product.variants.find(v => 
+    const variants = product.variants || [];
+    const variant = variants.find(v => 
       (v.size === selectedSize || !v.size) && 
       (v.color === selectedColor || !v.color)
-    ) || product.variants.find(v => v.size === selectedSize) || product.variants[0];
+    ) || variants.find(v => v.size === selectedSize) || variants[0];
+    if (!variant) return;
     
     setBuyNowItem({
       id: `${product.id}_${variant.id}_${selectedSize || 'one-size'}`,
@@ -395,12 +635,9 @@ export default function ProductDetailScreen() {
     });
 
     haptics.buttonTap();
-    
-    if (!isAuthenticated) {
-      Alert.alert('Login Required', 'Please log in to proceed with checkout and payment.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Log In', onPress: () => navigation.navigate('Auth') }
-      ]);
+
+    // Guests go straight to Auth (no popup); signed-in users continue to checkout
+    if (!requireValidAuth(navigation)) {
       return;
     }
     
@@ -412,10 +649,7 @@ export default function ProductDetailScreen() {
     
     if (!isAuthenticated) {
       haptics.buttonTap();
-      Alert.alert('Sign In Required', 'Please sign in to add items to your wishlist and sync them across your devices.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign In', onPress: () => navigation.navigate('Auth') }
-      ]);
+      navigation.navigate('Auth');
       return;
     }
 
@@ -429,31 +663,77 @@ export default function ProductDetailScreen() {
     }
   };
 
-  const images = product ? (product.images.length > 0 ? product.images : [product.featuredImage]) : [];
+  const images = useMemo(() => {
+    if (!product) return [] as string[];
+    const fromGallery = resolveImageArray(product.images);
+    if (fromGallery.length > 0) return fromGallery;
+    const featured = resolveImageUrl(product.featuredImage);
+    return featured ? [featured] : [];
+  }, [product]);
 
-  const renderHeroItem = useCallback(({ item, index }: any) => (
-    <TouchableOpacity 
-      activeOpacity={0.9} 
-      onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
-      style={styles.heroContainer}
-    >
-      <OptimizedImage 
-        source={String(item)} 
-        style={styles.heroImage} 
-        shopifyWidth={800}
-      />
-      <View style={styles.zoomPulse}>
-        <Ionicons name="expand-outline" size={12} color="#FFF" />
-      </View>
-      
-      {/* Background preloading of adjacent image */}
-      {index === activeImageIndex && images[index + 1] && (
-        <View style={{ width: 0, height: 0, opacity: 0 }}>
-          <OptimizedImage source={String(images[index + 1])} shopifyWidth={800} />
-        </View>
-      )}
-    </TouchableOpacity>
-  ), [activeImageIndex, images]);
+  // Progressive prefetch waterfall — first hero wins, then the rest stream in without waiting for taps.
+  useEffect(() => {
+    if (images.length === 0) return;
+    let cancelled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const prefetch = (uri: string | null) => {
+      if (!uri || cancelled) return;
+      Image.prefetch(uri).catch(() => {});
+    };
+
+    // Critical path: paint the first hero ASAP
+    prefetch(getOptimizedImageUrl(images[0], HERO_IMAGE_WIDTH));
+    prefetch(getOptimizedImageUrl(images[0], THUMB_IMAGE_WIDTH));
+
+    const afterFirst = InteractionManager.runAfterInteractions(() => {
+      if (cancelled) return;
+      // Kick off remaining thumbs + next heroes so cards fill without a tap
+      images.forEach((img, i) => {
+        prefetch(getOptimizedImageUrl(img, THUMB_IMAGE_WIDTH));
+        if (i > 0 && i < 3) prefetch(getOptimizedImageUrl(img, HERO_IMAGE_WIDTH));
+      });
+
+      idleTimer = setTimeout(() => {
+        if (cancelled) return;
+        images.slice(3).forEach((img) => {
+          prefetch(getOptimizedImageUrl(img, HERO_IMAGE_WIDTH));
+        });
+      }, 400);
+    });
+
+    return () => {
+      cancelled = true;
+      afterFirst.cancel();
+      if (idleTimer) clearTimeout(idleTimer);
+    };
+  }, [images]);
+
+  const scrollHeroTo = useCallback((index: number, animated = false) => {
+    if (index < 0 || index >= images.length) return;
+    heroScrollRef.current?.scrollTo({ x: index * SCREEN_W, y: 0, animated });
+  }, [images.length]);
+
+  const scrollThumbnailsTo = useCallback((index: number, animated = true) => {
+    if (index < 0 || index >= images.length) return;
+    const x = Math.max(0, index * THUMB_ITEM_WIDTH - (SCREEN_W - THUMB_ITEM_WIDTH) / 2);
+    thumbnailScrollRef.current?.scrollTo({ x, y: 0, animated });
+  }, [images.length]);
+
+  const selectImage = useCallback((index: number) => {
+    if (index < 0 || index >= images.length) return;
+    setActiveImageIndex(index);
+    // Instant page jump — neighbors decode on demand via the active±1 window.
+    scrollHeroTo(index, false);
+    scrollThumbnailsTo(index, true);
+  }, [images.length, scrollHeroTo, scrollThumbnailsTo]);
+
+  const onHeroMomentumEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = Math.round(e.nativeEvent.contentOffset.x / SCREEN_W);
+    if (index === activeImageIndex || index < 0 || index >= images.length) return;
+    setActiveImageIndex(index);
+    scrollThumbnailsTo(index, true);
+  }, [activeImageIndex, images.length, scrollThumbnailsTo]);
 
   if (loading || !product) {
     return (
@@ -494,6 +774,7 @@ export default function ProductDetailScreen() {
       </View>
 
       <ScrollView 
+        key={`pdp-scroll-${handle || product.id}`}
         ref={mainScrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 160 + insets.bottom }}
@@ -503,59 +784,89 @@ export default function ProductDetailScreen() {
         )}
         scrollEventThrottle={16}
       >
-        {/* ── HERO GALLERY: CAROUSEL EXPERIENCE ── */}
-        <View style={styles.heroWrapper}>
-           <Carousel
-              ref={carouselRef}
-              data={images}
-              renderItem={renderHeroItem}
-              width={SCREEN_W}
-              height={SCREEN_H * 0.72} // Much taller for full screen feel
-              onSnapToItem={(index) => {
-                setActiveImageIndex(index);
-                thumbnailCarouselRef.current?.scrollTo({ index, animated: true });
-              }}
-              loop
-              autoPlay={false}
-              onConfigurePanGesture={(panGesture: any) => panGesture.activeOffsetX([-10, 10])}
-              windowSize={3}
-           />
+        {/* ── HERO GALLERY (ScrollView — avoids VirtualizedList nesting crash under Fabric) ── */}
+        <View style={[styles.heroWrapper, { height: HERO_HEIGHT }]}>
+          <ScrollView
+            ref={heroScrollRef}
+            horizontal
+            pagingEnabled
+            nestedScrollEnabled
+            directionalLockEnabled
+            showsHorizontalScrollIndicator={false}
+            overScrollMode="never"
+            decelerationRate="fast"
+            onMomentumScrollEnd={onHeroMomentumEnd}
+          >
+            {images.map((item, index) => {
+              const isActive = index === activeImageIndex;
+              // All slides mount so images stream in on their own — priority keeps #1 first
+              const priority =
+                isActive ? 'high' : Math.abs(index - activeImageIndex) === 1 ? 'normal' : 'low';
+              return (
+                <TouchableOpacity
+                  key={`hero-${index}-${item}`}
+                  activeOpacity={0.9}
+                  onPress={() => { haptics.buttonTap(); setViewerVisible(true); }}
+                  style={styles.heroContainer}
+                >
+                  <OptimizedImage
+                    source={item}
+                    style={styles.heroImage}
+                    shopifyWidth={HERO_IMAGE_WIDTH}
+                    transition={isActive ? 160 : 0}
+                    priority={priority}
+                    showLoader={false}
+                  />
+                  <View style={styles.zoomPulse}>
+                    <Ionicons name="expand-outline" size={12} color="#FFF" />
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
         </View>
 
-        <View style={{ height: 180, marginTop: 16 }}>
-          <Carousel
-            ref={thumbnailCarouselRef}
-            data={images}
-            width={120}
-            height={165}
-            style={{ width: SCREEN_W }}
-            loop
-            autoPlay={false}
-            onConfigurePanGesture={(panGesture: any) => panGesture.activeOffsetX([-10, 10])}
-            renderItem={({ index }) => (
-              <TouchableOpacity 
-                key={index} 
-                activeOpacity={0.8}
-                onPress={() => { 
-                  haptics.buttonTap(); 
-                  setActiveImageIndex(index);
-                  carouselRef.current?.scrollTo({ index, animated: true });
-                  thumbnailCarouselRef.current?.scrollTo({ index, animated: true });
-                }}
-                style={[
-                  styles.thumbnail, 
-                  activeImageIndex === index && {
-                    borderWidth: 1.5,
-                    borderColor: colors.text,
-                  },
-                  { width: 110 }
-                ]}
-              >
-                <OptimizedImage source={String(images[index])} style={StyleSheet.absoluteFill} shopifyWidth={200} />
-              </TouchableOpacity>
-            )}
-          />
-        </View>
+        {images.length > 1 ? (
+          <View style={styles.thumbnailStrip}>
+            <ScrollView
+              ref={thumbnailScrollRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              overScrollMode="never"
+              contentContainerStyle={styles.thumbnailScroll}
+            >
+              {images.map((item, index) => {
+                const selected = activeImageIndex === index;
+                return (
+                  <TouchableOpacity
+                    key={`thumb-${index}-${item}`}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      haptics.buttonTap();
+                      selectImage(index);
+                    }}
+                    style={[
+                      styles.thumbnail,
+                      selected && {
+                        borderWidth: 1.5,
+                        borderColor: colors.text,
+                      },
+                    ]}
+                  >
+                    <OptimizedImage
+                      source={item}
+                      style={StyleSheet.absoluteFill}
+                      shopifyWidth={THUMB_IMAGE_WIDTH}
+                      priority={selected || index < 3 ? 'normal' : 'low'}
+                      showLoader={false}
+                      transition={120}
+                    />
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
 
         {/* ── PRODUCT INFO ── */}
         <View style={styles.infoSection}>
@@ -569,9 +880,16 @@ export default function ProductDetailScreen() {
                 >
                   {String(product?.title || '').toUpperCase()}
                 </Typography>
-                <Typography size={11} weight="400" color={colors.textSecondary} style={[styles.price, { marginTop: 2, opacity: 0.6 }]}>
-                  {formatPrice(product.price)}
-                </Typography>
+                <View style={styles.priceRow}>
+                  <Typography size={13} weight="700" color={colors.text} style={styles.price}>
+                    {formatPrice(product.price)}
+                  </Typography>
+                  {showInclTaxes && !!inclTaxesText && (
+                    <Typography size={9} weight="400" color={colors.textMuted} style={styles.inclTaxes}>
+                      {inclTaxesText}
+                    </Typography>
+                  )}
+                </View>
               </View>
               <TouchableOpacity 
                 style={[styles.wishlistToggle, { backgroundColor: isWishlisted ? (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)') : 'transparent' }]}
@@ -597,7 +915,7 @@ export default function ProductDetailScreen() {
               </View>
                <View style={styles.sizeGrid}>
                 {options.sizes.map(s => {
-                  const variant = product.variants.find(v => v.size === s && (v.color === selectedColor || !selectedColor));
+                  const variant = (product.variants || []).find(v => v.size === s && (v.color === selectedColor || !selectedColor));
                   const isOutOfStock = variant?.quantityAvailable === 0;
                   return (
                     <TouchableOpacity 
@@ -627,6 +945,11 @@ export default function ProductDetailScreen() {
                   );
                 })}
               </View>
+              {!!modelInfoLine && (
+                <Typography size={8} weight="400" color={colors.textMuted} style={styles.modelInfoLine}>
+                  {modelInfoLine}
+                </Typography>
+              )}
            </View>
 
            {/* COLOR SELECTOR */}
@@ -684,6 +1007,42 @@ export default function ProductDetailScreen() {
               </TouchableOpacity>
            </View>
 
+           {/* TRUST / OFFER BOXES */}
+           {trustBoxes.length > 0 && (
+             <View style={styles.trustGrid}>
+               {trustBoxes.map((box) => {
+                 const highlight = box.variant === 'highlight';
+                 // Prepaid-style tile is always black / white per design
+                 const boxBg = highlight
+                   ? '#000000'
+                   : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)');
+                 const titleColor = highlight ? '#FFFFFF' : colors.text;
+                 const subColor = highlight ? 'rgba(255,255,255,0.7)' : colors.textMuted;
+                 const iconColor = highlight ? '#FFFFFF' : colors.text;
+                 return (
+                   <View key={box.id} style={[styles.trustBox, { backgroundColor: boxBg }]}>
+                     <View style={styles.trustIconWrap}>
+                       <TrustBoxIcon
+                         icon={box.id === 'delivery' && !box.icon ? 'truck-outline' : box.icon}
+                         color={iconColor}
+                       />
+                     </View>
+                     <View style={styles.trustTextCol}>
+                       <Typography size={10} weight="700" color={titleColor} style={styles.trustTitle}>
+                         {box.title}
+                       </Typography>
+                       {!!box.subtitle && (
+                         <Typography size={8} weight="400" color={subColor} style={styles.trustSubtitle}>
+                           {box.subtitle}
+                         </Typography>
+                       )}
+                     </View>
+                   </View>
+                 );
+               })}
+             </View>
+           )}
+
             {/* INFO ACCORDION */}
            <View style={[styles.tabsBox, { backgroundColor: isDark ? 'rgba(255,255,255,0.01)' : 'rgba(0,0,0,0.01)', borderColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)' }]}>
               <View style={[styles.tabsPillContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }]}>
@@ -726,24 +1085,11 @@ export default function ProductDetailScreen() {
            {product.productVideo && (
              <View style={styles.videoSection}>
                 <Typography size={7} color={colors.textExtraLight} weight="700" style={styles.sectionTag}>EXPERIMENTAL REFERENCE</Typography>
-                <Pressable 
-                  style={[styles.videoWrapper, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }]}
-                  onPress={() => { haptics.buttonTap(); setIsMuted(!isMuted); }}
-                >
-                  <VideoView
-                    player={player}
-                    style={StyleSheet.absoluteFill}
-                    nativeControls={false}
-                    contentFit="cover"
-                  />
-                  <View style={styles.videoOverlay} />
-                  <Ionicons 
-                    name={isMuted ? "volume-mute-outline" : "volume-medium-outline"} 
-                    size={20} 
-                    color="#FFF" 
-                    style={{ position: 'absolute', bottom: 12, right: 12, opacity: 0.8 }} 
-                  />
-                </Pressable>
+                <ProductVideoSection
+                  videoUrl={product.productVideo}
+                  posterUri={resolveImageUrl(product.featuredImage || images[0])}
+                  isDark={isDark}
+                />
              </View>
            )}
 
@@ -760,11 +1106,13 @@ export default function ProductDetailScreen() {
                         key={`mb-${idx}`}
                         style={[styles.moodBoardItem, { backgroundColor: isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)' }]}
                       >
-                        <Image
-                          source={{ uri: resolvedUri }}
+                        <OptimizedImage
+                          source={resolvedUri}
                           style={StyleSheet.absoluteFill}
-                          contentFit="cover"
-                          transition={300}
+                          shopifyWidth={MOOD_IMAGE_WIDTH}
+                          priority={idx === 0 ? 'normal' : 'low'}
+                          showLoader={false}
+                          transition={160}
                         />
                       </View>
                     );
@@ -795,7 +1143,7 @@ export default function ProductDetailScreen() {
                       key={p.id}
                       product={p}
                       colors={colors}
-                      onPress={() => navigation.push('ProductDetail', { handle: p.handle })}
+                      onPress={() => navigation.push('ProductDetail', { handle: p.handle, initialProduct: p })}
                       onQuickAdd={() => {
                         setSelectedProduct(p);
                         setQuickAddVisible(true);
@@ -806,11 +1154,16 @@ export default function ProductDetailScreen() {
              </View>
             )}
 
-            {recentProducts.length > 1 && (
+            {(() => {
+              const recentItems = recentProducts
+                .filter((p) => p.id !== product.id && p.title && (p.featuredImage || (p.images && p.images.length > 0)))
+                .slice(0, 9);
+              if (recentItems.length === 0) return null;
+              return (
                <View style={styles.recentSection}>
                  <Typography size={7} color={colors.textExtraLight} weight="700" style={[styles.sectionTag, { marginLeft: 20 }]}>RECENTLY VIEWED</Typography>
                  <View style={styles.recentGrid}>
-                  {recentProducts.filter(p => p.id !== product.id).slice(0, 9).map(p => (
+                  {recentItems.map(p => (
                     <View key={p.id} style={styles.recentCardWrapper}>
                       <ProductCard 
                         product={p} 
@@ -824,7 +1177,8 @@ export default function ProductDetailScreen() {
                   ))}
                 </View>
               </View>
-           )}
+              );
+            })()}
 
            <StorefrontFooter />
         </View>
@@ -843,7 +1197,7 @@ export default function ProductDetailScreen() {
              </View>
              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: 'row', gap: 10, paddingVertical: 10 }}>
                {options.sizes.map(s => {
-                 const variant = product.variants.find(v => v.size === s);
+                 const variant = (product.variants || []).find(v => v.size === s);
                  const isOutOfStock = variant?.quantityAvailable === 0;
                  return (
                    <TouchableOpacity 
@@ -971,14 +1325,18 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.02)',
   },
   heroWrapper: {
-    paddingHorizontal: 0, 
-    marginTop: 0, // Ensure it bleeds to top
+    paddingHorizontal: 0,
+    marginTop: 0,
+    width: SCREEN_W,
   },
   heroContainer: {
-    width: '100%',
-    height: '100%', 
+    width: SCREEN_W,
+    height: HERO_HEIGHT,
   },
-  heroImage: { flex: 1 },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+  },
   zoomPulse: {
     position: 'absolute',
     bottom: 20,
@@ -990,16 +1348,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  thumbnailStrip: {
+    height: 180,
+    marginTop: 16,
+  },
   thumbnailScroll: {
     paddingHorizontal: 20,
-    gap: 10,
+    alignItems: 'center',
   },
   thumbnail: {
-    width: 110, 
-    height: 165, // Recalibrated for proper portrait aspect
+    width: THUMB_WIDTH,
+    height: 165,
+    marginRight: THUMB_GAP,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: 'rgba(0,0,0,0.04)',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
   },
   activeDot: {
     position: 'absolute',
@@ -1013,6 +1378,60 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 24,
   },
+  priceRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  inclTaxes: {
+    letterSpacing: 0.2,
+  },
+  modelInfoLine: {
+    marginTop: 12,
+    lineHeight: 14,
+    letterSpacing: 0.1,
+    fontStyle: 'italic',
+  },
+  trustGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 20,
+    marginTop: 4,
+  },
+  trustBox: {
+    width: (SCREEN_W - 40 - 10) / 2,
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  trustIconWrap: {
+    width: 22,
+    marginRight: 10,
+    marginTop: 1,
+    alignItems: 'center',
+  },
+  trustIconImg: {
+    width: 18,
+    height: 18,
+  },
+  trustTextCol: {
+    flex: 1,
+  },
+  trustTitle: {
+    letterSpacing: 0.2,
+    lineHeight: 14,
+    marginBottom: 4,
+  },
+  trustSubtitle: {
+    lineHeight: 13,
+    letterSpacing: 0.1,
+  },
   titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1020,7 +1439,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: { letterSpacing: 0.5, marginBottom: 2, lineHeight: 20 },
-  price: { letterSpacing: 2 },
+  price: { letterSpacing: 0.5 },
   wishlistToggle: {
     width: 32,
     height: 32,
@@ -1219,7 +1638,32 @@ const styles = StyleSheet.create({
   },
   videoOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: 'rgba(0,0,0,0.15)',
+  },
+  playButton: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    marginTop: -28,
+    marginLeft: -28,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  soundButton: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
   },
   viewerHeader: {
     position: 'absolute',

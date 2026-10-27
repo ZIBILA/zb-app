@@ -16,6 +16,7 @@ import {
   Rss,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface ShopifyVariant {
   id: number;
@@ -59,23 +60,19 @@ export default function ProductsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("title");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  const loadProducts = async () => {
-    setLoading(true);
+  const loadProducts = async (silent = false) => {
+    if (!silent && products.length === 0) setLoading(true);
     setError(null);
     try {
-      const [res, feedRes] = await Promise.all([
-        fetch("/api/shopify/products?limit=250"),
-        fetch("/api/admin/products-list/feed-toggle").catch(() => null),
+      const [data, feedData] = await Promise.all([
+        cachedAdminFetch<any>("/api/shopify/products?limit=250", { skipCache: silent, ttlMs: 60_000 }),
+        cachedAdminFetch<any>("/api/admin/products-list/feed-toggle", { skipCache: silent, ttlMs: 60_000 }).catch(() => null),
       ]);
-      const data = await res.json();
-      setProducts(data.products || []);
-      if (data.error) setError(`Shopify API: ${data.error}`);
+      setProducts(data?.products || []);
+      if (data?.error) setError(`Shopify API: ${data.error}`);
 
-      if (feedRes && feedRes.ok) {
-        const feedData = await feedRes.json();
-        if (feedData.feedMap) {
-          setFeedMap(feedData.feedMap);
-        }
+      if (feedData && feedData.feedMap) {
+        setFeedMap(feedData.feedMap);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An unknown error occurred");
@@ -105,6 +102,7 @@ export default function ProductsPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Update failed");
+      invalidateAdminCache('/api/admin/products-list/feed-toggle');
       setFeedMap((prev) => ({ ...prev, [String(product.id)]: nextInFeed }));
       showToast(`"${product.title}" ${nextInFeed ? "included in" : "excluded from"} feed`);
     } catch (err) {
@@ -125,6 +123,7 @@ export default function ProductsPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Update failed");
+      invalidateAdminCache('/api/shopify/products');
       setProducts((prev) =>
         prev.map((p) =>
           p.id === product.id ? { ...p, status: newStatus } : p
@@ -240,7 +239,7 @@ export default function ProductsPage() {
           </p>
         </div>
         <button
-          onClick={loadProducts}
+          onClick={() => loadProducts(true)}
           disabled={loading}
           className="glass-button flex items-center gap-2 px-4 py-2 text-[11px] font-medium !rounded-lg disabled:opacity-50"
         >

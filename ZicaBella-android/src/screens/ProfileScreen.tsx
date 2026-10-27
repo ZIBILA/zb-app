@@ -433,7 +433,7 @@ export default function ProfileScreen() {
 
   // ─── NOT AUTHENTICATED ───
   if (!isAuthenticated) {
-    return <LoginScreen />;
+    return <LoginScreen isInline={true} />;
   }
 
   // ─── AUTHENTICATED VIEW ───
@@ -449,8 +449,8 @@ export default function ProfileScreen() {
     { icon: 'heart-outline' as const, label: 'Wishlist', onPress: () => navigation.navigate('Wishlist') },
     { icon: 'swap-horizontal-outline' as const, label: 'Returns', onPress: () => navigation.navigate('Returns') },
     { icon: 'help-circle-outline' as const, label: 'FAQ', onPress: () => navigation.navigate('FAQ') },
-    { icon: 'people-outline' as const, label: 'Collabs', onPress: () => navigation.navigate('Collaborations') },
-    { icon: 'newspaper-outline' as const, label: 'Blogs', onPress: () => navigation.navigate('Blogs') },
+    { icon: 'sparkles-outline' as const, label: 'Creator', onPress: () => navigation.navigate('Creator') },
+    { icon: 'location-outline' as const, label: 'Addresses', onPress: () => navigation.navigate('Addresses') },
   ];
 
   return (

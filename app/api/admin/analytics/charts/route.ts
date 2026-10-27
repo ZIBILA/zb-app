@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
 // Canonical realized-revenue statuses (must match overview/route.ts)
-const REALIZED_PAYMENT_SQL = `('paid', 'partially_paid', 'cod_upfront_paid', 'cod')`;
-const EXCLUDED_STATUS_SQL = `('cancelled', 'payment_failed', 'pending', 'draft', 'abandoned', 'FAILED', 'CANCELLED', 'payment_pending')`;
+const REALIZED_PAYMENT_SQL = `('paid', 'PAID', 'success', 'SUCCESS', 'cod_upfront_paid', 'partially_paid')`;
+const EXCLUDED_STATUS_SQL = `('cancelled', 'CANCELLED', 'payment_failed', 'failed', 'FAILED', 'draft', 'abandoned', 'pending', 'payment_pending')`;
 
 // Valid platform values for allow-list validation
 const VALID_PLATFORMS = ['web', 'app'] as const;
@@ -26,7 +26,10 @@ async function handler(req: Request) {
 
     const now = new Date();
     const startDate = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
-    const rawEnd = to ? new Date(to) : now;
+    let rawEnd = to ? new Date(to) : now;
+    if (to && to.length === 10) {
+      rawEnd.setHours(23, 59, 59, 999);
+    }
     const endDate = rawEnd > now ? now : rawEnd;
 
     const data = await cachedAnalytics(
@@ -42,10 +45,12 @@ async function handler(req: Request) {
 
         // Build parameterized platform conditions
         const orderTypeCondition = platform === 'web'
-          ? `AND "orderType" IN ('WEB_STORE', 'REGULAR')`
+          ? `AND "orderType" IN ('WEB_STORE', 'REGULAR', 'EXCHANGE')`
           : platform === 'app'
-            ? `AND "orderType" IN ('MOBILE', 'MOBILE_APP')`
+            ? `AND "orderType" IN ('MOBILE', 'MOBILE_APP', 'APP')`
             : '';
+
+        const draftExclusionSql = `AND "internal_order_number" NOT LIKE 'ZBPF%' AND NOT ("internal_order_number" LIKE 'ZBPP%' AND "paymentStatus" IN ('pending', 'payment_pending', 'failed', 'payment_failed'))`;
 
         // Platform filter for analytics tables — parameterized (Item 6)
         const platformCondition = platform ? `AND platform = $3` : '';
@@ -63,6 +68,7 @@ async function handler(req: Request) {
             WHERE "createdAt" >= $1 AND "createdAt" <= $2
               AND "paymentStatus" IN ${REALIZED_PAYMENT_SQL}
               AND "status" NOT IN ${EXCLUDED_STATUS_SQL}
+              ${draftExclusionSql}
               ${orderTypeCondition}
             GROUP BY bucket
             ORDER BY bucket ASC

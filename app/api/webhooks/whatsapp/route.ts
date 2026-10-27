@@ -121,7 +121,12 @@ export async function GET(req: NextRequest) {
   const token = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
-  const verifyToken = config.verifyToken || 'zicabella_whatsapp_2026';
+  const verifyToken = config.verifyToken || process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN;
+
+  if (!verifyToken) {
+    console.error('[WhatsApp Webhook] Verify token not configured');
+    return new NextResponse('Forbidden', { status: 403 });
+  }
 
   if (mode === 'subscribe' && token === verifyToken) {
     console.log('[WhatsApp Webhook] Verification successful');
@@ -140,8 +145,12 @@ export async function POST(req: NextRequest) {
     const config = await getConfig();
     const appSecret = config.appSecret || process.env.WHATSAPP_APP_SECRET;
 
-    // Verify Meta signature if App Secret is configured
-    if (appSecret) {
+    // Fail closed: require App Secret + valid Meta signature
+    if (!appSecret) {
+      console.error('[WhatsApp Webhook] App secret not configured');
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+    }
+    {
       const isSignatureValid = await verifyMetaSignature(req, appSecret);
       if (!isSignatureValid) {
         console.warn('[WhatsApp Webhook] Signature verification failed. Unauthorized request.');

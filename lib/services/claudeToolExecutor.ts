@@ -25,6 +25,12 @@ import {
   emailLowStockAlert,
   emailCustomAI
 } from "./zohoMailService";
+import {
+  updateOrderAddressForAI,
+  updateOrderPhoneForAI,
+  updateOrderSizeForAI,
+  getOrderTrackingForAI,
+} from "./aiSupportMutations";
 
 const ACTOR = "Zica AI";
 
@@ -100,6 +106,14 @@ export async function executeClaudeTool(
         return await getOrderByNumber(toolInput.order_number, currentPrincipal);
       case "get_customer_profile":
         return await getCustomerProfile(currentPrincipal);
+      case "update_order_address":
+        return await updateOrderAddressForAI(toolInput as any, currentPrincipal);
+      case "update_order_phone":
+        return await updateOrderPhoneForAI(toolInput as any, currentPrincipal);
+      case "update_order_size":
+        return await updateOrderSizeForAI(toolInput as any, currentPrincipal);
+      case "get_order_tracking":
+        return await getOrderTrackingForAI(toolInput as any, currentPrincipal);
       default:
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });
     }
@@ -793,7 +807,7 @@ async function getOrderByNumber(orderNumber: string, principal?: Principal): Pro
   }
   const currentPrincipal = principal || { kind: 'guest' };
 
-  if (currentPrincipal.kind === 'guest') {
+  if (currentPrincipal.kind === 'guest' && !currentPrincipal.email && !currentPrincipal.phone) {
     return JSON.stringify({ error: "Access Denied: Please sign in to look up orders." });
   }
 
@@ -868,6 +882,11 @@ async function getOrderByNumber(orderNumber: string, principal?: Principal): Pro
   });
 
   if (!order) {
+    if (currentPrincipal.kind === 'guest') {
+      return JSON.stringify({
+        error: `No order found matching "${searchTerm}". Please verify the order number and the phone/email used at checkout.`,
+      });
+    }
     // If customer scoped, try a broader search without customer filter to give a better error
     if (currentPrincipal.kind === 'customer') {
       const existsForOther = await prisma.order.findFirst({
@@ -883,6 +902,21 @@ async function getOrderByNumber(orderNumber: string, principal?: Principal): Pro
     return JSON.stringify({
       error: `No order found matching "${searchTerm}". Please verify the order number and try again. Order numbers typically look like ZB81000 or ZB71909.`,
     });
+  }
+
+  if (currentPrincipal.kind === 'guest') {
+    const last10 = (currentPrincipal.phone || '').replace(/\D/g, '').slice(-10);
+    const email = (currentPrincipal.email || '').trim().toLowerCase();
+    const addr = String((order as any).shippingAddress || '').toLowerCase();
+    const custEmail = String(order.customer?.email || '').toLowerCase();
+    const custPhone = String(order.customer?.phone || '').replace(/\D/g, '');
+    const phoneOk = last10.length === 10 && (custPhone.endsWith(last10) || addr.includes(last10));
+    const emailOk = Boolean(email) && (custEmail === email || addr.includes(email));
+    if (!phoneOk && !emailOk) {
+      return JSON.stringify({
+        error: 'I found that order number but the email/phone does not match. Please share the phone or email used at checkout.',
+      });
+    }
   }
 
   // Cross-reference WebStoreOrder for COD upfront payment metrics
@@ -944,11 +978,7 @@ async function getCustomerProfile(principal?: Principal): Promise<string> {
       name: true,
       email: true,
       phone: true,
-      address: true,
-      city: true,
-      state: true,
-      zip: true,
-      country: true,
+      defaultAddress: true,
       createdAt: true,
       orders: {
         where: {
@@ -980,9 +1010,7 @@ async function getCustomerProfile(principal?: Principal): Promise<string> {
     name: customer.name,
     email: customer.email,
     phone: customer.phone,
-    address: [customer.address, customer.city, customer.state, customer.zip, customer.country]
-      .filter(Boolean)
-      .join(', '),
+    address: customer.defaultAddress || '',
     memberSince: customer.createdAt,
     totalOrders,
     totalSpent: `₹${totalSpent.toLocaleString('en-IN')}`,

@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef, useMemo, startTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight } from "lucide-react";
+import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight, Volume2, VolumeX, Play, Banknote, Tag, Truck, RotateCw, Info } from "lucide-react";
+import { DEFAULT_PDP_TRUST_BOXES, type PdpTrustBox } from "@/lib/pdp-trust-defaults";
 import { useMetaEvents, ga4AddToWishlist } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
@@ -22,6 +23,118 @@ interface ShopSettings {
   showSizeFit: boolean;
   showDetails: boolean;
   pdpBackground?: string;
+  /** Info tiles under Buy Now — managed in Dashboard → App Integration (same as the mobile app) */
+  pdpTrustBoxes?: PdpTrustBox[];
+}
+
+/**
+ * Product video with Play-to-start (no autoplay) for faster initial PDP load.
+ * Loops until the user pauses or leaves the page.
+ */
+function ProductVideoPlayer({
+  src,
+  poster,
+  className,
+  playButtonClassName,
+  muteButtonClassName,
+}: {
+  src: string;
+  poster?: string;
+  className?: string;
+  playButtonClassName?: string;
+  muteButtonClassName?: string;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setIsMuted(true);
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = 0;
+    }
+  }, [src]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = isMuted;
+  }, [isMuted]);
+
+  const handlePlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.play().then(() => setIsPlaying(true)).catch(() => {});
+  };
+
+  const handlePause = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    setIsPlaying(false);
+  };
+
+  return (
+    <div className={className}>
+      <video
+        ref={videoRef}
+        src={src}
+        poster={poster}
+        loop
+        muted={isMuted}
+        playsInline
+        preload="none"
+        className="w-full h-full object-cover"
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+      />
+      {!isPlaying ? (
+        <button
+          type="button"
+          onClick={handlePlay}
+          aria-label="Play video"
+          className={
+            playButtonClassName ||
+            "absolute inset-0 z-10 flex items-center justify-center bg-black/20"
+          }
+        >
+          <span className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center border border-white/15 backdrop-blur-sm transition-transform hover:scale-105 active:scale-95">
+            <Play className="w-6 h-6 text-white fill-white ml-0.5" />
+          </span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handlePause}
+          aria-label="Pause video"
+          className="absolute inset-0 z-[5]"
+        />
+      )}
+      {isPlaying && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsMuted(!isMuted);
+          }}
+          aria-label={isMuted ? "Unmute video" : "Mute video"}
+          className={
+            muteButtonClassName ||
+            "absolute bottom-3 right-3 z-10 w-7 h-7 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
+          }
+        >
+          {isMuted ? (
+            <VolumeX className="w-3.5 h-3.5 text-white/70" />
+          ) : (
+            <Volume2 className="w-3.5 h-3.5 text-white" />
+          )}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function ProductDescriptionContainer({
@@ -89,13 +202,13 @@ import { trackViewItem as zbTrackViewItem } from "@/lib/analytics-tracker";
 import { useRecentlyViewed } from "@/lib/recently-viewed-context";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import dynamic from "next/dynamic";
-// Zoom/pan library is only needed inside the full-screen gallery (opened on tap).
-const TransformWrapper = dynamic(() => import("react-zoom-pan-pinch").then((m) => m.TransformWrapper), { ssr: false });
-const TransformComponent = dynamic(() => import("react-zoom-pan-pinch").then((m) => m.TransformComponent), { ssr: false });
 
 const CheckoutWebView = dynamic(() => import("@/components/CheckoutWebView"), { ssr: false });
 const OrderSuccess = dynamic(() => import("@/components/OrderSuccess"), { ssr: false });
 const QuickAddModal = dynamic(() => import("@/components/QuickAddModal"), { ssr: false });
+// Zoom/pan library is only needed inside the full-screen gallery (opened on tap).
+const TransformWrapper = dynamic(() => import("react-zoom-pan-pinch").then((m) => m.TransformWrapper), { ssr: false });
+const TransformComponent = dynamic(() => import("react-zoom-pan-pinch").then((m) => m.TransformComponent), { ssr: false });
 
 interface ShopSettings {
   showProductVideo: boolean;
@@ -106,6 +219,56 @@ interface ShopSettings {
   showSizeFit: boolean;
   showDetails: boolean;
   pdpBackground?: string;
+  /** Info tiles under Buy Now — managed in Dashboard → App Integration (same as the mobile app) */
+  pdpTrustBoxes?: PdpTrustBox[];
+}
+
+/** Trust icons are stored as app (Ionicons) names or an image URL — map names to lucide equivalents */
+function TrustBoxIcon({ icon }: { icon: string }) {
+  const key = (icon || "").trim();
+  if (/^https?:\/\//.test(key)) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={key} alt="" className="w-5 h-5 object-contain" />;
+  }
+  const Icon =
+    /cash|banknote|money/.test(key) ? Banknote
+    : /tag/.test(key) ? Tag
+    : /truck|bicycle|delivery|shipping/.test(key) ? Truck
+    : /refresh|sync|return|rotate/.test(key) ? RotateCw
+    : Info;
+  return <Icon className="w-5 h-5" strokeWidth={1.75} />;
+}
+
+/** COD / prepaid offer / delivery / returns tiles shown under Buy Now (mirrors the mobile app) */
+function TrustBoxes({ boxes }: { boxes: PdpTrustBox[] }) {
+  if (!boxes.length) return null;
+  return (
+    <div className="grid grid-cols-2 gap-2.5">
+      {boxes.map((box) => {
+        const highlight = box.variant === "highlight";
+        return (
+          <div
+            key={box.id}
+            className={`flex items-start gap-3 rounded-2xl p-3.5 ${
+              highlight ? "bg-foreground text-background" : "bg-foreground/[0.04] text-foreground"
+            }`}
+          >
+            <span className="shrink-0 mt-0.5">
+              <TrustBoxIcon icon={box.icon} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold leading-snug">{box.title}</p>
+              {box.subtitle && (
+                <p className={`mt-1 text-[11px] leading-snug ${highlight ? "text-background/70" : "text-foreground/60"}`}>
+                  {box.subtitle}
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function ProductDetailsClient({ 
@@ -158,9 +321,7 @@ export default function ProductDetailsClient({
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("details");
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
-  const [isMuted, setIsMuted] = useState(true);
   const [showSizeChart, setShowSizeChart] = useState(false);
-  const [scrollPos, setScrollPos] = useState(0);
   const [activeImg, setActiveImg] = useState(0);
   const [direction, setDirection] = useState(0);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
@@ -240,18 +401,15 @@ export default function ProductDetailsClient({
     }
   }, [product, recordVisit]);
 
-  // Optimized Scroll Effects for Safari
+  // Scroll overlay opacity via DOM only — avoid re-rendering this large tree every frame
   useEffect(() => {
     let ticking = false;
     const handleScroll = () => {
       if (!ticking) {
         window.requestAnimationFrame(() => {
-          const scroll = window.scrollY;
-          setScrollPos(scroll);
-          
           const overlay = document.getElementById('pdp-blur-overlay-internal');
           if (overlay) {
-            const opacity = Math.min(scroll / 600, 0.4);
+            const opacity = Math.min(window.scrollY / 600, 0.4);
             overlay.style.backgroundColor = `rgba(0,0,0, ${opacity})`;
           }
           ticking = false;
@@ -409,6 +567,8 @@ export default function ProductDetailsClient({
   const hideCare = tagsList.includes('hide:care');
   const hideShippingReturn = tagsList.includes('hide:shipping_return');
 
+  const trustBoxes = shopSettings?.pdpTrustBoxes?.length ? shopSettings.pdpTrustBoxes : DEFAULT_PDP_TRUST_BOXES;
+
   const tabs = [
     { id: 'details', label: 'Description', show: (shopSettings?.showDetails ?? true) && !hideDescription },
     { id: 'more-details', label: 'Details', show: (shopSettings?.showDetails ?? true) && !hideDetails && !!getMeta('DETAILS') },
@@ -531,7 +691,7 @@ export default function ProductDetailsClient({
                 alt={product.title}
                 fill
                 className="object-cover transition-all duration-1200"
-                loading="eager"
+                // One LCP candidate only (mobile carousel owns priority below)
                 sizes="(max-width: 1200px) 50vw, 600px"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/10 to-transparent pointer-events-none" />
@@ -663,6 +823,8 @@ export default function ProductDetailsClient({
               )}
             </div>
 
+            <TrustBoxes boxes={trustBoxes} />
+
             {/* Tabs details */}
             <div className="p-3.5 rounded-xl border border-foreground/5 bg-foreground/[0.01] space-y-3">
               <div className="flex overflow-x-auto hide-scrollbar gap-1.5 border-b border-foreground/5 pb-1.5">
@@ -691,10 +853,11 @@ export default function ProductDetailsClient({
             {(shopSettings?.showProductVideo ?? true) && productVideoUrl && (
               <div className="space-y-2">
                 <span className="text-[7.5px] font-bold uppercase tracking-[0.3em] text-foreground/40 block">Experimental Reference</span>
-                <div className="relative aspect-[9/16] max-w-[200px] mx-auto rounded-2xl overflow-hidden border border-foreground/5 shadow-inner cursor-pointer" onClick={() => setIsMuted(!isMuted)}>
-                  <video src={productVideoUrl} autoPlay loop muted={isMuted} playsInline className="w-full h-full object-cover" />
-                  <div className="absolute bottom-4 right-4 z-10">{isMuted ? <X className="w-3 h-3 text-white/50" /> : <div className="flex items-center gap-0.5 opacity-80"><div className="w-[1px] h-1.5 bg-white animate-pulse" /><div className="w-[1px] h-2 bg-white animate-pulse" style={{ animationDelay: '0.1s' }} /></div>}</div>
-                </div>
+                <ProductVideoPlayer
+                  src={productVideoUrl}
+                  poster={product.image?.src || product.images?.[0]?.src}
+                  className="relative aspect-[9/16] max-w-[200px] mx-auto rounded-2xl overflow-hidden border border-foreground/5 shadow-inner"
+                />
               </div>
             )}
 
@@ -714,6 +877,7 @@ export default function ProductDetailsClient({
                         alt={`${product.title} mood board ${idx + 1}`}
                         className="w-full h-full object-cover"
                         loading="lazy"
+                        referrerPolicy="no-referrer"
                       />
                     </div>
                   ))}
@@ -1060,6 +1224,8 @@ export default function ProductDetailsClient({
                   )}
                 </div>
 
+                <TrustBoxes boxes={trustBoxes} />
+
                 <div 
                   className="mt-0.5 p-3 rounded-[1.5rem] border border-foreground/[0.06] bg-foreground/[0.01]"
                 >
@@ -1091,32 +1257,12 @@ export default function ProductDetailsClient({
                 {(shopSettings?.showProductVideo ?? true) && productVideoUrl && (
                   <div className="mt-1 -mx-0.5">
                     <span className="text-[7.5px] font-bold uppercase tracking-[0.4em] text-foreground/40 dark:text-foreground/20 ml-1 mb-1.5 block">Experimental Reference</span>
-                    <div 
-                      className="relative aspect-[9/16] rounded-[2.2rem] overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-inner cursor-pointer"
-                      onClick={() => setIsMuted(!isMuted)}
-                    >
-                      <video 
-                        key={productVideoUrl} 
-                        autoPlay 
-                        loop 
-                        muted={isMuted} 
-                        playsInline 
-                        className="w-full h-full object-cover pointer-events-none"
-                      >
-                        <source src={productVideoUrl} type="video/mp4" />
-                      </video>
-                      {/* Premium Minimal Audio Indicator */}
-                      <div className="absolute bottom-4 right-4 z-10">
-                        {isMuted ? (
-                          <X className="w-2.5 h-2.5 text-white/50" />
-                        ) : (
-                          <div className="flex items-center gap-0.5 opacity-80">
-                            <div className="w-[1.5px] h-2 bg-white animate-pulse" />
-                            <div className="w-[1.5px] h-2.5 bg-white animate-pulse" style={{ animationDelay: '0.1s' }} />
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    <ProductVideoPlayer
+                      src={productVideoUrl}
+                      poster={product.image?.src || product.images?.[0]?.src}
+                      className="relative aspect-[9/16] rounded-[2.2rem] overflow-hidden bg-foreground/[0.02] border border-foreground/[0.05] shadow-inner"
+                      muteButtonClassName="absolute bottom-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center transition-all hover:bg-black/80 hover:scale-105 active:scale-95 border border-white/10"
+                    />
                   </div>
                 )}
 
@@ -1136,6 +1282,7 @@ export default function ProductDetailsClient({
                             alt={`${product.title} mood ${idx + 1}`}
                             className="w-full h-full object-cover"
                             loading="lazy"
+                            referrerPolicy="no-referrer"
                           />
                         </div>
                       ))}

@@ -1,47 +1,24 @@
+/**
+ * POST /api/app/openai — legacy mobile path (name kept for clients).
+ * Chat completions now run on Anthropic Claude via streamClaude.
+ */
 import { NextRequest } from "next/server";
 import { getAppAuthFromRequest, resolveAuthCustomer } from "@/lib/appAuth";
 import prisma from "@/lib/db";
-import OpenAI from "openai";
+import { streamClaude } from "@/lib/ai/claudeClient";
+import type Anthropic from "@anthropic-ai/sdk";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Isolated User-Side OpenAI client resolver
-async function resolveOpenAIKey() {
-  try {
-    const shop = await prisma.shop.findFirst({
-      select: { openaiApiKey: true }
-    });
-    if (shop?.openaiApiKey && !shop.openaiApiKey.startsWith('sk-proj-R5x6e8X')) {
-      return shop.openaiApiKey;
-    }
-  } catch (err) {
-    console.error("[Zica User OpenAI] Failed to fetch key from DB:", err);
-  }
-  return process.env.OPENAI_API_KEY || "";
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const activeKey = await resolveOpenAIKey();
-    if (!activeKey || activeKey.includes("placeholder") || activeKey.startsWith("sk-proj-xxxx")) {
-      console.error("[Zica User OpenAI] Configuration Error: Real OpenAI API Key is not set.");
-      return new Response(JSON.stringify({ error: "Zica AI is temporarily offline. Please try again later." }), {
-        status: 503,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const openai = new OpenAI({
-      apiKey: activeKey,
-    });
-
     const body = await req.json().catch(() => null);
     if (!body || !body.messages || !Array.isArray(body.messages)) {
-      return new Response(JSON.stringify({ error: "Invalid request: messages array required" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Invalid request: messages array required" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const { messages, sessionId, userContext, orderIdContext } = body;
@@ -49,23 +26,25 @@ export async function POST(req: NextRequest) {
     const customer = auth ? await resolveAuthCustomer(auth) : null;
     const userId = customer?.id || userContext?.id;
 
-    // 1. Resolve Session ID (Ensure secure private session storage)
     let currentSessionId = sessionId;
     if (!currentSessionId) {
       try {
         const session = await prisma.aIChatSession.create({
           data: {
             userId: userId || null,
-            title: (messages[messages.length - 1]?.content || "Image analysis").substring(0, 50),
-          }
+            title: (
+              typeof messages[messages.length - 1]?.content === "string"
+                ? messages[messages.length - 1].content
+                : "Image analysis"
+            ).substring(0, 50),
+          },
         });
         currentSessionId = session.id;
       } catch (err) {
-        console.error("[Zica User OpenAI] Failed to create chat session:", err);
+        console.error("[Zica User AI] Failed to create chat session:", err);
       }
     }
 
-    // 2. Save User message to history securely
     const lastUserMsg = messages[messages.length - 1];
     if (currentSessionId && lastUserMsg) {
       try {
@@ -73,19 +52,22 @@ export async function POST(req: NextRequest) {
           data: {
             sessionId: currentSessionId,
             role: "user",
-            content: typeof lastUserMsg.content === "string" 
-              ? lastUserMsg.content 
-              : Array.isArray(lastUserMsg.content) 
-                ? lastUserMsg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ") || "Analyze image"
-                : "Analyze image"
-          }
+            content:
+              typeof lastUserMsg.content === "string"
+                ? lastUserMsg.content
+                : Array.isArray(lastUserMsg.content)
+                  ? lastUserMsg.content
+                      .filter((b: any) => b.type === "text")
+                      .map((b: any) => b.text)
+                      .join(" ") || "Analyze image"
+                  : "Analyze image",
+          },
         });
       } catch (err) {
-        console.error("[Zica User OpenAI] Failed to save user message:", err);
+        console.error("[Zica User AI] Failed to save user message:", err);
       }
     }
 
-    // 3. Build Private, Isolated User-Side System Prompt
     let systemPrompt = `You are Zica, the intelligent personal fashion AI for Zica Bella — a premium Indian streetwear brand focused on oversized silhouettes, graphic tees, acid-wash apparel, baggy denim, statement accessories, and bold urban styling. All apparel products are designed to be unisex.
 
 RESPONSE RULES:
@@ -111,14 +93,15 @@ STORE CONTEXT:
 - Shipping across India is free; delivery usually takes 3 to 7 business days depending on location.
 - Eligible returns and exchanges can be initiated in the app within 7 days of delivery when items are unworn, unwashed, and have original tags attached.`;
 
-    // 4. Securely fetch ONLY Customer's own orders context (Prevents Admin leaks)
     if (userId) {
       try {
         const recentOrders = await prisma.order.findMany({
           where: {
             customerId: userId,
-            status: { notIn: ['cancelled', 'CANCELLED', 'failed', 'FAILED'] },
-            paymentStatus: { notIn: ['failed', 'FAILED', 'cancelled', 'CANCELLED'] }
+            status: { notIn: ["cancelled", "CANCELLED", "failed", "FAILED"] },
+            paymentStatus: {
+              notIn: ["failed", "FAILED", "cancelled", "CANCELLED"],
+            },
           },
           take: 5,
           orderBy: { createdAt: "desc" },
@@ -130,118 +113,151 @@ STORE CONTEXT:
             paymentStatus: true,
             deliveryStatus: true,
             createdAt: true,
-          }
+          },
         });
 
         if (recentOrders.length > 0) {
-          systemPrompt += `\n\nCustomer's Recent Orders:\n${recentOrders.map((o: any) => 
-            `- Order #${o.shopifyOrderId.replace(/^#/, "")} (${o.id}): ₹${o.totalPrice}, Status: ${o.status}, Payment: ${o.paymentStatus}, Delivery: ${o.deliveryStatus}, Date: ${o.createdAt.toLocaleDateString()}`
-          ).join("\n")}`;
-          
+          systemPrompt += `\n\nCustomer's Recent Orders:\n${recentOrders
+            .map(
+              (o: any) =>
+                `- Order #${(o.shopifyOrderId || "").replace(/^#/, "") || o.id.slice(-6)} (${o.id}): ₹${o.totalPrice}, Status: ${o.status}, Payment: ${o.paymentStatus}, Delivery: ${o.deliveryStatus}, Date: ${o.createdAt.toLocaleDateString()}`
+            )
+            .join("\n")}`;
+
           systemPrompt += `\n\nIf the customer asks "Where is my order?" or "Track my order", refer to these orders.`;
         }
       } catch (err) {
-        console.error("[Zica User OpenAI] Failed to fetch customer orders context:", err);
+        console.error("[Zica User AI] Failed to fetch customer orders context:", err);
       }
     }
 
-    // 5. Securely fetch products catalog context
     try {
       const allProducts = await prisma.product.findMany({
         select: { title: true, price: true, handle: true, featuredImage: true },
-        take: 50
+        take: 50,
       });
 
       if (allProducts.length > 0) {
         systemPrompt += `\n\nZica Bella Product Catalog:\n`;
-        systemPrompt += allProducts.map((p: any) => 
-          `- ${p.title}: ₹${p.price || 'N/A'}. Handle: ${p.handle}. Image: ${p.featuredImage || ''}`
-        ).join("\n");
+        systemPrompt += allProducts
+          .map(
+            (p: any) =>
+              `- ${p.title}: ₹${p.price || "N/A"}. Handle: ${p.handle}. Image: ${p.featuredImage || ""}`
+          )
+          .join("\n");
       }
     } catch (err) {
-      console.error("[Zica User OpenAI] Failed to fetch products context:", err);
+      console.error("[Zica User AI] Failed to fetch products context:", err);
     }
 
     if (orderIdContext) {
       systemPrompt += `\n\nThe customer is currently viewing order ID: ${orderIdContext}. Focus on this order if they ask general questions.`;
     }
 
-    // 6. Format messages for OpenAI API (Handles standard text and image multi-part inputs)
-    const formattedMessages = messages.map((msg: any) => {
-      let content = msg.content;
-      if (Array.isArray(content)) {
-        content = content.map((block: any) => {
-          if (block.type === "image") {
-            return {
-              type: "image_url",
-              image_url: {
-                url: `data:${block.source.media_type};base64,${block.source.data}`
+    // Map OpenAI-style / Anthropic-style content blocks → Anthropic MessageParam
+    const formattedMessages: Anthropic.MessageParam[] = messages.map(
+      (msg: any) => {
+        let content: Anthropic.MessageParam["content"] = msg.content;
+        if (Array.isArray(content)) {
+          content = content.map((block: any) => {
+            if (block.type === "image" && block.source) {
+              return {
+                type: "image" as const,
+                source: {
+                  type: "base64" as const,
+                  media_type: block.source.media_type || "image/jpeg",
+                  data: block.source.data,
+                },
+              };
+            }
+            if (block.type === "image_url" && block.image_url?.url) {
+              const url: string = block.image_url.url;
+              const match = url.match(/^data:([^;]+);base64,(.+)$/);
+              if (match) {
+                return {
+                  type: "image" as const,
+                  source: {
+                    type: "base64" as const,
+                    media_type: match[1] as Anthropic.Base64ImageSource["media_type"],
+                    data: match[2],
+                  },
+                };
               }
+              return { type: "text" as const, text: "[image]" };
+            }
+            return {
+              type: "text" as const,
+              text: block.text || block.content || "",
             };
-          }
-          return {
-            type: "text",
-            text: block.text
-          };
-        });
+          }) as Anthropic.ContentBlockParam[];
+        }
+        return {
+          role: msg.role === "assistant" ? ("assistant" as const) : ("user" as const),
+          content,
+        };
       }
-      return {
-        role: msg.role === "assistant" ? "assistant" : "user",
-        content
-      };
+    );
+
+    // Ensure conversation ends with a user turn (Anthropic requirement)
+    if (
+      formattedMessages.length === 0 ||
+      formattedMessages[formattedMessages.length - 1].role !== "user"
+    ) {
+      formattedMessages.push({ role: "user", content: "Please continue." });
+    }
+
+    const anthropicStream = await streamClaude({
+      systemPrompt,
+      messages: formattedMessages,
+      maxTokens: 1024,
     });
 
-    const openAIModel = process.env.OPENAI_MODEL || "gpt-4o";
-
-    // 7. Request streaming completion from OpenAI
-    const openAIResponse = await openai.chat.completions.create({
-      model: openAIModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...formattedMessages
-      ],
-      stream: true,
-      max_tokens: 1024,
-    });
-
-    // 8. Stream the response back in chunked SSE format compatible with the client-side parser
     const encoder = new TextEncoder();
     const customStream = new ReadableStream({
       async start(controller) {
         let fullResponseText = "";
         try {
-          for await (const chunk of openAIResponse) {
-            const token = chunk.choices[0]?.delta?.content || "";
-            if (token) {
+          for await (const event of anthropicStream as AsyncIterable<any>) {
+            if (
+              event.type === "content_block_delta" &&
+              event.delta?.type === "text_delta" &&
+              event.delta?.text
+            ) {
+              const token = event.delta.text as string;
               fullResponseText += token;
               const dataString = `data: ${JSON.stringify({
                 type: "content_block_delta",
-                delta: { text: token }
+                delta: { text: token },
               })}\n\n`;
               controller.enqueue(encoder.encode(dataString));
             }
           }
 
-          // Save complete Assistant response to database securely
           if (currentSessionId && fullResponseText.trim()) {
             await prisma.aIChatMessage.create({
               data: {
                 sessionId: currentSessionId,
                 role: "assistant",
-                content: fullResponseText
-              }
+                content: fullResponseText,
+              },
             });
           }
         } catch (streamErr) {
-          console.error("[Zica User OpenAI] Streaming error:", streamErr);
-          const dataString = `data: ${JSON.stringify({ type: "error", error: { message: "AI response stream interrupted." } })}\n\n`;
+          console.error("[Zica User AI] Streaming error:", streamErr);
+          const dataString = `data: ${JSON.stringify({
+            type: "error",
+            error: { message: "AI response stream interrupted." },
+          })}\n\n`;
           controller.enqueue(encoder.encode(dataString));
         } finally {
-          const doneString = `data: ${JSON.stringify({ type: "message_stop", sessionId: currentSessionId })}\n\n`;
+          const doneString = `data: ${JSON.stringify({
+            type: "message_stop",
+            sessionId: currentSessionId,
+          })}\n\n`;
           controller.enqueue(encoder.encode(doneString));
           controller.close();
         }
-      }
+      },
     });
 
     return new Response(customStream, {
@@ -249,13 +265,16 @@ STORE CONTEXT:
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
-      }
+      },
     });
-
   } catch (error: any) {
-    console.error("[Zica User OpenAI] Route Exception:", error);
-    return new Response(JSON.stringify({ error: error.message || "Internal server error" }), {
-      status: 500,
+    console.error("[Zica User AI] Route Exception:", error);
+    const msg =
+      error?.message?.includes("No valid Anthropic") || error?.status === 401
+        ? "Zica AI is not configured. Add ANTHROPIC_API_KEY or Claude API key in settings."
+        : error.message || "Internal server error";
+    return new Response(JSON.stringify({ error: msg }), {
+      status: error?.status === 401 ? 503 : 500,
       headers: { "Content-Type": "application/json" },
     });
   }

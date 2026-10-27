@@ -378,7 +378,7 @@ export default function AdminReviewsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 p-4 sm:p-6 lg:p-8 font-sans selection:bg-amber-500 selection:text-black">
+    <div className="min-h-screen bg-background text-neutral-100 p-4 sm:p-6 lg:p-8 font-sans selection:bg-amber-500 selection:text-black">
       {/* Notification Toast */}
       <AnimatePresence>
         {toast && (
@@ -404,15 +404,15 @@ export default function AdminReviewsPage() {
 
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header Section */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-foreground/10 pb-5">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight text-white">Product Reviews</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">Product Reviews</h1>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
                 Live Feedback
               </span>
             </div>
-            <p className="text-xs text-neutral-400 mt-1">
+            <p className="text-xs text-foreground/60 mt-1">
               Manage, moderate, and publish customer ratings and reviews across your product store.
             </p>
           </div>
@@ -421,7 +421,7 @@ export default function AdminReviewsPage() {
             <button
               onClick={() => fetchReviews(pagination.page, true)}
               disabled={refreshing}
-              className="p-2.5 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-neutral-300 transition-colors disabled:opacity-50"
+              className="p-2.5 rounded-xl border border-foreground/10 bg-foreground/5 hover:bg-foreground/10 text-foreground/80 transition-colors disabled:opacity-50"
               title="Refresh Reviews"
             >
               <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
@@ -439,28 +439,28 @@ export default function AdminReviewsPage() {
 
         {/* Metrics Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-          <div className="p-4 rounded-2xl bg-neutral-900/60 border border-white/5 backdrop-blur-xl relative overflow-hidden group hover:border-white/10 transition-colors">
+          <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-foreground/5 backdrop-blur-xl relative overflow-hidden group hover:border-foreground/10 transition-colors">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">Total Reviews</span>
-              <MessageSquare className="w-4 h-4 text-neutral-500" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-foreground/60">Total Reviews</span>
+              <MessageSquare className="w-4 h-4 text-foreground/50" />
             </div>
-            <p className="text-2xl font-extrabold text-white mt-2">{stats.totalReviews}</p>
-            <p className="text-[10px] text-neutral-500 mt-1">Store-wide reviews</p>
+            <p className="text-2xl font-extrabold text-foreground mt-2">{stats.totalReviews}</p>
+            <p className="text-[10px] text-foreground/50 mt-1">Store-wide reviews</p>
           </div>
 
-          <div className="p-4 rounded-2xl bg-neutral-900/60 border border-amber-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-amber-500/20 transition-colors">
+          <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-amber-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-amber-500/20 transition-colors">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400">Average Rating</span>
               <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
             </div>
             <div className="flex items-baseline gap-1.5 mt-2">
               <p className="text-2xl font-extrabold text-amber-400">{stats.avgRating.toFixed(1)}</p>
-              <span className="text-xs text-neutral-400">/ 5.0</span>
+              <span className="text-xs text-foreground/60">/ 5.0</span>
             </div>
-            <p className="text-[10px] text-neutral-500 mt-1">From visible reviews</p>
+            <p className="text-[10px] text-foreground/50 mt-1">From visible reviews</p>
           </div>
 
-          <div className="p-4 rounded-2xl bg-neutral-900/60 border border-emerald-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-emerald-500/20 transition-colors">
+          <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-emerald-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-emerald-500/20 transition-colors">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">Published</span>
               <Eye className="w-4 h-4 text-emerald-400" />
@@ -469,7 +469,7 @@ export default function AdminReviewsPage() {
             <p className="text-[10px] text-emerald-500/70 mt-1">Visible on storefront</p>
           </div>
 
-          <div className="p-4 rounded-2xl bg-neutral-900/60 border border-rose-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-rose-500/20 transition-colors">
+          <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-rose-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-rose-500/20 transition-colors">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">Hidden</span>
               <EyeOff className="w-4 h-4 text-rose-400" />
@@ -478,32 +478,32 @@ export default function AdminReviewsPage() {
             <p className="text-[10px] text-rose-500/70 mt-1">Moderated / Hidden</p>
           </div>
 
-          <div className="p-4 rounded-2xl bg-neutral-900/60 border border-indigo-500/10 backdrop-blur-xl relative overflow-hidden col-span-2 sm:col-span-1 group hover:border-indigo-500/20 transition-colors">
+          <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-indigo-500/10 backdrop-blur-xl relative overflow-hidden col-span-2 sm:col-span-1 group hover:border-indigo-500/20 transition-colors">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-400">5-Star Ratio</span>
               <ThumbsUp className="w-4 h-4 text-indigo-400" />
             </div>
             <p className="text-2xl font-extrabold text-indigo-400 mt-2">{stats.fiveStarRatio}%</p>
-            <p className="text-[10px] text-neutral-500 mt-1">Top tier feedback</p>
+            <p className="text-[10px] text-foreground/50 mt-1">Top tier feedback</p>
           </div>
         </div>
 
         {/* Filter and Search Toolbar */}
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 p-4 rounded-2xl bg-neutral-900/40 border border-white/5 backdrop-blur-xl">
+        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 p-4 rounded-2xl bg-foreground/[0.03] border border-foreground/5 backdrop-blur-xl">
           {/* Search bar */}
           <div className="relative flex-1">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/50" />
             <input
               type="text"
               placeholder="Search by product, customer, title, text, or order..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-neutral-900 border border-white/10 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-amber-500/50 transition-colors"
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-background border border-foreground/10 text-xs text-foreground placeholder:text-foreground/50 focus:outline-none focus:border-amber-500/50 transition-colors"
             />
             {search && (
               <button
                 onClick={() => setSearch("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-white"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-foreground/50 hover:text-foreground"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -513,7 +513,7 @@ export default function AdminReviewsPage() {
           {/* Filter options */}
           <div className="flex flex-wrap items-center gap-2">
             {/* Status Tabs */}
-            <div className="flex items-center p-1 rounded-xl bg-neutral-900 border border-white/10 text-xs">
+            <div className="flex items-center p-1 rounded-xl bg-background border border-foreground/10 text-xs">
               <button
                 onClick={() => setStatusFilter("ALL")}
                 className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
@@ -550,7 +550,7 @@ export default function AdminReviewsPage() {
             <select
               value={ratingFilter}
               onChange={(e) => setRatingFilter(e.target.value)}
-              className="px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-neutral-300 focus:outline-none focus:border-amber-500/50"
+              className="px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground/80 focus:outline-none focus:border-amber-500/50"
             >
               <option value="ALL">All Ratings</option>
               <option value="5">★ ★ ★ ★ ★ (5 Stars)</option>
@@ -564,7 +564,7 @@ export default function AdminReviewsPage() {
             <select
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value as any)}
-              className="px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-neutral-300 focus:outline-none focus:border-amber-500/50"
+              className="px-3 py-2 rounded-xl bg-background border border-foreground/10 text-xs text-foreground/80 focus:outline-none focus:border-amber-500/50"
             >
               <option value="newest">Newest First</option>
               <option value="oldest">Oldest First</option>
@@ -576,15 +576,15 @@ export default function AdminReviewsPage() {
 
         {/* Reviews Content Area */}
         {loading ? (
-          <div className="flex flex-col items-center justify-center py-20 bg-neutral-900/30 rounded-2xl border border-white/5">
+          <div className="flex flex-col items-center justify-center py-20 bg-foreground/[0.03] rounded-2xl border border-foreground/5">
             <Loader2 className="w-8 h-8 text-amber-500 animate-spin mb-3" />
-            <p className="text-xs text-neutral-400">Loading product reviews...</p>
+            <p className="text-xs text-foreground/60">Loading product reviews...</p>
           </div>
         ) : reviews.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 bg-neutral-900/30 rounded-2xl border border-white/5 text-center px-4">
-            <MessageSquare className="w-12 h-12 text-neutral-600 mb-3" />
-            <h3 className="text-base font-bold text-neutral-300">No Product Reviews Found</h3>
-            <p className="text-xs text-neutral-500 max-w-sm mt-1">
+          <div className="flex flex-col items-center justify-center py-20 bg-foreground/[0.03] rounded-2xl border border-foreground/5 text-center px-4">
+            <MessageSquare className="w-12 h-12 text-foreground/40 mb-3" />
+            <h3 className="text-base font-bold text-foreground/80">No Product Reviews Found</h3>
+            <p className="text-xs text-foreground/50 max-w-sm mt-1">
               {debouncedSearch || statusFilter !== "ALL" || ratingFilter !== "ALL"
                 ? "No reviews match your filter criteria. Try resetting filters."
                 : "No customer reviews have been submitted yet. Click 'Add Review' to create one."}
@@ -596,7 +596,7 @@ export default function AdminReviewsPage() {
                   setStatusFilter("ALL");
                   setRatingFilter("ALL");
                 }}
-                className="mt-4 px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-neutral-300 border border-white/10 transition-colors"
+                className="mt-4 px-4 py-2 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-xs font-semibold text-foreground/80 border border-foreground/10 transition-colors"
               >
                 Clear Filters
               </button>
@@ -608,7 +608,7 @@ export default function AdminReviewsPage() {
               {reviews.map((review) => (
                 <div
                   key={review.id}
-                  className={`p-4 rounded-2xl bg-neutral-900/60 border transition-all ${
+                  className={`p-4 rounded-2xl bg-foreground/[0.03] border transition-all ${
                     review.status === "VISIBLE"
                       ? "border-white/5 hover:border-white/15"
                       : "border-rose-500/20 bg-rose-950/10"
@@ -618,7 +618,7 @@ export default function AdminReviewsPage() {
                     {/* Left: Product & Review Content */}
                     <div className="flex items-start gap-4 flex-1">
                       {/* Product Thumbnail */}
-                      <div className="w-14 h-14 rounded-xl bg-neutral-800 border border-white/10 overflow-hidden shrink-0 relative">
+                      <div className="w-14 h-14 rounded-xl bg-foreground/[0.06] border border-foreground/10 overflow-hidden shrink-0 relative">
                         {review.product?.image ? (
                           <Image
                             src={review.product.image}
@@ -627,7 +627,7 @@ export default function AdminReviewsPage() {
                             className="object-cover"
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center text-neutral-600">
+                          <div className="w-full h-full flex items-center justify-center text-foreground/40">
                             <ShoppingBag className="w-6 h-6" />
                           </div>
                         )}
@@ -640,10 +640,10 @@ export default function AdminReviewsPage() {
                           <Link
                             href={review.product?.slug ? `/products/${review.product.slug}` : "#"}
                             target="_blank"
-                            className="text-xs font-bold text-neutral-200 hover:text-amber-400 flex items-center gap-1 transition-colors truncate"
+                            className="text-xs font-bold text-foreground hover:text-amber-400 flex items-center gap-1 transition-colors truncate"
                           >
                             <span>{review.product?.title || `Product (${review.productId})`}</span>
-                            <ExternalLink className="w-3 h-3 text-neutral-500 shrink-0" />
+                            <ExternalLink className="w-3 h-3 text-foreground/50 shrink-0" />
                           </Link>
 
                           {review.verifiedPurchase && (
@@ -678,16 +678,16 @@ export default function AdminReviewsPage() {
                             ))}
                           </div>
 
-                          <span className="text-neutral-400 text-[11px]">
-                            by <span className="font-semibold text-neutral-200">{review.user?.name || "Customer"}</span>
+                          <span className="text-foreground/60 text-[11px]">
+                            by <span className="font-semibold text-foreground">{review.user?.name || "Customer"}</span>
                             {review.user?.email && ` (${review.user.email})`}
                           </span>
 
-                          <span className="text-neutral-500 text-[10px]">
-                            Order: <span className="font-mono text-neutral-400">{review.orderId}</span>
+                          <span className="text-foreground/50 text-[10px]">
+                            Order: <span className="font-mono text-foreground/60">{review.orderId}</span>
                           </span>
 
-                          <span className="text-neutral-500 text-[10px]">
+                          <span className="text-foreground/50 text-[10px]">
                             {new Date(review.createdAt).toLocaleDateString("en-IN", {
                               day: "numeric",
                               month: "short",
@@ -698,16 +698,16 @@ export default function AdminReviewsPage() {
 
                         {/* Title & Body */}
                         {review.title && (
-                          <h4 className="text-xs font-bold text-white mt-1">{review.title}</h4>
+                          <h4 className="text-xs font-bold text-foreground mt-1">{review.title}</h4>
                         )}
-                        <p className="text-xs text-neutral-300 leading-relaxed bg-black/20 p-2.5 rounded-xl border border-white/5">
+                        <p className="text-xs text-neutral-300 leading-relaxed bg-black/20 p-2.5 rounded-xl border border-foreground/5">
                           "{review.body}"
                         </p>
                       </div>
                     </div>
 
                     {/* Right: Actions */}
-                    <div className="flex items-center md:flex-col gap-2 shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-white/5">
+                    <div className="flex items-center md:flex-col gap-2 shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-foreground/5">
                       <button
                         onClick={() => toggleVisibility(review)}
                         disabled={actionLoadingId === review.id}
@@ -735,7 +735,7 @@ export default function AdminReviewsPage() {
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => openEditModal(review)}
-                          className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-300 hover:text-white border border-white/10 transition-colors"
+                          className="p-2 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground/80 hover:text-foreground border border-foreground/10 transition-colors"
                           title="Edit Review"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
@@ -757,7 +757,7 @@ export default function AdminReviewsPage() {
 
             {/* Pagination Controls */}
             {pagination.totalPages > 1 && (
-              <div className="flex items-center justify-between p-4 rounded-2xl bg-neutral-900/40 border border-white/5 text-xs text-neutral-400">
+              <div className="flex items-center justify-between p-4 rounded-2xl bg-foreground/[0.03] border border-foreground/5 text-xs text-foreground/60">
                 <span>
                   Showing {reviews.length} of {pagination.total} reviews
                 </span>
@@ -766,20 +766,20 @@ export default function AdminReviewsPage() {
                   <button
                     onClick={() => fetchReviews(pagination.page - 1)}
                     disabled={pagination.page <= 1}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 border border-white/10 text-white disabled:opacity-40 hover:bg-white/5 transition-colors"
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-background border border-foreground/10 text-foreground disabled:opacity-40 hover:bg-foreground/5 transition-colors"
                   >
                     <ChevronLeft className="w-4 h-4" />
                     <span>Prev</span>
                   </button>
 
-                  <span className="font-semibold text-white px-2">
+                  <span className="font-semibold text-foreground px-2">
                     Page {pagination.page} of {pagination.totalPages}
                   </span>
 
                   <button
                     onClick={() => fetchReviews(pagination.page + 1)}
                     disabled={pagination.page >= pagination.totalPages}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 border border-white/10 text-white disabled:opacity-40 hover:bg-white/5 transition-colors"
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-background border border-foreground/10 text-foreground disabled:opacity-40 hover:bg-foreground/5 transition-colors"
                   >
                     <span>Next</span>
                     <ChevronRight className="w-4 h-4" />
@@ -799,16 +799,16 @@ export default function AdminReviewsPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-lg bg-neutral-900 border border-white/10 rounded-2xl p-6 shadow-2xl space-y-4 relative"
+              className="w-full max-w-lg bg-background border border-foreground/10 rounded-2xl p-6 shadow-2xl space-y-4 relative"
             >
-              <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <div className="flex items-center justify-between border-b border-foreground/10 pb-4">
+                <h3 className="text-base font-bold text-foreground flex items-center gap-2">
                   <Plus className="w-4 h-4 text-amber-500" />
                   <span>Add Manual Product Review</span>
                 </h3>
                 <button
                   onClick={() => setShowAddModal(false)}
-                  className="text-neutral-400 hover:text-white p-1 rounded-lg"
+                  className="text-foreground/60 hover:text-foreground p-1 rounded-lg"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -823,11 +823,11 @@ export default function AdminReviewsPage() {
               <div className="space-y-3.5 text-xs">
                 {/* Product Select */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Select Product *
                   </label>
                   {loadingProducts ? (
-                    <div className="flex items-center gap-2 text-neutral-400 py-2">
+                    <div className="flex items-center gap-2 text-foreground/60 py-2">
                       <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
                       <span>Loading products...</span>
                     </div>
@@ -835,7 +835,7 @@ export default function AdminReviewsPage() {
                     <select
                       value={formProductId}
                       onChange={(e) => setFormProductId(e.target.value)}
-                      className="w-full px-3 py-2.5 rounded-xl bg-neutral-950 border border-white/10 text-white focus:outline-none focus:border-amber-500/50"
+                      className="w-full px-3 py-2.5 rounded-xl bg-background border border-foreground/10 text-foreground focus:outline-none focus:border-amber-500/50"
                     >
                       <option value="">-- Choose a product --</option>
                       {availableProducts.map((prod) => (
@@ -849,7 +849,7 @@ export default function AdminReviewsPage() {
 
                 {/* Rating selection */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Star Rating (1-5) *
                   </label>
                   <div className="flex items-center gap-2">
@@ -875,7 +875,7 @@ export default function AdminReviewsPage() {
 
                 {/* Review Title */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Review Headline / Title
                   </label>
                   <input
@@ -883,13 +883,13 @@ export default function AdminReviewsPage() {
                     placeholder="e.g. Absolutely stunning quality!"
                     value={formTitle}
                     onChange={(e) => setFormTitle(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-neutral-950 border border-white/10 text-white placeholder:text-neutral-600 focus:outline-none focus:border-amber-500/50"
+                    className="w-full px-3 py-2.5 rounded-xl bg-background border border-foreground/10 text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50"
                   />
                 </div>
 
                 {/* Review Body */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Review Content *
                   </label>
                   <textarea
@@ -897,14 +897,14 @@ export default function AdminReviewsPage() {
                     placeholder="Write detailed customer feedback..."
                     value={formBody}
                     onChange={(e) => setFormBody(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-neutral-950 border border-white/10 text-white placeholder:text-neutral-600 focus:outline-none focus:border-amber-500/50 resize-none"
+                    className="w-full px-3 py-2.5 rounded-xl bg-background border border-foreground/10 text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50 resize-none"
                   />
                 </div>
 
                 {/* Reviewer Details */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                    <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                       Reviewer Name
                     </label>
                     <input
@@ -912,12 +912,12 @@ export default function AdminReviewsPage() {
                       placeholder="e.g. Priya Sharma"
                       value={formReviewerName}
                       onChange={(e) => setFormReviewerName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/10 text-white placeholder:text-neutral-600 focus:outline-none focus:border-amber-500/50"
+                      className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                    <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                       Reviewer Email
                     </label>
                     <input
@@ -925,29 +925,29 @@ export default function AdminReviewsPage() {
                       placeholder="priya@example.com"
                       value={formReviewerEmail}
                       onChange={(e) => setFormReviewerEmail(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/10 text-white placeholder:text-neutral-600 focus:outline-none focus:border-amber-500/50"
+                      className="w-full px-3 py-2 rounded-xl bg-background border border-foreground/10 text-foreground placeholder:text-foreground/40 focus:outline-none focus:border-amber-500/50"
                     />
                   </div>
                 </div>
 
                 {/* Toggles */}
-                <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                <div className="flex items-center justify-between pt-2 border-t border-foreground/5">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={formVerified}
                       onChange={(e) => setFormVerified(e.target.checked)}
-                      className="rounded border-white/10 bg-neutral-950 text-amber-500 focus:ring-amber-500"
+                      className="rounded border-foreground/10 bg-background text-amber-500 focus:ring-amber-500"
                     />
-                    <span className="text-neutral-300 font-medium">Verified Purchase Badge</span>
+                    <span className="text-foreground/80 font-medium">Verified Purchase Badge</span>
                   </label>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-neutral-400 font-medium">Initial Status:</span>
+                    <span className="text-foreground/60 font-medium">Initial Status:</span>
                     <select
                       value={formStatus}
                       onChange={(e) => setFormStatus(e.target.value as any)}
-                      className="px-2.5 py-1 rounded-lg bg-neutral-950 border border-white/10 text-white font-bold"
+                      className="px-2.5 py-1 rounded-lg bg-background border border-foreground/10 text-foreground font-bold"
                     >
                       <option value="VISIBLE">VISIBLE</option>
                       <option value="HIDDEN">HIDDEN</option>
@@ -957,11 +957,11 @@ export default function AdminReviewsPage() {
               </div>
 
               {/* Actions */}
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-foreground/10">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-300 font-semibold text-xs transition-colors"
+                  className="px-4 py-2 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground/80 font-semibold text-xs transition-colors"
                 >
                   Cancel
                 </button>
@@ -989,16 +989,16 @@ export default function AdminReviewsPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-lg bg-neutral-900 border border-white/10 rounded-2xl p-6 shadow-2xl space-y-4 relative"
+              className="w-full max-w-lg bg-background border border-foreground/10 rounded-2xl p-6 shadow-2xl space-y-4 relative"
             >
-              <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <div className="flex items-center justify-between border-b border-foreground/10 pb-4">
+                <h3 className="text-base font-bold text-foreground flex items-center gap-2">
                   <Edit2 className="w-4 h-4 text-amber-500" />
                   <span>Edit Review</span>
                 </h3>
                 <button
                   onClick={() => setEditingReview(null)}
-                  className="text-neutral-400 hover:text-white p-1 rounded-lg"
+                  className="text-foreground/60 hover:text-foreground p-1 rounded-lg"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1013,7 +1013,7 @@ export default function AdminReviewsPage() {
               <div className="space-y-3.5 text-xs">
                 {/* Rating selection */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Star Rating
                   </label>
                   <div className="flex items-center gap-2">
@@ -1039,48 +1039,48 @@ export default function AdminReviewsPage() {
 
                 {/* Title */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Review Headline / Title
                   </label>
                   <input
                     type="text"
                     value={formTitle}
                     onChange={(e) => setFormTitle(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-neutral-950 border border-white/10 text-white focus:outline-none focus:border-amber-500/50"
+                    className="w-full px-3 py-2.5 rounded-xl bg-background border border-foreground/10 text-foreground focus:outline-none focus:border-amber-500/50"
                   />
                 </div>
 
                 {/* Body */}
                 <div>
-                  <label className="block text-neutral-400 font-bold uppercase tracking-wider mb-1">
+                  <label className="block text-foreground/60 font-bold uppercase tracking-wider mb-1">
                     Review Content *
                   </label>
                   <textarea
                     rows={4}
                     value={formBody}
                     onChange={(e) => setFormBody(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-neutral-950 border border-white/10 text-white focus:outline-none focus:border-amber-500/50 resize-none"
+                    className="w-full px-3 py-2.5 rounded-xl bg-background border border-foreground/10 text-foreground focus:outline-none focus:border-amber-500/50 resize-none"
                   />
                 </div>
 
                 {/* Status and Verified */}
-                <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                <div className="flex items-center justify-between pt-2 border-t border-foreground/5">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={formVerified}
                       onChange={(e) => setFormVerified(e.target.checked)}
-                      className="rounded border-white/10 bg-neutral-950 text-amber-500 focus:ring-amber-500"
+                      className="rounded border-foreground/10 bg-background text-amber-500 focus:ring-amber-500"
                     />
-                    <span className="text-neutral-300 font-medium">Verified Purchase Badge</span>
+                    <span className="text-foreground/80 font-medium">Verified Purchase Badge</span>
                   </label>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-neutral-400 font-medium">Status:</span>
+                    <span className="text-foreground/60 font-medium">Status:</span>
                     <select
                       value={formStatus}
                       onChange={(e) => setFormStatus(e.target.value as any)}
-                      className="px-2.5 py-1 rounded-lg bg-neutral-950 border border-white/10 text-white font-bold"
+                      className="px-2.5 py-1 rounded-lg bg-background border border-foreground/10 text-foreground font-bold"
                     >
                       <option value="VISIBLE">VISIBLE</option>
                       <option value="HIDDEN">HIDDEN</option>
@@ -1090,11 +1090,11 @@ export default function AdminReviewsPage() {
               </div>
 
               {/* Actions */}
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-foreground/10">
                 <button
                   type="button"
                   onClick={() => setEditingReview(null)}
-                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-300 font-semibold text-xs transition-colors"
+                  className="px-4 py-2 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground/80 font-semibold text-xs transition-colors"
                 >
                   Cancel
                 </button>
@@ -1122,15 +1122,15 @@ export default function AdminReviewsPage() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-neutral-900 border border-rose-500/20 rounded-2xl p-6 shadow-2xl space-y-4 relative text-center"
+              className="w-full max-w-md bg-background border border-rose-500/20 rounded-2xl p-6 shadow-2xl space-y-4 relative text-center"
             >
               <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
                 <Trash2 className="w-6 h-6" />
               </div>
 
               <div>
-                <h3 className="text-base font-bold text-white">Delete Product Review?</h3>
-                <p className="text-xs text-neutral-400 mt-1">
+                <h3 className="text-base font-bold text-foreground">Delete Product Review?</h3>
+                <p className="text-xs text-foreground/60 mt-1">
                   This action will permanently delete the review from your database and update product rating aggregates.
                 </p>
               </div>
@@ -1138,7 +1138,7 @@ export default function AdminReviewsPage() {
               <div className="flex items-center justify-center gap-3 pt-2">
                 <button
                   onClick={() => setDeletingReview(null)}
-                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-300 font-semibold text-xs transition-colors"
+                  className="px-4 py-2 rounded-xl bg-foreground/5 hover:bg-foreground/10 text-foreground/80 font-semibold text-xs transition-colors"
                 >
                   Cancel
                 </button>

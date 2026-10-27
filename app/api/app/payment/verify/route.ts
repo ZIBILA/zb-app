@@ -189,6 +189,9 @@ export async function POST(req: Request) {
               razorpayPaymentId: razorpay_payment_id,
               paymentCapturedAt: now,
               status: isCod ? 'open' : 'approved',
+              cancelledBy: null,
+              cancelledAt: null,
+              paymentFailureReason: null,
               tags: `${tags}, ${isCod ? 'cod_upfront_paid' : 'Prepaid, Razorpay'}`,
               internalOrderNumber: promotedNumber || order.internalOrderNumber,
             }

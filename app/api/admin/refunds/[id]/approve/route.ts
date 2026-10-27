@@ -4,6 +4,8 @@ import { createRefund } from '@/lib/shopify-admin';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { resolveRefundMethod } from '@/lib/returnPolicy';
 import { splitRefundAcrossLines } from '@/lib/services/refundSplit';
+import { calculateOrderRefundLimits } from '@/lib/services/refundAccuracy';
+import { assignRefundId } from '@/lib/orderNumber';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,15 +21,14 @@ class ClaimLostError extends Error {
 /**
  * POST /api/admin/refunds/[id]/approve
  * Releases the customer's money (Razorpay refund to the original source) or Store Credit for a
- * return that has been physically received.
+ * return or exchange difference refund that has passed physical Quality Check.
  *
  * Integrity rules:
- *  - The request is CLAIMED atomically (status → refund_pending) before any money moves, so two
- *    admins / a double click / a retry can never both release it.
- *  - Store credit + the "refunded" status commit in ONE transaction (all or nothing).
- *  - Razorpay refunds are idempotent per request: a retry reuses an existing refund tagged with
- *    this request id instead of creating a second one.
- *  - Any failure releases the claim so the admin can retry.
+ *  - Enforces strict QC & approval rules: cannot approve refunds that failed QC or have not been received.
+ *  - Prevents incorrect & duplicate refunds: caps refund at remaining order refundable balance.
+ *  - Atomic claim: prevents concurrent double-releases.
+ *  - Idempotent Razorpay execution: reuses existing refund if already issued.
+ *  - Updates status to completed / processing / failed and syncs with Razorpay.
  */
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -36,9 +37,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
     const refundId = params.id;
     const body = await req.json().catch(() => ({}));
-    const { overrideRefundMethod, overrideAmount, manualSettlement } = body;
+    const { overrideAmount, manualSettlement } = body;
 
-    // 1. Locate ReturnRequest or Standalone Return
+    // 1. Locate ReturnRequest, Standalone Return, or ExchangeRequest
     const returnRequest = await prisma.returnRequest.findUnique({
       where: { id: refundId },
       include: {
@@ -48,6 +49,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     });
 
     let standaloneReturn: any = null;
+    let exchangeRequest: any = null;
 
     if (!returnRequest) {
       standaloneReturn = await prisma.return.findUnique({
@@ -61,74 +63,172 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     if (!returnRequest && !standaloneReturn) {
+      exchangeRequest = await prisma.exchangeRequest.findUnique({
+        where: { id: refundId },
+        include: {
+          exchanges: { include: { originalProduct: true, newProduct: true } },
+          order: { include: { items: true, customer: true, payments: true } }
+        }
+      });
+    }
+
+    if (!returnRequest && !standaloneReturn && !exchangeRequest) {
       return NextResponse.json({ error: 'Refund request record not found.' }, { status: 404 });
     }
 
-    const isRequestGroup = !!returnRequest;
-    const targetEntity: any = returnRequest || standaloneReturn;
+    const isExchange = !!exchangeRequest;
+    const isReturnRequestGroup = !!returnRequest;
+    const targetEntity: any = returnRequest || standaloneReturn || exchangeRequest;
     const order = targetEntity.order;
 
     if (!order) {
       return NextResponse.json({ error: 'Associated order not found.' }, { status: 404 });
     }
 
-    // 2. Check if already refunded
-    const alreadyRefunded = isRequestGroup
+    // 3. Check if already refunded
+    const alreadyRefunded = isReturnRequestGroup
       ? returnRequest!.returns.some((r: any) => r.refundStatus === 'COMPLETED') || returnRequest!.status === 'refunded'
+      : isExchange
+      ? ['refunded', 'refunded_original'].includes(String(exchangeRequest!.paymentStatus || '').toLowerCase())
       : standaloneReturn!.refundStatus === 'COMPLETED' || standaloneReturn!.status === 'REFUNDED';
 
     if (alreadyRefunded) {
       return NextResponse.json({ error: 'This refund request has already been processed and completed.' }, { status: 400 });
     }
 
-    // Determine target refund method & amount
-    const initialMethod = isRequestGroup
-      ? (returnRequest!.returns[0]?.refundMethod || 'original_method')
-      : (standaloneReturn!.refundMethod || 'original_method');
+    // 2. QC & approval flow: money is released only after the parcel was received AND passed QC.
+    if (isReturnRequestGroup) {
+      const currentStatus = String(returnRequest!.status || '').toLowerCase();
+      if (currentStatus === 'qc_failed') {
+        return NextResponse.json(
+          { error: 'Quality Check failed for this return parcel. Refund cannot be approved for items that failed QC.' },
+          { status: 400 }
+        );
+      }
+      if (['rejected', 'cancelled'].includes(currentStatus)) {
+        return NextResponse.json(
+          { error: `Return request is ${currentStatus} and cannot be refunded.` },
+          { status: 400 }
+        );
+      }
+      // A retry after a failed / interrupted release keeps the QC result on the return lines.
+      const qcPassed =
+        currentStatus === 'qc_passed' ||
+        (['refund_pending', 'refund_failed'].includes(currentStatus) &&
+          returnRequest!.returns.length > 0 &&
+          returnRequest!.returns.every((r: any) => String(r.status).toUpperCase() === 'QC_PASSED'));
+      if (!qcPassed) {
+        return NextResponse.json(
+          { error: 'Quality Check not passed yet. Mark the parcel received and pass QC before releasing the refund / store credit.' },
+          { status: 400 }
+        );
+      }
+    } else if (standaloneReturn) {
+      const currentStatus = String(standaloneReturn!.status || '').toUpperCase();
+      if (currentStatus === 'QC_FAILED') {
+        return NextResponse.json(
+          { error: 'Quality Check failed for this return item. Refund cannot be approved for items that failed QC.' },
+          { status: 400 }
+        );
+      }
+      if (currentStatus !== 'QC_PASSED') {
+        return NextResponse.json(
+          { error: 'Quality Check not passed yet. Receive the parcel and pass QC before releasing the refund.' },
+          { status: 400 }
+        );
+      }
+    } else if (isExchange) {
+      const currentStatus = String(exchangeRequest!.status || '').toLowerCase();
+      const qcOf = (e: any) => String(e.qcStatus || '').toLowerCase();
+      if (exchangeRequest!.exchanges.some((e: any) => qcOf(e) === 'failed')) {
+        return NextResponse.json(
+          { error: 'Quality Check failed for this exchange parcel. Refund cannot be approved for items that failed QC.' },
+          { status: 400 }
+        );
+      }
+      if (['rejected', 'cancelled'].includes(currentStatus)) {
+        return NextResponse.json(
+          { error: `Exchange request is ${currentStatus} and cannot be refunded.` },
+          { status: 400 }
+        );
+      }
+      if (exchangeRequest!.exchanges.length === 0 || !exchangeRequest!.exchanges.every((e: any) => qcOf(e) === 'passed')) {
+        return NextResponse.json(
+          { error: 'Quality Check not passed yet. Receive the exchange parcel and pass QC before releasing the refund.' },
+          { status: 400 }
+        );
+      }
+    }
 
-    // COD → store credit only. Prepaid uses the customer's saved choice (no admin override).
-    const refundMethod = resolveRefundMethod(order, initialMethod);
+    // 4. Refund Accuracy & Calculation
+    const orderLimits = await calculateOrderRefundLimits(order.id);
 
-    // The customer's money / credit is released only after we physically hold the parcel.
-    const receivedOk = isRequestGroup
-      ? !!returnRequest!.receivedAt || ['received', 'qc_passed', 'refund_pending'].includes(String(returnRequest!.status).toLowerCase())
-      : String(standaloneReturn!.status).toUpperCase() === 'RECEIVED';
-    if (!receivedOk) {
+    if (orderLimits.maxRemainingRefundable <= 0) {
       return NextResponse.json(
-        { error: 'Parcel not received yet. Mark the return as received at the warehouse before releasing the refund / store credit.' },
+        {
+          error: `This order has already been fully refunded. Total paid: ₹${orderLimits.totalPaid}, Already refunded: ₹${orderLimits.totalAlreadyRefunded}. No additional refund can be processed.`,
+        },
         { status: 400 }
       );
     }
 
-    const calculatedAmount = isRequestGroup
-      ? (returnRequest!.actualRefund || returnRequest!.estimatedRefund || returnRequest!.returns.reduce((s: number, r: any) => s + (r.refundAmount || 0), 0))
-      : (standaloneReturn!.refundAmount || 0);
+    // Calculate base refund amount
+    let rawAmount = 0;
+    if (isReturnRequestGroup) {
+      rawAmount = returnRequest!.actualRefund || returnRequest!.estimatedRefund || returnRequest!.returns.reduce((s: number, r: any) => s + (r.refundAmount || 0), 0);
+    } else if (standaloneReturn) {
+      rawAmount = standaloneReturn!.refundAmount || 0;
+    } else if (isExchange) {
+      // Only a negative difference (customer took a cheaper item) is owed back; a positive one was paid by them.
+      const priceDifference = Number(exchangeRequest!.priceDifference || 0);
+      if (!(priceDifference < 0)) {
+        return NextResponse.json(
+          { error: 'This exchange has no refundable price difference — the customer owes or paid the difference, not the store.' },
+          { status: 400 }
+        );
+      }
+      rawAmount = -priceDifference;
+    }
 
     const finalRefundAmount = overrideAmount !== undefined && Number(overrideAmount) > 0
       ? Number(overrideAmount)
-      : calculatedAmount;
+      : rawAmount;
 
     if (!Number.isFinite(finalRefundAmount) || finalRefundAmount <= 0) {
       return NextResponse.json({ error: 'Invalid refund amount. Refund amount must be greater than 0.' }, { status: 400 });
     }
 
-    // Guard against typos / tampering: never release more than the order was worth.
-    const orderTotal = Number(order.totalPrice);
-    if (Number.isFinite(orderTotal) && orderTotal > 0 && finalRefundAmount > orderTotal + 0.01) {
+    // Guard: never refund more than remaining refundable on the order
+    if (finalRefundAmount > orderLimits.maxRemainingRefundable + 0.01) {
       return NextResponse.json(
-        { error: `Refund amount ₹${finalRefundAmount} exceeds the order total ₹${orderTotal}.` },
+        {
+          error: `Refund amount ₹${finalRefundAmount} exceeds the remaining refundable balance of ₹${orderLimits.maxRemainingRefundable} for this order.`,
+        },
         { status: 400 }
       );
     }
 
+    // 5. Determine Target Refund Method
+    let initialMethod = 'original_method';
+    if (isReturnRequestGroup) {
+      initialMethod = returnRequest!.returns[0]?.refundMethod || returnRequest!.refundType || 'original_method';
+    } else if (standaloneReturn) {
+      initialMethod = standaloneReturn!.refundMethod || 'original_method';
+    } else if (isExchange) {
+      initialMethod = exchangeRequest!.settlementPreference === 'REFUND_STORE_CREDIT' ? 'store_credit' : 'original_method';
+    }
+
+    // COD -> Store credit only. Prepaid uses customer's saved choice
+    const refundMethod = resolveRefundMethod(order, initialMethod);
     const customerId = order.customerId;
 
     if (refundMethod === 'store_credit' && !customerId) {
       return NextResponse.json({ error: 'Customer record missing. Cannot issue store credit.' }, { status: 400 });
     }
 
-    // Prepaid refund to the original source needs a real payment to refund against.
+    // Prepaid refund to original source needs a real payment
     const paymentId: string | null = order.razorpayPaymentId || null;
+
     if (refundMethod === 'original_method' && !paymentId && manualSettlement !== true) {
       return NextResponse.json(
         {
@@ -140,23 +240,20 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       );
     }
 
-    // 3. CLAIM the release atomically before any money moves.
+    // 6. CLAIM the release atomically before moving any money
     const staleCutoff = new Date(Date.now() - CLAIM_STALE_MS);
-    const previousStatus: string = isRequestGroup ? returnRequest!.status : standaloneReturn!.status;
-    const previousRefundStatus: string | null = isRequestGroup ? null : (standaloneReturn!.refundStatus ?? null);
-
+    const previousExchangePaymentStatus: string | null = isExchange ? (exchangeRequest!.paymentStatus ?? null) : null;
     let claimed = 0;
-    if (isRequestGroup) {
+
+    if (isReturnRequestGroup) {
       const res = await prisma.returnRequest.updateMany({
         where: {
           id: refundId,
           refundReleasedAt: null,
           AND: [
-            { status: { notIn: ['refunded', 'rejected', 'cancelled'] } },
             {
               OR: [
-                { status: { in: ['received', 'qc_passed'] } },
-                { receivedAt: { not: null }, status: { not: 'refund_pending' } },
+                { status: { in: ['qc_passed', 'refund_failed'] } },
                 { status: 'refund_pending', updatedAt: { lt: staleCutoff } },
               ],
             },
@@ -165,11 +262,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         data: { status: 'refund_pending' },
       });
       claimed = res.count;
-    } else {
+    } else if (standaloneReturn) {
       const res = await prisma.return.updateMany({
         where: {
           id: refundId,
-          status: 'RECEIVED',
+          status: 'QC_PASSED',
           OR: [
             { refundStatus: null },
             { refundStatus: { notIn: ['COMPLETED', 'PROCESSING'] } },
@@ -177,6 +274,24 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           ],
         },
         data: { refundStatus: 'PROCESSING' },
+      });
+      claimed = res.count;
+    } else if (isExchange) {
+      const res = await prisma.exchangeRequest.updateMany({
+        where: {
+          id: refundId,
+          priceDifference: { lt: 0 },
+          AND: [
+            { status: { notIn: ['rejected', 'cancelled'] } },
+            {
+              OR: [
+                { paymentStatus: { in: ['refund_original_pending', 'refund_credit_pending', 'refund_failed'] } },
+                { paymentStatus: 'refund_pending', updatedAt: { lt: staleCutoff } },
+              ],
+            },
+          ],
+        },
+        data: { paymentStatus: 'refund_pending' },
       });
       claimed = res.count;
     }
@@ -188,37 +303,64 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       );
     }
 
-    const releaseClaim = async () => {
+    const releaseClaim = async (statusOnFailure = 'failed', errorMessage?: string) => {
       try {
-        if (isRequestGroup) {
+        if (isReturnRequestGroup) {
           await prisma.returnRequest.updateMany({
             where: { id: refundId, status: 'refund_pending' },
-            data: { status: previousStatus === 'refund_pending' ? 'received' : previousStatus },
+            data: { status: statusOnFailure === 'failed' ? 'refund_failed' : 'qc_passed' },
           });
-        } else {
+        } else if (standaloneReturn) {
           await prisma.return.updateMany({
             where: { id: refundId, refundStatus: 'PROCESSING' },
-            data: { refundStatus: previousRefundStatus ?? 'PENDING' },
+            data: { refundStatus: statusOnFailure === 'failed' ? 'FAILED' : 'PENDING' },
+          });
+        } else if (isExchange) {
+          await prisma.exchangeRequest.updateMany({
+            where: { id: refundId, paymentStatus: 'refund_pending' },
+            data: {
+              paymentStatus: statusOnFailure === 'failed'
+                ? 'refund_failed'
+                : (previousExchangePaymentStatus && previousExchangePaymentStatus !== 'refund_pending'
+                  ? previousExchangePaymentStatus
+                  : refundMethod === 'store_credit' ? 'refund_credit_pending' : 'refund_original_pending'),
+            },
           });
         }
+
+        if (statusOnFailure === 'failed' && errorMessage) {
+          await prisma.order.update({
+            where: { id: order.id },
+            data: {
+              refundStatus: 'failed',
+              refundError: errorMessage,
+            },
+          }).catch(() => {});
+        }
       } catch (e: any) {
-        console.error('[AdminRefundApprove] Failed to release claim:', e?.message);
+        console.error('[AdminRefundApprove] Failed to update failure state:', e?.message);
       }
     };
 
-    // 4. Move the money (Razorpay only; store credit happens inside the final transaction).
+    // 7. Move the money (Razorpay or Mock)
     let razorpayRefundId: string | null = null;
     let recordRefundPayment = false;
+    let isMock = false;
+    let gatewayStatus: string | null = null;
 
     if (refundMethod === 'original_method' && paymentId) {
-      const isMock =
+      isMock =
         paymentId.startsWith('pay_mock_') ||
         (order.razorpayOrderId && order.razorpayOrderId.startsWith('order_mock_')) ||
         process.env.NODE_ENV === 'test';
 
       if (isMock) {
         console.warn(`[AdminRefundApprove] Processing MOCK Razorpay refund for payment ${paymentId}`);
-        razorpayRefundId = `mock_rf_${Date.now()}`;
+        let generatedZBRF: string | null = null;
+        try {
+          generatedZBRF = await assignRefundId(prisma);
+        } catch {}
+        razorpayRefundId = generatedZBRF || `mock_rf_${Date.now()}`;
         recordRefundPayment = true;
       } else {
         try {
@@ -227,55 +369,63 @@ export async function POST(req: Request, { params }: { params: { id: string } })
           const creds = await resolveRazorpayCredentials();
           const razorpayInstance: any = new Razorpay({ key_id: creds.key_id, key_secret: creds.key_secret });
 
-          // Idempotency: if a previous attempt already created a refund for THIS request, reuse it.
+          // Idempotency: check if already refunded at Razorpay
           let existingRefund: any = null;
           try {
             const prior = await razorpayInstance.payments.fetchMultipleRefund(paymentId, { count: 100 });
             existingRefund = (prior?.items || []).find(
-              (r: any) => r?.notes?.refundRequestId === targetEntity.id && r?.status !== 'failed'
+              (r: any) =>
+                (r?.notes?.refundRequestId === targetEntity.id || r?.notes?.exchangeRequestId === targetEntity.id) &&
+                r?.status !== 'failed'
             );
           } catch (lookupErr: any) {
-            // If we cannot prove no refund exists, refuse rather than risk a double refund.
             throw new Error(`Could not check existing Razorpay refunds (${lookupErr?.error?.description || lookupErr?.message || 'unknown'})`);
           }
 
           if (existingRefund) {
             razorpayRefundId = existingRefund.id;
+            gatewayStatus = String(existingRefund.status || '').toLowerCase();
             console.log(`[AdminRefundApprove] Reusing existing Razorpay refund ${razorpayRefundId} for request ${targetEntity.id}`);
           } else {
             const refundRes = await razorpayInstance.payments.refund(paymentId, {
               amount: Math.round(finalRefundAmount * 100),
               notes: {
                 refundRequestId: targetEntity.id,
+                exchangeRequestId: isExchange ? targetEntity.id : undefined,
                 orderId: order.id,
                 approvedBy: user.email || 'Admin',
-                reason: 'Admin Approved Customer Return Refund'
+                reason: isExchange ? 'Exchange Price Difference Refund' : 'Customer Return Refund'
               }
             });
             razorpayRefundId = refundRes.id;
+            gatewayStatus = String(refundRes.status || '').toLowerCase();
             console.log(`[AdminRefundApprove] Razorpay refund successful! Refund ID: ${razorpayRefundId}`);
           }
           recordRefundPayment = true;
         } catch (refundErr: any) {
-          console.error('[AdminRefundApprove] Razorpay refund failed:', refundErr);
-          await releaseClaim();
           const errMsg = refundErr?.error?.description || refundErr?.message || 'Razorpay refund execution failed';
-          return NextResponse.json({ error: `Razorpay refund failed: ${errMsg}. Please verify transaction status.` }, { status: 500 });
+          console.error('[AdminRefundApprove] Razorpay refund failed:', errMsg);
+          await releaseClaim('failed', errMsg);
+          return NextResponse.json({ error: `Razorpay refund failed: ${errMsg}. Refund marked as failed in dashboard.` }, { status: 500 });
         }
       }
     }
 
-    // 5. Commit everything in ONE transaction: credit (if any) + final status + order.
+    // Razorpay accepts most refunds as "pending" and settles later (refund.processed webhook / Sync).
+    // Until it reports "processed" the refund is PROCESSING, never COMPLETED.
+    const settling = refundMethod === 'original_method' && recordRefundPayment && !isMock && gatewayStatus !== 'processed';
+
+    // 8. Commit everything transactionally
     try {
       await prisma.$transaction(async (tx: any) => {
-        if (isRequestGroup) {
+        if (isReturnRequestGroup) {
           const done = await tx.returnRequest.updateMany({
             where: { id: refundId, status: 'refund_pending' },
             data: {
-              status: 'refunded',
+              status: settling ? 'refund_pending' : 'refunded',
               actualRefund: finalRefundAmount,
               refundType: refundMethod === 'store_credit' ? 'store_credit' : 'original_source',
-              refundReleasedAt: new Date()
+              refundReleasedAt: settling ? undefined : new Date()
             }
           });
           if (done.count !== 1) throw new ClaimLostError();
@@ -284,26 +434,41 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             await tx.return.update({
               where: { id: part.id },
               data: {
-                status: 'REFUNDED',
+                status: settling ? undefined : 'REFUNDED',
                 refundAmount: part.amount,
-                refundStatus: 'COMPLETED',
+                refundStatus: settling ? 'PROCESSING' : 'COMPLETED',
                 refundMethod: refundMethod,
                 storeCreditAmount: refundMethod === 'store_credit' ? part.amount : 0
               }
             });
           }
-        } else {
+        } else if (standaloneReturn) {
           const done = await tx.return.updateMany({
             where: { id: refundId, refundStatus: 'PROCESSING' },
             data: {
-              status: 'REFUNDED',
+              status: settling ? undefined : 'REFUNDED',
               refundAmount: finalRefundAmount,
-              refundStatus: 'COMPLETED',
+              refundStatus: settling ? 'PROCESSING' : 'COMPLETED',
               refundMethod: refundMethod,
               storeCreditAmount: refundMethod === 'store_credit' ? finalRefundAmount : 0
             }
           });
           if (done.count !== 1) throw new ClaimLostError();
+        } else if (isExchange) {
+          const done = await tx.exchangeRequest.updateMany({
+            where: { id: refundId, paymentStatus: 'refund_pending' },
+            data: {
+              paymentStatus: settling ? 'refund_pending' : refundMethod === 'store_credit' ? 'refunded' : 'refunded_original',
+            }
+          });
+          if (done.count !== 1) throw new ClaimLostError();
+
+          await tx.exchange.updateMany({
+            where: { exchangeRequestId: refundId },
+            data: {
+              paymentStatus: settling ? 'refund_pending' : 'refunded',
+            }
+          });
         }
 
         if (refundMethod === 'store_credit') {
@@ -315,10 +480,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             data: {
               customerId,
               amount: finalRefundAmount,
-              type: 'REFUND',
+              type: isExchange ? 'EXCHANGE_ADJUSTMENT' : 'REFUND',
               description: `Approved Store Credit Refund for Order #${order.shopifyOrderId || order.id}`,
               orderId: order.id,
-              returnId: targetEntity.id,
+              returnId: isExchange ? undefined : targetEntity.id,
               // Spendable amount tracked per credit (checkout debits and expiry both read this).
               remainingAmount: finalRefundAmount
             }
@@ -330,7 +495,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
               customerId: order.customerId,
               amount: finalRefundAmount,
               type: 'refund',
-              status: 'completed',
+              status: settling ? 'processing' : 'completed',
               gateway: 'razorpay'
             }
           });
@@ -339,16 +504,22 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         await tx.order.update({
           where: { id: order.id },
           data: {
-            refundStatus: 'completed',
-            paymentStatus: 'refunded',
-            status: 'returned'
+            refundStatus: settling ? 'processing' : 'completed',
+            refundError: null,
+            paymentStatus: settling ? undefined : 'refunded',
+            status: settling || isExchange ? undefined : 'returned'
           }
         });
       });
     } catch (txErr: any) {
       console.error('[AdminRefundApprove] Final transaction failed:', txErr);
-      await releaseClaim();
-      const moneyMoved = refundMethod === 'original_method' && razorpayRefundId && !String(razorpayRefundId).startsWith('mock_');
+      const moneyMoved = refundMethod === 'original_method' && !!razorpayRefundId && !isMock;
+      if (moneyMoved) {
+        // Money already left via Razorpay: keep the request retryable, not "failed" — a retry reuses the same refund.
+        await releaseClaim('retry');
+      } else {
+        await releaseClaim('failed', txErr.message);
+      }
       return NextResponse.json(
         {
           error: moneyMoved
@@ -359,44 +530,29 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       );
     }
 
-    if (refundMethod === 'store_credit') {
-      console.log(`[AdminRefundApprove] Store Credit of ₹${finalRefundAmount} issued to Customer ${customerId}`);
-    }
-
-    // Reverse proportional coupon cashback / Store Coins earned on this order.
-    try {
-      const { reverseCouponCashbackForReturn } = await import('@/lib/storeCreditsHelper');
-      const paidProductAmount = Math.max(
-        0,
-        Number(order.subtotalPrice || order.totalPrice || 0) - Number(order.discountAmount || 0)
-      );
-      await reverseCouponCashbackForReturn({
-        orderId: order.id,
-        customerId,
-        refundAmount: finalRefundAmount,
-        orderPaidAmount: paidProductAmount || Number(order.totalPrice || 0),
-      });
-    } catch (cashbackErr: any) {
-      console.error('[AdminRefundApprove] Coupon cashback reversal warning:', cashbackErr?.message);
-    }
-
-    // 6. Restock SKUs if applicable (best effort — the release itself is already committed)
-    try {
-      const { restoreSkuToStock } = await import('@/lib/services/skuService');
-      const itemsToRestock = isRequestGroup ? returnRequest!.returns : [standaloneReturn!];
-      for (const ret of itemsToRestock) {
-        if (ret.sku) {
-          await restoreSkuToStock(ret.sku, 'RETURN_RESTOCK', `Admin Approved Refund (${user.email || 'Admin'})`);
-        }
-      }
-    } catch (skuErr: any) {
-      console.error('[AdminRefundApprove] SKU restock warning:', skuErr?.message);
-    }
-
-    // 7. Shopify Refund Sync if shopifyOrderId exists (best effort)
-    if (order.shopifyOrderId) {
+    // Reverse proportional coupon cashback / Store Coins earned on this order (returns only).
+    if (!isExchange) {
       try {
-        const itemsToRefund = isRequestGroup ? returnRequest!.returns : [standaloneReturn!];
+        const { reverseCouponCashbackForReturn } = await import('@/lib/storeCreditsHelper');
+        const paidProductAmount = Math.max(
+          0,
+          Number(order.subtotalPrice || order.totalPrice || 0) - Number(order.discountAmount || 0)
+        );
+        await reverseCouponCashbackForReturn({
+          orderId: order.id,
+          customerId,
+          refundAmount: finalRefundAmount,
+          orderPaidAmount: paidProductAmount || Number(order.totalPrice || 0),
+        });
+      } catch (cashbackErr: any) {
+        console.error('[AdminRefundApprove] Coupon cashback reversal warning:', cashbackErr?.message);
+      }
+    }
+
+    // 9. Sync with Shopify if applicable
+    if (order.shopifyOrderId && !isExchange) {
+      try {
+        const itemsToRefund = isReturnRequestGroup ? returnRequest!.returns : [standaloneReturn!];
         const refundLineItems: any[] = [];
 
         for (const item of itemsToRefund) {
@@ -408,7 +564,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             refundLineItems.push({
               line_item_id: parseInt(matchingLineItem.shopifyLineItemId, 10),
               quantity: item.quantity || 1,
-              restock_type: 'return'
+              restock_type: 'no_restock'
             });
           }
         }
@@ -429,10 +585,13 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
     return NextResponse.json({
       success: true,
-      message: `Refund of ₹${finalRefundAmount} successfully approved and processed via ${refundMethod.toUpperCase().replace('_', ' ')}.`,
+      message: settling
+        ? `Refund of ₹${finalRefundAmount} submitted to Razorpay and is processing. Status updates when Razorpay confirms.`
+        : `Refund of ₹${finalRefundAmount} successfully approved and processed via ${refundMethod.toUpperCase().replace('_', ' ')}.`,
       refundMethod,
       finalRefundAmount,
-      razorpayRefundId
+      razorpayRefundId,
+      refundStatus: settling ? 'PROCESSING' : 'COMPLETED'
     });
 
   } catch (error: any) {

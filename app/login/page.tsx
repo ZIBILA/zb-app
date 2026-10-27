@@ -193,13 +193,16 @@ function LoginPageInner() {
   };
 
   // Fetch opt-in status when phone is long enough
-  const fetchOptInStatus = async (fullPhone: string) => {
+  const fetchOptInStatus = async (fullPhone: string, isStale: () => boolean) => {
     try {
       const res = await fetch(`/api/auth/marketing-optin-status?phone=${encodeURIComponent(fullPhone)}`);
+      if (isStale()) return;
       if (res.ok) {
         const data = await res.json();
+        if (isStale()) return;
+        // Set both ways so a status from an earlier (partial) number never sticks
+        setHasOptedBefore(!!data.hasOptedBefore);
         if (data.hasOptedBefore) {
-          setHasOptedBefore(true);
           // Sync combined checkbox from server state (user is already opted in for both)
           setOptIn(data.whatsappOptedIn && data.emailOptedIn);
         }
@@ -207,7 +210,7 @@ function LoginPageInner() {
       }
     } catch (err) {
       // Non-critical — default to showing editable checkboxes
-      setOptInLoaded(true);
+      if (!isStale()) setOptInLoaded(true);
     }
   };
 
@@ -240,7 +243,13 @@ function LoginPageInner() {
     }
     if (cleaned.length >= 7) {
       const fullPhone = country.code + cleaned;
-      fetchOptInStatus(fullPhone);
+      // Debounce keystrokes and drop responses for numbers the user has since changed
+      let stale = false;
+      const timer = setTimeout(() => fetchOptInStatus(fullPhone, () => stale), 400);
+      return () => {
+        stale = true;
+        clearTimeout(timer);
+      };
     } else {
       setHasOptedBefore(false);
       setOptInLoaded(false);

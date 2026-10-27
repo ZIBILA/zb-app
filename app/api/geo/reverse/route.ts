@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { matchIndianState } from "@/lib/countries";
+import {
+  buildDeliveryStreet,
+  isAdministrativeNoise,
+  stripLeadingHouseFromStreet,
+} from "@/lib/parseDetectedAddress";
 
 export const dynamic = "force-dynamic";
 
@@ -44,8 +49,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // ── Strategy 1: Google Maps Geocoding API (Only if dedicated server key without referrer restrictions is set) ──
-    const googleServerKey = process.env.GOOGLE_MAPS_SERVER_KEY || "";
+    // ── Strategy 1: Google Maps Geocoding API (Dedicated server key or general maps key) ──
+    const googleServerKey =
+      process.env.GOOGLE_MAPS_SERVER_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ||
+      "";
 
     if (googleServerKey) {
       try {
@@ -71,43 +80,58 @@ export async function GET(req: NextRequest) {
 
             for (const c of components) {
               const types = c.types || [];
+              const longName = String(c.long_name || "").trim();
+              if (!longName) continue;
+
+              // Keep premise/street_number in houseNo only — never merge into street
               if (types.includes("street_number") || types.includes("premise") || types.includes("subpremise")) {
-                houseNo = houseNo ? `${houseNo}, ${c.long_name}` : c.long_name;
+                houseNo = houseNo ? `${houseNo}, ${longName}` : longName;
+                continue;
               }
               if (types.includes("route")) {
-                street = street ? `${c.long_name}, ${street}` : c.long_name;
+                street = street ? `${longName}, ${street}` : longName;
               }
               if (types.includes("sublocality") || types.includes("sublocality_level_1") || types.includes("neighborhood")) {
+                if (isAdministrativeNoise(longName)) continue;
                 if (!street) {
-                  street = c.long_name;
+                  street = longName;
                 } else {
-                  landmark = landmark ? `${landmark}, ${c.long_name}` : c.long_name;
+                  landmark = landmark ? `${landmark}, ${longName}` : longName;
                 }
               }
               if (types.includes("locality")) {
-                city = c.long_name;
-              } else if (!city && (types.includes("administrative_area_level_2") || types.includes("postal_town"))) {
-                city = c.long_name;
+                city = longName;
+              } else if (
+                !city &&
+                (types.includes("administrative_area_level_2") || types.includes("postal_town")) &&
+                !isAdministrativeNoise(longName)
+              ) {
+                city = longName;
               }
               if (types.includes("administrative_area_level_1")) {
-                state = c.long_name;
+                state = longName;
               }
               if (types.includes("postal_code")) {
-                zip = c.long_name;
+                zip = longName;
               }
               if (types.includes("country")) {
-                country = c.long_name;
+                country = longName;
                 countryCode = (c.short_name || "IN").toUpperCase();
               }
             }
 
+            const cleanStreet =
+              buildDeliveryStreet([street, landmark]) ||
+              stripLeadingHouseFromStreet(first.formatted_address?.split(",")[0] || "");
+
             return NextResponse.json<ReverseGeoResponse>({
               ok: true,
               formattedAddress: first.formatted_address || "",
+              // Returned for callers that want it, but clients must leave Flat empty for manual entry
               houseNo,
-              street: street || landmark || first.formatted_address?.split(",")[0] || "",
-              landmark,
-              city,
+              street: cleanStreet,
+              landmark: buildDeliveryStreet([landmark]),
+              city: isAdministrativeNoise(city) ? "" : city,
               state: matchIndianState(state) || state,
               zip,
               country,
@@ -145,9 +169,15 @@ export async function GET(req: NextRequest) {
           const addr = data.address;
           const houseNo = addr.house_number || addr.building || "";
           const road = addr.road || addr.residential || "";
-          const suburb = addr.suburb || addr.neighbourhood || addr.quarter || addr.subdistrict || "";
-          const street = [road, suburb].filter(Boolean).join(", ");
-          const city = addr.city || addr.town || addr.village || addr.county || addr.state_district || "";
+          const suburbRaw = addr.suburb || addr.neighbourhood || addr.quarter || "";
+          const suburb = isAdministrativeNoise(suburbRaw) ? "" : suburbRaw;
+          const subdistrict = isAdministrativeNoise(addr.subdistrict || "")
+            ? ""
+            : addr.subdistrict || "";
+          const street = buildDeliveryStreet([road, suburb, subdistrict]);
+          const cityRaw =
+            addr.city || addr.town || addr.village || addr.county || addr.state_district || "";
+          const city = isAdministrativeNoise(cityRaw) ? "" : cityRaw;
           const rawState = addr.state || "";
           const state = matchIndianState(rawState) || rawState;
           const zip = (addr.postcode || "").replace(/\s/g, "").slice(0, 6);
@@ -158,8 +188,8 @@ export async function GET(req: NextRequest) {
             ok: true,
             formattedAddress: data.display_name || "",
             houseNo,
-            street: street || data.display_name?.split(",")[0] || "",
-            landmark: suburb !== street ? suburb : "",
+            street: street || stripLeadingHouseFromStreet(data.display_name?.split(",")[0] || ""),
+            landmark: suburb && suburb !== street ? suburb : "",
             city,
             state,
             zip,
@@ -186,8 +216,13 @@ export async function GET(req: NextRequest) {
       if (bdcRes.ok) {
         const data = await bdcRes.json();
         if (data) {
-          const street = data.locality || data.principalSubdivisionDescription || "";
-          const city = data.city || data.locality || "";
+          const locality = isAdministrativeNoise(data.locality || "")
+            ? ""
+            : data.locality || "";
+          // Avoid principalSubdivisionDescription — often "Meerut Division"-style admin labels
+          const street = buildDeliveryStreet([locality]);
+          const cityRaw = data.city || locality || "";
+          const city = isAdministrativeNoise(cityRaw) ? "" : cityRaw;
           const rawState = data.principalSubdivision || "";
           const state = matchIndianState(rawState) || rawState;
           const rawZip = data.postcode || "";

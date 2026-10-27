@@ -1,15 +1,20 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { 
   Users, MessageSquare, Shield, ShieldAlert, Search, 
   Settings, UserPlus, MoreVertical, Ban, Trash2, ExternalLink
 } from "lucide-react";
 import { format } from "date-fns";
-import { 
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid
-} from "recharts";
+
+const ChatGrowthChart = dynamic(
+  () => import("@/components/admin/charts/ChatGrowthChart"),
+  {
+    ssr: false,
+    loading: () => <div className="h-full w-full animate-pulse rounded-xl bg-foreground/[0.03]" />,
+  }
+);
 
 type ChatUser = {
   id: string;
@@ -194,40 +199,7 @@ export default function ChatManagementPage() {
            <h3 className="text-xs font-bold uppercase tracking-[0.2em] mb-6 text-muted-foreground">30-Day Growth</h3>
            <div className="h-64 w-full">
              {analytics.growth.length > 0 ? (
-               <ResponsiveContainer width="100%" height="100%">
-                 <AreaChart data={analytics.growth}>
-                   <defs>
-                     <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                       <stop offset="5%" stopColor="hsl(var(--foreground))" stopOpacity={0.1}/>
-                       <stop offset="95%" stopColor="hsl(var(--foreground))" stopOpacity={0}/>
-                     </linearGradient>
-                   </defs>
-                   <XAxis 
-                     dataKey="date" 
-                     axisLine={false} 
-                     tickLine={false} 
-                     tick={{ fontSize: 9, fill: 'currentColor', opacity: 0.3 }}
-                     tickFormatter={(str) => format(new Date(str), "MMM d")}
-                   />
-                   <YAxis hide />
-                   <Tooltip 
-                     contentStyle={{ 
-                       background: 'hsl(var(--background))', 
-                       border: '1px solid hsl(var(--foreground) / 0.1)',
-                       borderRadius: '12px',
-                       fontSize: '10px'
-                     }}
-                   />
-                   <Area 
-                     type="monotone" 
-                     dataKey="count" 
-                     stroke="hsl(var(--foreground))" 
-                     fillOpacity={1} 
-                     fill="url(#colorCount)" 
-                     strokeWidth={2}
-                   />
-                 </AreaChart>
-               </ResponsiveContainer>
+               <ChatGrowthChart data={analytics.growth} />
              ) : (
                <div className="h-full flex items-center justify-center text-[10px] font-bold text-muted-foreground uppercase tracking-widest italic">
                  Insufficient data for growth chart

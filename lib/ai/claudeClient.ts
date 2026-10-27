@@ -7,6 +7,8 @@
  * - Hard cap on agentic tool-use loops (MAX_TOOL_LOOPS)
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import prisma from '@/lib/db';
 import { getModelChain, type ModelEntry } from './models';
@@ -33,29 +35,110 @@ const BACKOFF_BASE_MS = 250;
 
 let _client: Anthropic | null = null;
 let _resolvedKey: string | null = null;
+let _resolvedSource: 'env' | 'dotenv' | 'db' | null = null;
+
+/** Strip quotes/whitespace — .env and shell `source` often leave these attached. */
+function normalizeApiKey(raw: string | undefined | null): string {
+  if (!raw) return '';
+  let k = String(raw).trim();
+  if (
+    (k.startsWith('"') && k.endsWith('"')) ||
+    (k.startsWith("'") && k.endsWith("'"))
+  ) {
+    k = k.slice(1, -1).trim();
+  }
+  return k;
+}
+
+/**
+ * Reject placeholder / example keys that shells often export and that Next
+ * will prefer over `.env.local` (existing process.env wins over dotenv).
+ * Real Anthropic keys are much longer than `sk-ant-api03-xxxx…`.
+ */
+function isUsableAnthropicKey(key: string): boolean {
+  if (!key.startsWith('sk-ant-')) return false;
+  if (key.length < 80) return false;
+  const lower = key.toLowerCase();
+  if (lower.includes('xxxx') || lower.includes('placeholder') || lower.includes('your_')) {
+    return false;
+  }
+  return true;
+}
+
+function readProcessEnvApiKey(): string {
+  // Bracket access avoids Next/webpack static inlining of process.env.FOO as undefined.
+  return normalizeApiKey(
+    process.env['ANTHROPIC_API_KEY'] || process.env['CLAUDE_API_KEY']
+  );
+}
+
+/** Read key directly from .env.local when process.env holds a stale placeholder. */
+function readDotEnvLocalApiKey(): string {
+  try {
+    const filePath = path.join(process.cwd(), '.env.local');
+    if (!fs.existsSync(filePath)) return '';
+    const text = fs.readFileSync(filePath, 'utf8');
+    const wanted = ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY'];
+    const found: Record<string, string> = {};
+    for (const line of text.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s || s.startsWith('#') || !s.includes('=')) continue;
+      const eq = s.indexOf('=');
+      const k = s.slice(0, eq).trim();
+      if (!wanted.includes(k)) continue;
+      found[k] = normalizeApiKey(s.slice(eq + 1));
+    }
+    return found.ANTHROPIC_API_KEY || found.CLAUDE_API_KEY || '';
+  } catch (err) {
+    console.warn('[ClaudeClient] Could not read .env.local:', err);
+    return '';
+  }
+}
 
 /**
  * Resolve the Anthropic API key.  Priority:
- * 1. ANTHROPIC_API_KEY env var (preferred)
- * 2. CLAUDE_API_KEY env var (legacy)
+ * 1. Real ANTHROPIC_API_KEY / CLAUDE_API_KEY in process.env
+ * 2. Same keys from `.env.local` (bypasses placeholder shell exports Next won't override)
  * 3. Shop.claudeApiKey from DB
  */
 async function resolveApiKey(): Promise<string> {
   if (_resolvedKey) return _resolvedKey;
 
-  const envKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
-  if (envKey && envKey.startsWith('sk-ant-')) {
-    _resolvedKey = envKey;
-    return envKey;
+  const processKey = readProcessEnvApiKey();
+  if (isUsableAnthropicKey(processKey)) {
+    _resolvedKey = processKey;
+    _resolvedSource = 'env';
+    return processKey;
+  }
+  if (processKey) {
+    console.warn(
+      `[ClaudeClient] Ignoring unusable process.env key (len=${processKey.length}, last4=...${processKey.slice(-4)}). ` +
+        `Next prefers shell exports over .env.local — unset ANTHROPIC_API_KEY/CLAUDE_API_KEY or use a clean shell.`
+    );
+  }
+
+  const fileKey = readDotEnvLocalApiKey();
+  if (isUsableAnthropicKey(fileKey)) {
+    _resolvedKey = fileKey;
+    _resolvedSource = 'dotenv';
+    // So the Anthropic SDK's own env fallback cannot pick the placeholder.
+    process.env['ANTHROPIC_API_KEY'] = fileKey;
+    return fileKey;
   }
 
   try {
     const shop = await prisma.shop.findFirst({
       select: { claudeApiKey: true },
     });
-    if (shop?.claudeApiKey && shop.claudeApiKey.startsWith('sk-ant-')) {
-      _resolvedKey = shop.claudeApiKey;
-      return shop.claudeApiKey;
+    const dbKey = normalizeApiKey(shop?.claudeApiKey);
+    if (isUsableAnthropicKey(dbKey)) {
+      _resolvedKey = dbKey;
+      _resolvedSource = 'db';
+      process.env['ANTHROPIC_API_KEY'] = dbKey;
+      console.warn(
+        `[ClaudeClient] Using Shop.claudeApiKey from DB. last4=...${dbKey.slice(-4)}`
+      );
+      return dbKey;
     }
   } catch (err) {
     console.error('[ClaudeClient] Failed to fetch key from DB:', err);
@@ -68,12 +151,17 @@ async function resolveApiKey(): Promise<string> {
 export function resetClient(): void {
   _client = null;
   _resolvedKey = null;
+  _resolvedSource = null;
 }
 
 async function getClient(): Promise<Anthropic> {
   if (_client) return _client;
   const apiKey = await resolveApiKey();
+  // Explicit apiKey only — do not rely on SDK env auto-detect (can pick a stale shell export).
   _client = new Anthropic({ apiKey });
+  console.log(
+    `[ClaudeClient] Client ready source=${_resolvedSource} keyLen=${apiKey.length} last4=...${apiKey.slice(-4)}`
+  );
   return _client;
 }
 
@@ -166,7 +254,10 @@ export async function callClaude(opts: ClaudeCallOptions): Promise<ClaudeCallRes
 
         // 401 — never retry, bad key
         if (status === 401 || errorType === 'authentication_error') {
-          console.error(`[ClaudeClient] Auth error — API key is invalid.`);
+          console.error(
+            `[ClaudeClient] Auth error — API key rejected by Anthropic (source=${_resolvedSource}, last4=...${(_resolvedKey || '').slice(-4)}). ` +
+              `If curl works with .env.local, check Dashboard Shop.claudeApiKey or a stale shell export of ANTHROPIC_API_KEY.`
+          );
           resetClient(); // Clear cached key
           throw error;
         }

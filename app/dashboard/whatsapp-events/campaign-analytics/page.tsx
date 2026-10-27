@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { 
@@ -8,10 +9,15 @@ import {
   Percent, BarChart3, RefreshCcw, Sparkles, Megaphone, Calendar,
   Search, ExternalLink
 } from "lucide-react";
-import { 
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell 
-} from "recharts";
 import { toast } from "sonner";
+
+const TemplateRevenueChart = dynamic(
+  () => import("@/components/admin/charts/TemplateRevenueChart"),
+  {
+    ssr: false,
+    loading: () => <div className="h-full w-full animate-pulse rounded-xl bg-foreground/[0.03]" />,
+  }
+);
 
 export default function CampaignAnalyticsPage() {
   const router = useRouter();
@@ -72,7 +78,7 @@ export default function CampaignAnalyticsPage() {
       case "sending": return "border-blue-500/20 text-blue-500 bg-blue-500/10 animate-pulse";
       case "scheduled": return "border-amber-500/20 text-amber-500 bg-amber-500/10";
       case "paused": return "border-violet-500/20 text-violet-500 bg-violet-500/10";
-      case "cancelled": return "border-zinc-500/20 text-zinc-500 bg-zinc-500/10";
+      case "cancelled": return "border-foreground/30 text-foreground/50 bg-foreground/30";
       default: return "border-rose-500/20 text-rose-500 bg-rose-500/10";
     }
   };
@@ -113,19 +119,7 @@ export default function CampaignAnalyticsPage() {
                 No revenue logs recorded yet.
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData}>
-                  <XAxis dataKey="name" stroke="currentColor" className="text-[10px] opacity-40" tickLine={false} />
-                  <YAxis stroke="currentColor" className="text-[10px] opacity-40" tickLine={false} />
-                  <Tooltip contentStyle={{ background: "rgba(0, 0, 0, 0.8)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "8px", fontSize: "12px" }} />
-                  <Bar dataKey="revenue" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]}>
-                    {chartData.map((entry: any, index: number) => {
-                      const colors = ["#10b981", "#3b82f6", "#8b5cf6", "#f59e0b", "#ec4899"];
-                      return <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />;
-                    })}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <TemplateRevenueChart data={chartData} />
             )}
           </div>
         </div>

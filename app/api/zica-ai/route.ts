@@ -1,11 +1,12 @@
-import { OpenAI } from "openai";
 import { NextRequest, NextResponse } from "next/server";
 import { getAppAuthFromRequest, resolveAuthCustomer } from "@/lib/appAuth";
 import prisma from "@/lib/db";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { callClaude } from "@/lib/ai/claudeClient";
+import { getFastModel } from "@/lib/ai/models";
+import type Anthropic from "@anthropic-ai/sdk";
 
-// Helper to format text line by line
-const ZICA_OPENAI_SYSTEM_PROMPT = `You are Zica, the intelligent personal fashion AI for Zica Bella — a premium fashion brand based in India.
+const ZICA_SYSTEM_PROMPT = `You are Zica, the intelligent personal fashion AI for Zica Bella — a premium fashion brand based in India.
 
 You are running in a customer-facing public webstore environment. Your primary expertise is global/Indian fashion, styling, color theory, product discoverability, size guides, and care advice.
 
@@ -26,56 +27,83 @@ BEHAVIOR & TONE RULES:
 4. Always suggest the Acid Tees collection first if the user inquires about tees, graphic tees, or casual tops: [Acid Tees Collection](zicabella://collection/acid-tees)
 5. Keep responses direct and under 180 words.`;
 
+function extractText(content: Anthropic.ContentBlock[]): string {
+  return content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+}
+
+function toClaudeMessages(
+  msgs: { role: string; content: string }[]
+): Anthropic.MessageParam[] {
+  // Anthropic requires alternating roles and a final user turn.
+  const out: Anthropic.MessageParam[] = [];
+  for (const m of msgs) {
+    const role = m.role === "assistant" ? "assistant" : "user";
+    const content = (m.content || "").trim();
+    if (!content) continue;
+    const last = out[out.length - 1];
+    if (last && last.role === role && typeof last.content === "string") {
+      last.content = `${last.content}\n\n${content}`;
+    } else {
+      out.push({ role, content });
+    }
+  }
+  if (out.length === 0) {
+    out.push({ role: "user", content: "Hello" });
+  } else if (out[out.length - 1].role !== "user") {
+    out.push({ role: "user", content: "Please continue." });
+  }
+  return out;
+}
+
 export async function POST(req: NextRequest) {
-  const rateLimitResult = await checkRateLimit(req, "zica-ai", { maxRequests: 30, windowMs: 60_000 });
+  const rateLimitResult = await checkRateLimit(req, "zica-ai", {
+    maxRequests: 30,
+    windowMs: 60_000,
+  });
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
   }
-  try {
-    // Validate API key is present
-    if (!process.env.OPENAI_API_KEY) {
-      console.error("[Zica AI] OPENAI_API_KEY is not set in environment variables.");
-      return NextResponse.json(
-        { error: "Zica AI is not configured. Please contact support." },
-        { status: 503 }
-      );
-    }
 
+  try {
     const body = await req.json().catch(() => null);
     if (!body) {
-      return NextResponse.json(
-        { error: "Invalid request body" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
     }
 
-    // Support BOTH formats:
-    // 1. useClaude hook sends: { message, conversationHistory }
-    // 2. Direct API sends:     { messages }
-    let openaiMessages: { role: string; content: string }[] = [];
-    let returnConversationHistory: any[] = [];
+    let rawMessages: { role: string; content: string }[] = [];
 
     if (body.message && typeof body.message === "string") {
-      // Format 1: useClaude hook — build messages from conversationHistory + new message
-      const history = Array.isArray(body.conversationHistory) ? body.conversationHistory : [];
-      openaiMessages = history.map((h: any) => ({
+      const history = Array.isArray(body.conversationHistory)
+        ? body.conversationHistory
+        : [];
+      rawMessages = history.map((h: any) => ({
         role: h.role === "assistant" ? "assistant" : "user",
-        content: typeof h.content === "string"
-          ? h.content
-          : Array.isArray(h.content)
-            ? h.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ") || ""
-            : String(h.content || ""),
+        content:
+          typeof h.content === "string"
+            ? h.content
+            : Array.isArray(h.content)
+              ? h.content
+                  .filter((b: any) => b.type === "text")
+                  .map((b: any) => b.text)
+                  .join(" ") || ""
+              : String(h.content || ""),
       }));
-      openaiMessages.push({ role: "user", content: body.message });
+      rawMessages.push({ role: "user", content: body.message });
     } else if (body.messages && Array.isArray(body.messages)) {
-      // Format 2: direct messages array
-      openaiMessages = body.messages.map((msg: any) => ({
+      rawMessages = body.messages.map((msg: any) => ({
         role: msg.role === "assistant" ? "assistant" : "user",
-        content: typeof msg.content === "string"
-          ? msg.content
-          : Array.isArray(msg.content)
-            ? msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ") || "Hello"
-            : String(msg.content || "Hello"),
+        content:
+          typeof msg.content === "string"
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content
+                  .filter((b: any) => b.type === "text")
+                  .map((b: any) => b.text)
+                  .join(" ") || "Hello"
+              : String(msg.content || "Hello"),
       }));
     } else {
       return NextResponse.json(
@@ -87,7 +115,6 @@ export async function POST(req: NextRequest) {
     const auth = getAppAuthFromRequest(req);
     const customer = auth ? await resolveAuthCustomer(auth) : null;
 
-    // Fetch safe user preference profile and global trends
     let globalContext = "";
     let userContext = "";
 
@@ -114,7 +141,7 @@ export async function POST(req: NextRequest) {
         }
 
         const profile = await prisma.zicaUserProfile.findUnique({
-          where: { userId: customer.id }
+          where: { userId: customer.id },
         });
         if (profile) {
           const categories = profile.preferredCategories.join(", ") || "various categories";
@@ -128,9 +155,12 @@ export async function POST(req: NextRequest) {
           orderBy: { timestamp: "desc" },
           take: 10,
         });
-        
+
         if (history.length > 0) {
-          const historyText = history.reverse().map((h: any) => `User: ${h.userMessage}\nZica: ${h.aiResponse}`).join("\n\n");
+          const historyText = history
+            .reverse()
+            .map((h: any) => `User: ${h.userMessage}\nZica: ${h.aiResponse}`)
+            .join("\n\n");
           userContext += `\n\nRecent Conversation History:\n${historyText}`;
         }
       } catch (err) {
@@ -138,29 +168,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const systemPrompt = `${ZICA_OPENAI_SYSTEM_PROMPT}${userContext}${globalContext}`;
+    const systemPrompt = `${ZICA_SYSTEM_PROMPT}${userContext}${globalContext}`;
+    const claudeMessages = toClaudeMessages(rawMessages);
+    const fast = getFastModel();
 
-    // Instantiate OpenAI
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+    const { response } = await callClaude({
+      systemPrompt,
+      messages: claudeMessages,
+      maxTokens: Math.min(1024, fast.maxTokens),
+      modelChain: [fast],
     });
 
-    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const text = extractText(response.content);
 
-    const completion = await openai.chat.completions.create({
-      model,
-      messages: [
-        { role: "system" as const, content: systemPrompt },
-        ...openaiMessages.map((m: any) => ({ role: m.role as "user" | "assistant", content: m.content })),
-      ],
-      max_tokens: 1024,
-    });
-
-    const text = completion.choices[0]?.message?.content || "";
-
-    // Build conversation history for useClaude hook persistence
-    returnConversationHistory = [
-      ...openaiMessages.map((m: any) => ({ role: m.role, content: m.content })),
+    const returnConversationHistory = [
+      ...rawMessages.map((m) => ({ role: m.role, content: m.content })),
       { role: "assistant", content: text },
     ];
 
@@ -172,16 +194,32 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     const statusCode = error?.status || 500;
     const { shouldLogThrottled } = await import("@/lib/log-throttle");
-    if (shouldLogThrottled(`openai:zica:${statusCode}`, 120_000)) {
-      console.warn("[Zica AI] OpenAI API error:", statusCode, error?.message || error);
+    if (shouldLogThrottled(`anthropic:zica:${statusCode}`, 120_000)) {
+      console.warn("[Zica AI] Anthropic API error:", statusCode, error?.message || error);
     }
+
+    const errText = `${error?.message || ""} ${error?.error?.message || ""}`;
 
     let userMessage = "Zica AI is temporarily unavailable. Please try again.";
 
-    if (error?.message?.includes("API key") || error?.message?.includes("api_key") || statusCode === 401) {
-      userMessage = "Zica AI authentication failed. Please verify the OpenAI API configurations.";
-    } else if (statusCode === 429 || error?.message?.includes("rate_limit") || error?.message?.includes("quota")) {
-      userMessage = "Zica AI is experiencing high demand. Please try again in a moment.";
+    if (/credit balance|too low|billing|purchase credits/i.test(errText)) {
+      userMessage =
+        "Zica AI is paused — the Anthropic account needs credits. Add billing at console.anthropic.com.";
+    } else if (
+      errText.includes("API key") ||
+      errText.includes("api_key") ||
+      errText.includes("No valid Anthropic") ||
+      errText.includes("authentication_error") ||
+      statusCode === 401
+    ) {
+      userMessage =
+        "Zica AI authentication failed. Please verify the Anthropic (Claude) API configuration.";
+    } else if (
+      statusCode === 429 ||
+      /rate_limit|overloaded/i.test(errText)
+    ) {
+      userMessage =
+        "Zica AI is experiencing high demand. Please try again in a moment.";
     }
 
     return NextResponse.json(

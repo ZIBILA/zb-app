@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,7 +11,76 @@ import { useAuth } from '../../hooks/useAuth';
 import { useAuthStore } from '../../store/authStore';
 import { haptics } from '../../utils/haptics';
 import { config } from '../../constants/config';
-import { getFreshDeviceCoordinates, requestDeviceLocationPermission } from '../../utils/deviceLocation';
+import { getFreshDeviceCoordinates, getNativeReverseGeocode, requestDeviceLocationPermission } from '../../utils/deviceLocation';
+import { requireValidAuth } from '../../utils/tokenUtils';
+import {
+  buildDeliveryStreet,
+  isAdministrativeNoise,
+  stripLeadingHouseFromStreet,
+} from '../../utils/parseDetectedAddress';
+
+function parseSavedAddress(a: any, currentUser?: any) {
+  if (!a) {
+    return {
+      name: currentUser?.name || '',
+      email: currentUser?.email || '',
+      phone: currentUser?.phone || '',
+      flat: '',
+      street: '',
+      streetAddress: '',
+      line1: '',
+      line2: '',
+      address1: '',
+      address2: '',
+      city: '',
+      state: '',
+      pincode: '',
+      country: 'India',
+    };
+  }
+
+  let flat = a.flat || '';
+  let street = a.street || a.streetAddress || a.address2 || a.line2 || '';
+
+  // If flat is not explicitly stored, parse from address1 / line1
+  if (!flat && (a.address1 || a.line1)) {
+    const rawLine1 = (a.address1 || a.line1 || '').trim();
+    if (street && rawLine1 !== street && rawLine1.endsWith(street)) {
+      flat = rawLine1.replace(new RegExp(`,?\\s*${street.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), '').trim();
+    } else if (street && rawLine1 !== street) {
+      flat = rawLine1;
+    } else {
+      const parts = rawLine1.split(',');
+      if (parts.length >= 2) {
+        flat = parts[0].trim();
+        street = parts.slice(1).join(',').trim();
+      } else {
+        flat = '';
+        street = rawLine1;
+      }
+    }
+  }
+
+  const fullLine1 = [flat, street].filter(Boolean).join(', ') || a.address1 || a.line1 || '';
+
+  return {
+    name: a.name || currentUser?.name || '',
+    email: a.email || currentUser?.email || '',
+    phone: a.phone || currentUser?.phone || '',
+    flat,
+    street,
+    streetAddress: street,
+    line1: fullLine1,
+    line2: street || a.address2 || a.line2 || '',
+    address1: fullLine1,
+    address2: street || a.address2 || a.line2 || '',
+    city: a.city || '',
+    state: a.state || a.province || '',
+    pincode: a.zip || a.pincode || '',
+    country: a.country || 'India',
+    zip: a.zip || a.pincode || '',
+  };
+}
 
 export default function DeliveryAddressScreen() {
   const insets = useSafeAreaInsets();
@@ -29,15 +98,24 @@ export default function DeliveryAddressScreen() {
   const [savedAddresses, setSavedAddresses] = useState<any[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
   const [detectingLocation, setDetectingLocation] = useState(false);
+  const [addressFieldHighlighted, setAddressFieldHighlighted] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const flatFieldRef = useRef<TextInput>(null);
+  const streetFieldRef = useRef<TextInput>(null);
+
+  const initialParsed = useMemo(() => parseSavedAddress(shippingAddress, user), [shippingAddress, user]);
+
   const [address, setAddress] = useState({
-    name: shippingAddress?.name || user?.name || '',
-    email: shippingAddress?.email || user?.email || '',
-    phone: shippingAddress?.phone || user?.phone || '',
-    line1: shippingAddress?.line1 || shippingAddress?.street || '',
-    line2: shippingAddress?.line2 || '',
-    city: shippingAddress?.city || '',
-    state: shippingAddress?.state || '',
-    pincode: shippingAddress?.pincode || shippingAddress?.zip || '',
+    name: initialParsed.name,
+    email: initialParsed.email,
+    phone: initialParsed.phone,
+    flat: initialParsed.flat,
+    street: initialParsed.street,
+    line1: initialParsed.line1,
+    line2: initialParsed.line2,
+    city: initialParsed.city,
+    state: initialParsed.state,
+    pincode: initialParsed.pincode,
     country: 'India',
   });
 
@@ -106,13 +184,12 @@ export default function DeliveryAddressScreen() {
       console.warn('Backend pincode fetch failed, trying fallback API:', e);
     }
 
-    // 2. Fallback to the public API
+    // 2. Fallback to public Indian postal directory
     try {
       const res = await fetch(`https://api.postalpincode.in/pincode/${pin}`);
       const json = await res.json();
       if (json[0]?.Status === 'Success' && Array.isArray(json[0].PostOffice) && json[0].PostOffice.length > 0) {
         const postOffice = json[0].PostOffice[0];
-        // Use District first (most reliable for city), then Division, Block, and finally Name
         const city = (postOffice.District && postOffice.District !== 'NA' ? postOffice.District : null)
           || (postOffice.Division && postOffice.Division !== 'NA' ? postOffice.Division : null)
           || (postOffice.Block && postOffice.Block !== 'NA' ? postOffice.Block : null)
@@ -141,49 +218,105 @@ export default function DeliveryAddressScreen() {
     try {
       const permission = await requestDeviceLocationPermission();
       if (permission !== 'granted') {
-        Alert.alert(
-          'Location permission needed',
-          'Allow location access so we can fill your delivery address from your current position.'
-        );
         haptics.error();
         return;
       }
 
       const coords = await getFreshDeviceCoordinates();
-      const res = await fetch(
-        `${config.appUrl}/api/geo/reverse?lat=${coords.latitude}&lng=${coords.longitude}`
-      );
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        Alert.alert('Could not detect address', 'Please enter your delivery address manually.');
-        haptics.error();
-        return;
+
+      // 1 & 2. Run Native geocoding and Server enrichment concurrently for speed
+      let detectedArea = '';
+      let detectedCity = '';
+      let detectedState = '';
+      let detectedZip = '';
+
+      const [nativeResult, serverResult] = await Promise.allSettled([
+        getNativeReverseGeocode(coords),
+        fetch(`${config.appUrl}/api/geo/reverse?lat=${coords.latitude}&lng=${coords.longitude}`)
+          .then(res => res.json())
+          .catch(() => null),
+      ]);
+
+      const nativeAddr = nativeResult.status === 'fulfilled' ? nativeResult.value : null;
+      if (nativeAddr) {
+        // Never use name/streetNumber — native often puts plot/house ("E 1701") there.
+        // Never use district/subregion when it's admin noise ("Meerut Division").
+        const locality =
+          nativeAddr.subregion &&
+          nativeAddr.subregion !== nativeAddr.city &&
+          !isAdministrativeNoise(nativeAddr.subregion)
+            ? nativeAddr.subregion
+            : null;
+        const district =
+          nativeAddr.district &&
+          nativeAddr.district !== nativeAddr.city &&
+          !isAdministrativeNoise(nativeAddr.district)
+            ? nativeAddr.district
+            : null;
+
+        detectedArea = buildDeliveryStreet([nativeAddr.street, locality, district]);
+
+        const cityCandidate =
+          nativeAddr.city ||
+          (!isAdministrativeNoise(nativeAddr.district || '') ? nativeAddr.district : '') ||
+          (!isAdministrativeNoise(nativeAddr.subregion || '') ? nativeAddr.subregion : '') ||
+          '';
+        detectedCity = isAdministrativeNoise(cityCandidate) ? '' : cityCandidate;
+        detectedState = nativeAddr.region || '';
+        detectedZip = (nativeAddr.postalCode || '').replace(/\D/g, '').slice(0, 6);
       }
 
-      const stateKey = String(data.state || '').trim().toUpperCase();
-      const stateName = STATE_CODE_TO_NAME[stateKey] || data.state || '';
-      const zipDigits = String(data.zip || '').replace(/\D/g, '').slice(0, 6);
-      const line1 =
-        data.street ||
-        data.landmark ||
-        (typeof data.formattedAddress === 'string' ? data.formattedAddress.split(',')[0].trim() : '');
+      const serverData = serverResult.status === 'fulfilled' ? serverResult.value : null;
+      if (serverData && serverData.ok) {
+        const serverStateKey = String(serverData.state || '').trim().toUpperCase();
+        const serverStateName = STATE_CODE_TO_NAME[serverStateKey] || serverData.state || '';
+        const serverZip = String(serverData.zip || '').replace(/\D/g, '').slice(0, 6);
+        // houseNo stays out of street — Flat field is left empty for manual entry
+        const serverArea =
+          buildDeliveryStreet([serverData.street, serverData.landmark]) ||
+          stripLeadingHouseFromStreet(
+            typeof serverData.formattedAddress === 'string'
+              ? serverData.formattedAddress.split(',').slice(0, 3).join(',').trim()
+              : ''
+          );
+
+        if (!detectedArea || (serverArea && serverArea.length > detectedArea.length)) {
+          detectedArea = serverArea;
+        }
+        if (!detectedCity && serverData.city && !isAdministrativeNoise(serverData.city)) {
+          detectedCity = serverData.city;
+        }
+        if (!detectedState && serverStateName) detectedState = serverStateName;
+        if (!detectedZip && serverZip) detectedZip = serverZip;
+      }
+
+      const finalStateKey = String(detectedState || '').trim().toUpperCase();
+      const finalStateName = STATE_CODE_TO_NAME[finalStateKey] || detectedState || '';
+      const finalStreet = stripLeadingHouseFromStreet(detectedArea);
 
       setAddress(prev => ({
         ...prev,
-        line1: line1 || prev.line1,
-        city: data.city || prev.city,
-        state: stateName || prev.state,
-        pincode: zipDigits || prev.pincode,
+        // Always clear flat after location detect — customers must enter house/building manually
+        flat: '',
+        street: finalStreet || prev.street,
+        city: detectedCity || prev.city,
+        state: finalStateName || prev.state,
+        pincode: detectedZip || prev.pincode,
       }));
+
+      if (detectedZip && detectedZip.length === 6) {
+        fetchPincodeDetails(detectedZip);
+      }
+
       setIsEditing(true);
       haptics.success();
+      // Flat stays empty for manual entry — no error UI until user tries to continue
+      setAddressFieldHighlighted(false);
     } catch (e) {
       console.warn('Current location detection failed:', e);
-      Alert.alert(
-        'Location unavailable',
-        'We could not get a fresh GPS fix. Please enter your address manually or try again outdoors.'
-      );
       haptics.error();
+      setIsEditing(true);
+      setAddressFieldHighlighted(false);
     } finally {
       setDetectingLocation(false);
     }
@@ -191,7 +324,7 @@ export default function DeliveryAddressScreen() {
 
   const handlePincodeChange = (v: string) => {
     const cleaned = v.replace(/[^0-9]/g, '').slice(0, 6);
-    setAddress({ ...address, pincode: cleaned });
+    setAddress(prev => ({ ...prev, pincode: cleaned }));
     if (cleaned.length === 6) {
       fetchPincodeDetails(cleaned);
     }
@@ -199,8 +332,19 @@ export default function DeliveryAddressScreen() {
 
   const isValid = useMemo(
     () =>
-      !!(address.name && address.email && address.phone && address.line1 && address.city && address.pincode && address.state) && 
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address.email),
+      !!(
+        address.name?.trim() && 
+        address.email?.trim() && 
+        address.phone?.trim() && 
+        address.flat?.trim() && 
+        address.street?.trim() && 
+        address.city?.trim() && 
+        address.pincode?.trim() && 
+        address.pincode.trim().length === 6 &&
+        address.state?.trim()
+      ) && 
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address.email) &&
+      address.phone.replace(/\D/g, '').length >= 10,
     [address]
   );
 
@@ -215,26 +359,11 @@ export default function DeliveryAddressScreen() {
       const json = await res.json().catch(() => ({ addresses: [] }));
       if (res.ok && Array.isArray(json.addresses)) {
         setSavedAddresses(json.addresses);
-        // Auto-fill if store is empty
         if (!shippingAddress && json.addresses.length > 0) {
-          const a = json.addresses[0];
-          const normalized = {
-            name: a.name || user?.name || '',
-            email: a.email || user?.email || '',
-            phone: a.phone || user?.phone || '',
-            line1: a.address1 || '',
-            line2: a.address2 || '',
-            city: a.city || '',
-            state: a.state || '',
-            pincode: a.zip || '',
-            country: 'India',
-            street: a.address1 || '',
-            zip: a.zip || '',
-          };
-          setShippingAddress(normalized);
+          const parsed = parseSavedAddress(json.addresses[0], user);
+          setShippingAddress(parsed);
           setIsEditing(false);
-          // Also update the local form state
-          setAddress(normalized);
+          setAddress(parsed);
         }
       } else {
         setSavedAddresses([]);
@@ -247,10 +376,10 @@ export default function DeliveryAddressScreen() {
   }, [user?.phone, user?.email]);
 
   useEffect(() => {
+    if (!requireValidAuth(navigation)) return;
     fetchSavedAddresses();
-  }, [fetchSavedAddresses]);
+  }, [fetchSavedAddresses, navigation]);
 
-  // Prefill signup name/phone into the editable address form when empty
   useEffect(() => {
     if (!user) return;
     setAddress((prev) => ({
@@ -263,6 +392,14 @@ export default function DeliveryAddressScreen() {
 
   const fieldError = (field: keyof typeof address) => {
     if (!submitted) return null;
+    if (field === 'flat') {
+      if (!String(address.flat || '').trim()) return 'Please enter flat/house no. and building name';
+      return null;
+    }
+    if (field === 'street') {
+      if (!String(address.street || '').trim()) return 'Please enter street, area, or locality';
+      return null;
+    }
     if (!String(address[field] || '').trim()) return 'Required';
     if (field === 'pincode' && String(address.pincode).trim().length !== 6) return 'Invalid pincode';
     if (field === 'phone' && String(address.phone).replace(/\D/g, '').length < 10) return 'Invalid phone';
@@ -289,6 +426,7 @@ export default function DeliveryAddressScreen() {
       </View>
 
       <ScrollView 
+        ref={scrollViewRef}
         contentContainerStyle={[styles.scroll, { paddingBottom: 120 + insets.bottom }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
@@ -369,21 +507,9 @@ export default function DeliveryAddressScreen() {
                     key={`${a.id || idx}`}
                     onPress={() => {
                       haptics.buttonTap();
-                      const normalized = {
-                        name: a.name || user?.name || '',
-                        email: a.email || user?.email || '',
-                        phone: a.phone || user?.phone || '',
-                        line1: a.address1 || '',
-                        line2: a.address2 || '',
-                        city: a.city || '',
-                        state: a.state || '',
-                        pincode: a.zip || '',
-                        country: 'India',
-                        street: a.address1 || '',
-                        zip: a.zip || '',
-                      };
-                      setShippingAddress(normalized);
-                      setAddress(normalized); // Update form too
+                      const parsed = parseSavedAddress(a, user);
+                      setShippingAddress(parsed);
+                      setAddress(parsed); // Update form too
                       setIsEditing(false);
                     }}
                     activeOpacity={0.7}
@@ -411,6 +537,8 @@ export default function DeliveryAddressScreen() {
                   name: user?.name || '',
                   email: user?.email || '',
                   phone: user?.phone || '',
+                  flat: '',
+                  street: '',
                   line1: '',
                   line2: '',
                   city: '',
@@ -475,31 +603,72 @@ export default function DeliveryAddressScreen() {
             {fieldError('phone') && <Typography size={8} color={colors.error} style={{ marginLeft: 6 }}>{fieldError('phone')}</Typography>}
           </View>
 
+          {/* FLAT / HOUSE NO. & BUILDING NAME — MANDATORY */}
           <View style={styles.field}>
-            <Typography size={7} weight="600" color={colors.textExtraLight} style={styles.label}>ADDRESS LINE 1</Typography>
+            <Typography size={7} weight="600" color={colors.textExtraLight} style={styles.label}>
+              FLAT / HOUSE NO. & BUILDING NAME
+            </Typography>
             <TextInput
-              value={address.line1}
-              onChangeText={(v) => setAddress({...address, line1: v})}
-              placeholder="House No, Building, Street..."
-              placeholderTextColor={colors.textExtraLight}
-              textContentType="streetAddressLine1"
-              autoComplete="address-line1"
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
+              ref={flatFieldRef}
+              value={address.flat}
+              onChangeText={(v) => {
+                setAddress(prev => ({ ...prev, flat: v }));
+                if (v.trim()) setAddressFieldHighlighted(false);
+              }}
+              placeholder="Enter flat/house no. and building name"
+              placeholderTextColor={addressFieldHighlighted && !address.flat.trim() ? 'rgba(255,59,48,0.6)' : colors.textExtraLight}
+              style={[
+                styles.input,
+                {
+                  color: colors.text,
+                  backgroundColor: (addressFieldHighlighted && !address.flat.trim())
+                    ? (colors.background === '#000000' ? 'rgba(255,59,48,0.06)' : 'rgba(255,59,48,0.04)')
+                    : colors.surface,
+                  borderColor: (fieldError('flat') || (addressFieldHighlighted && !address.flat.trim()))
+                    ? colors.error
+                    : colors.borderLight,
+                  borderWidth: (fieldError('flat') || (addressFieldHighlighted && !address.flat.trim())) ? 1.5 : 1,
+                }
+              ]}
             />
-            {fieldError('line1') && <Typography size={8} color={colors.error} style={{ marginLeft: 6 }}>{fieldError('line1')}</Typography>}
+            {fieldError('flat') && (
+              <Typography size={8} color={colors.error} style={{ marginLeft: 6 }}>
+                {fieldError('flat')}
+              </Typography>
+            )}
+            {addressFieldHighlighted && !address.flat.trim() && !fieldError('flat') && (
+              <Typography size={8} color={colors.error} style={{ marginLeft: 6, fontWeight: '600' }}>
+                Please enter your flat/house no. and building name to complete your address
+              </Typography>
+            )}
           </View>
 
+          {/* STREET / AREA / LANDMARK — AUTO-FILLED BY LOCATION OR EDITABLE */}
           <View style={styles.field}>
-            <Typography size={7} weight="600" color={colors.textExtraLight} style={styles.label}>ADDRESS LINE 2 (OPTIONAL)</Typography>
             <TextInput
-              value={address.line2}
-              onChangeText={(v) => setAddress({...address, line2: v})}
-              placeholder="Apartment, landmark..."
+              ref={streetFieldRef}
+              value={address.street}
+              onChangeText={(v) => setAddress(prev => ({ ...prev, street: v }))}
+              placeholder="Street, area, locality, or landmark"
               placeholderTextColor={colors.textExtraLight}
-              textContentType="streetAddressLine2"
-              autoComplete="address-line2"
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
+              textContentType="fullStreetAddress"
+              autoComplete="street-address"
+              multiline
+              style={[
+                styles.input,
+                styles.completeAddressInput,
+                { 
+                  color: colors.text, 
+                  backgroundColor: colors.surface, 
+                  borderColor: fieldError('street') ? colors.error : colors.borderLight,
+                }
+              ]}
             />
+            {fieldError('street') && (
+              <Typography size={8} color={colors.error} style={{ marginLeft: 6, marginTop: 2 }}>
+                {fieldError('street')}
+              </Typography>
+            )}
           </View>
 
           <View style={styles.row}>
@@ -514,7 +683,7 @@ export default function DeliveryAddressScreen() {
                   keyboardType="number-pad"
                   textContentType="postalCode"
                   autoComplete="postal-code"
-                  style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
+                  style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: fieldError('pincode') ? colors.error : colors.borderLight }]}
                 />
                 {loadingPincode && (
                   <View style={{ position: 'absolute', right: 15, top: 20 }}>
@@ -533,7 +702,7 @@ export default function DeliveryAddressScreen() {
                 placeholderTextColor={colors.textExtraLight}
                 textContentType="addressCity"
                 autoComplete="postal-address-locality"
-                style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: fieldError('city') ? colors.error : colors.borderLight }]}
               />
               {fieldError('city') && <Typography size={8} color={colors.error} style={{ marginLeft: 6 }}>{fieldError('city')}</Typography>}
             </View>
@@ -548,7 +717,7 @@ export default function DeliveryAddressScreen() {
               placeholderTextColor={colors.textExtraLight}
               textContentType="addressState"
               autoComplete="postal-address-region"
-              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.borderLight }]}
+              style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: fieldError('state') ? colors.error : colors.borderLight }]}
             />
             {fieldError('state') && <Typography size={8} color={colors.error} style={{ marginLeft: 6 }}>{fieldError('state')}</Typography>}
           </View>
@@ -562,6 +731,7 @@ export default function DeliveryAddressScreen() {
         total={checkoutTotal}
         primaryLabel="REVIEW & PAY"
         onPrimaryPress={async () => {
+          if (!requireValidAuth(navigation)) return;
           setSubmitted(true);
           
           if (!isEditing && shippingAddress) {
@@ -596,6 +766,12 @@ export default function DeliveryAddressScreen() {
 
           if (!isValid) {
             haptics.error();
+            if (!address.flat.trim()) {
+              setAddressFieldHighlighted(true);
+              flatFieldRef.current?.focus();
+            } else if (!address.street.trim()) {
+              streetFieldRef.current?.focus();
+            }
             return;
           }
 
@@ -614,19 +790,27 @@ export default function DeliveryAddressScreen() {
             formattedPhone = `+${phoneDigits}`;
           }
 
+          const flatTrimmed = address.flat.trim();
+          const streetTrimmed = address.street.trim();
+          const completeAddress1 = [flatTrimmed, streetTrimmed].filter(Boolean).join(', ');
+
           const normalized = {
-            name: address.name || user?.name || '',
-            email: address.email || user?.email || '',
+            name: address.name?.trim() || user?.name || '',
+            email: address.email?.trim() || user?.email || '',
             phone: formattedPhone || user?.phone || '',
-            line1: address.line1,
-            line2: address.line2,
-            city: address.city,
-            state: address.state,
-            pincode: address.pincode,
+            flat: flatTrimmed,
+            street: streetTrimmed,
+            streetAddress: streetTrimmed,
+            line1: completeAddress1,
+            line2: streetTrimmed,
+            address1: completeAddress1,
+            address2: streetTrimmed,
+            city: address.city?.trim() || '',
+            state: address.state?.trim() || '',
+            province: address.state?.trim() || '',
+            pincode: address.pincode?.trim() || '',
             country: 'India',
-            // Back-compat for older screens/services still reading these keys
-            street: address.line1,
-            zip: address.pincode,
+            zip: address.pincode?.trim() || '',
           };
 
           // Save to backend if we have a user identity
@@ -641,8 +825,10 @@ export default function DeliveryAddressScreen() {
                   address: {
                     name: normalized.name,
                     phone: normalized.phone,
-                    address1: normalized.line1,
-                    address2: normalized.line2,
+                    flat: normalized.flat,
+                    street: normalized.street,
+                    address1: normalized.address1,
+                    address2: normalized.address2,
                     city: normalized.city,
                     state: normalized.state,
                     zip: normalized.pincode,
@@ -704,6 +890,8 @@ const styles = StyleSheet.create({
   field: { gap: 8 },
   label: { letterSpacing: 2, marginLeft: 4 },
   input: { height: 60, borderRadius: 20, borderWidth: 1, paddingHorizontal: 20, fontSize: 13, fontWeight: '500' },
+  completeAddressInput: { minHeight: 64, paddingTop: 16, paddingBottom: 16, textAlignVertical: 'top' },
+  exampleText: { marginLeft: 6, marginTop: 4, letterSpacing: 0.2, lineHeight: 14 },
   row: { flexDirection: 'row', gap: 16 },
   savedSection: { marginTop: 40 },
   savedCard: { flexDirection: 'row', alignItems: 'center', padding: 20, borderRadius: 24, borderWidth: 1, marginBottom: 12 },

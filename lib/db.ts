@@ -32,7 +32,8 @@ const createMockPrismaClient = (reason: string) => {
       }
       const mockReturn = (targetProp: string) => {
         if (targetProp === 'count') return 0;
-        if (targetProp === 'findMany') return [];
+        if (targetProp === 'findMany' || targetProp === 'groupBy') return [];
+        if (targetProp === 'aggregate') return { _count: 0, _sum: {}, _avg: {}, _min: {}, _max: {} };
         return { 
           id: 'mock_id', 
           shopifyId: 'mock_shopify_id', 
@@ -110,8 +111,42 @@ const prismaClientSingleton = () => {
     // Connection Pool Configuration:
     // Sized for Supabase pooler — keep modest so concurrent dashboard polls don't starve.
     const poolMax = process.env.PG_POOL_MAX ? parseInt(process.env.PG_POOL_MAX) : 8;
+
+    // Apply statement_timeout via connection options (not pool.on('connect') SET).
+    // A fire-and-forget SET raced with Prisma's first query on the same client and
+    // triggered: "Calling client.query() when the client is already executing a query".
+    // Poolers (Supabase Supavisor, PgBouncer) reject the `options` startup parameter with
+    // FATAL 08P01 "unsupported startup parameter in options" — every query fails. Behind a
+    // pooler, set the timeout on the DB role instead: ALTER ROLE <user> SET statement_timeout = '12s';
+    const isPooledUrl = (url: string): boolean => {
+      try {
+        const parsed = new URL(url);
+        return (
+          parsed.hostname.includes('pooler.supabase.com') ||
+          parsed.port === '6543' ||
+          parsed.searchParams.get('pgbouncer') === 'true'
+        );
+      } catch {
+        return false;
+      }
+    };
+
+    const withStatementTimeout = (url: string): string => {
+      if (/statement_timeout/i.test(url) || isPooledUrl(url)) return url;
+      const setting = '-c statement_timeout=12000';
+      // Prefer %20 over URLSearchParams'+' so libpq option parsing stays reliable.
+      const sep = url.includes('?') ? '&' : '?';
+      if (/[?&]options=/.test(url)) {
+        return url.replace(/([?&]options=)([^&]*)/, (_m, prefix: string, value: string) => {
+          const decoded = decodeURIComponent(value.replace(/\+/g, ' '));
+          return `${prefix}${encodeURIComponent(`${decoded} ${setting}`.trim())}`;
+        });
+      }
+      return `${url}${sep}options=${encodeURIComponent(setting)}`;
+    };
+
     const pool = new Pool({
-      connectionString: pgUrl,
+      connectionString: withStatementTimeout(pgUrl),
       ssl: { 
         rejectUnauthorized: false 
       },
@@ -119,11 +154,6 @@ const prismaClientSingleton = () => {
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 8_000,
       allowExitOnIdle: true,
-    });
-
-    // Set statement_timeout on every new connection (12s cap)
-    pool.on('connect', (client) => {
-      client.query('SET statement_timeout = 12000').catch(() => {});
     });
 
     pool.on('error', (err) => {
@@ -297,6 +327,10 @@ export const DEFAULT_SHOP_SETTINGS = {
   showCare: true,
   showSizeFit: true,
   showDetails: true,
+  pdpTrustBoxes: '[{"id":"cod","icon":"cash-outline","title":"COD available","subtitle":"₹99 now, rest on delivery","variant":"default"},{"id":"prepaid","icon":"pricetag-outline","title":"10% off on prepaid","subtitle":"+ 10% cashback as store credit","variant":"highlight"},{"id":"delivery","icon":"truck-outline","title":"Delivery in 3–7 days","subtitle":"Dispatched in 24–48 hrs","variant":"default"},{"id":"returns","icon":"refresh-outline","title":"15-day easy return/exchange","subtitle":"No questions asked","variant":"default"}]',
+  pdpInclTaxesText: 'Incl. taxes',
+  pdpShowInclTaxes: true,
+  pdpModelInfoDefault: "Model is 6'0\", wearing size 32 · Oversized fit, true to waist",
   showTreeText: true,
   communityMinOrders: 1,
   communityAgeRestricted: true,
@@ -375,6 +409,12 @@ function serializeShopField(value: unknown): unknown {
   return value;
 }
 
+// Last settings read successfully from the DB (per server process). Served when the DB is
+// unreachable so an outage doesn't regress the storefront to the stale committed JSON file
+// (old hero video, default homepage products).
+let lastGoodShopSettings: Record<string, any> | null = null;
+const lastGoodStoreSettings = new Map<string, any>();
+
 export const getShopSettings = cache(async function getShopSettings() {
   try {
     const isMock = (prisma as any)._isMock;
@@ -391,10 +431,15 @@ export const getShopSettings = cache(async function getShopSettings() {
           cleanShop[k] = serializeShopField(v);
         }
       }
-      return { ...DEFAULT_SHOP_SETTINGS, ...persistent, ...cleanShop };
+      lastGoodShopSettings = { ...DEFAULT_SHOP_SETTINGS, ...persistent, ...cleanShop };
+      return lastGoodShopSettings;
     }
     return getPersistentSettings();
   } catch (error: any) {
+    if (lastGoodShopSettings) {
+      console.error('[DB] getShopSettings query failed, serving last good settings:', error.message);
+      return lastGoodShopSettings;
+    }
     console.error('[DB] getShopSettings query failed, using persistent fallback:', error.message);
     return getPersistentSettings();
   }
@@ -456,10 +501,12 @@ export async function updateShopSettings(updates: Record<string, any>) {
 
 export const getStoreSettings = cache(async function getStoreSettings(pageKey: string) {
   try {
-    return await prisma.storeSettings.findUnique({ where: { pageKey } });
+    const settings = await prisma.storeSettings.findUnique({ where: { pageKey } });
+    if (settings) lastGoodStoreSettings.set(pageKey, settings);
+    return settings;
   } catch (error: any) {
     console.error(`[DB] getStoreSettings direct query failed for ${pageKey}:`, error.message);
-    return null;
+    return lastGoodStoreSettings.get(pageKey) ?? null;
   }
 })
 

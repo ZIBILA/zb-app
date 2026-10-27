@@ -1,8 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
-import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
-import { useCollectionByHandle, useProducts } from '../hooks/useProducts';
+import { useCollectionByHandle } from '../hooks/useProducts';
 import { useColors } from '../constants/colors';
 import { useAdminSettings } from '../hooks/useAdminFeatures';
 import { Typography } from './Typography';
@@ -22,6 +21,10 @@ interface Props {
   collectionHandle?: string;
   media?: string;
   productIds?: string | string[];
+  /** Reuse parent catalog — avoids a second useProducts(50) fetch on Home */
+  catalogProducts?: FlatProduct[];
+  products?: FlatProduct[];
+  mediaActive?: boolean;
 }
 
 const SpotlightSection = React.memo(({ 
@@ -29,7 +32,10 @@ const SpotlightSection = React.memo(({
   subtitle,
   collectionHandle,
   media,
-  productIds
+  productIds,
+  catalogProducts: catalogProductsProp,
+  products: productsProp,
+  mediaActive = false,
 }: Props) => {
   const navigation = useNavigation<any>();
   const colors = useColors();
@@ -57,7 +63,7 @@ const SpotlightSection = React.memo(({
   }, [rawProductsSetting]);
 
   const { products: collectionProducts, loading: collectionLoading } = useCollectionByHandle(resolvedCollectionHandle ?? "");
-  const { products: catalogProducts, loading: catalogLoading } = useProducts(50);
+  const catalogProducts = catalogProductsProp || productsProp || [];
 
   const displayProducts = React.useMemo(() => {
     const availablePool = (catalogProducts && catalogProducts.length > 0)
@@ -83,7 +89,7 @@ const SpotlightSection = React.memo(({
     return (collectionProducts || []).slice(0, 6);
   }, [specifiedIds, catalogProducts, collectionProducts]);
 
-  const loading = collectionLoading || (specifiedIds.length > 0 && catalogLoading);
+  const loading = collectionLoading;
 
   if (loading && displayProducts.length === 0) {
     return (
@@ -108,7 +114,7 @@ const SpotlightSection = React.memo(({
       {/* Optional Media Background Section */}
       {resolvedMedia && (
         <View style={styles.mediaBackground}>
-          <HeroVideo source={resolvedMedia} height={400} borderRadius={0} isMuted />
+          <HeroVideo source={resolvedMedia} height={400} borderRadius={0} isMuted active={mediaActive} />
           <View style={[styles.mediaOverlay, { backgroundColor: isDark ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.2)' }]} />
         </View>
       )}
@@ -146,7 +152,7 @@ const SpotlightSection = React.memo(({
           <TouchableOpacity 
             key={product?.id || idx}
             style={styles.item}
-            onPress={() => product && navigation.navigate('ProductDetail', { handle: product.handle })}
+            onPress={() => product && navigation.navigate('ProductDetail', { handle: product.handle, initialProduct: product })}
             activeOpacity={0.8}
           >
             <View style={[
@@ -164,8 +170,9 @@ const SpotlightSection = React.memo(({
                 />
               ) : (
                 <OptimizedImage 
-                  source={require('../../assets/load-image-4.jpg')} 
+                  source={require('../../assets/zb-logo-220px.png')} 
                   style={styles.image}
+                  contentFit="contain"
                 />
               )}
             </View>

@@ -19,9 +19,10 @@ import {
   ChevronDown,
   RefreshCw,
 } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface ShopifyCollection {
   id: string;
@@ -29,6 +30,8 @@ interface ShopifyCollection {
   handle: string;
   image: { src: string } | null;
   products?: { id: number }[];
+  productsCount?: number;
+  products_count?: number;
 }
 
 type VisibilityFilter = "all" | "full" | "partial" | "hidden";
@@ -51,7 +54,7 @@ export default function CollectionsAdminPage() {
   const [syncing, setSyncing] = useState(false);
 
   // Advanced filter state
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("all");
   const [productCountFilter, setProductCountFilter] = useState<"all" | "0-10" | "10-50" | "50+">("all");
 
@@ -64,7 +67,8 @@ export default function CollectionsAdminPage() {
     try {
       const res = await fetch("/api/admin/collections/sync", { method: "POST" });
       if (res.ok) {
-        await fetchData();
+        invalidateAdminCache("/api/admin/collections");
+        await fetchData(true);
       }
     } catch (err) {
       console.error("Failed to sync from Shopify:", err);
@@ -73,10 +77,13 @@ export default function CollectionsAdminPage() {
     }
   };
 
-  async function fetchData() {
+  async function fetchData(silent = false) {
+    if (!silent && collections.length === 0) setLoading(true);
     try {
-      const res = await fetch("/api/admin/collections");
-      const data = await res.json();
+      const data = await cachedAdminFetch<any>("/api/admin/collections", {
+        skipCache: silent,
+        ttlMs: 60_000,
+      });
       if (data.allCollections) {
         setCollections(data.allCollections);
         setEnabled(data.enabled);
@@ -144,6 +151,7 @@ export default function CollectionsAdminPage() {
         body: JSON.stringify(enabled),
       });
       if (res.ok) {
+        invalidateAdminCache("/api/admin/collections");
         setSuccess(true);
         setTimeout(() => setSuccess(false), 3000);
       }
@@ -178,7 +186,7 @@ export default function CollectionsAdminPage() {
       }
       // Product count filter
       if (productCountFilter !== "all") {
-        const count = c.products?.length || 0;
+        const count = Number(c.productsCount ?? c.products_count ?? c.products?.length ?? 0);
         if (productCountFilter === "0-10" && count > 10) return false;
         if (productCountFilter === "10-50" && (count < 10 || count > 50)) return false;
         if (productCountFilter === "50+" && count < 50) return false;
@@ -492,7 +500,7 @@ export default function CollectionsAdminPage() {
 
         {/* Collection Rows */}
         <div className="divide-y divide-foreground/[0.03]">
-          <AnimatePresence mode="popLayout">
+          <AnimatePresence>
             {filteredCollections.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16">
                 <Package className="w-8 h-8 text-foreground/15 mb-3" />
@@ -556,7 +564,7 @@ export default function CollectionsAdminPage() {
                           />
                         </div>
                         <p className="text-[11px] text-foreground/40 mt-0.5">
-                          {collection.products?.length || 0} products
+                          {Number(collection.productsCount ?? collection.products_count ?? collection.products?.length ?? 0)} products
                         </p>
                       </div>
                     </div>

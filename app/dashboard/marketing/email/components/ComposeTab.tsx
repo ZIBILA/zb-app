@@ -248,7 +248,7 @@ export default function ComposeTab() {
         <div className="p-4 border-b border-black/10 dark:border-white/10 flex justify-between items-center bg-gray-50 dark:bg-[#161616]">
           <h2 className="text-base font-medium text-black dark:text-white">Compose</h2>
           <div className="flex gap-2">
-            <span className="text-xs text-gray-500 mr-2 flex items-center">
+            <span className="text-xs text-foreground/50 mr-2 flex items-center">
               {subject.length} chars (Recommended: &lt;60)
             </span>
           </div>
@@ -366,7 +366,7 @@ export default function ComposeTab() {
                   onChange={e => setScheduledAt(e.target.value)}
                   className="bg-white dark:bg-[#1a1a1a] border border-black/10 dark:border-white/10 rounded-lg p-2 text-black dark:text-white text-sm outline-none"
                 />
-                <span className="text-xs text-gray-500 ml-2">(IST Timezone)</span>
+                <span className="text-xs text-foreground/50 ml-2">(IST Timezone)</span>
               </div>
             )}
           </div>
@@ -443,12 +443,12 @@ export default function ComposeTab() {
             </p>
             <div className="bg-black/5 dark:bg-white/5 p-3 rounded-xl border border-black/10 dark:border-white/10 space-y-2 text-xs text-gray-700 dark:text-gray-300">
               <div>
-                <span className="font-semibold block text-[10px] uppercase text-gray-500">Subject:</span>
+                <span className="font-semibold block text-[10px] uppercase text-foreground/50">Subject:</span>
                 <span>{subject}</span>
               </div>
               {selectedTemplateId && (
                 <div>
-                  <span className="font-semibold block text-[10px] uppercase text-gray-500">Template ID:</span>
+                  <span className="font-semibold block text-[10px] uppercase text-foreground/50">Template ID:</span>
                   <span>{selectedTemplateId}</span>
                 </div>
               )}

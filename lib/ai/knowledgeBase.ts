@@ -17,6 +17,10 @@ export interface KBItem {
   priority: number;
 }
 
+/** Official support contact — matches the site's structured data and policy pages. Used only when the KB has none. */
+export const OFFICIAL_SUPPORT_WHATSAPP = '+91 92203 85011';
+export const OFFICIAL_SUPPORT_EMAIL = 'support@zicabella.com';
+
 /** Default fallback Knowledge Base policies used if DB table is unpopulated */
 export const DEFAULT_KB_ENTRIES = [
   {
@@ -26,7 +30,19 @@ export const DEFAULT_KB_ENTRIES = [
 Standard delivery timeframe: 3 to 7 business days depending on location.
 Dispatch timeframe: Orders are packed and dispatched within 24 to 48 hours.
 Tracking: Once shipped, tracking details and live courier link are sent via SMS and Email.`,
-    keywords: 'shipping, delivery, dispatch, tracking, courier, delivery time, charges',
+    keywords: 'shipping, delivery, dispatch, tracking, courier, delivery time, charges, awb, where is my order',
+    priority: 10,
+  },
+  {
+    category: 'ORDER_CHANGES',
+    title: 'Pre-AWB Address, Phone & Size Changes',
+    content: `Before AWB generation, Zica AI can update the order automatically:
+- Address change: collect full name, complete street address, city, state, 6-digit pincode, and 10-digit Indian mobile, then update the order.
+- Phone change: collect a valid 10-digit Indian mobile starting with 6-9, then update the order.
+- Size change: confirm the product and new size, check stock, then update the order.
+After AWB is generated, address, phone, and size MUST NOT be changed. Direct the customer to human support for hold/RTO.
+If the customer asks "Where is my order?", fetch and share real tracking (AWB, courier, status, tracking link). Never invent an AWB.`,
+    keywords: 'address change, phone change, size change, awb, tracking, where is my order, update address, change size',
     priority: 10,
   },
   {
@@ -66,7 +82,7 @@ Prepaid Orders: 100% prepaid orders qualify for priority processing and dispatch
     title: 'Official Support Contact & Human Handoff Details',
     content: `Support Channels:
 - Customer Support Email: support@zicabella.com
-- WhatsApp Support Number: +91 98765 43210 (Mon-Sat, 10:00 AM - 7:00 PM IST)
+- WhatsApp Support Number: +91 92203 85011 (Mon-Sat, 10:00 AM - 7:00 PM IST)
 - Live Ticket Chat: Directly on the Zica Bella app & admin dashboard.
 Escalation Policy: When a customer asks to speak to a human executive, asks for a supervisor/agent, or faces a payment/delivery dispute, provide these contact details and confirm that their ticket has been flagged for human review.`,
     keywords: 'contact, phone, whatsapp, email, speak to human, agent, support number, representative, escalation, help',
@@ -133,6 +149,45 @@ ${item.content}`
     return `OFFICIAL ZICA BELLA KNOWLEDGE BASE & STORE POLICIES:\n${formatted}`;
   } catch (err) {
     console.error('[KnowledgeBase] Error retrieving knowledge context:', err);
-    return `OFFICIAL ZICA BELLA KNOWLEDGE BASE & STORE POLICIES:\nFree shipping across India (3-7 days). 7-day unworn return/exchange policy. Support email: support@zicabella.com, WhatsApp Support: +91 98765 43210.`;
+    return `OFFICIAL ZICA BELLA KNOWLEDGE BASE & STORE POLICIES:\nFree shipping across India (3-7 days). 7-day unworn return/exchange policy. Support email: ${OFFICIAL_SUPPORT_EMAIL}, WhatsApp Support: ${OFFICIAL_SUPPORT_WHATSAPP}.`;
+  }
+}
+
+/**
+ * Support WhatsApp number + email for fixed (non-AI) replies and prompt rules, read from the admin
+ * Knowledge Base so the dashboard stays the single source of truth. Falls back to the official
+ * contact if the KB has no contact entry or the DB is unreachable.
+ */
+export async function getSupportContact(): Promise<{ whatsapp: string; email: string }> {
+  const fallback = { whatsapp: OFFICIAL_SUPPORT_WHATSAPP, email: OFFICIAL_SUPPORT_EMAIL };
+  try {
+    const entries: Pick<KBItem, 'category' | 'title' | 'content' | 'keywords'>[] =
+      await prisma.supportKnowledgeBase.findMany({
+        where: { isActive: true },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        select: { category: true, title: true, content: true, keywords: true },
+      });
+    const isContact = (e: { category: string; title: string; keywords?: string | null }) =>
+      /CONTACT|ESCALATION/i.test(e.category) || /contact|support/i.test(e.title) || /whatsapp/i.test(e.keywords || '');
+    const contactEntries = [...entries.filter(isContact), ...entries.filter((e) => !isContact(e))];
+
+    let whatsapp: string | null = null;
+    let email: string | null = null;
+    for (const e of contactEntries) {
+      // Prefer a number on a line that mentions WhatsApp/phone; otherwise the first Indian mobile in the entry
+      const line = e.content.split('\n').find((l: string) => /whatsapp|phone|call|mobile/i.test(l) && /\d{5}/.test(l)) || e.content;
+      const phone = line.match(/(\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}/);
+      if (!whatsapp && phone) {
+        const digits = phone[0].replace(/\D/g, '').slice(-10);
+        whatsapp = `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+      }
+      const mail = e.content.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+      if (!email && mail) email = mail[0];
+      if (whatsapp && email) break;
+    }
+    return { whatsapp: whatsapp || fallback.whatsapp, email: email || fallback.email };
+  } catch (err) {
+    console.warn('[KnowledgeBase] Support contact lookup failed, using official contact:', err);
+    return fallback;
   }
 }

@@ -17,12 +17,16 @@ interface User {
 interface AuthStore {
   user: User | null;
   token: string | null;
+  refreshToken: string | null;
   isAuthenticated: boolean;
   biometricEnabled: boolean;
   rememberMe: boolean;
 
-  login: (user: User, token: string) => void;
+  login: (user: User, token: string, refreshToken?: string | null) => void;
+  /** Clears auth only — keeps cart/wishlist (session expiry, re-login). */
+  softLogout: () => void;
   logout: () => void;
+  setTokens: (token: string, refreshToken?: string | null) => void;
   setBiometric: (enabled: boolean) => void;
   setRememberMe: (enabled: boolean) => void;
   updateUser: (updates: Partial<User>) => void;
@@ -33,12 +37,18 @@ export const useAuthStore = create<AuthStore>()(
     (set) => ({
       user: null,
       token: null,
+      refreshToken: null,
       isAuthenticated: false,
       biometricEnabled: false,
       rememberMe: false,
 
-      login: (user, token) => {
-        set({ user, token, isAuthenticated: true });
+      login: (user, token, refreshToken = null) => {
+        set({
+          user,
+          token,
+          refreshToken: refreshToken || null,
+          isAuthenticated: true,
+        });
         // Lazy require to avoid circular module dependency.
         try {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -58,8 +68,29 @@ export const useAuthStore = create<AuthStore>()(
           // Non-fatal
         }
       },
+      setTokens: (token, refreshToken) => {
+        set((state) => ({
+          token,
+          refreshToken:
+            refreshToken === undefined ? state.refreshToken : refreshToken,
+          isAuthenticated: true,
+        }));
+      },
+      softLogout: () => {
+        set({
+          user: null,
+          token: null,
+          refreshToken: null,
+          isAuthenticated: false,
+        });
+      },
       logout: () => {
-        set({ user: null, token: null, isAuthenticated: false });
+        set({
+          user: null,
+          token: null,
+          refreshToken: null,
+          isAuthenticated: false,
+        });
         try {
           // 1. Clear cart
           // eslint-disable-next-line @typescript-eslint/no-var-requires

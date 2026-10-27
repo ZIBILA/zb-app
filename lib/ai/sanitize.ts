@@ -40,16 +40,19 @@ const ORDER_SAFE_FIELDS = new Set([
 
 /** Fields allowed in customer-visible order item data */
 const ORDER_ITEM_SAFE_FIELDS = new Set([
+  'id',
   'title',
   'quantity',
   'price',
   'image',
   'size',
+  'variantTitle',
 ]);
 
 /** Fields allowed in shipment data */
 const SHIPMENT_SAFE_FIELDS = new Set([
   'trackingNumber',
+  'awb',
   'courier',
   'status',
   'trackingUrl',

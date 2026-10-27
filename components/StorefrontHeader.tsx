@@ -1,18 +1,20 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import NextImage from "next/image";
 import { Bookmark, ShoppingBag, ChevronLeft, ChevronDown, Search, User, Sun, Moon } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
-import MenuDrawer from "./MenuDrawer";
-import CartDrawer from "./CartDrawer";
-import BookmarkDrawer from "./BookmarkDrawer";
 import { useBookmarks } from "@/lib/bookmark-context";
 import { useRouter, usePathname } from "next/navigation";
 import { useShakeToCart } from "@/lib/hooks/useShakeToCart";
 import { useTheme } from "next-themes";
 import { fetchHeaderCollections } from "@/lib/storefront-fetch";
+
+const MenuDrawer = dynamic(() => import("./MenuDrawer"), { ssr: false });
+const CartDrawer = dynamic(() => import("./CartDrawer"), { ssr: false });
+const BookmarkDrawer = dynamic(() => import("./BookmarkDrawer"), { ssr: false });
 
 export default function StorefrontHeader({ collections: initialCollections = [] }: { collections?: any[] }) {
   const router = useRouter();
@@ -45,6 +47,20 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
   const { bookmarks, isOpen: isBookmarkOpen, setIsOpen: setIsBookmarkOpen } = useBookmarks();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  // Mount drawer chunks only after first open (keeps framer-motion off the critical path)
+  const [menuMounted, setMenuMounted] = useState(false);
+  const [cartMounted, setCartMounted] = useState(false);
+  const [bookmarkMounted, setBookmarkMounted] = useState(false);
+
+  useEffect(() => {
+    if (isMenuOpen) setMenuMounted(true);
+  }, [isMenuOpen]);
+  useEffect(() => {
+    if (isCartOpen) setCartMounted(true);
+  }, [isCartOpen]);
+  useEffect(() => {
+    if (isBookmarkOpen) setBookmarkMounted(true);
+  }, [isBookmarkOpen]);
   const [collections, setCollections] = useState(initialCollections);
   const { theme, setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -287,10 +303,12 @@ export default function StorefrontHeader({ collections: initialCollections = [] 
 
       </div>
 
-      {/* Drawers */}
-      <MenuDrawer isOpen={isMenuOpen} onClose={() => setIsMenuOpen(false)} />
-      <CartDrawer isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} />
-      <BookmarkDrawer isOpen={isBookmarkOpen} onClose={() => setIsBookmarkOpen(false)} />
+      {/* Drawers — lazy-loaded after first open */}
+      {menuMounted && <MenuDrawer isOpen={isMenuOpen} onClose={() => setIsMenuOpen(false)} />}
+      {cartMounted && <CartDrawer isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} />}
+      {bookmarkMounted && (
+        <BookmarkDrawer isOpen={isBookmarkOpen} onClose={() => setIsBookmarkOpen(false)} />
+      )}
     </>
   );
 }

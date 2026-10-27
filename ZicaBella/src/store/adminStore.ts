@@ -31,7 +31,7 @@ export const useAdminStore = create<AdminState>((set, get) => ({
 
     try {
       // Use the robust fetch with timeout
-      const res = await fetchWithTimeout(`${config.appUrl}/api/app/config?t=${now}`, {}, 8000);
+      const res = await fetchWithTimeout(`${config.appUrl}/api/app/config?t=${now}`, {}, 15000);
       const data = await res.json();
       
       if (data.config) {

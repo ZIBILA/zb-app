@@ -21,21 +21,19 @@ function getCleanEmail(email?: string | null): string | null {
 /**
  * GET /api/user/store-credits
  *
- * Query params: ?email=...&phone=...
- *
- * Resolves customer by session or email/phone, voids expired credits,
- * and returns available store credit balance.
+ * Returns the logged-in customer's available store credit balance (voids expired credits first).
+ * Resolved from the session only — never from query params, so one customer can't read another's
+ * balance. Guests get a zero balance.
  */
-export async function GET(req: Request) {
+export async function GET() {
   try {
     const session = await getServerSession(authOptions);
-    const sessionEmail = session?.user?.email || null;
+    const sessionUser = session?.user as any;
+    const sessionId: string | null = sessionUser?.id || null;
+    const sessionEmail = getCleanEmail(sessionUser?.email);
+    const sessionPhone = getCleanPhone(sessionUser?.phone);
 
-    const url = new URL(req.url);
-    const queryEmail = getCleanEmail(url.searchParams.get('email') || sessionEmail);
-    const queryPhone = getCleanPhone(url.searchParams.get('phone'));
-
-    if (!queryEmail && !queryPhone) {
+    if (!sessionId && !sessionEmail && !sessionPhone) {
       return NextResponse.json({
         success: true,
         balance: 0,
@@ -43,21 +41,26 @@ export async function GET(req: Request) {
       }, { status: 200 });
     }
 
-    const customer = await prisma.customer.findFirst({
-      where: {
-        OR: [
-          ...(queryEmail ? [{ email: { equals: queryEmail, mode: 'insensitive' as const } }] : []),
-          ...(queryPhone ? [{ phone: { contains: queryPhone } }] : []),
-        ],
-      },
-      select: {
-        id: true,
-        storeCredits: true,
-        storeCreditPreference: true,
-        email: true,
-        phone: true,
-      },
-    });
+    const select = {
+      id: true,
+      storeCredits: true,
+      storeCreditPreference: true,
+      email: true,
+      phone: true,
+    };
+    const customer =
+      (sessionId ? await prisma.customer.findUnique({ where: { id: sessionId }, select }) : null) ||
+      (sessionEmail || sessionPhone
+        ? await prisma.customer.findFirst({
+            where: {
+              OR: [
+                ...(sessionEmail ? [{ email: { equals: sessionEmail, mode: 'insensitive' as const } }] : []),
+                ...(sessionPhone ? [{ phone: { contains: sessionPhone } }] : []),
+              ],
+            },
+            select,
+          })
+        : null);
 
     if (!customer) {
       return NextResponse.json({

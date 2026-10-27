@@ -10,6 +10,7 @@ import VariantBadge from "@/components/admin/VariantBadge";
 import InlineSizeSelector from "@/components/admin/InlineSizeSelector";
 import { parseLinkedId } from "@/lib/linkedIds";
 import { COD_STORE_CREDIT_MESSAGE } from "@/lib/returnPolicy";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 type ReturnRequest = {
   returnRequestId: string;
@@ -143,16 +144,14 @@ export default function ReturnsPage() {
       if (linkedSearch) params.set("search", linkedSearch);
 
       // Refund Pending card reuses Refunds Management's pending count — same source of truth.
-      const [res, refundsRes] = await Promise.all([
-        fetch(`/api/admin/returns?${params.toString()}`),
-        fetch("/api/admin/refunds"),
+      const [data, refundSummary] = await Promise.all([
+        cachedAdminFetch<any>(`/api/admin/returns?${params.toString()}`, { skipCache: silent, ttlMs: 30_000 }),
+        cachedAdminFetch<any>("/api/admin/refunds?summaryOnly=true", { skipCache: silent, ttlMs: 30_000 }).catch(() => null),
       ]);
-      if (res.ok) {
-        const data = await res.json();
+      if (data) {
         setReturns(data.returns || []);
         
         const sc = data.statusCounts || {};
-        const refundSummary = refundsRes.ok ? await refundsRes.json() : null;
         setSummary({
           pending: sc.pending || sc.pending_approval || 0,
           pickup_scheduled: sc.pickup_scheduled || 0,
@@ -610,7 +609,7 @@ export default function ReturnsPage() {
                           className={`w-full flex items-center gap-3 p-2 rounded-lg border transition-all ${isSelected ? "border-emerald-500/50 bg-emerald-500/5" : "border-foreground/[0.05]"}`}
                         >
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? "bg-emerald-500 border-emerald-500" : "border-foreground/20"}`}>
-                            {isSelected && <Check className="w-3 h-3 text-white" />}
+                            {isSelected && <Check className="w-3 h-3 text-foreground" />}
                           </div>
                           <div className="flex-1 min-w-0 text-left">
                             <p className="text-[11px] font-semibold text-foreground truncate">{item.title}</p>

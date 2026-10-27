@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { adjustInventoryLevel, fetchLocations } from '@/lib/shopify-admin';
 import prisma from '@/lib/db';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +13,8 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(req: Request) {
   try {
+    await requireAdmin('INVENTORY', 'edit');
+
     const body = await req.json();
     const { inventoryItemId, delta } = body;
     let { locationId } = body;
@@ -40,10 +43,23 @@ export async function POST(req: Request) {
       delta
     );
 
-    // Sync local DB
-    const product = await prisma.product.findUnique({
+    // Sync local DB (first-variant Product.inventoryItemId, else product_skus)
+    let product = await prisma.product.findUnique({
       where: { inventoryItemId: String(inventoryItemId) },
     });
+    if (!product) {
+      try {
+        const skuRows: { product_id: string }[] = await prisma.$queryRawUnsafe(
+          `SELECT DISTINCT product_id FROM product_skus WHERE inventory_item_id = $1 LIMIT 1`,
+          String(inventoryItemId)
+        );
+        if (skuRows[0]?.product_id) {
+          product = await prisma.product.findUnique({ where: { id: skuRows[0].product_id } });
+        }
+      } catch (skuLookupErr) {
+        console.warn('[Inventory Adjust] product_skus lookup failed:', skuLookupErr);
+      }
+    }
 
     if (product) {
       await prisma.inventory.upsert({
@@ -67,6 +83,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, inventoryLevel: updatedLevel });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Inventory Adjust Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

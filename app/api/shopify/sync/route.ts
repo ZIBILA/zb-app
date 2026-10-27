@@ -9,6 +9,7 @@ import {
 import prisma from '@/lib/db';
 import { registerWebhooks } from '@/lib/shopify-webhooks';
 import { extractSizeFromVariant } from '@/lib/utils';
+import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,7 @@ export async function POST() {
   };
 
   try {
+    await requireAdmin('PRODUCTS', 'edit');
     // Ensure shop record exists
     const shopDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN || '8tiahf-bk.myshopify.com';
     const envToken = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN;
@@ -197,12 +199,7 @@ export async function POST() {
           
           // Orders from Shopify are considered "approved" if they are mobile app orders
           let finalStatus = isMobileAppOrder ? 'approved' : 'active';
-          
-          if (o.cancelled_at) {
-            finalStatus = 'cancelled';
-            deliveryStatus = 'cancelled';
-            o.fulfillment_status = 'cancelled';
-          }
+          let honorShopifyCancel = true;
 
           // Extract the universalOrderNumber from tags if available
           const tagsArray = (o.tags || '').split(',').map((t: string) => t.trim());
@@ -228,9 +225,27 @@ export async function POST() {
           }
 
           // Resolve existing local Order record to check if we can prevent duplicates
+          const orderSelectFields = {
+            id: true,
+            paymentMethod: true,
+            paymentStatus: true,
+            status: true,
+            deliveryStatus: true,
+            fulfillmentStatus: true,
+            cancelledBy: true,
+            cancelledAt: true,
+            totalPrice: true,
+            razorpayOrderId: true,
+            razorpayPaymentId: true,
+            orderType: true,
+            internalOrderNumber: true,
+            discountAmount: true,
+            discountCode: true,
+          };
+
           let existingLocalOrder = await prisma.order.findUnique({
             where: { shopifyOrderId: String(o.id) },
-            select: { id: true, paymentMethod: true, razorpayOrderId: true, razorpayPaymentId: true, orderType: true, internalOrderNumber: true, discountAmount: true, discountCode: true }
+            select: orderSelectFields,
           });
 
           // Prevent Duplicate: If not found by shopifyOrderId, look up by internalOrderNumber
@@ -247,7 +262,7 @@ export async function POST() {
                   }
                 ]
               },
-              select: { id: true, paymentMethod: true, razorpayOrderId: true, razorpayPaymentId: true, orderType: true, internalOrderNumber: true, discountAmount: true, discountCode: true }
+              select: orderSelectFields,
             });
 
             // Heal shopifyOrderId on the existing local Order record to ensure the upsert updates it
@@ -257,6 +272,36 @@ export async function POST() {
                 where: { id: existingLocalOrder.id },
                 data: { shopifyOrderId: String(o.id) }
               });
+            }
+          }
+
+          if (o.cancelled_at) {
+            const { shouldHonorShopifyOrderCancel } = await import('@/lib/services/orderLifecycleService');
+            const decision = shouldHonorShopifyOrderCancel(existingLocalOrder, {
+              financial_status: o.financial_status,
+              cancelled_at: o.cancelled_at,
+              cancel_reason: (o as any).cancel_reason,
+            });
+            honorShopifyCancel = decision.honor;
+            if (honorShopifyCancel) {
+              finalStatus = 'cancelled';
+              deliveryStatus = 'cancelled';
+              o.fulfillment_status = 'cancelled';
+            } else {
+              console.warn(
+                `[Sync Route] Ignoring Shopify cancel for paid local order ` +
+                  `${existingLocalOrder?.internalOrderNumber || existingLocalOrder?.id} ` +
+                  `(reason=${decision.reason}, shopify_financial=${o.financial_status})`
+              );
+              finalStatus = existingLocalOrder?.status || finalStatus;
+              deliveryStatus =
+                existingLocalOrder?.deliveryStatus &&
+                !String(existingLocalOrder.deliveryStatus).toLowerCase().includes('cancel')
+                  ? existingLocalOrder.deliveryStatus
+                  : 'pending';
+              if (o.fulfillment_status && String(o.fulfillment_status).toLowerCase().includes('cancel')) {
+                o.fulfillment_status = existingLocalOrder?.fulfillmentStatus || 'unfulfilled';
+              }
             }
           }
 
@@ -365,7 +410,7 @@ export async function POST() {
             },
           });
 
-          if (finalStatus === 'cancelled') {
+          if (finalStatus === 'cancelled' && honorShopifyCancel) {
             try {
               const { processOrderRefund } = await import('@/lib/services/refundService');
               await processOrderRefund(order.id);
@@ -510,6 +555,9 @@ export async function POST() {
       synced: results,
     });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Sync Error:', error.stack);
     return NextResponse.json(
       { error: 'Sync failed', details: error.message, partialResults: results },

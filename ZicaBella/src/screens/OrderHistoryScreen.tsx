@@ -113,11 +113,15 @@ export default function OrderHistoryScreen() {
       const timeline = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
       const deliveredAt = timeline.find((t: any) => t.step === 'delivered')?.completedAt;
       
-      const fulfillmentStatus = getVal(o.fulfillmentStatus);
+      const payLower = String(o.paymentStatus || o.payment_status || o.financialStatus || o.financial_status || '').toLowerCase();
+      const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
+      const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(o.deliveryStatus || '').toLowerCase()) || !!deliveredAt;
       const isCancelled =
-        Boolean(o.cancelledBy) ||
-        mainStatus.includes('cancel') ||
-        fulfillmentStatus.includes('cancel');
+        mainStatus === 'cancelled' ||
+        mainStatus === 'canceled' ||
+        payLower === 'cancelled' ||
+        payLower === 'voided' ||
+        (Boolean(o.cancelledBy) && !isPaidLike && !isDeliveredOrShipped);
       const isDelivered = !!deliveredAt;
       const isReturnActive = ['return_initiated', 'return_approved', 'exchange_initiated', 'exchange_approved'].includes(mainStatus) ||
                              o.returnRequests?.some((r: any) => !['cancelled', 'rejected', 'refunded'].includes(r.status)) ||
@@ -326,8 +330,15 @@ export default function OrderHistoryScreen() {
       
       const timeline = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
       const deliveredAt = timeline.find((t: any) => t.step === 'delivered')?.completedAt;
-      const f = getVal(o.fulfillmentStatus);
-      const isCancelled = Boolean(o.cancelledBy) || s.includes('cancel') || f.includes('cancel');
+      const payLower = finStatus;
+      const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
+      const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(o.deliveryStatus || '').toLowerCase()) || !!deliveredAt;
+      const isCancelled =
+        s === 'cancelled' ||
+        s === 'canceled' ||
+        payLower === 'cancelled' ||
+        payLower === 'voided' ||
+        (Boolean(o.cancelledBy) && !isPaidLike && !isDeliveredOrShipped);
       const isDelivered = !!deliveredAt;
       const isReturnActive = ['return_initiated', 'return_approved', 'exchange_initiated', 'exchange_approved'].includes(s) ||
                              o.returnRequests?.some((r: any) => !['cancelled', 'rejected', 'refunded'].includes(r.status)) ||

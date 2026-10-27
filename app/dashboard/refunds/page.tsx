@@ -21,30 +21,39 @@ import {
   Loader2,
   X,
   Check,
-  Package
+  Package,
+  Repeat,
+  AlertCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cachedAdminFetch, invalidateAdminCache } from "@/lib/adminClientCache";
 
 interface RefundItem {
   id: string;
-  type: string;
+  type: 'RETURN_REQUEST' | 'STANDALONE_RETURN' | 'EXCHANGE_REQUEST';
   returnRequestId: string;
   orderId: string;
+  orderNumber?: string;
   shopifyOrderId: string;
   customerId: string;
   customerName: string;
   customerEmail: string | null;
   customerPhone: string | null;
   status: string;
-  refundStatus: 'PENDING' | 'COMPLETED' | 'REJECTED';
+  refundStatus: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'REJECTED';
   refundAmount: number;
+  originalAmount?: number;
   refundMethod: 'original_method' | 'store_credit';
   paymentMethod: string;
   razorpayPaymentId?: string | null;
-  qcStatus: string;
+  qcStatus: 'PASSED' | 'FAILED' | 'AWAITING_QC' | 'AWAITING_ITEM' | 'PENDING';
   createdAt: string;
   updatedAt: string;
   reason: string;
+  refundError?: string | null;
+  orderTotal?: number;
+  orderDiscount?: number;
+  maxRemainingRefundable?: number | null;
   items: Array<{
     id: string;
     title: string;
@@ -58,7 +67,9 @@ interface RefundItem {
 interface SummaryStats {
   totalRequests: number;
   pendingCount: number;
+  processingCount: number;
   completedCount: number;
+  failedCount: number;
   rejectedCount: number;
   totalPendingAmount: number;
   totalCompletedAmount: number;
@@ -71,13 +82,15 @@ export default function RefundsPage() {
   const searchParams = useSearchParams();
   const initialStatus = (() => {
     const s = String(searchParams.get("status") || "all").toLowerCase();
-    return ["all", "pending", "completed", "rejected"].includes(s) ? s : "all";
+    return ["all", "pending", "processing", "completed", "failed", "rejected"].includes(s) ? s : "all";
   })();
   const [refunds, setRefunds] = useState<RefundItem[]>([]);
   const [summary, setSummary] = useState<SummaryStats>({
     totalRequests: 0,
     pendingCount: 0,
+    processingCount: 0,
     completedCount: 0,
+    failedCount: 0,
     rejectedCount: 0,
     totalPendingAmount: 0,
     totalCompletedAmount: 0,
@@ -92,7 +105,6 @@ export default function RefundsPage() {
 
   // Approval Modal State
   const [selectedRefund, setSelectedRefund] = useState<RefundItem | null>(null);
-  const [overrideMethod, setOverrideMethod] = useState<"original_method" | "store_credit">("original_method");
   const [customAmount, setCustomAmount] = useState<string>("");
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -105,7 +117,7 @@ export default function RefundsPage() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const fetchRefunds = useCallback(async (silent = false) => {
+  const fetchRefunds = useCallback(async (silent = false, force = false) => {
     if (!silent && refunds.length === 0) setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -113,14 +125,15 @@ export default function RefundsPage() {
       if (methodFilter !== "all") params.set("method", methodFilter);
       if (search) params.set("search", search);
 
-      const res = await fetch(`/api/admin/refunds?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await cachedAdminFetch<any>(`/api/admin/refunds?${params.toString()}`, { skipCache: force || silent });
+      if (data) {
         setRefunds(data.refunds || []);
         setSummary(data.summary || {
           totalRequests: 0,
           pendingCount: 0,
+          processingCount: 0,
           completedCount: 0,
+          failedCount: 0,
           rejectedCount: 0,
           totalPendingAmount: 0,
           totalCompletedAmount: 0,
@@ -142,20 +155,19 @@ export default function RefundsPage() {
   // Deep-link from Returns dashboard: /dashboard/refunds?status=pending
   useEffect(() => {
     const s = String(searchParams.get("status") || "").toLowerCase();
-    if (["pending", "completed", "rejected", "all"].includes(s)) {
+    if (["pending", "processing", "completed", "failed", "rejected", "all"].includes(s)) {
       setStatusFilter(s);
     }
   }, [searchParams]);
 
   useEffect(() => {
-    const handleSync = () => fetchRefunds(true);
+    const handleSync = () => fetchRefunds(true, true);
     window.addEventListener("realtime-sync", handleSync);
     return () => window.removeEventListener("realtime-sync", handleSync);
   }, [fetchRefunds]);
 
   const openApproveModal = (refund: RefundItem) => {
     setSelectedRefund(refund);
-    setOverrideMethod(refund.refundMethod || "original_method");
     setCustomAmount(String(refund.refundAmount || 0));
   };
 
@@ -174,9 +186,10 @@ export default function RefundsPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        invalidateAdminCache("/api/admin/refunds");
         showToast(data.message || "Refund successfully approved and processed!", "success");
         setSelectedRefund(null);
-        fetchRefunds(true);
+        fetchRefunds(true, true);
       } else {
         showToast(data.error || "Failed to process refund. Please try again.", "error");
       }
@@ -201,10 +214,11 @@ export default function RefundsPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        invalidateAdminCache("/api/admin/refunds");
         showToast("Refund request rejected successfully.", "success");
         setRejectingRefund(null);
         setRejectReason("");
-        fetchRefunds(true);
+        fetchRefunds(true, true);
       } else {
         showToast(data.error || "Failed to reject refund", "error");
       }
@@ -246,12 +260,12 @@ export default function RefundsPage() {
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Refunds Management</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Review Quality Check (QC) status and manually approve all return/exchange refunds. Auto-refunds are disabled for maximum security.
+            Review Quality Check (QC) status, verified payment origins, and approve Prepaid Returns & Exchange Price Difference refunds.
           </p>
         </div>
 
         <button
-          onClick={() => fetchRefunds(false)}
+          onClick={() => fetchRefunds(false, true)}
           disabled={loading}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-secondary/80 hover:bg-secondary border border-border/50 text-xs font-semibold tracking-wide transition-all self-start sm:self-auto"
         >
@@ -294,7 +308,7 @@ export default function RefundsPage() {
             <span className="text-xs text-muted-foreground">online payments</span>
           </div>
           <div className="mt-2 text-xs text-muted-foreground">
-            Executed live via Razorpay API on approval
+            Executed live via Razorpay API to original source
           </div>
         </div>
 
@@ -357,7 +371,7 @@ export default function RefundsPage() {
               onClick={() => setStatusFilter("all")}
               className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${statusFilter === "all" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
             >
-              All Status
+              All ({summary.totalRequests})
             </button>
             <button
               onClick={() => setStatusFilter("pending")}
@@ -366,10 +380,22 @@ export default function RefundsPage() {
               Pending ({summary.pendingCount})
             </button>
             <button
+              onClick={() => setStatusFilter("processing")}
+              className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${statusFilter === "processing" ? "bg-blue-500/20 text-blue-400 shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              Processing ({summary.processingCount})
+            </button>
+            <button
               onClick={() => setStatusFilter("completed")}
               className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${statusFilter === "completed" ? "bg-emerald-500/20 text-emerald-400 shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
             >
-              Refunded
+              Refunded ({summary.completedCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter("failed")}
+              className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${statusFilter === "failed" ? "bg-rose-500/20 text-rose-400 shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              Failed ({summary.failedCount})
             </button>
           </div>
 
@@ -412,7 +438,7 @@ export default function RefundsPage() {
                   <th className="py-3.5 px-4 font-semibold">Customer</th>
                   <th className="py-3.5 px-4 font-semibold">Items & Reason</th>
                   <th className="py-3.5 px-4 font-semibold text-right">Refund Amount</th>
-                  <th className="py-3.5 px-4 font-semibold text-center">Requested Method</th>
+                  <th className="py-3.5 px-4 font-semibold text-center">Payment Method</th>
                   <th className="py-3.5 px-4 font-semibold text-center">QC Status</th>
                   <th className="py-3.5 px-4 font-semibold text-center">Refund Status</th>
                   <th className="py-3.5 px-4 font-semibold text-right">Actions</th>
@@ -421,19 +447,39 @@ export default function RefundsPage() {
               <tbody className="divide-y divide-border/30 text-xs">
                 {refunds.map((refund) => {
                   const isPending = refund.refundStatus === "PENDING";
+                  const isProcessing = refund.refundStatus === "PROCESSING";
                   const isCompleted = refund.refundStatus === "COMPLETED";
+                  const isFailed = refund.refundStatus === "FAILED";
                   const isRejected = refund.refundStatus === "REJECTED";
+
+                  const isQcPassed = refund.qcStatus === "PASSED";
+                  const isQcFailed = refund.qcStatus === "FAILED";
+                  const isAwaitingItem = refund.qcStatus === "AWAITING_ITEM";
+                  const isExchange = refund.type === "EXCHANGE_REQUEST";
 
                   return (
                     <tr key={refund.id} className="hover:bg-secondary/20 transition-colors">
                       {/* Order & Request */}
                       <td className="py-4 px-4 font-mono">
                         <div className="font-bold text-foreground flex items-center gap-1.5">
-                          <ShoppingBag className="w-3.5 h-3.5 text-primary" />
-                          <span>#{refund.shopifyOrderId || refund.orderId}</span>
+                          {isExchange ? (
+                            <Repeat className="w-3.5 h-3.5 text-blue-400" />
+                          ) : (
+                            <ShoppingBag className="w-3.5 h-3.5 text-primary" />
+                          )}
+                          <span>#{refund.orderNumber || refund.shopifyOrderId || refund.orderId}</span>
                         </div>
-                        <div className="text-[10px] text-muted-foreground mt-0.5">
-                          {new Date(refund.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                            isExchange
+                              ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                              : "bg-purple-500/10 text-purple-400 border border-purple-500/20"
+                          }`}>
+                            {isExchange ? "Exchange Diff" : "Prepaid Return"}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {new Date(refund.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
                         </div>
                       </td>
 
@@ -454,16 +500,21 @@ export default function RefundsPage() {
                         </div>
                         {refund.reason && (
                           <div className="text-[10px] text-muted-foreground mt-1 truncate italic">
-                            "{refund.reason}"
+                            &quot;{refund.reason}&quot;
                           </div>
                         )}
                       </td>
 
                       {/* Refund Amount */}
                       <td className="py-4 px-4 text-right font-mono">
-                        <span className="text-sm font-extrabold text-emerald-400">
+                        <div className="text-sm font-extrabold text-emerald-400">
                           ₹{refund.refundAmount.toLocaleString('en-IN')}
-                        </span>
+                        </div>
+                        {refund.orderDiscount && refund.orderDiscount > 0 ? (
+                          <div className="text-[9px] text-amber-400/90 font-medium">
+                            Discount adjusted
+                          </div>
+                        ) : null}
                       </td>
 
                       {/* Requested Method */}
@@ -481,7 +532,7 @@ export default function RefundsPage() {
                           ) : (
                             <>
                               <CreditCard className="w-3 h-3" />
-                              <span>Razorpay</span>
+                              <span>Razorpay Source</span>
                             </>
                           )}
                         </span>
@@ -489,9 +540,35 @@ export default function RefundsPage() {
 
                       {/* QC Status */}
                       <td className="py-4 px-4 text-center">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-secondary text-foreground">
-                          {refund.qcStatus || "PENDING"}
-                        </span>
+                        {isQcPassed && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>QC Passed</span>
+                          </span>
+                        )}
+                        {isQcFailed && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                            <XCircle className="w-3 h-3" />
+                            <span>QC Failed</span>
+                          </span>
+                        )}
+                        {refund.qcStatus === "AWAITING_QC" && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            <Clock className="w-3 h-3" />
+                            <span>Awaiting QC</span>
+                          </span>
+                        )}
+                        {isAwaitingItem && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-secondary text-muted-foreground border border-border/50">
+                            <Package className="w-3 h-3" />
+                            <span>Awaiting Item</span>
+                          </span>
+                        )}
+                        {refund.qcStatus === "PENDING" && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-secondary text-muted-foreground">
+                            <span>Pending</span>
+                          </span>
+                        )}
                       </td>
 
                       {/* Refund Status */}
@@ -499,17 +576,36 @@ export default function RefundsPage() {
                         {isPending && (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/20">
                             <Clock className="w-3 h-3 animate-pulse" />
-                            <span>Pending Approval</span>
+                            <span>Pending</span>
+                          </span>
+                        )}
+                        {isProcessing && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>Processing</span>
                           </span>
                         )}
                         {isCompleted && (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                             <CheckCircle2 className="w-3 h-3" />
-                            <span>Refunded</span>
+                            <span>Successful</span>
                           </span>
                         )}
+                        {isFailed && (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                              <AlertCircle className="w-3 h-3" />
+                              <span>Failed</span>
+                            </span>
+                            {refund.refundError && (
+                              <span className="text-[9px] text-rose-400/80 max-w-[120px] truncate" title={refund.refundError}>
+                                {refund.refundError}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {isRejected && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-muted text-muted-foreground border border-border/40">
                             <XCircle className="w-3 h-3" />
                             <span>Rejected</span>
                           </span>
@@ -518,17 +614,39 @@ export default function RefundsPage() {
 
                       {/* Actions */}
                       <td className="py-4 px-4 text-right">
-                        {isPending ? (
+                        {isPending || isFailed ? (
                           <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => openApproveModal(refund)}
-                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs shadow-md hover:shadow-emerald-500/20 transition-all flex items-center gap-1"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                              <span>Approve</span>
-                            </button>
+                            {isQcFailed ? (
+                              <button
+                                disabled
+                                title="Cannot approve refund for items that failed Quality Check."
+                                className="px-3 py-1.5 bg-secondary text-muted-foreground rounded-lg font-bold text-xs cursor-not-allowed opacity-50 flex items-center gap-1"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                                <span>QC Failed</span>
+                              </button>
+                            ) : isAwaitingItem ? (
+                              <button
+                                disabled
+                                title="Parcel has not arrived at the warehouse yet."
+                                className="px-3 py-1.5 bg-secondary text-muted-foreground rounded-lg font-bold text-xs cursor-not-allowed opacity-50 flex items-center gap-1"
+                              >
+                                <Package className="w-3.5 h-3.5" />
+                                <span>Awaiting Parcel</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => openApproveModal(refund)}
+                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs shadow-md hover:shadow-emerald-500/20 transition-all flex items-center gap-1"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                <span>{isFailed ? "Retry" : "Approve"}</span>
+                              </button>
+                            )}
+
                             <button
                               onClick={() => setRejectingRefund(refund)}
+                              title="Reject refund request"
                               className="px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg font-bold text-xs transition-all flex items-center gap-1"
                             >
                               <X className="w-3.5 h-3.5" />
@@ -536,7 +654,7 @@ export default function RefundsPage() {
                           </div>
                         ) : (
                           <span className="text-[11px] text-muted-foreground font-mono">
-                            {isCompleted ? "Approved & Executed" : "Request Declined"}
+                            {isCompleted ? "Approved & Executed" : isProcessing ? "In Progress..." : "Declined"}
                           </span>
                         )}
                       </td>
@@ -561,8 +679,15 @@ export default function RefundsPage() {
             >
               <div className="flex items-center justify-between border-b border-border/40 pb-4">
                 <div>
-                  <h3 className="text-lg font-bold">Approve & Execute Refund</h3>
-                  <p className="text-xs text-muted-foreground">Order #{selectedRefund.shopifyOrderId || selectedRefund.orderId}</p>
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <span>Approve & Execute Refund</span>
+                    {selectedRefund.type === "EXCHANGE_REQUEST" ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-mono">EXCHANGE DIFF</span>
+                    ) : (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 font-mono">RETURN</span>
+                    )}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">Order #{selectedRefund.orderNumber || selectedRefund.shopifyOrderId || selectedRefund.orderId}</p>
                 </div>
                 <button
                   onClick={() => setSelectedRefund(null)}
@@ -570,6 +695,33 @@ export default function RefundsPage() {
                 >
                   <X className="w-5 h-5" />
                 </button>
+              </div>
+
+              {/* QC Verification Alert */}
+              <div className={`p-3.5 rounded-xl border flex items-center gap-3 text-xs ${
+                selectedRefund.qcStatus === "PASSED"
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                  : selectedRefund.qcStatus === "FAILED"
+                  ? "bg-rose-500/10 border-rose-500/30 text-rose-400 font-semibold"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-400"
+              }`}>
+                {selectedRefund.qcStatus === "PASSED" ? (
+                  <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                )}
+                <div>
+                  <div className="font-bold">
+                    Quality Check: {selectedRefund.qcStatus.replace('_', ' ')}
+                  </div>
+                  <div className="text-[11px] opacity-80 mt-0.5">
+                    {selectedRefund.qcStatus === "PASSED"
+                      ? "Parcel received and verified by warehouse QC team. Safe to refund."
+                      : selectedRefund.qcStatus === "FAILED"
+                      ? "QC FAILED. Return/exchange rules prohibit approving refund for damaged items."
+                      : "Parcel not fully QC verified yet. Verify physical items before releasing funds."}
+                  </div>
+                </div>
               </div>
 
               {/* Items Summary */}
@@ -583,32 +735,56 @@ export default function RefundsPage() {
                 ))}
               </div>
 
-              {/* Customer refund method (read-only — no admin override) */}
+              {/* Refund Accuracy Breakdown */}
+              <div className="p-3.5 rounded-xl bg-secondary/30 border border-border/40 text-xs space-y-1.5 font-mono">
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Order Total:</span>
+                  <span className="text-foreground font-bold">₹{selectedRefund.orderTotal || 0}</span>
+                </div>
+                {selectedRefund.orderDiscount ? (
+                  <div className="flex justify-between text-amber-400/90">
+                    <span>Applied Discounts:</span>
+                    <span>-₹{selectedRefund.orderDiscount}</span>
+                  </div>
+                ) : null}
+                {selectedRefund.maxRemainingRefundable !== null && selectedRefund.maxRemainingRefundable !== undefined ? (
+                  <div className="flex justify-between text-muted-foreground pt-1 border-t border-border/30">
+                    <span>Remaining Max Refundable:</span>
+                    <span className="text-emerald-400 font-bold">₹{selectedRefund.maxRemainingRefundable}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Destination Payment Source */}
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block">
-                  Customer Refund Method
+                  Refund Destination
                 </label>
                 <div
                   className={`p-3.5 rounded-xl border text-left flex flex-col gap-1 ${
-                    (selectedRefund.refundMethod || "original_method") === "store_credit"
+                    selectedRefund.refundMethod === "store_credit"
                       ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
                       : "bg-blue-500/15 border-blue-500/40 text-blue-400"
                   }`}
                 >
                   <div className="flex items-center gap-2 font-bold text-xs">
-                    {(selectedRefund.refundMethod || "original_method") === "store_credit" ? (
+                    {selectedRefund.refundMethod === "store_credit" ? (
                       <Wallet className="w-4 h-4" />
                     ) : (
                       <CreditCard className="w-4 h-4" />
                     )}
                     <span>
-                      {(selectedRefund.refundMethod || "original_method") === "store_credit"
-                        ? "Store Credit"
-                        : "Original Payment Method"}
+                      {selectedRefund.refundMethod === "store_credit"
+                        ? "Customer Wallet (Store Credit)"
+                        : "Original Payment Source (Razorpay Gateway)"}
                     </span>
                   </div>
                   <p className="text-[10px] opacity-80">
-                    Processed automatically from the customer&apos;s choice at return request. No manual override.
+                    {selectedRefund.refundMethod === "store_credit"
+                      ? "Credited instantly to the customer's account store credits."
+                      : selectedRefund.razorpayPaymentId
+                      ? `Refunded back directly to Razorpay Payment ID ${selectedRefund.razorpayPaymentId}.`
+                      : "Refunded to original card/UPI/netbanking via Razorpay."}
                   </p>
                 </div>
               </div>
@@ -637,8 +813,12 @@ export default function RefundsPage() {
                 <button
                   type="button"
                   onClick={handleApproveRefund}
-                  disabled={actionLoading}
-                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
+                  disabled={actionLoading || selectedRefund.qcStatus === "FAILED"}
+                  className={`flex-1 py-2.5 rounded-xl text-foreground text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${
+                    selectedRefund.qcStatus === "FAILED"
+                      ? "bg-secondary text-muted-foreground cursor-not-allowed opacity-50"
+                      : "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20"
+                  }`}
                 >
                   {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                   <span>Confirm & Execute Refund</span>
@@ -661,7 +841,7 @@ export default function RefundsPage() {
             >
               <h3 className="text-lg font-bold text-rose-400">Reject Refund Request</h3>
               <p className="text-xs text-muted-foreground">
-                Provide a reason for rejecting the refund for Order #{rejectingRefund.shopifyOrderId || rejectingRefund.orderId}.
+                Provide a reason for rejecting the refund for Order #{rejectingRefund.orderNumber || rejectingRefund.shopifyOrderId || rejectingRefund.orderId}.
               </p>
 
               <textarea

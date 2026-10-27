@@ -7,25 +7,22 @@ import { rateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
+// Payouts are Direct Bank Transfer only (UPI removed). Existing UPI accounts still display/reveal.
 const PayoutAccountSchema = z.object({
-  method: z.enum(['BANK', 'UPI']),
-  accountHolderName: z.string().trim().min(2).max(100),
-  accountNumber: z.string().trim().min(6).max(30).optional(),
-  ifsc: z.string().trim().min(5).max(15).optional(),
+  method: z.literal('BANK').default('BANK'),
+  accountHolderName: z.string().trim().min(2, 'Enter the account holder name').max(100),
+  accountNumber: z
+    .string()
+    .trim()
+    .transform((v) => v.replace(/\s+/g, ''))
+    .refine((v) => /^\d{9,18}$/.test(v), 'Account number must be 9–18 digits'),
+  ifsc: z
+    .string()
+    .trim()
+    .transform((v) => v.toUpperCase())
+    .refine((v) => /^[A-Z]{4}0[A-Z0-9]{6}$/.test(v), 'Enter a valid 11-character IFSC code (e.g. HDFC0001234)'),
   bankName: z.string().trim().max(100).optional(),
-  upiId: z.string().trim().min(3).max(100).optional(),
-}).refine(
-  (data) => {
-    if (data.method === 'BANK') {
-      return Boolean(data.accountNumber && data.ifsc);
-    }
-    if (data.method === 'UPI') {
-      return Boolean(data.upiId);
-    }
-    return false;
-  },
-  { message: 'Incomplete payout account details for the selected method' }
-);
+});
 
 export async function GET(req: NextRequest) {
   const customer = await getAuthenticatedCustomer(req);
@@ -90,8 +87,9 @@ export async function POST(req: NextRequest) {
       account,
     });
   } catch (error: any) {
+    // Log the real cause; never send server internals (e.g. missing encryption key) to the creator
     console.error('[Affiliate Bank] Error saving payout account:', error);
-    return NextResponse.json({ error: error.message || 'Failed to save payout account' }, { status: 500 });
+    return NextResponse.json({ error: 'Could not save your bank details right now. Please try again shortly.' }, { status: 500 });
   }
 }
 

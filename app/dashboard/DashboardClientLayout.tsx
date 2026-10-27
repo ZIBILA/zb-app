@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSession, signOut } from "next-auth/react";
 import {
   BarChart3,
@@ -11,6 +11,7 @@ import {
   LogOut,
   User,
   ShoppingCart,
+  Loader2,
   ArrowLeftRight,
   Undo2,
   ScanLine,
@@ -49,13 +50,13 @@ import {
   ChevronLeft,
   ChevronRight,
   AlertTriangle,
-  Rss
+  Rss,
+  ImageIcon
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { useRealtimeSync } from "@/lib/hooks/useRealtime";
 import ThemeToggle from "@/components/ThemeToggle";
-import AdminPolarisProvider from "@/components/AdminPolarisProvider";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { data: session } = useSession();
@@ -67,6 +68,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const navScrollRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLAnchorElement>(null);
+  const [optimisticPath, setOptimisticPath] = useState<string | null>(null);
+
+  // Instantly clear optimistic path when route change completes
+  useEffect(() => {
+    setOptimisticPath(null);
+  }, [pathname]);
+
+  const currentPath = optimisticPath || pathname;
+  const isNavigating = Boolean(optimisticPath && optimisticPath !== pathname);
+
   // Keep infrequent — dashboard pages refetch Shopify/DB on this signal
   useRealtimeSync(60_000);
 
@@ -75,8 +86,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // Poll DB health every 60s — lightweight check for the persistent banner
   useEffect(() => {
     let cancelled = false;
+    let lastChecked = 0;
     const checkDbHealth = async () => {
       if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastChecked < 45_000) return;
+      lastChecked = now;
       try {
         const res = await fetch('/api/admin/db-status', { cache: 'no-store' });
         if (!cancelled) {
@@ -121,8 +136,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   // Poll unread notification count (infrequent — not on every route change)
   useEffect(() => {
+    let lastChecked = 0;
     const fetchUnread = async () => {
       if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastChecked < 45_000) return;
+      lastChecked = now;
       try {
         const res = await fetch("/api/admin/notifications/unread-count");
         if (res.ok) {
@@ -211,15 +230,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   ];
 
   const webStoreNav = [
-    { name: "Web Store Overview", href: "/web-store", icon: BarChart3, module: 'STOREFRONT' },
-    { name: "Web Store Orders", href: "/web-store/orders", icon: ShoppingBag, module: 'STOREFRONT' },
-    { name: "Web Store Customers", href: "/web-store/customers", icon: Users, module: 'STOREFRONT' },
-    { name: "Abandoned Carts", href: "/web-store/abandoned-carts", icon: ShoppingCart, module: 'STOREFRONT' },
-    { name: "Web Storefront", href: "/web-store/storefront", icon: Monitor, module: 'STOREFRONT' },
-    { name: "Products & Order", href: "/web-store/merchandising", icon: LayoutGrid, module: 'STOREFRONT' },
-    { name: "All Products", href: "/web-store/products", icon: Sparkles, module: 'STOREFRONT' },
-    { name: "Homepage Banners", href: "/web-store/banners", icon: Monitor, module: 'STOREFRONT' },
-    { name: "Gallery CMS", href: "/web-store/gallery", icon: Sparkles, module: 'STOREFRONT' },
+    { name: "Web Store Overview", href: "/dashboard/webstore", icon: BarChart3, module: 'STOREFRONT' },
+    { name: "Web Store Orders", href: "/dashboard/webstore/orders", icon: ShoppingBag, module: 'STOREFRONT' },
+    { name: "Web Store Customers", href: "/dashboard/webstore/customers", icon: Users, module: 'STOREFRONT' },
+    { name: "Abandoned Carts", href: "/dashboard/webstore/abandoned-carts", icon: ShoppingCart, module: 'STOREFRONT' },
+    { name: "Web Storefront", href: "/dashboard/webstore/storefront", icon: Monitor, module: 'STOREFRONT' },
+    { name: "Products & Order", href: "/dashboard/webstore/merchandising", icon: LayoutGrid, module: 'STOREFRONT' },
+    { name: "All Products", href: "/dashboard/webstore/products", icon: Sparkles, module: 'STOREFRONT' },
+    { name: "Homepage Banners", href: "/dashboard/webstore/banners", icon: Monitor, module: 'STOREFRONT' },
+    { name: "Gallery CMS", href: "/dashboard/webstore/gallery", icon: Sparkles, module: 'STOREFRONT' },
     { name: "Global Store", href: "/dashboard/global-store", icon: Globe, module: 'STOREFRONT' },
     { name: "Preferences", href: "/dashboard/webstore-settings/preferences", icon: Settings, module: 'STOREFRONT' },
   ];
@@ -248,7 +267,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Live Carts", href: "/dashboard/live-carts", icon: ShoppingCart, module: 'INTEGRATIONS' },
     { name: "App Login Logs", href: "/dashboard/app-logins", icon: History, module: 'INTEGRATIONS' },
     { name: "Razorpay", href: "/dashboard/payments/razorpay", icon: CreditCard, module: 'INTEGRATIONS' },
-    { name: "Global Store", href: "/dashboard/global-store", icon: Globe, module: 'INTEGRATIONS' },
   ];
 
   const marketingNav = [
@@ -269,7 +287,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const whatsappEventsNav = [
     { name: "Overview", href: "/dashboard/whatsapp-events/overview", icon: BarChart3, module: 'MARKETING' },
     { name: "Live Chat", href: "/dashboard/whatsapp-events/chat", icon: MessageSquare, module: 'MARKETING' },
-    { name: "Chat Media", href: "/dashboard/whatsapp-events/media", icon: Image, module: 'MARKETING' },
+    { name: "Chat Media", href: "/dashboard/whatsapp-events/media", icon: ImageIcon, module: 'MARKETING' },
     { name: "Events Feed", href: "/dashboard/whatsapp-events/events", icon: Database, module: 'MARKETING' },
     { name: "Campaign Analytics", href: "/dashboard/whatsapp-events/campaign-analytics", icon: TrendingUp, module: 'MARKETING' },
     { name: "Templates Manager", href: "/dashboard/whatsapp-events/templates", icon: FileText, module: 'MARKETING' },
@@ -320,19 +338,55 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   ];
 
   const isActive = useCallback(
-    (href: string) =>
-      pathname === href || (href !== "/dashboard" && href !== "/web-store" && pathname.startsWith(href)),
-    [pathname]
+    (href: string) => {
+      const rawTarget = optimisticPath || pathname || "";
+      // Normalize /web-store to /dashboard/webstore so old and new paths match identically
+      const cleanTarget = rawTarget.replace(/^\/web-store(\/|$)/, "/dashboard/webstore$1");
+      const cleanHref = href.replace(/^\/web-store(\/|$)/, "/dashboard/webstore$1");
+
+      // 1. Strict exact match
+      if (cleanTarget === cleanHref) return true;
+
+      // 2. Only allow sub-path highlighting for specific dynamic detail pages with IDs:
+      // (e.g. /dashboard/orders/[id] -> highlights /dashboard/orders)
+      // All other pages, overview routes, and webstore tools MUST be strict matches only!
+      const idDetailParents = [
+        "/dashboard/orders",
+        "/dashboard/customers",
+        "/dashboard/products",
+        "/dashboard/collections",
+        "/dashboard/returns",
+        "/dashboard/exchanges",
+        "/dashboard/support",
+        "/dashboard/webstore/orders",
+        "/dashboard/webstore/customers",
+      ];
+
+      if (idDetailParents.includes(cleanHref)) {
+        return cleanTarget.startsWith(cleanHref + "/");
+      }
+
+      return false;
+    },
+    [optimisticPath, pathname]
   );
 
   const NavLink = useCallback(
     ({ item }: { item: { name: string; href: string; icon: any } }) => {
       const active = isActive(item.href);
+      const isPending = optimisticPath === item.href && pathname !== item.href;
       const Icon = item.icon;
       return (
         <Link
           ref={active ? activeRef : undefined}
           href={item.href}
+          prefetch={true}
+          onClick={() => {
+            if (pathname !== item.href) {
+              setOptimisticPath(item.href);
+              if (isSidebarOpen) setIsSidebarOpen(false);
+            }
+          }}
           title={isCollapsed ? item.name : undefined}
           className={`group flex items-center transition-all duration-300 relative overflow-hidden ${
             isCollapsed
@@ -351,17 +405,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             strokeWidth={active ? 2 : 1.5}
           />
           <span className={`text-[12px] font-medium relative z-10 truncate ${isCollapsed ? "lg:hidden" : ""}`}>{item.name}</span>
+          {isPending && !isCollapsed && (
+            <Loader2 className="w-3 h-3 text-foreground/50 animate-spin ml-auto shrink-0 relative z-10" />
+          )}
           {active && (
             <motion.div
               layoutId="activeNav"
               className={`absolute inset-0 bg-gradient-to-r from-foreground/5 to-transparent -z-10 ${isCollapsed ? "lg:hidden" : ""}`}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              transition={{ type: "spring", stiffness: 350, damping: 30 }}
             />
           )}
         </Link>
       );
     },
-    [isActive, isCollapsed]
+    [isActive, isCollapsed, optimisticPath, pathname, isSidebarOpen]
   );
 
   const SectionLabel = ({ children: label }: { children: React.ReactNode }) => (
@@ -376,9 +433,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (isLoginPage) return <>{children}</>;
 
   const pageTitle =
-    pathname === "/dashboard"
+    currentPath === "/dashboard"
       ? "Overview"
-      : pathname
+      : currentPath
           .split("/")
           .filter(Boolean)
           .pop()
@@ -386,7 +443,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           .replace(/\b\w/g, (l) => l.toUpperCase());
 
   return (
-    <AdminPolarisProvider>
       <div className="min-h-[100dvh] flex text-foreground bg-background dark:bg-[#0A0A0A] font-sans selection:bg-foreground/20 selection:text-foreground">
       {/* Subtle background */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden bg-background" aria-hidden="true">
@@ -427,6 +483,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   width={30}
                   height={30}
                   priority
+                  unoptimized
                   className="dark:brightness-200 dark:grayscale dark:contrast-200"
                 />
               </div>
@@ -576,22 +633,29 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {hasPermission('SETTINGS') && (
             <div className="mt-4 pt-3 border-t border-foreground/[0.06]">
               <Link
-                ref={pathname === "/dashboard/settings" ? activeRef : undefined}
+                ref={(optimisticPath || pathname) === "/dashboard/settings" ? activeRef : undefined}
                 href="/dashboard/settings"
+                prefetch={true}
+                onClick={() => {
+                  if (pathname !== "/dashboard/settings") {
+                    setOptimisticPath("/dashboard/settings");
+                    if (isSidebarOpen) setIsSidebarOpen(false);
+                  }
+                }}
                 title={isCollapsed ? "Settings" : undefined}
                 className={`flex items-center transition-all duration-300 ${
                   isCollapsed
                     ? "lg:p-0 lg:justify-center lg:h-10 lg:w-10 lg:mx-auto lg:rounded-xl gap-3 px-5 py-2.5 rounded-xl w-full"
                     : "gap-3 px-5 py-2.5 rounded-xl w-full"
                 } ${
-                  pathname === "/dashboard/settings"
+                  (optimisticPath || pathname) === "/dashboard/settings"
                     ? "bg-foreground text-background shadow-lg shadow-black/10"
                     : "text-foreground/50 hover:text-foreground hover:bg-foreground/[0.04]"
                 }`}
               >
                 <Settings
                   className="w-4 h-4 shrink-0"
-                  strokeWidth={pathname === "/dashboard/settings" ? 2 : 1.5}
+                  strokeWidth={(optimisticPath || pathname) === "/dashboard/settings" ? 2 : 1.5}
                 />
                 <span className={`text-[12px] font-medium font-inter ${isCollapsed ? "lg:hidden" : ""}`}>Settings</span>
               </Link>
@@ -604,6 +668,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <main className={`flex-1 flex flex-col min-h-[100dvh] relative z-10 overflow-x-hidden transition-all duration-300 ${
         isCollapsed ? "lg:ml-28" : "lg:ml-80"
       }`}>
+        {/* Instant Route Transition Bar */}
+        {isNavigating && (
+          <div className="fixed top-0 left-0 right-0 z-[100] h-[3px] bg-foreground/10 overflow-hidden pointer-events-none">
+            <motion.div
+              initial={{ x: "-100%" }}
+              animate={{ x: "0%" }}
+              transition={{ duration: 0.5, ease: "easeOut" }}
+              className="h-full bg-gradient-to-r from-violet-500 via-indigo-500 to-sky-400 shadow-[0_0_10px_rgba(139,92,246,0.8)]"
+            />
+          </div>
+        )}
+
         {/* Header */}
         <header className="h-14 lg:h-16 flex items-center justify-between px-4 lg:px-8 m-2 lg:mx-8 lg:my-6 rounded-3xl glass shadow-2xl sticky top-2 lg:top-6 z-40 border border-foreground/5 shrink-0">
           <div className="flex items-center gap-3 lg:gap-6 min-w-0">
@@ -760,10 +836,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             </div>
           )}
-          <div className="max-w-[1400px] w-full mx-auto relative overflow-x-clip">{children}</div>
+          <div className={`max-w-[1400px] w-full mx-auto relative overflow-x-clip transition-opacity duration-200 ${isNavigating ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>{children}</div>
         </div>
       </main>
     </div>
-  </AdminPolarisProvider>
   );
 }

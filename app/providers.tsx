@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect } from 'react';
+import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { ThemeProvider } from '../components/ThemeProvider';
 import { CartProvider } from '../lib/cart-context';
@@ -47,22 +47,20 @@ function SmartSessionProvider({ children }: { children: React.ReactNode }) {
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <Suspense fallback={null}>
-      <SmartSessionProvider>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem={true}
-        >
-          <CartProvider>
-            <BookmarkProvider>
-              <RecentlyViewedProvider>
-                {children}
-              </RecentlyViewedProvider>
-            </BookmarkProvider>
-          </CartProvider>
-        </ThemeProvider>
-      </SmartSessionProvider>
-    </Suspense>
+    <SmartSessionProvider>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem={true}
+      >
+        <CartProvider>
+          <BookmarkProvider>
+            <RecentlyViewedProvider>
+              {children}
+            </RecentlyViewedProvider>
+          </BookmarkProvider>
+        </CartProvider>
+      </ThemeProvider>
+    </SmartSessionProvider>
   );
 }

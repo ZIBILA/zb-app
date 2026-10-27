@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { NotificationService } from '@/lib/services/notification.service';
 import db from '@/lib/db';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 /**
  * POST /api/send-notification
@@ -10,6 +11,8 @@ import db from '@/lib/db';
  */
 export async function POST(req: Request) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const payload = await req.json();
     const { userId, title, body, data } = payload;
 
@@ -35,6 +38,9 @@ export async function POST(req: Request) {
       failureCount: (result as any).failureCount || 0,
     });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('[send-notification] Error:', error);
     return NextResponse.json(
       { error: error.message || 'Internal server error' },

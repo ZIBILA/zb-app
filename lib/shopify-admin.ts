@@ -4,7 +4,6 @@
  * Fetches the Admin access token dynamically from the local database.
  */
 
-import { unstable_cache, revalidateTag } from 'next/cache';
 import prisma from './db';
 import { parseShopifyRichText } from './utils';
 import { toE164 } from './shopify-phone';
@@ -21,42 +20,52 @@ import {
   clearShopConfigCache,
   shouldAutoRefreshShopifyAdminToken,
   getShopifyClientCredentialsToken,
+  shopifyGetFetchInit,
+  SHOPIFY_CATALOG_CACHE_TAG,
+  type ShopifyGetCacheMode,
 } from './shopify-client';
 
-export { getShopConfig, shopifyFetch, adminUrl, headers, clearShopConfigCache, shopifyPatch };
+export {
+  getShopConfig,
+  shopifyFetch,
+  adminUrl,
+  headers,
+  clearShopConfigCache,
+  shopifyPatch,
+  SHOPIFY_CATALOG_CACHE_TAG,
+};
 
 const pageCache = new Map<string, { data: any, nextPageUrl?: string, timestamp: number }>();
+const pageInflight = new Map<string, Promise<{ data: any; nextPageUrl?: string }>>();
 const PAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+const gqlCache = new Map<string, { data: any; timestamp: number }>();
+const gqlInflight = new Map<string, Promise<any>>();
+const GQL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export function clearShopifyCache() {
   pageCache.clear();
+  pageInflight.clear();
+  gqlCache.clear();
+  gqlInflight.clear();
   clearShopConfigCache();
-  try {
-    // Only legal inside route handlers / server actions (where this is called from); no-op elsewhere.
-    revalidateTag(SHOPIFY_CATALOG_TAG);
-  } catch {
-    /* called outside a request scope */
-  }
 }
 
-async function shopifyFetchPage<T>(urlStr: string, ttlMs: number = PAGE_CACHE_TTL): Promise<{ data: T; nextPageUrl?: string }> {
-  const now = Date.now();
-  const cached = pageCache.get(urlStr);
-
-  if (cached && (now - cached.timestamp < ttlMs)) {
-    return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
-  }
-
+async function shopifyFetchPageOnce<T>(
+  urlStr: string,
+  ttlMs: number,
+  cacheMode: ShopifyGetCacheMode,
+  cached: { data: any; nextPageUrl?: string; timestamp: number } | undefined
+): Promise<{ data: T; nextPageUrl?: string }> {
   const MAX_RETRIES = 3;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
     let res: Response;
     try {
       res = await fetch(urlStr, {
         method: 'GET',
         headers: await headers(),
-        cache: isBuild ? 'force-cache' : 'no-store',
+        ...shopifyGetFetchInit(cacheMode),
       });
     } catch (networkErr) {
       // Network blip: serve the last good copy instead of failing the whole page.
@@ -75,7 +84,7 @@ async function shopifyFetchPage<T>(urlStr: string, ttlMs: number = PAGE_CACHE_TT
       }
       // No cache — wait with exponential backoff and retry
       const retryAfter = parseInt(res.headers.get('Retry-After') || '0', 10);
-      const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
+      const delay = (retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000)) + Math.floor(Math.random() * 500);
       if (shouldLogThrottled('shopify:page:429:retry', 30_000)) {
         console.warn(`[Shopify Admin] Rate limited on page fetch, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
       }
@@ -117,37 +126,139 @@ async function shopifyFetchPage<T>(urlStr: string, ttlMs: number = PAGE_CACHE_TT
     return { data, nextPageUrl };
   }
 
+  if (cached) {
+    return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
+  }
   throw new Error(`Shopify Admin API: Max retries exceeded for page fetch`);
 }
 
-/**
- * Execute a Shopify GraphQL API request.
- */
-export async function shopifyGraphqlFetch<T>(query: string, variables?: any): Promise<T> {
-  const { domain } = await getShopConfig();
-  const url = `https://${domain}/admin/api/${API_VERSION}/graphql.json`;
-  
-  const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: await headers(),
-    body: JSON.stringify({ query, variables }),
-    cache: isBuild ? 'force-cache' : 'no-store',
+async function shopifyFetchPage<T>(
+  urlStr: string,
+  ttlMs: number = PAGE_CACHE_TTL,
+  cacheMode: ShopifyGetCacheMode = 'live'
+): Promise<{ data: T; nextPageUrl?: string }> {
+  const now = Date.now();
+  const cached = pageCache.get(urlStr);
+
+  if (cached && (now - cached.timestamp < ttlMs)) {
+    return { data: cached.data as T, nextPageUrl: cached.nextPageUrl };
+  }
+
+  const inflightKey = `${cacheMode}:${urlStr}`;
+  const existing = pageInflight.get(inflightKey);
+  if (existing) return existing as Promise<{ data: T; nextPageUrl?: string }>;
+
+  const promise = shopifyFetchPageOnce<T>(urlStr, ttlMs, cacheMode, cached).finally(() => {
+    pageInflight.delete(inflightKey);
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Shopify GraphQL Error [${res.status}]: ${text}`);
-  }
-
-  const result = await res.json();
-  if (result.errors) {
-    throw new Error(`Shopify GraphQL Error: ${JSON.stringify(result.errors)}`);
-  }
-  return result.data as T;
+  pageInflight.set(inflightKey, promise);
+  return promise;
 }
 
-async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, string>, dataKey?: string, ttlMs?: number): Promise<T[]> {
+/**
+ * Execute a Shopify GraphQL API request (with 429/5xx retry).
+ */
+export async function shopifyGraphqlFetch<T>(
+  query: string,
+  variables?: any,
+  opts?: { cacheMode?: ShopifyGetCacheMode; ttlMs?: number }
+): Promise<T> {
+  const cacheMode = opts?.cacheMode || 'live';
+  const ttlMs = opts?.ttlMs ?? GQL_CACHE_TTL;
+  const cacheKey = JSON.stringify({ query, variables });
+
+  if (cacheMode === 'catalog') {
+    const cached = gqlCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < ttlMs) {
+      return cached.data as T;
+    }
+    const inflight = gqlInflight.get(cacheKey);
+    if (inflight) return inflight as Promise<T>;
+  }
+
+  const runFetch = async (): Promise<T> => {
+    const { domain } = await getShopConfig();
+    const url = `https://${domain}/admin/api/${API_VERSION}/graphql.json`;
+    const MAX = 4;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < MAX; attempt++) {
+      const isBuild = process.env.NEXT_PHASE === 'phase-production-build';
+      const fetchInit: RequestInit = {
+        method: 'POST',
+        headers: await headers(),
+        body: JSON.stringify({ query, variables }),
+      };
+      if (cacheMode !== 'catalog') {
+        fetchInit.cache = isBuild ? 'force-cache' : 'no-store';
+      }
+
+      let res: Response;
+      try {
+        res = await fetch(url, fetchInit);
+      } catch (networkErr) {
+        if (cacheMode === 'catalog') {
+          const cached = gqlCache.get(cacheKey);
+          if (cached) return cached.data as T;
+        }
+        throw networkErr;
+      }
+
+      if (res.ok) {
+        const result = await res.json();
+        if (result.errors) {
+          throw new Error(`Shopify GraphQL Error: ${JSON.stringify(result.errors)}`);
+        }
+        if (cacheMode === 'catalog') {
+          gqlCache.set(cacheKey, { data: result.data, timestamp: Date.now() });
+        }
+        return result.data as T;
+      }
+
+      if (res.status === 429) {
+        if (cacheMode === 'catalog') {
+          const cached = gqlCache.get(cacheKey);
+          if (cached) return cached.data as T;
+        }
+      }
+
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX - 1) {
+        const ra = parseInt(res.headers.get('Retry-After') || '0', 10);
+        const delay = (ra > 0 ? ra * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000)) + Math.floor(Math.random() * 500);
+        const { shouldLogThrottled } = await import('@/lib/log-throttle');
+        if (shouldLogThrottled(`shopify:gql:${res.status}`, 30_000)) {
+          console.warn(`[Shopify Admin] GraphQL returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX})`);
+        }
+        await new Promise((r) => setTimeout(r, delay));
+        lastError = new Error(`Shopify GraphQL Error [${res.status}]`);
+        continue;
+      }
+
+      const text = await res.text();
+      throw new Error(`Shopify GraphQL Error [${res.status}]: ${text}`);
+    }
+
+    throw lastError || new Error('Shopify GraphQL: exhausted retries');
+  };
+
+  if (cacheMode === 'catalog') {
+    const promise = runFetch().finally(() => {
+      gqlInflight.delete(cacheKey);
+    });
+    gqlInflight.set(cacheKey, promise);
+    return promise;
+  }
+
+  return runFetch();
+}
+
+async function shopifyFetchAll<T>(
+  endpoint: string,
+  params?: Record<string, string>,
+  dataKey?: string,
+  ttlMs?: number,
+  cacheMode: ShopifyGetCacheMode = 'live'
+): Promise<T[]> {
   const url = new URL(await adminUrl(endpoint));
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
@@ -157,7 +268,11 @@ async function shopifyFetchAll<T>(endpoint: string, params?: Record<string, stri
   let allResults: any[] = [];
 
   while (currentUrl) {
-    const pageData: { data: any; nextPageUrl?: string } = await shopifyFetchPage<any>(currentUrl, ttlMs);
+    const pageData: { data: any; nextPageUrl?: string } = await shopifyFetchPage<any>(
+      currentUrl,
+      ttlMs,
+      cacheMode
+    );
 
     if (!pageData.data) break;
 
@@ -472,9 +587,16 @@ export async function findShopifyOrderByInternalNumber(internalOrderNumber: stri
   return null;
 }
 
-export async function cancelOrder(orderId: string, reason = 'customer'): Promise<any> {
+export async function cancelOrder(
+  orderId: string,
+  reason = 'customer',
+  opts?: { restock?: boolean }
+): Promise<any> {
   try {
-    const data = await shopifyPost<any>(`orders/${orderId}/cancel.json`, { reason });
+    const data = await shopifyPost<any>(`orders/${orderId}/cancel.json`, {
+      reason,
+      restock: opts?.restock !== false,
+    });
     return data;
   } catch (e) {
     console.error(`[Shopify Admin] Error cancelling order ${orderId}:`, e);
@@ -490,6 +612,42 @@ export async function updateOrderTags(orderId: string, tags: string, noteAttribu
   const body: any = { order: { id: parseInt(orderId, 10), tags } };
   if (noteAttributes) body.order.note_attributes = noteAttributes;
   const data = await shopifyPatch<{ order: ShopifyOrder }>(`orders/${orderId}.json`, body);
+  return data.order;
+}
+
+/** Update shipping/billing address and/or phone on an existing Shopify order. */
+export async function updateShopifyOrderAddress(
+  orderId: string,
+  address: {
+    first_name?: string;
+    last_name?: string;
+    address1?: string;
+    address2?: string;
+    city?: string;
+    province?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+  }
+): Promise<ShopifyOrder> {
+  const numericId = String(orderId).replace(/\D/g, '');
+  const addr: Record<string, string> = {};
+  for (const [k, v] of Object.entries(address)) {
+    if (v) addr[k] = String(v);
+  }
+  if (addr.phone) {
+    const e164 = toE164(addr.phone);
+    if (e164) addr.phone = e164;
+  }
+  const body: any = {
+    order: {
+      id: parseInt(numericId, 10),
+      shipping_address: addr,
+      billing_address: addr,
+      ...(addr.phone ? { phone: addr.phone } : {}),
+    },
+  };
+  const data = await shopifyPatch<{ order: ShopifyOrder }>(`orders/${numericId}.json`, body);
   return data.order;
 }
 
@@ -608,23 +766,101 @@ export interface ShopifyCollection {
   updated_at: string;
   body_html: string | null;
   image: { src: string } | null;
+  /** Product count from Admin GraphQL `productsCount`. REST list payloads omit this. */
+  products_count?: number;
+  productsCount?: number;
 }
 
-async function fetchCollections__uncached(limit = 250): Promise<ShopifyCollection[]> {
+const CATALOG_FETCH_OPTS = { cacheMode: 'catalog' as const };
+const CATALOG_TTL_MS = 60 * 1000;
+
+function parseGraphqlProductsCount(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) return raw;
+  if (raw && typeof raw === "object" && "count" in raw) {
+    const n = Number((raw as { count?: unknown }).count);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+
+async function fetchCollectionProductCounts(): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  let cursor: string | null = null;
+
+  for (let page = 0; page < 10; page++) {
+    const data: any = await shopifyGraphqlFetch<{
+      collections?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: Array<{
+          id?: string;
+          handle?: string;
+          productsCount?: { count?: number } | number | null;
+        }>;
+      };
+    }>(
+      `query CollectionProductCounts($cursor: String) {
+        collections(first: 250, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id handle productsCount { count } }
+        }
+      }`,
+      { cursor },
+      { cacheMode: "catalog", ttlMs: CATALOG_TTL_MS }
+    );
+
+    for (const node of data.collections?.nodes || []) {
+      const n = parseGraphqlProductsCount(node.productsCount);
+      if (n === null) continue;
+      const restId = String(node.id || "").split("/").pop();
+      if (restId) counts.set(restId, n);
+      if (node.handle) counts.set(node.handle, n);
+    }
+
+    if (!data.collections?.pageInfo?.hasNextPage) break;
+    cursor = data.collections.pageInfo.endCursor || null;
+    if (!cursor) break;
+  }
+
+  return counts;
+}
+
+export async function fetchCollections(limit = 250): Promise<ShopifyCollection[]> {
   try {
-    const [data, data2] = await Promise.all([
-      shopifyFetch<{ custom_collections: ShopifyCollection[] }>('custom_collections.json', { limit: String(limit) }).catch(() => ({ custom_collections: [] })),
-      shopifyFetch<{ smart_collections: ShopifyCollection[] }>('smart_collections.json', { limit: String(limit) }).catch(() => ({ smart_collections: [] })),
+    const [custom, smart, countMap] = await Promise.all([
+      shopifyFetchAll<ShopifyCollection>(
+        'custom_collections.json',
+        { limit: String(limit) },
+        'custom_collections',
+        CATALOG_TTL_MS,
+        'catalog'
+      ).catch(() => [] as ShopifyCollection[]),
+      shopifyFetchAll<ShopifyCollection>(
+        'smart_collections.json',
+        { limit: String(limit) },
+        'smart_collections',
+        CATALOG_TTL_MS,
+        'catalog'
+      ).catch(() => [] as ShopifyCollection[]),
+      fetchCollectionProductCounts().catch((e) => {
+        console.warn("[Shopify Admin] Collection product counts unavailable:", (e as Error)?.message || e);
+        return new Map<string, number>();
+      }),
     ]);
-    
-    const all = [...(data?.custom_collections || []), ...(data2?.smart_collections || [])];
-    
-    // Deduplicate by handle
-    const seen = new Set();
-    return all.filter(c => {
+
+    const all = [...custom, ...smart];
+    const seen = new Set<string>();
+    return all.filter((c) => {
       if (!c || !c.handle) return false;
       if (seen.has(c.handle)) return false;
       seen.add(c.handle);
+      const counted = countMap.get(String(c.id)) ?? countMap.get(c.handle);
+      if (counted !== undefined) {
+        c.products_count = counted;
+        c.productsCount = counted;
+      } else {
+        delete c.products_count;
+        delete c.productsCount;
+      }
       return true;
     });
   } catch (e) {
@@ -639,8 +875,16 @@ async function fetchCollections__uncached(limit = 250): Promise<ShopifyCollectio
  */
 async function fetchCollectionsStrict(limit = 250): Promise<ShopifyCollection[]> {
   const [a, b] = await Promise.allSettled([
-    shopifyFetch<{ custom_collections: ShopifyCollection[] }>('custom_collections.json', { limit: String(limit) }),
-    shopifyFetch<{ smart_collections: ShopifyCollection[] }>('smart_collections.json', { limit: String(limit) }),
+    shopifyFetch<{ custom_collections: ShopifyCollection[] }>(
+      'custom_collections.json',
+      { limit: String(limit) },
+      CATALOG_FETCH_OPTS
+    ),
+    shopifyFetch<{ smart_collections: ShopifyCollection[] }>(
+      'smart_collections.json',
+      { limit: String(limit) },
+      CATALOG_FETCH_OPTS
+    ),
   ]);
   if (a.status === 'rejected' && b.status === 'rejected') throw a.reason;
   const all = [
@@ -658,15 +902,12 @@ async function fetchCollectionsStrict(limit = 250): Promise<ShopifyCollection[]>
   });
 }
 
-/** Short TTL so Shopify edits reach the live site quickly (pages also re-render every 2 min / on webhook). */
-const CATALOG_TTL_MS = 60 * 1000;
-
 /**
  * EVERY product the live storefront may show: all pages from Shopify, active + published only.
  * Optionally scoped to one collection. Throws on Shopify errors (callers decide how to degrade) —
  * it never substitutes placeholder products.
  */
-async function fetchStorefrontCatalog__uncached(opts?: { collectionId?: string | number }): Promise<ShopifyProduct[]> {
+export async function fetchStorefrontCatalog(opts?: { collectionId?: string | number }): Promise<ShopifyProduct[]> {
   const params: Record<string, string> = {
     limit: '250',
     status: 'active',
@@ -675,7 +916,13 @@ async function fetchStorefrontCatalog__uncached(opts?: { collectionId?: string |
   if (opts?.collectionId !== undefined && opts.collectionId !== null && String(opts.collectionId) !== '') {
     params.collection_id = String(opts.collectionId);
   }
-  const items = await shopifyFetchAll<ShopifyProduct>('products.json', params, 'products', CATALOG_TTL_MS);
+  const items = await shopifyFetchAll<ShopifyProduct>(
+    'products.json',
+    params,
+    'products',
+    CATALOG_TTL_MS,
+    'catalog'
+  );
   const seen = new Set<number>();
   return items.filter((p) => {
     if (!p || seen.has(p.id)) return false;
@@ -687,7 +934,13 @@ async function fetchStorefrontCatalog__uncached(opts?: { collectionId?: string |
 
 /** Every product (any status) for CMS pickers — all pages, never placeholders. */
 export async function fetchCatalogForAdmin(): Promise<ShopifyProduct[]> {
-  const items = await shopifyFetchAll<ShopifyProduct>('products.json', { limit: '250' }, 'products', CATALOG_TTL_MS);
+  const items = await shopifyFetchAll<ShopifyProduct>(
+    'products.json',
+    { limit: '250' },
+    'products',
+    CATALOG_TTL_MS,
+    'catalog'
+  );
   const seen = new Set<number>();
   return items.filter((p) => p && !seen.has(p.id) && (seen.add(p.id), true));
 }
@@ -703,16 +956,21 @@ export async function loadOrderConfig() {
 }
 
 export async function fetchProductsByCollectionId(collectionId: string | number, limit = 250): Promise<ShopifyProduct[]> {
-  const data = await shopifyFetch<{ products: ShopifyProduct[] }>(`collections/${collectionId}/products.json`, {
-    limit: String(limit),
-  });
-  return data.products;
+  const products = await shopifyFetchAll<ShopifyProduct>(
+    `collections/${collectionId}/products.json`,
+    { limit: String(limit) },
+    'products',
+    CATALOG_TTL_MS,
+    'catalog'
+  );
+  const seen = new Set<number>();
+  return products.filter((p) => p && !seen.has(p.id) && (seen.add(p.id), true));
 }
 
 /**
  * Fetches only the collections that are enabled in the admin dashboard for a specific location.
  */
-async function fetchEnabledCollections__uncached(location: 'header' | 'page' | 'menu' = 'page', shopDomain?: string): Promise<ShopifyCollection[]> {
+export async function fetchEnabledCollections(location: 'header' | 'page' | 'menu' = 'page', shopDomain?: string): Promise<ShopifyCollection[]> {
   const allCollections = await fetchCollections();
   
   try {
@@ -757,16 +1015,24 @@ async function fetchEnabledCollections__uncached(location: 'header' | 'page' | '
       return allCollections;
     }
 
-    const enabledHandles: string[] = JSON.parse(jsonValue).map((h: string) => h.trim().toLowerCase());
+    const enabledHandles: string[] = Array.from(
+      new Set(
+        JSON.parse(jsonValue)
+          .map((h: string) => String(h || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    );
 
     if (enabledHandles.length === 0) {
       return [];
     }
 
-    return allCollections.filter((c: any) => {
-      const handle = c.handle?.trim().toLowerCase();
-      return enabledHandles.includes(handle);
-    });
+    const byHandle = new Map(
+      allCollections.map((c: any) => [String(c.handle || '').trim().toLowerCase(), c])
+    );
+    return enabledHandles
+      .map((handle) => byHandle.get(handle))
+      .filter((c): c is ShopifyCollection => !!c);
   } catch (e) {
     // Database connection failed, return all collections as fallback
     return allCollections;
@@ -1493,11 +1759,13 @@ export const FALLBACK_PRODUCTS: ShopifyProduct[] = [
   }
 ];
 
-async function fetchProducts__uncached(limit = 250): Promise<ShopifyProduct[]> {
+export async function fetchProducts(limit = 250): Promise<ShopifyProduct[]> {
   try {
-    const data = await shopifyFetch<{ products: ShopifyProduct[] }>('products.json', {
-      limit: String(limit),
-    });
+    const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
+      'products.json',
+      { limit: String(limit) },
+      CATALOG_FETCH_OPTS
+    );
     if (data && Array.isArray(data.products) && data.products.length > 0) {
       return data.products;
     }
@@ -1513,9 +1781,13 @@ export async function fetchAllProducts(
 ): Promise<ShopifyProduct[]> {
   const allowFallback = opts?.allowFallback ?? true;
   try {
-    const products = await shopifyFetchAll<ShopifyProduct>('products.json', {
-      limit: String(limit),
-    }, 'products');
+    const products = await shopifyFetchAll<ShopifyProduct>(
+      'products.json',
+      { limit: String(limit) },
+      'products',
+      undefined,
+      'catalog'
+    );
     if (products && Array.isArray(products) && products.length > 0) {
       return products;
     }
@@ -1553,6 +1825,118 @@ export async function fetchLocations(): Promise<ShopifyLocation[]> {
   return data.locations;
 }
 
+function numericShopifyResourceId(id: string | number): number {
+  const n = parseInt(String(id).split("/").pop() || "", 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Invalid Shopify id: ${id}`);
+  }
+  return n;
+}
+
+export async function fetchInventoryLevelsForItem(inventoryItemId: string): Promise<ShopifyInventoryLevel[]> {
+  const data = await shopifyFetch<{ inventory_levels: ShopifyInventoryLevel[] }>(
+    "inventory_levels.json",
+    {
+      inventory_item_ids: String(numericShopifyResourceId(inventoryItemId)),
+      limit: "50",
+    }
+  );
+  return data.inventory_levels || [];
+}
+
+export async function connectInventoryLevel(
+  inventoryItemId: string,
+  locationId: string
+): Promise<ShopifyInventoryLevel | null> {
+  try {
+    const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
+      "inventory_levels/connect.json",
+      {
+        inventory_item_id: numericShopifyResourceId(inventoryItemId),
+        location_id: numericShopifyResourceId(locationId),
+        relocate_if_necessary: true,
+      }
+    );
+    return data.inventory_level || null;
+  } catch (e) {
+    console.warn("[Shopify Admin] inventory_levels/connect failed:", (e as Error).message);
+    return null;
+  }
+}
+
+async function resolveLocationForInventoryItem(
+  inventoryItemId: string,
+  preferredLocationId?: string
+): Promise<string> {
+  const itemId = String(numericShopifyResourceId(inventoryItemId));
+  const levels = await fetchInventoryLevelsForItem(itemId).catch(() => [] as ShopifyInventoryLevel[]);
+  const preferred =
+    preferredLocationId && preferredLocationId !== "0"
+      ? String(numericShopifyResourceId(preferredLocationId))
+      : "";
+
+  if (preferred && levels.some((level) => String(level.location_id) === preferred)) {
+    return preferred;
+  }
+  if (levels[0]?.location_id) return String(levels[0].location_id);
+
+  const locations = await fetchLocations();
+  const match = preferred ? locations.find((l) => String(l.id) === preferred) : null;
+  const active = match || locations.find((l) => l.active) || locations[0];
+  if (!active) throw new Error("No Shopify location found");
+  await connectInventoryLevel(itemId, String(active.id));
+  return String(active.id);
+}
+
+async function adjustInventoryViaGraphql(
+  inventoryItemId: string,
+  locationId: string,
+  delta: number
+): Promise<ShopifyInventoryLevel> {
+  const itemNum = numericShopifyResourceId(inventoryItemId);
+  const locNum = numericShopifyResourceId(locationId);
+  const data = await shopifyGraphqlFetch<{
+    inventoryAdjustQuantities?: {
+      userErrors?: { message?: string }[];
+    };
+  }>(
+    `mutation InventoryAdjust($input: InventoryAdjustQuantitiesInput!) {
+      inventoryAdjustQuantities(input: $input) {
+        userErrors { field message }
+      }
+    }`,
+    {
+      input: {
+        reason: "correction",
+        name: "available",
+        changes: [
+          {
+            inventoryItemId: `gid://shopify/InventoryItem/${itemNum}`,
+            locationId: `gid://shopify/Location/${locNum}`,
+            delta,
+          },
+        ],
+      },
+    }
+  );
+
+  const errors = data.inventoryAdjustQuantities?.userErrors || [];
+  if (errors.length) {
+    throw new Error(errors.map((e) => e.message).filter(Boolean).join("; ") || "GraphQL inventory adjust failed");
+  }
+
+  const levels = await fetchInventoryLevelsForItem(String(itemNum)).catch(() => [] as ShopifyInventoryLevel[]);
+  const level = levels.find((l) => String(l.location_id) === String(locNum)) || levels[0];
+  return (
+    level || {
+      inventory_item_id: itemNum,
+      location_id: locNum,
+      available: 0,
+      updated_at: new Date().toISOString(),
+    }
+  );
+}
+
 // ─── Count helpers ───────────────────────────────────────────────────
 
 export async function fetchOrdersCount(): Promise<number> {
@@ -1581,15 +1965,26 @@ export async function adjustInventoryLevel(
   locationId: string,
   delta: number
 ): Promise<ShopifyInventoryLevel> {
-  const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
-    'inventory_levels/adjust.json',
-    {
-      inventory_item_id: parseInt(inventoryItemId, 10),
-      location_id: parseInt(locationId, 10),
-      available_adjustment: delta,
-    }
-  );
-  return data.inventory_level;
+  const itemId = String(numericShopifyResourceId(inventoryItemId));
+  const resolvedLocationId = await resolveLocationForInventoryItem(itemId, locationId);
+
+  try {
+    const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
+      "inventory_levels/adjust.json",
+      {
+        inventory_item_id: numericShopifyResourceId(itemId),
+        location_id: numericShopifyResourceId(resolvedLocationId),
+        available_adjustment: delta,
+      }
+    );
+    if (data.inventory_level) return data.inventory_level;
+  } catch (restErr) {
+    const message = String((restErr as Error)?.message || restErr);
+    if (!message.includes("404") && !message.includes("Not Found")) throw restErr;
+    await connectInventoryLevel(itemId, resolvedLocationId);
+  }
+
+  return adjustInventoryViaGraphql(itemId, resolvedLocationId, delta);
 }
 
 /**
@@ -1600,11 +1995,13 @@ export async function setInventoryLevel(
   locationId: string,
   quantity: number
 ): Promise<ShopifyInventoryLevel> {
+  const itemId = String(numericShopifyResourceId(inventoryItemId));
+  const resolvedLocationId = await resolveLocationForInventoryItem(itemId, locationId);
   const data = await shopifyPost<{ inventory_level: ShopifyInventoryLevel }>(
-    'inventory_levels/set.json',
+    "inventory_levels/set.json",
     {
-      inventory_item_id: parseInt(inventoryItemId, 10),
-      location_id: parseInt(locationId, 10),
+      inventory_item_id: numericShopifyResourceId(itemId),
+      location_id: numericShopifyResourceId(resolvedLocationId),
       available: quantity,
     }
   );
@@ -1679,14 +2076,18 @@ export async function updateVariant(
 /**
  * Fetch a single product by Shopify product ID.
  */
-async function fetchProductById__uncached(productId: string, includeMetafields = false): Promise<ShopifyProduct> {
-  const data = await shopifyFetch<{ product: ShopifyProduct }>(`products/${productId}.json`);
+export async function fetchProductById(productId: string, includeMetafields = false): Promise<ShopifyProduct> {
+  const data = await shopifyFetch<{ product: ShopifyProduct }>(
+    `products/${productId}.json`,
+    undefined,
+    CATALOG_FETCH_OPTS
+  );
   if (!includeMetafields) return data.product;
   const metafields = await fetchProductMetafields(productId).catch(() => []);
   return { ...data.product, metafields };
 }
 
-async function fetchProductByHandle__uncached(handle: string): Promise<ShopifyProduct | null> {
+export async function fetchProductByHandle(handle: string): Promise<ShopifyProduct | null> {
   // Clients sometimes pass "foo.json" or encoded paths — normalize before Shopify
   const normalized = String(handle || '')
     .trim()
@@ -1719,7 +2120,9 @@ async function fetchProductByHandle__uncached(handle: string): Promise<ShopifyPr
     }
 
     const data = await shopifyFetch<{ products: ShopifyProduct[] }>(
-      `products.json?handle=${encodeURIComponent(normalized)}`
+      `products.json?handle=${encodeURIComponent(normalized)}`,
+      undefined,
+      CATALOG_FETCH_OPTS
     );
     if (data?.products?.length) {
       const product = data.products[0];
@@ -1741,8 +2144,154 @@ async function fetchProductByHandle__uncached(handle: string): Promise<ShopifyPr
  * Fetch metafields for a single product.
  */
 export async function fetchProductMetafields(productId: string): Promise<ShopifyMetafield[]> {
-  const data = await shopifyFetch<{ metafields: ShopifyMetafield[] }>(`products/${productId}/metafields.json`);
-  return data.metafields;
+  const data = await shopifyFetch<{ metafields: ShopifyMetafield[] }>(
+    `products/${productId}/metafields.json`,
+    undefined,
+    CATALOG_FETCH_OPTS
+  );
+  return data.metafields || [];
+}
+
+const METAFIELD_BATCH_SIZE = 25;
+
+function toProductGid(productId: string | number): string {
+  const id = String(productId);
+  return id.startsWith('gid://') ? id : `gid://shopify/Product/${id}`;
+}
+
+function extractNumericId(gidOrId: string | number): string {
+  const s = String(gidOrId);
+  if (s.includes('/')) return s.split('/').pop() || s;
+  return s;
+}
+
+function mapGraphQLMetafields(
+  edges: Array<{ node?: { id?: string; namespace?: string; key?: string; value?: string; type?: string } }> | undefined,
+  ownerId: number
+): ShopifyMetafield[] {
+  if (!edges?.length) return [];
+  return edges
+    .map((edge, idx) => {
+      const n = edge?.node;
+      if (!n?.namespace || !n?.key || n.value == null) return null;
+      return {
+        id: Number(extractNumericId(n.id || idx)) || idx,
+        namespace: n.namespace,
+        key: n.key,
+        value: String(n.value),
+        value_type: n.type || 'single_line_text_field',
+        description: null,
+        owner_id: ownerId,
+        owner_resource: 'product',
+      } as ShopifyMetafield;
+    })
+    .filter((m): m is ShopifyMetafield => m !== null);
+}
+
+/**
+ * Batch-load product metafields via Admin GraphQL `nodes(ids:)` to avoid N+1 REST.
+ * Falls back to concurrency-limited REST if GraphQL fails.
+ */
+export async function fetchProductsMetafieldsBatch(
+  productIds: Array<string | number>
+): Promise<Map<string, ShopifyMetafield[]>> {
+  const unique = Array.from(
+    new Set(
+      productIds
+        .map((id) => extractNumericId(id))
+        .filter((id) => id && id !== '0')
+    )
+  );
+  const result = new Map<string, ShopifyMetafield[]>();
+  if (unique.length === 0) return result;
+
+  const query = `
+    query productMetafieldsBatch($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          metafields(first: 50) {
+            edges {
+              node {
+                id
+                namespace
+                key
+                value
+                type
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    for (let i = 0; i < unique.length; i += METAFIELD_BATCH_SIZE) {
+      const chunk = unique.slice(i, i + METAFIELD_BATCH_SIZE);
+      const data = await shopifyGraphqlFetch<{
+        nodes: Array<{
+          id?: string;
+          metafields?: { edges?: Array<{ node?: any }> };
+        } | null>;
+      }>(query, { ids: chunk.map(toProductGid) });
+
+      for (const node of data?.nodes || []) {
+        if (!node?.id) continue;
+        const id = extractNumericId(node.id);
+        result.set(id, mapGraphQLMetafields(node.metafields?.edges, Number(id) || 0));
+      }
+      // Any id missing from the response still needs a value so callers don't re-fetch forever.
+      for (const id of chunk) {
+        if (!result.has(id)) result.set(id, []);
+      }
+    }
+    return result;
+  } catch (err: any) {
+    const { shouldLogThrottled } = await import('@/lib/log-throttle');
+    if (shouldLogThrottled('shopify:metafields:batch-fallback', 60_000)) {
+      console.warn(
+        '[Shopify Admin] GraphQL metafield batch failed; falling back to limited REST:',
+        err?.message || err
+      );
+    }
+  }
+
+  // REST fallback: small concurrency pool (never Promise.all over the full catalog).
+  const REST_CONCURRENCY = 3;
+  let nextIdx = 0;
+  const workers = Array.from({ length: Math.min(REST_CONCURRENCY, unique.length) }, async () => {
+    while (true) {
+      const idx = nextIdx++;
+      if (idx >= unique.length) return;
+      const id = unique[idx];
+      try {
+        result.set(id, await fetchProductMetafields(id));
+      } catch {
+        result.set(id, []);
+      }
+    }
+  });
+  await Promise.all(workers);
+  return result;
+}
+
+/**
+ * Attach metafields to products that lack them (batch GraphQL, REST fallback).
+ * Products that already have metafields are left untouched.
+ */
+export async function hydrateProductsMetafields(
+  products: ShopifyProduct[]
+): Promise<ShopifyProduct[]> {
+  if (!products.length) return products;
+  const needing = products.filter((p) => !p.metafields);
+  if (needing.length === 0) return products;
+
+  const byId = await fetchProductsMetafieldsBatch(needing.map((p) => p.id));
+  return products.map((p) => {
+    if (p.metafields) return p;
+    return { ...p, metafields: byId.get(extractNumericId(p.id)) || [] };
+  });
 }
 
 /**
@@ -1765,7 +2314,7 @@ const GID_CACHE_TTL = 1 * 60 * 60 * 1000; // 1 hour TTL
 /**
  * Resolve a Shopify GID (Video, MediaImage, etc.) to a public URL using GraphQL.
  */
-async function resolveShopifyGid__uncached(gid: string): Promise<string | null> {
+export async function resolveShopifyGid(gid: string): Promise<string | null> {
   if (!gid || !gid.startsWith('gid://shopify/')) return null;
 
   const now = Date.now();
@@ -1860,7 +2409,7 @@ export async function fetchOrderRefunds(orderId: string): Promise<any[]> {
  * Fetch shop policies (privacy, refund, terms, shipping, legal).
  * Uses explicit caching to prevent Next.js Dynamic Server Usage 500 errors on static routes.
  */
-async function fetchPolicies__uncached(): Promise<{ title: string; body: string; url: string; handle: string }[]> {
+export async function fetchPolicies(): Promise<{ title: string; body: string; url: string; handle: string }[]> {
   try {
     const url = await adminUrl('policies.json');
     const res = await fetch(url, {
@@ -2102,11 +2651,33 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
   if (!query?.trim()) return [];
   const q = query.trim();
 
-  // Map a GraphQL product node to ShopifyProduct shape
+  // Map a GraphQL product node to ShopifyProduct shape (includes metafields so flattenProduct won't N+1).
   function mapGraphQLNode(node: any): ShopifyProduct {
     const extractId = (gid: string) => parseInt(gid.split('/').pop() || '0', 10);
+    const id = extractId(node.id);
+    const metafields: ShopifyMetafield[] = [];
+    const pushMeta = (key: string, value?: string | null, type = 'single_line_text_field') => {
+      if (value == null || value === '') return;
+      metafields.push({
+        id: metafields.length + 1,
+        namespace: 'custom',
+        key,
+        value: String(value),
+        value_type: type,
+        description: null,
+        owner_id: id,
+        owner_resource: 'product',
+      });
+    };
+    pushMeta('product_video', node.productVideo?.value);
+    pushMeta('product-video', node.productVideo2?.value);
+    pushMeta('Product-video', node.productVideo3?.value);
+    pushMeta('size_chart', node.sizeChart?.value);
+    pushMeta('details', node.details?.value, 'json');
+    pushMeta('care', node.care?.value, 'json');
+
     return {
-      id: extractId(node.id),
+      id,
       title: node.title,
       handle: node.handle,
       body_html: node.bodyHtml || null,
@@ -2138,6 +2709,7 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
           option3: v.selectedOptions?.[2]?.value || null,
         };
       }),
+      metafields,
     };
   }
 
@@ -2177,6 +2749,15 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
               value
             }
             productVideo3: metafield(namespace: "custom", key: "Product-video") {
+              value
+            }
+            sizeChart: metafield(namespace: "custom", key: "size_chart") {
+              value
+            }
+            details: metafield(namespace: "custom", key: "details") {
+              value
+            }
+            care: metafield(namespace: "custom", key: "care") {
               value
             }
           }
@@ -2226,7 +2807,11 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
 
     try {
       // Fetch all products and filter/sort locally — REST title param is exact match only
-      const allData = await shopifyFetch<{ products: ShopifyProduct[] }>('products.json', { limit: '250' });
+      const allData = await shopifyFetch<{ products: ShopifyProduct[] }>(
+        'products.json',
+        { limit: '250' },
+        CATALOG_FETCH_OPTS
+      );
       const allProducts = allData.products || [];
 
       // Score, filter by MIN_RELEVANCY_SCORE, and sort
@@ -2234,13 +2819,19 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
         .map(p => ({ product: p, score: productRelevancyScore(p, q) }))
         .filter(item => item.score >= MIN_RELEVANCY_SCORE)
         .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
+        .slice(0, limit)
+        .map(({ product }) => product);
 
+      // One batch metafield fetch for the shortlist (not N+1).
+      const hydrated = await hydrateProductsMetafields(scored);
       const resolved = await Promise.all(
-        scored.map(async ({ product: p }) => {
+        hydrated.map(async (p) => {
           try {
-            const metafields = await fetchProductMetafields(p.id.toString()).catch(() => []);
-            const videoMeta = metafields.find(m => m.namespace === 'custom' && (m.key === 'product_video' || m.key === 'product-video' || m.key === 'Product-video'));
+            const videoMeta = p.metafields?.find(
+              (m) =>
+                m.namespace === 'custom' &&
+                (m.key === 'product_video' || m.key === 'product-video' || m.key === 'Product-video')
+            );
             if (videoMeta?.value) {
               if (videoMeta.value.startsWith('gid://shopify/')) {
                 p.video = await resolveShopifyGid(videoMeta.value).catch(() => null);
@@ -2250,7 +2841,7 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
             } else {
               p.video = null;
             }
-          } catch (e) {
+          } catch {
             p.video = null;
           }
           return p;
@@ -2279,7 +2870,7 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
  *    last good page instead of replacing it with fake data or a bogus 404.
  *  - handle "all" is the Shop All page.
  */
-async function fetchCollectionByHandle__uncached(handle: string, limit?: number): Promise<{
+export async function fetchCollectionByHandle(handle: string, limit?: number): Promise<{
   collection: { id: number; title: string; handle: string; body_html: string; image?: { src: string } } | null;
   products: ShopifyProduct[];
 }> {
@@ -2307,7 +2898,7 @@ async function fetchCollectionByHandle__uncached(handle: string, limit?: number)
  * Fetch all navigation menus with their nested items from Shopify using GraphQL.
  * This is efficient as it fetches everything in one round-trip.
  */
-async function fetchMenus__uncached(): Promise<any[]> {
+export async function fetchMenus(): Promise<any[]> {
   try {
     const query = `
       {
@@ -2334,7 +2925,7 @@ async function fetchMenus__uncached(): Promise<any[]> {
         }
       }
     `;
-    const data = await shopifyGraphqlFetch<any>(query);
+    const data = await shopifyGraphqlFetch<any>(query, undefined, { cacheMode: 'catalog' });
     const menus = data.menus?.edges.map((e: any) => e.node) || [];
     return menus;
   } catch (e) {
@@ -2405,9 +2996,22 @@ function getMetafieldText(p: ShopifyProduct, key: string): string | undefined {
   }
 }
 
-export async function flattenProduct(p: ShopifyProduct) {
-  // Ensure metafields are present (REST list endpoints don't include them)
-  const metafields = p.metafields || await fetchProductMetafields(p.id.toString()).catch(() => []);
+export type FlattenProductOptions = {
+  /**
+   * When true, do not call REST metafields.json (use p.metafields or empty).
+   * Prefer hydrateProductsMetafields / flattenProducts for list endpoints.
+   */
+  skipMetafieldFetch?: boolean;
+};
+
+export async function flattenProduct(p: ShopifyProduct, opts?: FlattenProductOptions) {
+  // Ensure metafields are present (REST list endpoints don't include them).
+  // List callers must use flattenProducts to avoid N+1; PDP keeps single-fetch behavior.
+  const metafields =
+    p.metafields ||
+    (opts?.skipMetafieldFetch
+      ? []
+      : await fetchProductMetafields(p.id.toString()).catch(() => []));
   const pWithMeta = { ...p, metafields };
 
   const sizeOptionIndex = p.options?.findIndex(o => o.name.toLowerCase() === 'size') ?? -1;
@@ -2486,13 +3090,25 @@ export async function flattenProduct(p: ShopifyProduct) {
     care: getMetafieldText(pWithMeta, 'care'),
     sizeChart,
     productVideo,
+    modelInfo:
+      getMetafieldText(pWithMeta, 'model_info') ||
+      getMetafieldRaw(pWithMeta, ['model_info', 'model-info', 'model info', 'model_fit_line']),
   };
+}
+
+/**
+ * Flatten many products for list/search APIs without N+1 metafield REST calls.
+ * Preserves per-product output shape of flattenProduct (including video/size chart).
+ */
+export async function flattenProducts(products: ShopifyProduct[]) {
+  const hydrated = await hydrateProductsMetafields(products);
+  return Promise.all(hydrated.map((p) => flattenProduct(p, { skipMetafieldFetch: true })));
 }
 
 /**
  * Fetch product video URL (native video or video metafield) from Shopify
  */
-async function fetchProductVideoUrl__uncached(productId: string): Promise<string | null> {
+export async function fetchProductVideoUrl(productId: string): Promise<string | null> {
   if (!productId) return null;
   const gid = productId.startsWith('gid://shopify/Product/') 
     ? productId 
@@ -2548,28 +3164,3 @@ async function fetchProductVideoUrl__uncached(productId: string): Promise<string
   }
   return null;
 }
-
-// ─── Storefront read cache ───────────────────────────────────────────
-// The storefront pages (home, collections, products, sitemap) are ISR routes. The
-// underlying Admin API calls use `cache: 'no-store'`, which would otherwise mark every
-// ISR render as dynamic (and break revalidation with Next's "static to dynamic" error).
-// Wrapping the read entry points in `unstable_cache` keeps the routes static-safe, dedupes
-// identical reads across requests (file-backed data cache, 60 s), and lets
-// `refreshStorefront()` / webhooks bust everything at once via the `shopify-catalog` tag.
-// Writes (orders, customers, inventory) are untouched.
-export const SHOPIFY_CATALOG_TAG = 'shopify-catalog';
-const CATALOG_REVALIDATE_S = 60;
-const cached = <T extends (...args: any[]) => Promise<any>>(fn: T, key: string): T =>
-  unstable_cache(fn, ['shopify', key], { revalidate: CATALOG_REVALIDATE_S, tags: [SHOPIFY_CATALOG_TAG] }) as unknown as T;
-
-export const fetchCollections = cached(fetchCollections__uncached, 'fetchCollections');
-export const fetchStorefrontCatalog = cached(fetchStorefrontCatalog__uncached, 'fetchStorefrontCatalog');
-export const fetchEnabledCollections = cached(fetchEnabledCollections__uncached, 'fetchEnabledCollections');
-export const fetchProducts = cached(fetchProducts__uncached, 'fetchProducts');
-export const fetchProductById = cached(fetchProductById__uncached, 'fetchProductById');
-export const fetchProductByHandle = cached(fetchProductByHandle__uncached, 'fetchProductByHandle');
-export const fetchCollectionByHandle = cached(fetchCollectionByHandle__uncached, 'fetchCollectionByHandle');
-export const fetchMenus = cached(fetchMenus__uncached, 'fetchMenus');
-export const fetchPolicies = cached(fetchPolicies__uncached, 'fetchPolicies');
-export const resolveShopifyGid = cached(resolveShopifyGid__uncached, 'resolveShopifyGid');
-export const fetchProductVideoUrl = cached(fetchProductVideoUrl__uncached, 'fetchProductVideoUrl');

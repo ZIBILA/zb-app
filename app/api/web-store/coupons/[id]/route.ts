@@ -78,6 +78,7 @@ export async function PATCH(
           type: uCoupon.discountType,
           value: Number(uCoupon.discountValue),
           minOrderAmount: Number(uCoupon.minOrderValue),
+          applicability: uCoupon.applicability === "PREPAID_ONLY" ? "PREPAID_ONLY" : "ALL",
           endDate: uCoupon.validUntil,
           usageLimit: uCoupon.usageLimit,
           isActive: uCoupon.isActive,

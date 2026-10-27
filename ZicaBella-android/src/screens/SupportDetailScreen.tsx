@@ -13,6 +13,13 @@ import { useColors } from '../constants/colors';
 import { useAuth } from '../hooks/useAuth';
 import { Typography } from '../components/Typography';
 import { config } from '../constants/config';
+import { useAuthStore } from '../store/authStore';
+
+/** Send the login token so the server knows who is asking (no reliance on customerId in the URL). */
+const supportAuthHeaders = (): Record<string, string> => {
+  const token = useAuthStore.getState().token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
 import { haptics } from '../utils/haptics';
 import { RootStackParamList } from '../navigation/types';
 import { useThemeStore } from '../store/themeStore';
@@ -41,7 +48,7 @@ export default function SupportDetailScreen() {
 
   const fetchMessages = useCallback(async () => {
     try {
-      const res = await fetch(`${config.appUrl}/api/support/tickets?customerId=${user?.id}`);
+      const res = await fetch(`${config.appUrl}/api/support/tickets?customerId=${user?.id}`, { headers: supportAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         const ticket = data.tickets?.find((t: any) => t.id === ticketId);
@@ -86,7 +93,7 @@ export default function SupportDetailScreen() {
     try {
       const res = await fetch(`${config.appUrl}/api/support/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...supportAuthHeaders() },
         body: JSON.stringify({
           ticketId,
           content,

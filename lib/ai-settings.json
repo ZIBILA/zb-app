@@ -21,7 +21,11 @@
       "get_payment_details",
       "get_shipment_details",
       "get_ai_action_log",
-      "get_app_user_chats"
+      "get_app_user_chats",
+      "update_order_address",
+      "update_order_phone",
+      "update_order_size",
+      "get_order_tracking"
     ],
     "allowedPages": [
       "dashboard",
@@ -38,6 +42,10 @@
     "enabledTools": [
       "get_shipment_details",
       "get_payment_details",
+      "update_order_address",
+      "update_order_phone",
+      "update_order_size",
+      "get_order_tracking",
       "get_orders_summary"
     ],
     "allowedPages": [

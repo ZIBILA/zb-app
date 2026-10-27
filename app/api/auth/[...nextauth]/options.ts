@@ -223,6 +223,23 @@ export const authOptions: AuthOptions = {
 
           let isVerified = false;
 
+          // Pre-check lockout from prior wrong codes (does not increment)
+          try {
+            const failKey = `otp-verify-failures:${normalizedPhone}`;
+            const windowStart = new Date(Date.now() - 10 * 60 * 1000);
+            const counted: any[] = await prisma.$queryRawUnsafe(
+              `SELECT COUNT(*)::int as count FROM "RateLimitLog" WHERE "key" = $1 AND "timestamp" >= $2`,
+              failKey,
+              windowStart
+            );
+            if ((counted[0]?.count ?? 0) >= 5) {
+              console.warn(`[AUTH] OTP lockout for phone ending …${normalizedPhone.slice(-4)}`);
+              return null;
+            }
+          } catch {
+            /* never block auth on limiter errors */
+          }
+
           // Special case: Demo User Bypass (format-valid Indian mobile)
           if (isDemoPhone(normalizedPhone) && providedOtp === DEMO_OTP) {
             isVerified = true;
@@ -285,6 +302,17 @@ export const authOptions: AuthOptions = {
 
           if (!isVerified) {
             console.warn(`[AUTH] Invalid OTP attempt for phone: ${fullPhone}`);
+
+            // Lock after 5 wrong codes per phone / 10 minutes (same key as mobile-verify)
+            try {
+              const { rateLimit } = await import("@/lib/rate-limit");
+              await rateLimit(`otp-verify-failures:${normalizedPhone}`, {
+                maxRequests: 5,
+                windowMs: 10 * 60 * 1000,
+              });
+            } catch {
+              /* never block on limiter errors */
+            }
             
             // Log failed verification attempt (non-blocking)
             prisma.appLogin.create({

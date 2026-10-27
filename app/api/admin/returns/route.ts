@@ -156,6 +156,10 @@ async function GET_impl(req: Request) {
           createdAt: r.createdAt,
           items: enrichedItems,
           ...live,
+          // The logistics stage maps "refunded" to "received"; show the real outcome instead.
+          ...(String(r.status || '').toLowerCase() === 'refunded'
+            ? { liveStage: 'refunded', liveStageLabel: 'Refunded' }
+            : {}),
         };
       })
     );
@@ -286,16 +290,16 @@ async function GET_impl(req: Request) {
     };
 
     // Terminal chips use raw DB statuses only (never merged into live-stage buckets).
-    statusGroups.forEach((g: any) => {
-      const s = g.status.toLowerCase();
+    (Array.isArray(statusGroups) ? statusGroups : []).forEach((g: any) => {
+      const s = g?.status?.toLowerCase();
       if (s === 'refunded' || s === 'rejected') {
-        statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+        statusCounts[s] = (statusCounts[s] || 0) + (g._count?.id || 0);
       }
     });
-    standaloneStatusGroups.forEach((g: any) => {
-      const s = g.status.toLowerCase();
+    (Array.isArray(standaloneStatusGroups) ? standaloneStatusGroups : []).forEach((g: any) => {
+      const s = g?.status?.toLowerCase();
       if (s === 'refunded' || s === 'rejected') {
-        statusCounts[s] = (statusCounts[s] || 0) + g._count.id;
+        statusCounts[s] = (statusCounts[s] || 0) + (g._count?.id || 0);
       }
     });
 

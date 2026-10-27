@@ -28,15 +28,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
     }
 
-    // Determine senderType securely based on principal or dashboard referer
-    const referer = req.headers.get('referer') || '';
-    const isDashboard = referer.includes('/dashboard/') || req.nextUrl.pathname.startsWith('/api/admin/');
+    // Determine senderType securely based on the principal
+    // Admin access comes only from a real admin session (resolvePrincipal). A Referer containing
+    // "/dashboard/" used to count too — it's client-controlled, so anyone could read any ticket.
 
     let senderType = 'USER';
     let senderId: string | null = null;
     let senderName = body.senderName || 'Customer';
 
-    if (principal.kind === 'admin' || isDashboard) {
+    if (principal.kind === 'admin') {
       senderType = 'AGENT';
       senderId = principal.kind === 'admin' ? principal.adminId : 'admin';
       senderName = body.senderName || 'Zica Support';

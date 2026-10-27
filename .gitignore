@@ -74,3 +74,15 @@ lighthouse/**/*.report.json
 lighthouse/g*/*.report.html
 lighthouse/visual/*.png
 lighthouse/before/bundle-client.html
+# Build artifacts / local dumps (never commit)
+*.ipa
+*.xcdistributionlogs/
+ZICABELLA*/
+*.log
+**/screenshot*.png
+*.docx
+server.log
+public/uploads/*
+!public/uploads/.gitkeep
+ZicaBella-android/android/app/src/main/assets/*.bundle
+

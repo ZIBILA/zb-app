@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import prisma from '@/lib/db';
 import { extractSizeFromVariant } from '@/lib/utils';
 import { refreshStorefront } from '@/lib/storefrontRefresh';
+import { shouldHonorShopifyOrderCancel } from '@/lib/services/orderLifecycleService';
 
 export async function POST(req: Request) {
   try {
@@ -182,12 +183,8 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
   // For shipment/delivery state, use Order.deliveryStatus and Order.fulfillmentStatus — those
   // are the fields of record, set by both this webhook handler and manual admin actions.
   let finalStatus = isMobileAppOrder ? 'approved' : 'active';
-  
-  if (topic === 'orders/cancelled' || orderData.cancelled_at) {
-    finalStatus = 'cancelled';
-    deliveryStatus = 'cancelled';
-    orderData.fulfillment_status = 'cancelled';
-  }
+  let honorShopifyCancel = false;
+  let shopifyCancelProtectReason: string | null = null;
 
   // Attempt to link order by internalOrderNumber if shopifyOrderId doesn't match
   let existingLocalOrder = await prisma.order.findUnique({
@@ -254,6 +251,43 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
     }
   }
 
+  // Decide cancel AFTER local order is linked — paid ₹0 / coupon orders must not
+  // flip to CANCELLED when Shopify auto-cancels an unpaid mirror (ZB81322 class).
+  if (topic === 'orders/cancelled' || orderData.cancelled_at) {
+    const decision = shouldHonorShopifyOrderCancel(existingLocalOrder, {
+      financial_status: orderData.financial_status,
+      cancelled_at: orderData.cancelled_at,
+      cancel_reason: orderData.cancel_reason,
+    });
+    honorShopifyCancel = decision.honor;
+    shopifyCancelProtectReason = decision.reason;
+    if (honorShopifyCancel) {
+      finalStatus = 'cancelled';
+      deliveryStatus = 'cancelled';
+      orderData.fulfillment_status = 'cancelled';
+    } else {
+      console.warn(
+        `[Webhook] Ignoring Shopify cancel for paid local order ` +
+          `${existingLocalOrder?.internalOrderNumber || existingLocalOrder?.id} ` +
+          `(reason=${decision.reason}, shopify_financial=${orderData.financial_status})`
+      );
+      finalStatus = existingLocalOrder?.status || finalStatus;
+      deliveryStatus =
+        existingLocalOrder?.deliveryStatus &&
+        !String(existingLocalOrder.deliveryStatus).toLowerCase().includes('cancel')
+          ? existingLocalOrder.deliveryStatus
+          : 'pending';
+      // Do not force fulfillment_status=cancelled onto the local paid order.
+      if (
+        orderData.fulfillment_status &&
+        String(orderData.fulfillment_status).toLowerCase().includes('cancel')
+      ) {
+        orderData.fulfillment_status =
+          existingLocalOrder?.fulfillmentStatus || 'unfulfilled';
+      }
+    }
+  }
+
   // Resolve WebStoreOrder to get discount details
   let webStoreOrder = null;
   const lookupNumber = extractedNumber || existingLocalOrder?.internalOrderNumber;
@@ -291,6 +325,22 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
     finalTotalPrice = finalSubtotalPrice - discountAmount;
   }
 
+  const shopifyPaymentStatus = orderData.financial_status || 'pending';
+  const localPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'partially-paid'].includes(
+    String(existingLocalOrder?.paymentStatus || '').toLowerCase()
+  );
+  const shopifyUnpaidLike = ['pending', 'authorized', 'voided', 'expired', ''].includes(
+    String(shopifyPaymentStatus || '').toLowerCase()
+  );
+  // Never downgrade a locally paid order to Shopify pending/voided (₹0 coupon mirrors).
+  const resolvedPaymentStatus =
+    localPaidLike && shopifyUnpaidLike
+      ? existingLocalOrder!.paymentStatus
+      : shopifyPaymentStatus;
+
+  const protectedFromShopifyCancel =
+    Boolean(topic === 'orders/cancelled' || orderData.cancelled_at) && !honorShopifyCancel;
+
   const order = await prisma.order.upsert({
     where: { shopifyOrderId: orderData.id.toString() },
     create: {
@@ -305,7 +355,7 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
       subtotalPrice: finalSubtotalPrice,
       totalTax: parseFloat(orderData.total_tax || '0'),
       currency: orderData.currency || 'INR',
-      paymentStatus: orderData.financial_status || 'pending',
+      paymentStatus: shopifyPaymentStatus,
       paymentMethod: orderData.gateway || (orderData.payment_gateway_names && orderData.payment_gateway_names[0]) || null,
       fulfillmentStatus: orderData.fulfillment_status || 'unfulfilled',
       deliveryStatus: deliveryStatus,
@@ -316,6 +366,9 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
       tags: orderData.tags || null,
       discountAmount: discountAmount,
       discountCode: discountCode,
+      ...(honorShopifyCancel
+        ? { cancelledAt: orderData.cancelled_at ? new Date(orderData.cancelled_at) : new Date(), cancelledBy: 'shopify' }
+        : {}),
       createdAt: orderDate
     },
     update: {
@@ -325,8 +378,8 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
       subtotalPrice: finalSubtotalPrice,
       totalTax: parseFloat(orderData.total_tax || '0'),
       currency: orderData.currency || 'INR',
-      paymentStatus: orderData.financial_status || 'pending',
-      paymentMethod: orderData.gateway || (orderData.payment_gateway_names && orderData.payment_gateway_names[0]) || null,
+      paymentStatus: resolvedPaymentStatus,
+      paymentMethod: orderData.gateway || (orderData.payment_gateway_names && orderData.payment_gateway_names[0]) || existingLocalOrder?.paymentMethod || null,
       fulfillmentStatus: orderData.fulfillment_status || 'unfulfilled',
       deliveryStatus: deliveryStatus,
       ...(deliveryStatus === 'delivered' ? { deliveredAt: existingLocalOrder?.deliveredAt || new Date() } : {}),
@@ -336,8 +389,36 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
       tags: orderData.tags || null,
       discountAmount: discountAmount,
       discountCode: discountCode,
+      ...(honorShopifyCancel
+        ? {
+            cancelledAt: existingLocalOrder?.cancelledAt || (orderData.cancelled_at ? new Date(orderData.cancelled_at) : new Date()),
+            cancelledBy: existingLocalOrder?.cancelledBy || 'shopify',
+          }
+        : {}),
+      ...(protectedFromShopifyCancel
+        ? {
+            shopifySyncStatus: 'needs_review',
+            shopifySyncError: `Shopify cancel ignored (${shopifyCancelProtectReason}); local paid order kept active`,
+          }
+        : {}),
     }
   });
+
+  if (honorShopifyCancel && existingLocalOrder?.id) {
+    try {
+      const { restoreOrderSkus } = await import('@/lib/services/skuService');
+      const { INV_RESTORED_TAG, withInventoryTag } = await import('@/lib/inventoryPolicy');
+      await restoreOrderSkus(existingLocalOrder.id, 'CANCEL_RESTORE', 'Shopify (Cancelled)', {
+        adjustShopify: false,
+      });
+      await prisma.order.update({
+        where: { id: existingLocalOrder.id },
+        data: { tags: withInventoryTag(existingLocalOrder.tags, INV_RESTORED_TAG) },
+      });
+    } catch (skuErr) {
+      console.error('[Webhook] SKU restore on Shopify cancel failed:', skuErr);
+    }
+  }
 
   // Sync Fulfillments / Tracking Details to Shipment table in DB
   if (orderData.fulfillments && Array.isArray(orderData.fulfillments) && orderData.fulfillments.length > 0) {
@@ -428,7 +509,8 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
     }).catch((e: any) => console.error('[Webhook] Failed to sync tracking to webStoreOrder:', e.message));
   }
 
-  if (finalStatus === 'cancelled') {
+  // Only refund when we actually honored a customer-facing cancel (not protected paid ₹0).
+  if (finalStatus === 'cancelled' && honorShopifyCancel) {
     try {
       const { processOrderRefund } = await import('@/lib/services/refundService');
       await processOrderRefund(order.id);
@@ -695,6 +777,10 @@ async function handleRefundWebhook(shop: string, refundData: any) {
     include: { items: true },
   });
   if (!order) return;
+
+  // Refunds released from our Refund Management are already tracked on the request itself;
+  // echoing them back would create a duplicate ₹0 "refunded" row in the refund queue.
+  if (String(refundData.note || '').startsWith('Admin approved refund')) return;
 
   const refundLineItems =
     refundData.refund_line_items && Array.isArray(refundData.refund_line_items)

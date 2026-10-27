@@ -24,6 +24,13 @@ export type OrderCancelFields = {
   }> | null;
 };
 
+const PAID_LIKE_PAYMENT_STATUSES = new Set([
+  'paid',
+  'cod_upfront_paid',
+  'partially_paid',
+  'partially-paid',
+]);
+
 /**
  * Customer-facing "order cancelled" — NOT the same as a voided courier shipment.
  * Shipment / fulfillment cancel alone must not paint the whole order as Cancelled
@@ -31,16 +38,91 @@ export type OrderCancelFields = {
  */
 export function isOrderCancelledForCustomer(order: {
   status?: string | null;
+  paymentStatus?: string | null;
   fulfillmentStatus?: string | null;
   cancelledBy?: string | null;
   deliveryStatus?: string | null;
 }): boolean {
-  if (order.cancelledBy) return true;
   const status = String(order.status || '').toLowerCase();
-  // Only treat explicit order-level cancel — not fulfillmentStatus "cancelled"
-  // from a voided AWB, which left many delivered orders looking cancelled.
+  const payment = String(order.paymentStatus || '').toLowerCase();
+  const isPaidLike = PAID_LIKE_PAYMENT_STATUSES.has(payment) || payment === 'success';
+  const delivery = String(order.deliveryStatus || '').toLowerCase();
+  const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(delivery);
+
+  // If order is paid or shipped/delivered, never treat it as cancelled unless explicitly cancelled/refunded
+  if (isPaidLike || isDeliveredOrShipped) {
+    if (status === 'cancelled' || status === 'canceled' || payment === 'cancelled' || payment === 'refunded') {
+      return true;
+    }
+    return false;
+  }
+
+  if (order.cancelledBy) return true;
   if (status === 'cancelled' || status === 'canceled') return true;
+  if (payment === 'cancelled' || payment === 'voided') return true;
   return false;
+}
+
+/**
+ * Decide whether a Shopify `orders/cancelled` (or cancelled_at) webhook should
+ * overwrite the local customer-facing order status.
+ *
+ * Paid local orders — especially ₹0 100% coupon orders — must not flip to
+ * CANCELLED when Shopify auto-cancels an unpaid/voided mirror.
+ */
+export function shouldHonorShopifyOrderCancel(
+  local:
+    | {
+        paymentStatus?: string | null;
+        status?: string | null;
+        cancelledBy?: string | null;
+        totalPrice?: number | null;
+        discountAmount?: number | null;
+        discountCode?: string | null;
+      }
+    | null
+    | undefined,
+  shopify: {
+    financial_status?: string | null;
+    cancelled_at?: string | null;
+    cancel_reason?: string | null;
+  }
+): { honor: boolean; reason: string } {
+  if (!local) return { honor: true, reason: 'no_local_order' };
+
+  const localStatus = String(local.status || '').toLowerCase();
+  if (localStatus === 'cancelled' || localStatus === 'canceled') {
+    return { honor: true, reason: 'already_cancelled_locally' };
+  }
+
+  const pay = String(local.paymentStatus || '').toLowerCase();
+  const isPaidLocally = PAID_LIKE_PAYMENT_STATUSES.has(pay);
+
+  // Stale cancelledBy from pre-checkout dismiss must NOT cancel a locally paid order
+  if (local.cancelledBy && (!isPaidLocally || localStatus === 'cancelled')) {
+    return { honor: true, reason: 'local_cancelled_by' };
+  }
+  if (!isPaidLocally) return { honor: true, reason: 'local_unpaid' };
+
+  const shopPay = String(shopify.financial_status || '').toLowerCase();
+  const total = Number(local.totalPrice || 0);
+  const discount = Number(local.discountAmount || 0);
+  const isZeroPaidOrder =
+    total <= 0.009 && (discount > 0 || Boolean(local.discountCode));
+
+  // Shopify never captured / voided an unpaid mirror — keep customer order alive.
+  const unpaidLikeShopify = ['pending', 'authorized', 'voided', 'expired', ''].includes(
+    shopPay
+  );
+  if (isZeroPaidOrder) {
+    return { honor: false, reason: 'protect_zero_paid_local' };
+  }
+  if (unpaidLikeShopify) {
+    return { honor: false, reason: 'protect_paid_vs_unpaid_shopify' };
+  }
+
+  // Local paid and Shopify shows paid/refunded cancel — honor (real cancel/refund).
+  return { honor: true, reason: 'shopify_paid_then_cancelled' };
 }
 
 export function getCustomerCancelLabel(order: {

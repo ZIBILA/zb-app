@@ -12,6 +12,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { cachedAdminFetch, invalidateAdminCache } from '@/lib/adminClientCache';
 
 interface CartItem {
   id: string;
@@ -63,12 +64,12 @@ export default function LiveCartsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const fetchCarts = useCallback(async () => {
+  const fetchCarts = useCallback(async (force = false) => {
+    if (carts.length === 0) setLoading(true);
     setRefreshing(true);
     try {
-      const res = await fetch('/api/admin/live-carts?limit=50&days=7');
-      const data = await res.json();
-      if (res.ok && Array.isArray(data)) {
+      const data = await cachedAdminFetch<any>('/api/admin/live-carts?limit=50&days=7', { skipCache: force, ttlMs: 15_000 });
+      if (Array.isArray(data)) {
         setCarts(data);
       }
     } catch (error) {
@@ -77,7 +78,7 @@ export default function LiveCartsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [carts.length]);
 
   const handleClear = async (cartId: string) => {
     if (!confirm("Are you sure you want to clear this cart? This action cannot be undone.")) return;
@@ -85,8 +86,9 @@ export default function LiveCartsPage() {
     try {
       const res = await fetch(`/api/admin/live-carts/${cartId}`, { method: 'DELETE' });
       if (res.ok) {
+        invalidateAdminCache('/api/admin/live-carts');
         toast.success("Cart cleared successfully");
-        fetchCarts();
+        fetchCarts(true);
       } else {
         toast.error("Failed to clear cart");
       }
@@ -159,7 +161,7 @@ export default function LiveCartsPage() {
              )}
           </div>
           <button
-            onClick={fetchCarts}
+            onClick={() => fetchCarts(true)}
             disabled={refreshing}
             className="flex items-center justify-center gap-4 px-10 py-5 rounded-[2rem] text-[11px] font-black tracking-[0.3em] uppercase bg-foreground text-background hover:scale-105 transition-all active:scale-95 disabled:opacity-50 shadow-2xl"
           >
@@ -239,7 +241,7 @@ export default function LiveCartsPage() {
                               )}
                             </div>
                           <div className="absolute -bottom-1 -right-1 w-8 h-8 rounded-xl bg-emerald-500 border-4 border-background flex items-center justify-center">
-                             <Activity className="w-3 h-3 text-white" />
+                             <Activity className="w-3 h-3 text-foreground" />
                           </div>
                         </div>
                         <div className="flex-1 min-w-0">
@@ -349,7 +351,7 @@ export default function LiveCartsPage() {
                                   <ShoppingBag className="w-8 h-8" />
                                 </div>
                               )}
-                              <div className="absolute top-4 right-4 bg-background/80 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10 shadow-2xl">
+                              <div className="absolute top-4 right-4 bg-background/80 backdrop-blur-xl px-4 py-2 rounded-2xl border border-foreground/10 shadow-2xl">
                                  <span className="text-[12px] font-black italic text-foreground">x{item.quantity}</span>
                               </div>
                             </div>

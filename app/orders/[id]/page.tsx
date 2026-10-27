@@ -266,10 +266,14 @@ export default function OrderDetailsPage() {
   }, [order]);
   const isCancelled = useMemo(() => {
     if (!order) return false;
-    // Real order cancel only — not a voided Shiprocket / fulfillment cancel
-    if (order.cancelledBy) return true;
     const s = String(order.status || '').toLowerCase();
-    return s === 'cancelled' || s === 'canceled';
+    const p = String(order.paymentStatus || '').toLowerCase();
+    const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(p);
+    const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
+
+    if (s === 'cancelled' || s === 'canceled' || p === 'cancelled' || p === 'voided') return true;
+    if (order.cancelledBy && !isPaidLike && !isDeliveredOrShipped) return true;
+    return false;
   }, [order]);
   const isDelivered = useMemo(() => {
     const ds = (order?.deliveryStatus || '').toLowerCase();

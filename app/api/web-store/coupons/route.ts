@@ -106,6 +106,7 @@ export async function POST(request: Request) {
             type: discountType,
             value: parseFloat(discountValue),
             minOrderAmount: parseFloat(minOrderValue || 0),
+            applicability: applicability === "PREPAID_ONLY" ? "PREPAID_ONLY" : "ALL",
             endDate: new Date(validUntil),
             usageLimit: usageLimit ? parseInt(usageLimit) : null,
             isActive: isActive !== undefined ? isActive : true,

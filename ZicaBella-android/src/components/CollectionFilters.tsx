@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, Modal } from 'react-native';
 import { GlassView } from './GlassView';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '../constants/colors';
@@ -61,6 +61,24 @@ const getColorHex = (colorName: string): string => {
   return map[name] || '#888888';
 };
 
+const getSortLabel = (sort: string): string => {
+  switch (sort) {
+    case 'newest': return 'NEWEST';
+    case 'price-asc': return 'PRICE ↑';
+    case 'price-desc': return 'PRICE ↓';
+    case 'featured':
+    default:
+      return 'FEATURED';
+  }
+};
+
+const SORT_OPTIONS = [
+  { label: 'FEATURED', value: 'featured' },
+  { label: 'NEWEST', value: 'newest' },
+  { label: 'PRICE: LOW TO HIGH (PRICE ↑)', value: 'price-asc' },
+  { label: 'PRICE: HIGH TO LOW (PRICE ↓)', value: 'price-desc' },
+];
+
 export default function CollectionFilters({
   allSizes,
   selectedSize,
@@ -82,82 +100,80 @@ export default function CollectionFilters({
   const colors = useColors();
   const theme = useThemeStore(state => state.theme);
   const isDark = theme === 'dark';
+  const [isSortOpen, setIsSortOpen] = React.useState(false);
 
   return (
     <View style={styles.container}>
       <View style={[styles.pillWrapper, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)' }]}>
         <GlassView intensity={isDark ? 30 : 45} tint={isDark ? 'dark' : 'light'} style={styles.pill}>
-          {/* Sort Button */}
+          {/* Sort Button (Dropdown) */}
           <TouchableOpacity 
             style={[styles.filterBtn, compact && styles.compactBtn]} 
             onPress={() => {
-              const sorts = ['featured', 'newest', 'price-asc', 'price-desc'];
-              const next = sorts[(sorts.indexOf(sortBy) + 1) % sorts.length];
-              onSelectSort(next);
+              setIsSortOpen(true);
+              setIsSizeOpen(false);
+              setIsColorOpen(false);
             }}
             accessibilityLabel={`Sort by: ${sortBy.replace('-', ' ')}`}
             accessibilityRole="button"
+            accessibilityState={{ expanded: isSortOpen }}
           >
-            <Ionicons name="swap-vertical" size={13} color={colors.text} />
-            {!compact && (
-              <Text style={[styles.filterText, { color: colors.text }]}>
-                {sortBy === 'featured' ? 'SORT' : sortBy.replace('-', ' ').toUpperCase()}
-              </Text>
-            )}
+            <Text style={[styles.filterText, { color: colors.text }]}>
+              {getSortLabel(sortBy)}
+            </Text>
+            <Ionicons name="chevron-down" size={9} color={colors.text} style={styles.chevron} />
           </TouchableOpacity>
           
-          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
+          <View style={[styles.divider, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]} />
 
-          {/* Color Button */}
-          <TouchableOpacity 
-            style={[styles.filterBtn, compact && styles.compactBtn]}
-            onPress={() => {
-              setIsColorOpen(!isColorOpen);
-              setIsSizeOpen(false);
-            }}
-            accessibilityLabel={`Filter by color${selectedColor ? ': ' + selectedColor : ''}`}
-            accessibilityRole="button"
-            accessibilityState={{ expanded: isColorOpen }}
-          >
-            <View style={styles.iconWrapper}>
-              {selectedColor ? (
-                <View style={[styles.colorSwatchInPill, { backgroundColor: getColorHex(selectedColor), borderColor: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.15)' }]} />
-              ) : (
-                <Ionicons name="color-palette-outline" size={13} color={colors.text} />
-              )}
-            </View>
-            {!compact && (
-              <Text style={[styles.filterText, { color: colors.text }]}>
-                {selectedColor || 'COLOR'}
-              </Text>
-            )}
-          </TouchableOpacity>
+          {/* Color Button — only rendered if color options actually exist on products */}
+          {allColors.length > 0 && (
+            <>
+              <TouchableOpacity 
+                style={[styles.filterBtn, compact && styles.compactBtn]}
+                onPress={() => {
+                  setIsColorOpen(!isColorOpen);
+                  setIsSizeOpen(false);
+                  setIsSortOpen(false);
+                }}
+                accessibilityLabel={`Filter by color${selectedColor ? ': ' + selectedColor : ''}`}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: isColorOpen }}
+              >
+                <View style={styles.iconWrapper}>
+                  {selectedColor ? (
+                    <View style={[styles.colorSwatchInPill, { backgroundColor: getColorHex(selectedColor), borderColor: isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.15)' }]} />
+                  ) : null}
+                </View>
+                <Text style={[styles.filterText, { color: colors.text }]}>
+                  {selectedColor || 'COLOR'}
+                </Text>
+                <Ionicons name="chevron-down" size={9} color={colors.text} style={styles.chevron} />
+              </TouchableOpacity>
+              <View style={[styles.divider, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]} />
+            </>
+          )}
 
-          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
-
-          {/* Size Button */}
+          {/* Size Button (Dropdown) */}
           <TouchableOpacity 
             style={[styles.filterBtn, compact && styles.compactBtn]}
             onPress={() => {
               setIsSizeOpen(!isSizeOpen);
               setIsColorOpen(false);
+              setIsSortOpen(false);
             }}
             accessibilityLabel={`Filter by size${selectedSize ? ': ' + selectedSize : ''}`}
             accessibilityRole="button"
             accessibilityState={{ expanded: isSizeOpen }}
           >
-            <View style={styles.iconWrapper}>
-              <Ionicons name="resize-outline" size={13} color={colors.text} />
-              {selectedSize && <View style={[styles.activeDot, { backgroundColor: colors.iosBlue || '#D4AF37' }]} />}
-            </View>
-            {!compact && (
-              <Text style={[styles.filterText, { color: colors.text }]}>
-                {selectedSize || 'SIZE'}
-              </Text>
-            )}
+            <Text style={[styles.filterText, { color: colors.text }]}>
+              {selectedSize || 'SIZE'}
+            </Text>
+            <Ionicons name="chevron-down" size={9} color={colors.text} style={styles.chevron} />
+            {selectedSize && <View style={[styles.activeDot, { backgroundColor: colors.iosBlue || '#D4AF37' }]} />}
           </TouchableOpacity>
 
-          <View style={[styles.divider, { backgroundColor: colors.borderLight }]} />
+          <View style={[styles.divider, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]} />
 
           {/* View Toggle */}
           <TouchableOpacity 
@@ -179,90 +195,156 @@ export default function CollectionFilters({
         </GlassView>
       </View>
 
-      {/* Dropdown for Sizes */}
-      {isSizeOpen && (
-        <View style={styles.dropdownOverlay}>
-          <TouchableOpacity 
-            style={StyleSheet.absoluteFill} 
-            activeOpacity={1} 
-            onPress={() => setIsSizeOpen(false)} 
-          />
-          <View style={[styles.dropdownContainer, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)' }]}>
-            <GlassView intensity={isDark ? 70 : 85} tint={isDark ? 'dark' : 'light'} style={styles.dropdownInner}>
-              <ScrollView style={{ maxHeight: 220 }}>
-                <TouchableOpacity 
-                  style={styles.dropdownOption}
-                  onPress={() => { onSelectSize(null); setIsSizeOpen(false); }}
-                >
-                  <Text style={[styles.dropdownOptionText, { color: colors.text, opacity: !selectedSize ? 1 : 0.5 }]}>
-                    ANY SIZE
-                  </Text>
-                  {!selectedSize && <Ionicons name="checkmark" size={11} color={colors.text} />}
-                </TouchableOpacity>
-                {allSizes.map(size => (
-                  <TouchableOpacity 
-                    key={size}
-                    style={styles.dropdownOption}
-                    onPress={() => { onSelectSize(size); setIsSizeOpen(false); }}
-                  >
-                    <Text style={[styles.dropdownOptionText, { color: colors.text }]}>
-                      {size}
-                    </Text>
-                    {selectedSize === size && (
-                      <Ionicons name="checkmark" size={11} color={colors.text} />
-                    )}
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </GlassView>
+      {/* Dropdown Modal for Sort */}
+      <Modal
+        visible={isSortOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsSortOpen(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setIsSortOpen(false)}
+        >
+          <View style={styles.modalContentWrapper}>
+            <View style={[styles.dropdownContainer, { borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]}>
+              <GlassView intensity={isDark ? 85 : 95} tint={isDark ? 'dark' : 'light'} style={styles.dropdownInner}>
+                <View style={styles.dropdownHeader}>
+                  <Text style={[styles.dropdownHeaderText, { color: colors.textExtraLight }]}>SORT BY</Text>
+                </View>
+                <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                  {SORT_OPTIONS.map(opt => {
+                    const isSelected = sortBy === opt.value;
+                    return (
+                      <TouchableOpacity 
+                        key={opt.value}
+                        style={styles.dropdownOption}
+                        onPress={() => {
+                          onSelectSort(opt.value);
+                          setIsSortOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.dropdownOptionText, { color: colors.text, fontWeight: isSelected ? '800' : '500', opacity: isSelected ? 1 : 0.6 }]}>
+                          {opt.label}
+                        </Text>
+                        {isSelected && (
+                          <Ionicons name="checkmark" size={14} color={colors.text} />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </GlassView>
+            </View>
           </View>
-        </View>
-      )}
+        </TouchableOpacity>
+      </Modal>
 
-      {/* Dropdown for Colors */}
-      {isColorOpen && (
-        <View style={styles.dropdownOverlay}>
-          <TouchableOpacity 
-            style={StyleSheet.absoluteFill} 
-            activeOpacity={1} 
-            onPress={() => setIsColorOpen(false)} 
-          />
-          <View style={[styles.dropdownContainer, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)' }]}>
-            <GlassView intensity={isDark ? 70 : 85} tint={isDark ? 'dark' : 'light'} style={styles.dropdownInner}>
-              <ScrollView style={{ maxHeight: 220 }}>
-                <TouchableOpacity 
-                  style={styles.dropdownOption}
-                  onPress={() => { onSelectColor(null); setIsColorOpen(false); }}
-                >
-                  <View style={styles.dropdownOptionColorRow}>
-                    <View style={[styles.colorSwatchDropdown, { backgroundColor: 'transparent', borderWidth: 1, borderStyle: 'dashed', borderColor: colors.textExtraLight }]} />
-                    <Text style={[styles.dropdownOptionText, { color: colors.text, opacity: !selectedColor ? 1 : 0.5 }]}>
-                      ANY COLOR
-                    </Text>
-                  </View>
-                  {!selectedColor && <Ionicons name="checkmark" size={11} color={colors.text} />}
-                </TouchableOpacity>
-                {allColors.map(color => (
+      {/* Dropdown Modal for Sizes */}
+      <Modal
+        visible={isSizeOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsSizeOpen(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setIsSizeOpen(false)}
+        >
+          <View style={styles.modalContentWrapper}>
+            <View style={[styles.dropdownContainer, { borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]}>
+              <GlassView intensity={isDark ? 85 : 95} tint={isDark ? 'dark' : 'light'} style={styles.dropdownInner}>
+                <View style={styles.dropdownHeader}>
+                  <Text style={[styles.dropdownHeaderText, { color: colors.textExtraLight }]}>FILTER BY SIZE</Text>
+                </View>
+                <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
                   <TouchableOpacity 
-                    key={color}
                     style={styles.dropdownOption}
-                    onPress={() => { onSelectColor(color); setIsColorOpen(false); }}
+                    onPress={() => { onSelectSize(null); setIsSizeOpen(false); }}
                   >
-                    <View style={styles.dropdownOptionColorRow}>
-                      <View style={[styles.colorSwatchDropdown, { backgroundColor: getColorHex(color), borderColor: isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.12)' }]} />
-                      <Text style={[styles.dropdownOptionText, { color: colors.text }]}>
-                        {color}
-                      </Text>
-                    </View>
-                    {selectedColor === color && (
-                      <Ionicons name="checkmark" size={11} color={colors.text} />
-                    )}
+                    <Text style={[styles.dropdownOptionText, { color: colors.text, opacity: !selectedSize ? 1 : 0.4 }]}>
+                      ALL SIZES
+                    </Text>
+                    {!selectedSize && <Ionicons name="checkmark" size={14} color={colors.text} />}
                   </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </GlassView>
+                  {allSizes.map(size => (
+                    <TouchableOpacity 
+                      key={size}
+                      style={styles.dropdownOption}
+                      onPress={() => { onSelectSize(size); setIsSizeOpen(false); }}
+                    >
+                      <Text style={[styles.dropdownOptionText, { color: colors.text, fontWeight: selectedSize === size ? '800' : '600' }]}>
+                        {size}
+                      </Text>
+                      {selectedSize === size && (
+                        <Ionicons name="checkmark" size={14} color={colors.text} />
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </GlassView>
+            </View>
           </View>
-        </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Dropdown Modal for Colors (only if colors exist) */}
+      {allColors.length > 0 && (
+        <Modal
+          visible={isColorOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsColorOpen(false)}
+        >
+          <TouchableOpacity 
+            style={styles.modalOverlay} 
+            activeOpacity={1} 
+            onPress={() => setIsColorOpen(false)}
+          >
+            <View style={styles.modalContentWrapper}>
+              <View style={[styles.dropdownContainer, { borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]}>
+                <GlassView intensity={isDark ? 85 : 95} tint={isDark ? 'dark' : 'light'} style={styles.dropdownInner}>
+                  <View style={styles.dropdownHeader}>
+                    <Text style={[styles.dropdownHeaderText, { color: colors.textExtraLight }]}>FILTER BY COLOR</Text>
+                  </View>
+                  <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                    <TouchableOpacity 
+                      style={styles.dropdownOption}
+                      onPress={() => { onSelectColor(null); setIsColorOpen(false); }}
+                    >
+                      <View style={styles.dropdownOptionColorRow}>
+                        <View style={[styles.colorSwatchDropdown, { backgroundColor: 'transparent', borderWidth: 1, borderStyle: 'dashed', borderColor: colors.textExtraLight }]} />
+                        <Text style={[styles.dropdownOptionText, { color: colors.text, opacity: !selectedColor ? 1 : 0.4 }]}>
+                          ALL COLORS
+                        </Text>
+                      </View>
+                      {!selectedColor && <Ionicons name="checkmark" size={14} color={colors.text} />}
+                    </TouchableOpacity>
+                    {allColors.map(color => (
+                      <TouchableOpacity 
+                        key={color}
+                        style={styles.dropdownOption}
+                        onPress={() => { onSelectColor(color); setIsColorOpen(false); }}
+                      >
+                        <View style={styles.dropdownOptionColorRow}>
+                          <View style={[styles.colorSwatchDropdown, { backgroundColor: getColorHex(color), borderColor: isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.12)' }]} />
+                          <Text style={[styles.dropdownOptionText, { color: colors.text, fontWeight: selectedColor === color ? '800' : '600' }]}>
+                            {color}
+                          </Text>
+                        </View>
+                        {selectedColor === color && (
+                          <Ionicons name="checkmark" size={14} color={colors.text} />
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </GlassView>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </Modal>
       )}
     </View>
   );
@@ -303,14 +385,18 @@ const styles = StyleSheet.create({
   filterBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    height: 30,
+    gap: 4,
+    paddingHorizontal: 8,
+    height: 28,
   },
   compactBtn: {
-    paddingHorizontal: 8,
-    width: 36,
+    paddingHorizontal: 6,
+    width: 32,
     justifyContent: 'center',
+  },
+  chevron: {
+    opacity: 0.35,
+    marginLeft: 2,
   },
   iconWrapper: {
     flexDirection: 'row',
@@ -340,7 +426,7 @@ const styles = StyleSheet.create({
   divider: {
     width: 0.5,
     height: 12,
-    opacity: 0.08,
+    opacity: 0.25,
   },
   viewToggle: {
     width: 36,
@@ -348,16 +434,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     height: 30,
   },
-  dropdownOverlay: {
-    position: 'absolute',
-    top: 42,
-    width: '100%',
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 2001,
-    elevation: 2001,
+    paddingHorizontal: 24,
+  },
+  modalContentWrapper: {
+    width: '100%',
+    maxWidth: 240,
+    alignItems: 'center',
   },
   dropdownContainer: {
-    width: 200,
+    width: '100%',
     borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 0.5,
@@ -372,6 +462,18 @@ const styles = StyleSheet.create({
         elevation: 10,
       },
     }),
+  },
+  dropdownHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(150,150,150,0.1)',
+  },
+  dropdownHeaderText: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    textAlign: 'center',
   },
   dropdownInner: {
     paddingVertical: 8,

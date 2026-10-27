@@ -99,17 +99,18 @@ export async function POST(req: Request) {
       data: { isDefault: false },
     });
 
+    const resolvedAddress1 = address.address1 || [address.flat, address.street || address.line1].filter(Boolean).join(', ') || address.line1 || '';
     const newAddress = await prisma.address.create({
       data: {
         customerId: customer.id,
         name: address.name,
         phone: address.phone || customer.phone,
         email: address.email || customer.email,
-        address1: address.address1,
-        address2: address.address2,
+        address1: resolvedAddress1,
+        address2: address.address2 || address.line2 || null,
         city: address.city,
         state: address.state,
-        zip: address.zip,
+        zip: address.zip || address.pincode || '',
         country: address.country || 'India',
         isDefault: true,
       },

@@ -38,7 +38,7 @@ type DesignTask = {
 };
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; border: string; label: string }> = {
-  draft: { bg: "bg-zinc-500/10", text: "text-zinc-400", border: "border-zinc-500/15", label: "Draft" },
+  draft: { bg: "bg-foreground/30", text: "text-foreground/60", border: "border-foreground/30", label: "Draft" },
   in_review: { bg: "bg-blue-500/10", text: "text-blue-400", border: "border-blue-500/15", label: "In Review" },
   approved: { bg: "bg-green-500/10", text: "text-green-400", border: "border-green-500/15", label: "Approved" },
   rejected: { bg: "bg-red-500/10", text: "text-red-400", border: "border-red-500/15", label: "Rejected" },

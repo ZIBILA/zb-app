@@ -19,13 +19,13 @@ function getAppJwtSecret() {
 }
 
 /**
- * Signs a short-lived access token (1 hour).
+ * Signs an access token for mobile app sessions (30 days).
  */
 export function signAccessToken(payload: Omit<AppAuthTokenPayload, 'type'>) {
   return jwt.sign(
     { ...payload, type: 'access' },
     getAppJwtSecret(),
-    { expiresIn: '1h' }
+    { expiresIn: '30d' }
   );
 }
 
@@ -41,7 +41,7 @@ export function signRefreshToken(payload: Omit<AppAuthTokenPayload, 'type'>) {
 }
 
 /**
- * Backward-compatible alias — issues an access token (1h).
+ * Backward-compatible alias — issues an access token (30d).
  * New callers should use signAccessToken + signRefreshToken instead.
  * @deprecated Use signAccessToken + signRefreshToken
  */
@@ -86,7 +86,7 @@ export function getAppAuthFromRequest(req: Request) {
 export async function requireAppAuth(req: Request) {
   const auth = getAppAuthFromRequest(req);
   if (!auth) {
-    throw Object.assign(new Error('Unauthorized'), { statusCode: 401 });
+    throw Object.assign(new Error('Session expired. Please log in again.'), { statusCode: 401 });
   }
 
   // Reject refresh tokens used as access tokens
@@ -105,7 +105,7 @@ export async function requireAppAuth(req: Request) {
   }
 
   if (auth.tokenVersion !== undefined && auth.tokenVersion < customer.tokenVersion) {
-    throw Object.assign(new Error('Token revoked'), { statusCode: 401 });
+    throw Object.assign(new Error('Token revoked. Please log in again.'), { statusCode: 401 });
   }
 
   return { auth, customer };
@@ -117,7 +117,10 @@ export async function requireAppAuth(req: Request) {
 export function handleAppAuthError(error: any) {
   const { NextResponse } = require('next/server');
   const statusCode = error?.statusCode || 401;
-  const message = error instanceof Error ? error.message : 'Unauthorized';
+  const rawMessage = error instanceof Error ? error.message : '';
+  const message = rawMessage && rawMessage !== 'Unauthorized'
+    ? rawMessage
+    : 'Session expired. Please log in again.';
   return NextResponse.json({ error: message }, { status: statusCode });
 }
 

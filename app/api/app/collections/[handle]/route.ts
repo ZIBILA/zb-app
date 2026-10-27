@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchCollectionByHandle, flattenProduct } from '@/lib/shopify-admin';
+import { fetchCollectionByHandle, flattenProducts } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,7 +24,8 @@ export async function GET(
       );
     }
 
-    const flatProducts = await Promise.all(products.map(flattenProduct));
+    // Batch metafield hydration — avoids one REST call per product (Shopify 429s).
+    const flatProducts = await flattenProducts(products);
 
     return NextResponse.json({
       collection: {

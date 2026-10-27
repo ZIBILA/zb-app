@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
 import { NotificationService } from '@/lib/services/notification.service';
 import db from '@/lib/db';
+import { requireAdmin, handleAuthError } from "@/lib/auth/rbac";
 
 export async function POST(req: Request) {
   try {
+    await requireAdmin('MARKETING', 'edit');
+
     const body = await req.json();
     const { title, body: msgBody, imageUrl, targetType, targetValue, deepLinkType, deepLinkId } = body;
 
@@ -84,6 +87,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, result });
   } catch (error: any) {
+    if (error?.message === '401' || error?.message === '403') {
+      return handleAuthError(error);
+    }
     console.error('Manual notification send error:', error);
     return NextResponse.json({ 
       success: false, 

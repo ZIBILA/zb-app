@@ -1,6 +1,6 @@
 import { fetchEnabledCollections, fetchCollectionByHandle } from "@/lib/shopify-admin";
 import { isStorefrontEligible } from "@/lib/storefrontCatalog";
-import prisma, { getStoreSettings, getShopSettings } from "@/lib/db";
+import prisma, { getStoreSettings, getShopSettings, DEFAULT_SHOP_SETTINGS } from "@/lib/db";
 import NextImage from "next/image";
 import Link from "next/link";
 import { Suspense } from "react";
@@ -33,7 +33,7 @@ function resolveSocialImageUrl(candidate?: string | null): string {
   return `${siteUrl}/og-image.jpg`;
 }
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60; // ISR: revalidate in background every 60s, serving static cache in ~15ms
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getStoreSettings('homepage');
@@ -79,9 +79,8 @@ export default async function Home() {
 
   // Hint the hero poster (the mobile LCP image) before the catalogue fetches below, so the
   // <link rel="preload"> lands in the streamed <head> instead of in the body after the data.
-  // Same values as heroVideo / heroPoster further down.
-  if (s?.heroVideo || "/zb-video-heroo.webm") {
-    preload(s?.heroImage || "/zb-video-hero-poster.jpg", { as: "image", fetchPriority: "high" });
+  if (s?.heroVideo && s?.heroImage) {
+    preload(s.heroImage, { as: "image", fetchPriority: "high" });
   }
 
   // Concurrently fetch all independent assets to optimize TTFB and speed up the homepage loading
@@ -146,11 +145,11 @@ export default async function Home() {
   const heroTitle      = nullIfEmpty(s?.heroTitle);
   const heroSubtitle   = nullIfEmpty(s?.heroSubtitle);
   const heroButtonText = nullIfEmpty(s?.heroButtonText);
-  const heroImage      = s?.heroImage       || "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?q=80&w=2070&auto=format&fit=crop";
-  const heroVideo      = s?.heroVideo       || "/zb-video-heroo.webm";
+  // Hero media comes only from the CMS — no bundled/stock defaults, so a settings outage
+  // shows a plain black hero instead of an old video or placeholder image.
+  const heroImage      = s?.heroImage       || "";
+  const heroVideo      = s?.heroVideo       || "";
   const heroVideoMobile = s?.heroVideoMobile || "";
-  // The poster is the LCP element on mobile (the video itself now loads after hydration).
-  const heroPoster = s?.heroImage || "/zb-video-hero-poster.jpg";
   const latestTitle    = nullIfEmpty(s?.latestCurationTitle);
   const latestSubtitle = nullIfEmpty(s?.latestCurationSubtitle);
   const archiveTitle   = nullIfEmpty(s?.archiveTitle);
@@ -199,10 +198,14 @@ export default async function Home() {
       <section className="relative w-full h-screen overflow-hidden min-h-[500px] bg-black">
         {/* Background video */}
         {heroVideo ? (
-          <HeroVideo src={heroVideo} mobileSrc={heroVideoMobile} poster={heroPoster} />
-        ) : (
+          <HeroVideo
+            src={heroVideo}
+            mobileSrc={heroVideoMobile || undefined}
+            poster={heroImage || undefined}
+          />
+        ) : heroImage ? (
           <NextImage src={heroImage} alt="Hero" fill priority className="object-cover" onError={handleImageError} />
-        )}
+        ) : null}
 
         {/* Glass gradient overlay at bottom */}
         <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/80 via-black/30 to-transparent pointer-events-none" />

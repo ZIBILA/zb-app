@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   Tag, Plus, Trash2, Calendar, Percent, Banknote, 
   Search, Filter, ChevronRight, X, CheckCircle2,
-  AlertCircle, Sparkles, Clock, ShieldCheck, Edit2, Smartphone, Monitor
+  AlertCircle, Sparkles, Clock, ShieldCheck, Edit2, Smartphone, Monitor,
+  ChevronDown
 } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -30,6 +31,7 @@ interface AppSettings {
   value: number;
   minOrderAmount: number;
   maxDiscount?: number | null;
+  applicability?: string;
   cashbackEnabled: boolean;
   cashbackType: string;
   cashbackValue: number;
@@ -51,6 +53,10 @@ interface Campaign {
   webstoreSettings?: WebstoreSettings | null;
   appSettings?: AppSettings | null;
 }
+
+/** "YYYY-MM-DD" for the admin's local calendar day (matches <input type="date"> values). */
+const localDateStr = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 export default function UnifiedDiscountsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -90,6 +96,7 @@ export default function UnifiedDiscountsPage() {
   const [appDiscountValue, setAppDiscountValue] = useState("");
   const [appMinOrderAmount, setAppMinOrderAmount] = useState("0");
   const [appMaxDiscount, setAppMaxDiscount] = useState("");
+  const [appApplicability, setAppApplicability] = useState("ALL"); // ALL (prepaid & COD), PREPAID_ONLY
   const [appCashbackEnabled, setAppCashbackEnabled] = useState(false);
   const [appCashbackType, setAppCashbackType] = useState("percentage");
   const [appCashbackValue, setAppCashbackValue] = useState("");
@@ -129,12 +136,8 @@ export default function UnifiedDiscountsPage() {
     setDescription("");
     setTargets(["webstore", "app"]);
     
-    // Default valid dates (today, and 1 year expiry)
-    const today = new Date();
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
-    
-    setValidFrom(todayStr);
+    // Default start: today (saved as "now", so the code works immediately)
+    setValidFrom(localDateStr(new Date()));
     setValidUntil("");
     setUsageLimit("");
     setIsActive(true);
@@ -159,6 +162,7 @@ export default function UnifiedDiscountsPage() {
     setAppDiscountType("percentage");
     setAppDiscountValue("");
     setAppMinOrderAmount("0");
+    setAppApplicability("ALL");
     setAppMaxDiscount("");
     setAppCashbackEnabled(false);
     setAppCashbackType("percentage");
@@ -224,6 +228,7 @@ export default function UnifiedDiscountsPage() {
       setAppDiscountType(app.type);
       setAppDiscountValue(String(app.value));
       setAppMinOrderAmount(String(app.minOrderAmount));
+      setAppApplicability(app.applicability === "PREPAID_ONLY" ? "PREPAID_ONLY" : "ALL");
       setAppMaxDiscount(app.maxDiscount ? String(app.maxDiscount) : "");
       setAppCashbackEnabled(!!app.cashbackEnabled);
       setAppCashbackType(app.cashbackType || "percentage");
@@ -233,6 +238,7 @@ export default function UnifiedDiscountsPage() {
       setAppDiscountType("percentage");
       setAppDiscountValue("");
       setAppMinOrderAmount("0");
+    setAppApplicability("ALL");
       setAppMaxDiscount("");
       setAppCashbackEnabled(false);
       setAppCashbackType("percentage");
@@ -280,6 +286,7 @@ export default function UnifiedDiscountsPage() {
       value: parseFloat(appDiscountValue || "0"),
       minOrderAmount: parseFloat(appMinOrderAmount || "0"),
       maxDiscount: appMaxDiscount ? parseFloat(appMaxDiscount) : null,
+      applicability: appApplicability,
       cashbackEnabled: appCashbackEnabled,
       cashbackType: appCashbackType,
       cashbackValue: parseFloat(appCashbackValue || "0")
@@ -289,8 +296,13 @@ export default function UnifiedDiscountsPage() {
       code: code.toUpperCase().trim(),
       targets,
       description,
-      validFrom: validFrom ? new Date(validFrom).toISOString() : new Date().toISOString(),
-      validUntil: validUntil ? new Date(validUntil).toISOString() : null,
+      // Date inputs are "YYYY-MM-DD"; new Date() on that is UTC midnight, which for admins east of
+      // UTC (India, +5:30) makes "today" start in the future. Today (or no date) = active right now;
+      // other dates use the admin's local day boundaries.
+      validFrom: !validFrom || validFrom === localDateStr(new Date())
+        ? new Date().toISOString()
+        : new Date(`${validFrom}T00:00:00`).toISOString(),
+      validUntil: validUntil ? new Date(`${validUntil}T23:59:59.999`).toISOString() : null,
       usageLimit: usageLimit ? parseInt(usageLimit) : null,
       isActive,
       autoApply,
@@ -530,6 +542,9 @@ export default function UnifiedDiscountsPage() {
                               <span className="bg-foreground/5 px-2 py-0.5 rounded text-[10px]">
                                 {campaign.appSettings.type === "percentage" ? `${campaign.appSettings.value}%` : `₹${campaign.appSettings.value}`} Off
                               </span>
+                              <span className="bg-foreground/5 px-2 py-0.5 rounded text-[10px]">
+                                {campaign.appSettings.applicability === "PREPAID_ONLY" ? "Prepaid only" : "Prepaid & COD"}
+                              </span>
                               {campaign.appSettings.maxDiscount && (
                                 <span className="bg-foreground/5 px-2 py-0.5 rounded text-[10px]">Max off: ₹{campaign.appSettings.maxDiscount}</span>
                               )}
@@ -550,9 +565,21 @@ export default function UnifiedDiscountsPage() {
                           <Calendar className="w-3 h-3 opacity-30" />
                           <span>{campaign.validUntil ? format(new Date(campaign.validUntil), "MMM d, yyyy") : 'Infinite'}</span>
                         </div>
-                        <span className={`text-[9px] font-black uppercase tracking-widest ${campaign.validUntil && new Date(campaign.validUntil) < new Date() ? 'text-red-500/50' : 'text-emerald-500/50'}`}>
-                          {campaign.validUntil && new Date(campaign.validUntil) < new Date() ? 'Expired' : 'Live'}
-                        </span>
+                        {(() => {
+                          // Mirror the storefront's checks so "Live" means the code actually works now
+                          const now = new Date();
+                          const status =
+                            campaign.validUntil && new Date(campaign.validUntil) < now ? { label: 'Expired', cls: 'text-red-500/50' }
+                            : !campaign.isActive ? { label: 'Inactive', cls: 'text-red-500/50' }
+                            : campaign.validFrom && new Date(campaign.validFrom) > now
+                              ? { label: `Starts ${format(new Date(campaign.validFrom), "MMM d, h:mm a")}`, cls: 'text-amber-500/60' }
+                            : { label: 'Live', cls: 'text-emerald-500/50' };
+                          return (
+                            <span className={`text-[9px] font-black uppercase tracking-widest ${status.cls}`}>
+                              {status.label}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </td>
                     <td className="px-8 py-6">
@@ -670,14 +697,26 @@ export default function UnifiedDiscountsPage() {
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="space-y-3">
-                      <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Start Date</label>
-                      <input 
+                      <div className="flex items-center justify-between ml-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45">Start Date</label>
+                        <button
+                          type="button"
+                          onClick={() => setValidFrom(localDateStr(new Date()))}
+                          className="text-[9px] font-black uppercase tracking-widest text-emerald-500/70 hover:text-emerald-500"
+                        >
+                          Start now
+                        </button>
+                      </div>
+                      <input
                         required
-                        type="date" 
+                        type="date"
                         value={validFrom}
                         onChange={(e) => setValidFrom(e.target.value)}
                         className="w-full bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
                       />
+                      <p className="text-[9px] text-foreground/35 ml-1">
+                        {validFrom === localDateStr(new Date()) ? "Active immediately after saving" : "Starts at 00:00 on this date"}
+                      </p>
                     </div>
                     <div className="space-y-3">
                       <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Expiration Date</label>
@@ -798,16 +837,19 @@ export default function UnifiedDiscountsPage() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-3">
                           <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Applicability Filter</label>
+                          <div className="relative">
                           <select
                             value={webstoreApplicability}
                             onChange={(e) => setWebstoreApplicability(e.target.value)}
-                            className="w-full bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
+                            className="w-full appearance-none cursor-pointer bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl pl-6 pr-12 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
                           >
                             <option value="ALL" className="bg-[#0e0e0e]">Prepaid & COD (Universal)</option>
                             <option value="PREPAID_ONLY" className="bg-[#0e0e0e]">Prepaid Orders Only</option>
                             <option value="COD_ONLY" className="bg-[#0e0e0e]">COD Orders Only</option>
                             <option value="CUSTOM_RATES" className="bg-[#0e0e0e]">Custom Rates (Prepaid vs COD)</option>
                           </select>
+                          <ChevronDown className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/40" />
+                          </div>
                         </div>
 
                         <div className="flex items-center pt-8">
@@ -987,6 +1029,24 @@ export default function UnifiedDiscountsPage() {
                             placeholder={appDiscountType === "fixed" ? "N/A" : "Infinite"}
                             className="w-full bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground disabled:opacity-20"
                           />
+                        </div>
+                      </div>
+
+                      {/* Applicability setting */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-3">
+                          <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Applicability Filter</label>
+                          <div className="relative">
+                          <select
+                            value={appApplicability}
+                            onChange={(e) => setAppApplicability(e.target.value)}
+                            className="w-full appearance-none cursor-pointer bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl pl-6 pr-12 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
+                          >
+                            <option value="ALL" className="bg-[#0e0e0e]">Prepaid & COD</option>
+                            <option value="PREPAID_ONLY" className="bg-[#0e0e0e]">Prepaid Only</option>
+                          </select>
+                          <ChevronDown className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground/40" />
+                          </div>
                         </div>
                       </div>
 

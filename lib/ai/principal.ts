@@ -20,7 +20,7 @@ import { NextRequest } from 'next/server';
 export type Principal =
   | { kind: 'admin'; adminId: string; role: 'ADMIN' | 'SUPER_ADMIN' }
   | { kind: 'customer'; customerId: string; email?: string; phone?: string }
-  | { kind: 'guest' };
+  | { kind: 'guest'; email?: string; phone?: string };
 
 // ---------------------------------------------------------------------------
 // Resolvers

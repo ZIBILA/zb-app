@@ -64,7 +64,7 @@ export async function GET(req: Request) {
 
   const customer = await getCustomerFromSessionOrToken(req);
   if (!customer) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ items: [] }, { status: 200 });
   }
 
   try {

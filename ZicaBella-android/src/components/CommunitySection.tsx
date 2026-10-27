@@ -6,7 +6,7 @@ import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
 import { Typography } from './Typography';
 import { useFeaturedUsers } from '../hooks/useAdminFeatures';
-import { resolveImageUrl } from '../utils/imageUtils';
+import { resolveImageUrl, getOptimizedImageUrl } from '../utils/imageUtils';
 
 const { width } = Dimensions.get('window');
 
@@ -101,10 +101,12 @@ export default function CommunitySection({ community, title, subtitle }: Props) 
         contentContainerStyle={styles.list}
         snapToInterval={width * 0.82 + 16}
         decelerationRate="fast"
+        nestedScrollEnabled={true}
         scrollEventThrottle={16}
       >
         {displayUsers.map((look) => {
             const hasIg = !!look.instagramUrl?.trim();
+            const optimizedUri = typeof look.imageUrl === 'string' ? getOptimizedImageUrl(look.imageUrl, 500) : null;
             return (
               <TouchableOpacity
                 key={look.id}
@@ -122,14 +124,13 @@ export default function CommunitySection({ community, title, subtitle }: Props) 
                 accessibilityHint={hasIg ? 'Opens this look on Instagram' : undefined}
               >
                 <Image
-                  source={typeof look.imageUrl === 'string' ? { uri: resolveImageUrl(look.imageUrl) || '' } : look.imageUrl}
+                  source={optimizedUri ? { uri: optimizedUri } : look.imageUrl}
                   style={styles.image}
                   contentFit="cover"
-                  transition={200}
-                  priority="high"
+                  transition={80}
+                  priority="normal"
                   cachePolicy="memory-disk"
-                  recyclingKey={look.id}
-                  placeholder={LOAD_IMAGES[parseInt(look.id) % 4] || LOAD_IMAGES[0]}
+                  recyclingKey={optimizedUri || look.id}
                 />
                 <View style={styles.labelContainer}>
                   <GlassView

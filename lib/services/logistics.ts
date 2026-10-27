@@ -882,6 +882,64 @@ export async function createReturnShipment(
 /**
  * Parse Shiprocket ids stored on Shipment.rawDelhiveryResponse.
  */
+/**
+ * Update Shiprocket order consignee (address/phone) before AWB is assigned.
+ * After AWB, Shiprocket rejects destination changes — callers must gate that.
+ */
+export async function updateShiprocketOrderConsignee(input: {
+  shiprocketOrderId: string | number;
+  name: string;
+  address1: string;
+  address2?: string;
+  city: string;
+  state: string;
+  zip: string;
+  country?: string;
+  phone: string;
+  email?: string;
+}): Promise<{ success: boolean; message?: string }> {
+  const orderId = String(input.shiprocketOrderId || '').trim();
+  if (!orderId) return { success: false, message: 'Missing Shiprocket order id' };
+
+  let consignee: ReturnType<typeof buildShiprocketConsignee>;
+  try {
+    consignee = buildShiprocketConsignee({
+      name: input.name,
+      address1: input.address1,
+      city: input.city,
+      state: input.state,
+      zip: input.zip,
+      country: input.country || 'India',
+      phone: input.phone,
+      email: input.email,
+    });
+  } catch (err: any) {
+    return { success: false, message: String(err?.message || err) };
+  }
+
+  try {
+    await logisticsApiFetch('/orders/update/adhoc', 'POST', {
+      order_id: /^\d+$/.test(orderId) ? Number(orderId) : orderId,
+      billing_customer_name: consignee.billing_customer_name,
+      billing_last_name: consignee.billing_last_name,
+      billing_address: consignee.billing_address,
+      billing_address_2: input.address2 || undefined,
+      billing_city: consignee.billing_city,
+      billing_pincode: consignee.billing_pincode,
+      billing_state: consignee.billing_state,
+      billing_country: consignee.billing_country,
+      billing_email: consignee.billing_email,
+      billing_phone: consignee.billing_phone,
+      shipping_is_billing: true,
+    });
+    return { success: true };
+  } catch (err: any) {
+    const message = String(err?.message || err);
+    console.warn('[Shiprocket] Consignee update failed:', message);
+    return { success: false, message };
+  }
+}
+
 export function parseShiprocketMeta(raw: string | null | undefined): ShiprocketShipmentMeta | null {
   if (!raw) return null;
   try {

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchCollectionByHandle, fetchProductById, flattenProduct, ShopifyProduct } from '@/lib/shopify-admin';
+import { fetchCollectionByHandle, fetchProductById, flattenProducts, ShopifyProduct } from '@/lib/shopify-admin';
 import { isStorefrontEligible } from '@/lib/storefrontCatalog';
 import { getShopSettings } from '@/lib/db';
 
@@ -47,7 +47,8 @@ export async function GET(req: Request) {
       });
     }
 
-    const flat = await Promise.all(products.map(flattenProduct));
+    // Batch metafield hydration — avoids one REST call per product (Shopify 429s).
+    const flat = await flattenProducts(products);
 
     return NextResponse.json({ products: flat }, {
       headers: {

@@ -75,7 +75,7 @@ export default function SentTab() {
               ))
             ) : logs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-gray-500 text-sm bg-transparent">
+                <td colSpan={6} className="px-6 py-12 text-center text-foreground/50 text-sm bg-transparent">
                   No emails have been sent yet.
                 </td>
               </tr>

@@ -1,7 +1,7 @@
 import Razorpay from 'razorpay';
 import { NextResponse } from 'next/server';
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
-import { requireAppAuth, handleAppAuthError, type AppAuthTokenPayload } from '@/lib/appAuth';
+import { requireAppAuth, handleAppAuthError, getAppAuthFromRequest, type AppAuthTokenPayload } from '@/lib/appAuth';
 import prisma from '@/lib/db';
 import { assignFailedOrderNumber } from '@/lib/orderNumber';
 
@@ -22,11 +22,11 @@ function razorpayErrMessage(err: unknown): string {
   return 'Order creation failed';
 }
 
-async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: AppAuthTokenPayload) {
+async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: AppAuthTokenPayload | null) {
   // Prefer auth customer so prepaid orders always stick to the logged-in account
   const bodyCustomerId = orderData?.customerId && orderData.customerId !== 'GUEST' ? orderData.customerId : null;
-  const customerId = userAuth.customerId || bodyCustomerId;
-  const customerEmail = orderData?.customerEmail || orderData?.shippingAddress?.email || userAuth.customerEmail;
+  const customerId = userAuth?.customerId || bodyCustomerId;
+  const customerEmail = orderData?.customerEmail || orderData?.shippingAddress?.email || userAuth?.customerEmail;
   const customerPhone = orderData?.customerPhone || orderData?.shippingAddress?.phone || '';
 
   let customer = customerId
@@ -61,7 +61,16 @@ async function resolveMobileCustomer(shopId: string, orderData: any, userAuth: A
 export async function POST(req: Request) {
   const corsHeaders = getCorsHeaders(req);
   try {
-    const { auth: userAuth } = await requireAppAuth(req);
+    const authHeader = req.headers.get('authorization') || '';
+    const userAuth = getAppAuthFromRequest(req);
+
+    // If client supplied a Bearer token but it's expired/invalid, reject with clear session expired message
+    if (authHeader && !userAuth) {
+      return NextResponse.json(
+        { error: 'Session expired. Please log in again.' },
+        { status: 401, headers: corsHeaders }
+      );
+    }
 
     let { key_id, key_secret, source } = await resolveRazorpayCredentials();
     key_id = key_id.trim();
@@ -80,13 +89,73 @@ export async function POST(req: Request) {
     }
 
     const isCod = String(orderData?.paymentMethod || '').toUpperCase() === 'COD';
+
+    const { isCodAllowedForCountry, resolveCheckoutCountry, COD_INDIA_ONLY_ERROR } = await import('@/lib/cod-availability');
+    const appCountry = resolveCheckoutCountry({
+      displayCountry: orderData?.displayCountry || orderData?.countryCode,
+      currency,
+      address: orderData?.shippingAddress || orderData?.shipping_address,
+    });
+    if (isCod && !isCodAllowedForCountry(appCountry)) {
+      return NextResponse.json({ error: COD_INDIA_ONLY_ERROR }, { status: 400, headers: corsHeaders });
+    }
     const { getConfiguredCodUpfrontAmount } = await import('@/lib/cod-upfront');
     const configuredCodFee = isCod ? await getConfiguredCodUpfrontAmount() : 0;
-    // COD: charge dashboard fee only. Prepaid: charge the client amount (order total).
-    const chargeAmountRupees = isCod ? configuredCodFee : amountRupees;
+
+    // Reprice line items from Shopify when possible (null = reprice unavailable).
+    const lineItems = Array.isArray(orderData?.lineItems) ? orderData.lineItems : [];
+    let pricedSubtotal: number | null = null;
+    if (lineItems.length > 0) {
+      try {
+        const { fetchVariantPriceMap, sumLineItemsWithAuthoritativePrices } = await import(
+          '@/lib/shopify-variant-prices'
+        );
+        const priceMap = await fetchVariantPriceMap(
+          lineItems.map((li: any) => String(li?.variantId || li?.variant_id || ''))
+        );
+        if (priceMap.size > 0) {
+          pricedSubtotal = sumLineItemsWithAuthoritativePrices(lineItems, priceMap).subtotal;
+        }
+      } catch (e: any) {
+        console.warn('[MobileCheckout] Reprice failed:', e?.message);
+      }
+    }
+
+    // Re-validate the coupon and its amount before any payment order is created.
+    {
+      const clientLinesTotal = lineItems.reduce(
+        (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
+      const { verifyAppOrderDiscount } = await import('@/lib/appDiscounts');
+      const discountCheck = await verifyAppOrderDiscount({
+        code: orderData?.discountCode || orderData?.discount_code,
+        claimedAmount: orderData?.discountAmount ?? orderData?.discount_amount,
+        orderAmount: pricedSubtotal ?? clientLinesTotal,
+        paymentMethod: orderData?.paymentMethod,
+      });
+      if (!discountCheck.ok) {
+        return NextResponse.json({ error: discountCheck.error }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // Prepaid: use the repriced subtotal when available so Razorpay isn't opened for ₹1.
+    let prepaidCharge = amountRupees;
+    if (!isCod && pricedSubtotal !== null) {
+      const credits = Math.max(0, Number(orderData.appliedStoreCredits || 0));
+      const discount = Math.max(0, Number(orderData.discountAmount || orderData.discount_amount || 0));
+      prepaidCharge = Math.max(0, Math.round((pricedSubtotal - credits - discount) * 100) / 100);
+    }
+    if (!isCod && prepaidCharge <= 0) {
+      return NextResponse.json(
+        { error: 'Invalid prepaid amount after discounts' },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    // COD: charge dashboard fee only. Prepaid: server-floor amount.
+    const chargeAmountRupees = isCod ? configuredCodFee : prepaidCharge;
     const orderTotalRupees = isCod
       ? Number(orderData?.total ?? orderData?.total_price ?? amountRupees)
-      : amountRupees;
+      : chargeAmountRupees;
 
     // Razorpay receipt: required, max 40 chars
     let receipt = typeof receiptIn === 'string' && receiptIn.trim() ? receiptIn.trim() : `zb_${Date.now()}`;
@@ -100,7 +169,7 @@ export async function POST(req: Request) {
       receipt,
       payment_capture: true,
       notes: {
-        customerId: userAuth.customerId || orderData?.customerId,
+        customerId: userAuth?.customerId || orderData?.customerId,
         source: 'mobile-app',
         ...(isCod ? { payment_type: 'cod_upfront', cod_upfront: String(chargeAmountRupees) } : {}),
       }
