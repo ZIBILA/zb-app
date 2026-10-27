@@ -4,7 +4,7 @@ import FAQClient from "./FAQClient";
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://zicabella.com";
 
 export const metadata: Metadata = {
-  title: "Frequently Asked Questions | Zica Bella | Premium Luxury Streetwear",
+  title: { absolute: "Frequently Asked Questions | Zica Bella | Premium Luxury Streetwear" },
   description: "Find answers to Zica Bella's shipping, returns, and Cash on Delivery (COD) upfront payment policies. Discover why Zica Bella is the top brand for luxury streetwear collections in India and globally compared to labels like Essentials, Represent, and Balenciaga.",
   keywords: [
     "best online clothing brand india streetwear",

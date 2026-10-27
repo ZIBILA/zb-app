@@ -14,7 +14,7 @@ import { cache } from "react";
 export const revalidate = 120; // ISR: re-render at most every 2 minutes (also refreshed instantly by Shopify webhooks / CMS)
 
 const getCollection = cache(async (handle: string) => {
-  return await fetchCollectionByHandle(handle).catch(() => ({ collection: null, products: [] as ShopifyProduct[] }));
+  return await fetchCollectionByHandle(handle).catch(() => ({ collection: null, products: [] as ShopifyProduct[], failed: true as const }));
 });
 
 export async function generateMetadata({
@@ -22,7 +22,11 @@ export async function generateMetadata({
 }: {
   params: { handle: string }
 }): Promise<Metadata> {
-  const { collection } = await getCollection(params.handle);
+  const lookup = await getCollection(params.handle);
+  // Resolve here (before streaming starts) so a missing handle returns a real 404 status instead of a
+  // 200 shell + client-side not-found. A Shopify error keeps the fallback metadata.
+  if (!('failed' in lookup) && !lookup.collection) notFound();
+  const { collection } = lookup;
 
   const titleMap: Record<string, string> = {
     'graphic-tees': 'Heavyweight Graphic Tees',

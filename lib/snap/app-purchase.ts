@@ -15,6 +15,7 @@
 import { pickRealEmail, pickRealName } from '@/lib/tracking/placeholder-identity';
 import { snapPurchasePhone } from '@/lib/snap/identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
+import { internalOrderReason } from '@/lib/meta/internal-orders';
 import { createDeliveryLedger, isMissingTable, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
 import { findRecoveryCandidates } from '@/lib/snap/recovery';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
@@ -118,6 +119,31 @@ const SNAP_TERMINAL_RETRY_SKIP = /^(order not found|not a native app order|nativ
 export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process.env, verifyCapture }: SnapAppPurchaseDeps) {
   const ledger = createDeliveryLedger(db, '[Snap App Purchase]');
 
+  /**
+   * Staff / QA / demo-account orders are never a conversion (lib/meta/internal-orders.ts,
+   * the same rule the browser pixel and the Meta server Purchase apply). The ledger row
+   * is closed so the retry cron and the recovery scan do not re-examine it every run.
+   */
+  async function closeAsInternal(orderId: string, why: string): Promise<void> {
+    const lastError = `internal order (${why}): not reported to Snap`.slice(0, 500);
+    const key = { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } };
+    try {
+      const row = await db.adConversionDelivery.findUnique({ where: key });
+      if (!row) {
+        await db.adConversionDelivery.create({
+          data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, status: 'skipped', lastError },
+        });
+      } else if (row.status === 'pending' || row.status === 'failed') {
+        await db.adConversionDelivery.updateMany({
+          where: { id: row.id, status: { in: ['pending', 'failed'] } },
+          data: { status: 'skipped', leaseUntil: null, lastError },
+        });
+      }
+    } catch (err: any) {
+      console.warn(`[Snap App Purchase] could not close internal order ${orderId}:`, isMissingTable(err) ? 'ledger table missing' : err?.message);
+    }
+  }
+
   /** A validation-only answer recorded nothing at Snap: never mark the Purchase as delivered. */
   const send: SnapAppPurchaseDeps['send'] = async (input, cfg) => {
     const res = await rawSend(input, cfg);
@@ -160,6 +186,11 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
       return { status: 'skipped', reason: 'not a native app order' };
     }
     if (isUnresolvedRecoveryOrder(order)) return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
+    const internal = internalOrderReason(order);
+    if (internal) {
+      await closeAsInternal(orderId, internal);
+      return { status: 'skipped', reason: `internal order (${internal})` };
+    }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     if (snapPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };

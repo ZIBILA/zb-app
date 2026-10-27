@@ -271,7 +271,10 @@ export async function POST(req: Request) {
         // checkout/complete. Idempotent with that path via the delivery ledger;
         // uses the click context recorded at Razorpay pre-create. Native-app and
         // unpaid orders are skipped inside emitSnapPurchase.
-        try {
+        // Not awaited, like the Meta send above: two sequential Snap calls (5 s
+        // timeout each) must not hold the webhook response past Razorpay's limit and
+        // trigger redeliveries. The ledger keeps an interrupted send safe.
+        void (async () => {
           // Only captured / order.paid reach this point → payment is confirmed.
           // Web orders → website CAPI; native-app orders → MOBILE_APP CAPI.
           // Each function skips orders that are not its type.
@@ -279,9 +282,9 @@ export async function POST(req: Request) {
           const { emitSnapAppPurchase } = await import('@/lib/snap/app-purchase-server');
           await emitSnapPurchase(order.id, undefined, { paymentConfirmed: true });
           await emitSnapAppPurchase(order.id, { paymentConfirmed: true });
-        } catch (snapErr: any) {
+        })().catch((snapErr: any) => {
           console.warn('[Razorpay Webhook] Snap Purchase dispatch failed:', snapErr?.message);
-        }
+        });
 
         // Link WebhookEvent to Order
         await prisma.webhookEvent.update({

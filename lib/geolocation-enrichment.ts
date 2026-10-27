@@ -72,11 +72,12 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
             latitude: geoData.lat,
             longitude: geoData.lng,
           }));
-          // IP geolocation is accurate to the country / region; its city and
-          // postal code are the ISP's, not the shopper's, so they are not stored
-          // as customer data (Meta already geo-matches on the client IP).
+          // IP geolocation is reliable to the country only. Its region is the
+          // carrier's egress (often another state on Indian mobile networks), and
+          // city / postal code are the ISP's, so none of those are stored as the
+          // shopper's address (Meta already geo-matches on the client IP; the relay
+          // rule is "st / ct / zp never from IP").
           await saveUserDataToCookies({
-            state: geoData.region || undefined,
             country: geoData.country || undefined,
           });
           initPixel();
@@ -135,9 +136,8 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
             latitude: geoData.lat,
             longitude: geoData.lng,
           }));
-          // IP-derived: country / region only (see above).
+          // IP-derived: country only (see above).
           await saveUserDataToCookies({
-            state: geoData.region || undefined,
             country: geoData.country || undefined,
           });
           initPixel();

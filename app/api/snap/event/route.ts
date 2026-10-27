@@ -3,6 +3,10 @@ import { z } from 'zod';
 import { sendSnapEvent } from '@/lib/snap-capi';
 import { isSnapExcludedPath, snapStorefrontHosts } from '@/lib/snap/config';
 import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
+import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
+import { isBotUserAgent } from '@/lib/tracking/bot-agent';
+import { isSnapProductionSite } from '@/lib/snap/config';
+import { rateLimitInMemory } from '@/lib/rate-limit-memory';
 
 /**
  * Public, browser-facing Snap CAPI relay for NON-monetary-authoritative web events.
@@ -13,7 +17,9 @@ import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
  *
  * Defence in depth: strict schema, event allowlist, storefront-host check on
  * event_source_url, value/quantity bounds, per-IP rate limit, opaque responses.
- * (Origin/Referer are spoofable and are not used as authentication.)
+ * Origin / Sec-Fetch-Site must name the storefront (lib/tracking/same-site-request.ts):
+ * forgeable by a script, so a bar rather than authentication, but it keeps
+ * cross-site pages and header-less clients out.
  */
 
 const RELAYED_EVENTS = [
@@ -66,33 +72,28 @@ const bodySchema = z.strictObject({
 // ── Storefront host allowlist for event_source_url (lib/snap/config.ts) ──
 const HOSTS = snapStorefrontHosts();
 
-// ── Per-IP sliding-window rate limit (in-memory on purpose: this route is hit on
-//    every page view, and a DB-backed limiter would add a write per event to an
-//    already connection-constrained Postgres). ──
-const WINDOW_MS = 60_000;
-const MAX_PER_WINDOW = 120;
-const hits = new Map<string, number[]>();
-function rateLimited(key: string): boolean {
-  const now = Date.now();
-  const arr = (hits.get(key) || []).filter(t => now - t < WINDOW_MS);
-  arr.push(now);
-  hits.set(key, arr);
-  if (hits.size > 20_000) {
-    for (const [k, v] of hits) if (!v.length || now - v[v.length - 1] > WINDOW_MS) hits.delete(k);
-  }
-  return arr.length > MAX_PER_WINDOW;
-}
+// Crawler / automation filtering only on the live site (local checks run headless Chrome).
+const FILTER_NON_HUMANS = process.env.NODE_ENV === 'production' && isSnapProductionSite();
 
 const reject = (status: number, error: string) => NextResponse.json({ success: false, error }, { status });
 
 export async function POST(req: NextRequest) {
   try {
-    // Rate-limit identity = the IP our hosting proxy reports for THIS connection
-    // (do-connecting-ip on DigitalOcean, then standard forwarding headers).
-    // Never a cookie: zb_client_ip is client-controlled and could be rotated
-    // per request to dodge the limit.
+    if (!isStorefrontPageRequest(req.headers, HOSTS)) return reject(400, 'invalid_source');
+    // Crawlers / headless browsers and staff / QA / demo browsers (zb_internal cookie,
+    // set by /api/meta/event for internal accounts) never feed Snap's funnel.
+    if (FILTER_NON_HUMANS && isBotUserAgent(req.headers.get('user-agent'))) return NextResponse.json({ success: true, skipped: true });
+    if (req.cookies.get('zb_internal')?.value === '1') return NextResponse.json({ success: true, skipped: true });
+    // Abuse throttle (in-memory, no DB): per visitor (trusted request IP + the device id
+    // the middleware mints — never a client-rotatable value alone), with a loose per-IP
+    // backstop. A per-IP bucket of 120/min dropped the server half of events for Indian
+    // mobile shoppers sharing one CGNAT address.
     const trustedIp = getClientIP(req);
-    if (rateLimited(trustedIp || 'unknown')) return reject(429, 'rate_limited');
+    const visitorKey = `${trustedIp || 'unknown'}:${req.cookies.get('zb_external_id')?.value || ''}`;
+    if (!rateLimitInMemory(`snap-event:${visitorKey}`, { maxRequests: 120, windowMs: 60_000 }).allowed
+      || !rateLimitInMemory(`snap-event-ip:${trustedIp || 'unknown'}`, { maxRequests: 2000, windowMs: 60_000 }).allowed) {
+      return reject(429, 'rate_limited');
+    }
 
     let raw: unknown;
     try { raw = await req.json(); } catch { return reject(400, 'invalid_json'); }
@@ -146,31 +147,27 @@ export async function POST(req: NextRequest) {
       country: u.country || own('zb_guest_country'),
     };
 
-    // Anonymous, non-checkout events: never re-attach identity cookies the
-    // client chose not to send (shared-device privacy).
-    const isCheckoutEvent = body.eventName === 'START_CHECKOUT' || body.eventName === 'ADD_BILLING';
-    const isLoggedIn = c('zb_user_logged_in') === 'true';
-    if (!isCheckoutEvent && !isLoggedIn && body.eventName !== 'SUBSCRIBE') {
-      if (!u.em) userData.em = undefined;
-      if (!u.ph) userData.ph = undefined;
-      if (!u.fn) userData.fn = undefined;
-      if (!u.ln) userData.ln = undefined;
-    }
+    // The bound cookie hashes (own()) are this visitor's and the browser pixel
+    // already sends them on every event; the server half carries the same identity.
 
+    // No address known for this visitor: the IP gives a trustworthy country, but its
+    // region / city / postcode are the carrier's egress, not the shopper's. A wrong
+    // hashed ct / zp can only fail to match, so only country is filled (the Meta relay
+    // applies the same rule).
     if (!userData.country && !userData.st && !userData.ct && !userData.zp && ip) {
       const ipGeo = await lookupIpGeo(ip, req).catch(() => null);
       if (ipGeo && !ipGeo.isDevFallback) {
         userData.country = ipGeo.countryCode || undefined;
-        userData.st = ipGeo.region || undefined;
-        userData.ct = ipGeo.city || undefined;
-        userData.zp = ipGeo.zip || undefined;
       }
     }
 
     const result = await sendSnapEvent({
       eventName: body.eventName,
       eventId: body.eventId,
-      eventTime: body.eventTime,
+      // A relayed event happened moments ago, so the browser clock is trusted only
+      // within an hour of now; a device with a wrong clock gets the server's receive
+      // time instead of a mis-dated event (or, before, no server event at all).
+      eventTime: typeof body.eventTime === 'number' && Number.isFinite(body.eventTime) && Math.abs(Date.now() - body.eventTime) <= 3_600_000 ? body.eventTime : Date.now(),
       eventSourceUrl: body.eventSourceUrl,
       userAgent: body.userAgent || req.headers.get('user-agent') || '',
       ipAddress: ip,

@@ -361,7 +361,12 @@ export default function CheckoutPage() {
   // Nothing else on this page waits for it (GA4 / Snap / OpenAI / zb fire below as on main).
   const metaIcFiredRef = useRef(false);
   useEffect(() => {
-    const canFire = status === "unauthenticated" || (status === "authenticated" && addressesLoaded);
+    // Checkout is login-gated (an unauthenticated visitor is redirected to /login on
+    // this same render). Firing here for them sent Meta an InitiateCheckout with no
+    // identity and the guest device id, and the 30-minute cart marker then suppressed
+    // the real one after login — so the IC Meta kept was the weak copy. Fire only once
+    // the shopper is signed in and the saved address is known.
+    const canFire = status === "authenticated" && addressesLoaded;
     if (items.length === 0 || metaIcFiredRef.current || !canFire) return;
     const fire = () => {
       if (metaIcFiredRef.current) return;
@@ -406,7 +411,10 @@ export default function CheckoutPage() {
           category: item.category
         })));
       }
-      {
+      // Snap START_CHECKOUT: signed-in shoppers only, for the same reason as Meta's
+      // InitiateCheckout above (the unauthenticated render is redirected to /login and
+      // the page remounts after login, which would send a second, now-identified copy).
+      if (status === "authenticated") {
         const snap = snapCartPayload(items);
         // Unique categories, ≤ 256 chars: /api/snap/event rejects longer content_category
         // (a big cart repeating "Oversized T-Shirts" used to make the CAPI event fail).
@@ -1853,6 +1861,30 @@ export default function CheckoutPage() {
       });
       if (optionError) throw new Error(optionError);
 
+      // Snap ADD_BILLING: a returning customer who picked a saved address reaches this
+      // point without handleProceed or a payment-method click, so nothing has fired it
+      // yet. Same moment as Meta's AddPaymentInfo below; the once-guard keeps it single.
+      if (!paymentInfoFired) {
+        const snapNameParts = (address.name || "").trim().split(/\s+/);
+        trackSnapAddBilling(
+          subtotal,
+          'INR', // subtotal is the INR base amount (cart prices are INR)
+          {
+            country: address.countryCode || address.country,
+            st: address.state,
+            ct: address.city,
+            zp: address.zip,
+            fn: snapNameParts[0] || undefined,
+            ln: snapNameParts.length > 1 ? snapNameParts.slice(1).join(" ") : undefined,
+            em: address.email || undefined,
+            ph: address.phone || undefined,
+          },
+          snapCartPayload(items).ids,
+          snapCartPayload(items).numItems,
+          snapCartPayload(items).contents
+        );
+        setPaymentInfoFired(true);
+      }
       // Meta AddPaymentInfo: the shopper is now actually paying (Razorpay opens next).
       fireMetaAddPaymentInfo();
 

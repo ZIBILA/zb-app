@@ -191,8 +191,8 @@ export default function ProductCardImage({
 
   const onFirstLoad = useCallback(() => {
     loadedSet.current.add(0);
-    if (count >= 2) setPreloadUpTo(1);
-  }, [count]);
+    // Image #2 is fetched when the carousel index moves (swipe / hover), not for every card on load.
+  }, []);
 
   // When carousel index changes, preload one ahead
   useEffect(() => {

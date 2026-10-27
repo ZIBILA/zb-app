@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import {
-  SNAP_PIXEL_ID,
+  snapPixelId,
   captureSnapClickId,
   getSnapIdentityCookies,
   getClientCookie,
@@ -12,6 +12,8 @@ import {
   trackSnapClientEvent,
   initSnapPixel,
 } from '@/lib/snapPixel';
+import { isDemoValue } from '@/lib/metaPixel';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -29,7 +31,7 @@ export function SnapPixelRouteTracker() {
 
   // Persist ScCid immediately on landing, before anything else can navigate away.
   useEffect(() => {
-    if (SNAP_PIXEL_ID) captureSnapClickId();
+    if (snapPixelId()) captureSnapClickId();
   }, [pathname]);
 
   // Don't let a stuck session request block PAGE_VIEW forever.
@@ -58,7 +60,7 @@ export function SnapPixelRouteTracker() {
     }
     lastTrackedPath.current = pathname;
 
-    if (!SNAP_PIXEL_ID) {
+    if (!snapPixelId()) {
       return;
     }
 
@@ -72,8 +74,20 @@ export function SnapPixelRouteTracker() {
       setClientCookie('zb_external_id', extId, 365);
     }
 
-    // 3. (Re)init pixel with advanced matching (only re-inits when identity changed)
-    initSnapPixel();
+    // 3. (Re)init pixel with advanced matching (only re-inits when identity changed).
+    //    Logged in: the session's own raw email / phone / name — the pixel hashes raw
+    //    values itself (cookie hashes can only feed email / phone), so the pixel half
+    //    matches on the same keys as the CAPI half. Guests: the bound cookie hashes.
+    const su = session?.user as any;
+    const sessionName = String(su?.name || '').trim();
+    const nameParts = sessionName && !isDemoValue('name', sessionName) ? sessionName.split(/\s+/) : [];
+    const sessionPhone = su?.phone || (session as any)?.customer?.phone;
+    initSnapPixel(su ? {
+      em: su.email && !isDemoValue('email', su.email) ? su.email : undefined,
+      ph: sessionPhone && !isDemoValue('phone', sessionPhone) ? sessionPhone : undefined,
+      fn: nameParts[0] || undefined,
+      ln: nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined,
+    } : undefined);
 
     // 4. Shared id: browser client_dedup_id === CAPI event_id
     const eventId = 'pv_snap_' + uuidv4();
@@ -82,10 +96,11 @@ export function SnapPixelRouteTracker() {
     // 5. Browser PAGE_VIEW
     trackSnapClientEvent('PAGE_VIEW', {}, eventId);
 
-    // 6. Server PAGE_VIEW. Hashed email/phone/name cookies are attached only for
-    //    logged-in shoppers (shared-device privacy); location + Snap ids always.
+    // 6. Server PAGE_VIEW. getSnapIdentityCookies() only returns hashes bound to this
+    //    visitor's external_id, and the pixel half (step 5) sends the same hashes, so
+    //    the server half carries them too (same identity on both halves of the pair).
     const ids = getSnapIdentityCookies();
-    const loggedIn = !!session?.user;
+    if (isExcludedBrowser()) return;
     fetch('/api/snap/event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -100,7 +115,7 @@ export function SnapPixelRouteTracker() {
         scCookie1: ids.sc_cookie1,
         externalId: ids.external_id || extId,
         userData: {
-          ...(loggedIn ? { em: ids.em, ph: ids.ph, fn: ids.fn, ln: ids.ln } : {}),
+          em: ids.em, ph: ids.ph, fn: ids.fn, ln: ids.ln,
           ct: ids.ct, st: ids.st, zp: ids.zp, country: ids.country,
         },
       }),

@@ -42,7 +42,9 @@ export default function SearchResultsClient({
   useEffect(() => {
     if (query) {
       trackSearch(query);
-      trackSnapSearch(query);
+      // Snap SEARCH with the first results' catalog ids (variant id = feed <g:id>).
+      const resultIds = (initialProducts || []).slice(0, 10).map(p => p.variants?.[0]?.id).filter(Boolean).map(String);
+      trackSnapSearch(query, resultIds.length ? resultIds : undefined);
     }
   }, [query]);
 

@@ -2,9 +2,19 @@ import { isPlaceholderEmailHash, isPlaceholderPhoneHash } from '@/lib/tracking/p
 import { DEMO_PHONE_HASHES } from '@/lib/buildMetaUserData';
 import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
 import { resolveSnapPixelId } from '@/lib/snap/config';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 
 /** The pixel id in use ('' = Snap tracking is off on this deployment). See lib/snap/config.ts. */
-export const SNAP_PIXEL_ID = resolveSnapPixelId();
+const BUILD_SNAP_PIXEL_ID = resolveSnapPixelId();
+
+/** The pixel id this page runs with: the request-time value app/layout.tsx wrote to window.__zbSnapPixelId, else the build-time one (same reasoning as lib/metaPixel.ts metaPixelId). */
+export function snapPixelId(): string {
+  if (typeof window !== 'undefined') {
+    const v = (window as any).__zbSnapPixelId;
+    if (typeof v === 'string') return v;
+  }
+  return BUILD_SNAP_PIXEL_ID;
+}
 
 /**
  * Defensive helper: ensures window.snaptr exists before calling the callback.
@@ -13,6 +23,7 @@ export const SNAP_PIXEL_ID = resolveSnapPixelId();
  */
 export function withSnaptr(callback: (snaptr: any) => void, eventLabel = 'unknown'): void {
   if (typeof window === 'undefined') return;
+  if (isExcludedBrowser()) return; // staff / QA / demo browser or WebDriver automation on the live site
 
   if ((window as any).snaptr) {
     callback((window as any).snaptr);
@@ -81,7 +92,9 @@ export function captureSnapClickId(): string | null {
   const urlParams = new URLSearchParams(window.location.search);
   const scCid = urlParams.get('ScCid') || urlParams.get('sccid') || urlParams.get('sc_click_id');
   if (scCid) {
-    setClientCookie('ScCid', scCid, 90);
+    // middleware.ts already set this value as an HTTP cookie (full 90 days on Safari);
+    // rewriting the same value from script would replace it with a 24 h-capped one.
+    if (getClientCookie('ScCid') !== scCid) setClientCookie('ScCid', scCid, 90);
     return scCid;
   }
   return getClientCookie('ScCid');
@@ -169,7 +182,7 @@ function initWithIdentity(snaptr: any, identity: Record<string, string>) {
   const key = JSON.stringify(identity, Object.keys(identity).sort());
   if (key === lastInitKey) return;
   lastInitKey = key;
-  snaptr('init', SNAP_PIXEL_ID, identity);
+  snaptr('init', snapPixelId(), identity);
   if (typeof window !== 'undefined') (window as any).__snapPixelInitialized = true;
 }
 
@@ -177,7 +190,7 @@ function initWithIdentity(snaptr: any, identity: Record<string, string>) {
  * Initialize Snap Pixel with advanced matching from cookies (+ optional raw PII).
  */
 export const initSnapPixel = (raw?: RawIdentity) => {
-  if (!SNAP_PIXEL_ID) return;
+  if (!snapPixelId()) return;
   withSnaptr((snaptr) => initWithIdentity(snaptr, buildPixelIdentity(raw)), 'init');
 };
 
@@ -194,7 +207,7 @@ export const trackSnapClientEvent = (
   dedupId?: string,
   rawIdentity?: RawIdentity
 ) => {
-  if (!SNAP_PIXEL_ID) return;
+  if (!snapPixelId()) return;
   withSnaptr((snaptr) => {
     initWithIdentity(snaptr, buildPixelIdentity(rawIdentity));
     const payload: Record<string, any> = {};

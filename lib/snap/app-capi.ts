@@ -153,7 +153,7 @@ export function buildSnapAppEvent(input: SnapAppEventInput): Record<string, any>
     if (h) user_data[k] = [h];
   });
   const ext = hashIfNeeded(input.externalId?.trim());
-  if (ext) user_data.external_id = [ext];
+  if (ext) user_data.external_id = ext; // plain string per Snap's parameter reference
   if (input.ipAddress) user_data.client_ip_address = input.ipAddress;
   if (input.userAgent) user_data.client_user_agent = input.userAgent;
   if (d.idfv) user_data.idfv = d.idfv;

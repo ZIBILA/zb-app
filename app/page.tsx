@@ -1,4 +1,4 @@
-import { fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle } from "@/lib/shopify-admin";
+import { fetchEnabledCollections, fetchCollectionByHandle } from "@/lib/shopify-admin";
 import { isStorefrontEligible } from "@/lib/storefrontCatalog";
 import prisma, { getStoreSettings, getShopSettings, DEFAULT_SHOP_SETTINGS } from "@/lib/db";
 import NextImage from "next/image";
@@ -16,6 +16,7 @@ import SpotlightSection from "@/components/SpotlightSection";
 import LazyVideo from "@/components/LazyVideo";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import { Metadata } from "next";
+import { preload } from "react-dom";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
 
@@ -76,10 +77,15 @@ export default async function Home() {
     getShopSettings(),
   ]);
 
+  // Hint the hero poster (the mobile LCP image) before the catalogue fetches below, so the
+  // <link rel="preload"> lands in the streamed <head> instead of in the body after the data.
+  if (s?.heroVideo && s?.heroImage) {
+    preload(s.heroImage, { as: "image", fetchPriority: "high" });
+  }
+
   // Concurrently fetch all independent assets to optimize TTFB and speed up the homepage loading
-  const [collections, policies, banners, fetchedProducts] = await Promise.all([
+  const [collections, banners, fetchedProducts] = await Promise.all([
     fetchEnabledCollections('page').catch(() => []),
-    fetchPolicies().catch(() => []),
     (async () => {
       try {
         return await prisma.webStoreBanner.findMany({
@@ -303,8 +309,8 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 1 ─── */}
         <section className="mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {products.slice(0, 4).map((p: ShopifyProduct, idx: number) => (
-              <ProductCard key={p.id} product={p} priority={idx < 4} />
+            {products.slice(0, 4).map((p: ShopifyProduct) => (
+              <ProductCard key={p.id} product={p} />
             ))}
           </div>
         </section>

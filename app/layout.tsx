@@ -4,6 +4,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
 import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
+import { fetchEnabledCollections } from "@/lib/shopify-admin";
 import { Toaster } from "sonner";
 import MetaPixelRouteTracker from "@/components/MetaPixelRouteTracker";
 import FacebookSDKInit from "@/components/FacebookSDKInit";
@@ -17,16 +18,9 @@ import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
 import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES, PLACEHOLDER_ZIP_HASHES } from "@/lib/tracking/placeholder-identity";
 import { resolveSnapPixelId } from "@/lib/snap/config";
-import { resolveMetaPixelId } from "@/lib/meta/config";
+import { resolveMetaServerPixelId } from "@/lib/meta/config";
 import { parseConsentRegions } from "@/lib/meta/consent";
 import MetaConsentGate from "@/components/MetaConsentGate";
-
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
-  display: "swap",
-});
 
 /* ISR/SSG enabled — force-dynamic removed from root layout.
    Only truly dynamic pages (checkout, cart, search) set their own dynamic mode. */
@@ -39,6 +33,7 @@ const inter = localFont({
   ],
   variable: "--font-inter",
   display: "swap",
+  preload: false, // only cart/orders/returns + toasts use Inter; the face still loads on demand
 });
 
 const poppins = localFont({
@@ -51,6 +46,7 @@ const poppins = localFont({
   ],
   variable: "--font-poppins",
   display: "swap",
+  preload: false, // only policies + search use Poppins
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
@@ -158,7 +154,9 @@ export default async function RootLayout({
 }>) {
   // '' = Meta tracking off on this deployment (dev / test / staging without an explicit
   // NEXT_PUBLIC_META_PIXEL_ID): the base snippet below is not rendered (lib/meta/config.ts).
-  const pixelId = resolveMetaPixelId();
+  // The id the Conversions API sends with (META_PIXEL_ID, else the public id, else the
+  // built-in one): the browser must use the same one or the two halves never deduplicate.
+  const pixelId = resolveMetaServerPixelId();
   // Consent regions / Limited Data Use — both off unless the env says otherwise (lib/meta/consent.ts).
   const metaConsentRegions = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
   const metaLdu = String(process.env.NEXT_PUBLIC_META_LDU || '').trim() === '1';
@@ -169,7 +167,14 @@ export default async function RootLayout({
   const snapPixelId = resolveSnapPixelId(); // '' = Snap tracking off on this deployment (lib/snap/config.ts)
   const openaiAdsPixelId = process.env.NEXT_PUBLIC_OPENAI_ADS_PIXEL_ID || '';
   const storefrontGtmId = process.env.NEXT_PUBLIC_STOREFRONT_GTM_ID || "GTM-WKTQJ5LF";
-  const footerData = await getStorefrontFooterData();
+  const [footerData, headerCollections] = await Promise.all([
+    getStorefrontFooterData(),
+    // Desktop header nav links: resolved here so they are in the HTML instead of popping in after a
+    // client fetch. Only the fields the header renders are serialised.
+    fetchEnabledCollections("header")
+      .then((cols) => cols.map((c) => ({ id: c.id, handle: c.handle, title: c.title })))
+      .catch(() => [] as { id: number; handle: string; title: string }[]),
+  ]);
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -208,6 +213,8 @@ export default async function RootLayout({
           }}
         />
         <link rel="preconnect" href="https://cdn.shopify.com" />
+        {/* Header wordmark font — above the fold on every page, so preload the (same-origin) file */}
+        <link rel="preload" href="/fonts/Rocaston.ttf" as="font" type="font/ttf" crossOrigin="anonymous" />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
@@ -240,13 +247,29 @@ export default async function RootLayout({
             })
           }}
         />
+        {/* Request-time pixel ids for the browser bundle (lib/metaPixel.ts / lib/snapPixel.ts read these
+            instead of the build-time NEXT_PUBLIC_* values, so a build env that differs from the runtime env
+            cannot leave the snippet and the bundle disagreeing on whether tracking is on). */}
+        <script
+          id="zb-pixel-ids"
+          dangerouslySetInnerHTML={{
+            __html: `window.__zbMetaPixelId=${JSON.stringify(pixelId)};window.__zbSnapPixelId=${JSON.stringify(snapPixelId)};`,
+          }}
+        />
         {/* Pixel queue stubs + init (no network). External SDKs load via lazyOnload so early track() calls still queue. */}
         {pixelId && (
         <script
           id="fb-pixel-stub"
           dangerouslySetInnerHTML={{
             __html: `
-              if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              var zbInternal = /(?:^|; )zb_internal=1(?:;|$)/.test(document.cookie);
+              if (!zbInternal && /[?&]zb_internal=1(?:&|$)/.test(location.search)) {
+                document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+                zbInternal = true;
+              }
+              if (/[?&]zb_app=1(?:&|$)/.test(location.search)) zbInternal = true; // native-app WebView page: not a website visit
+              window.__zbInternal = zbInternal;
+              if (!zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
                 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];}(window);
@@ -295,7 +318,7 @@ export default async function RootLayout({
             id="snap-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-              if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!window.__zbInternal && !/(?:^|; )zb_internal=1(?:;|$)/.test(document.cookie) && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 if (!window.snaptr) {
                   var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
                   a.queue = [];
@@ -351,7 +374,7 @@ export default async function RootLayout({
           }}
         />
       </head>
-      <body className={`${geistSans.variable} ${inter.variable} ${poppins.variable} antialiased`}>
+      <body className={`${inter.variable} ${poppins.variable} antialiased`}>
         {/* Google Tag Manager (noscript) */}
         <noscript>
           <iframe
@@ -370,7 +393,7 @@ export default async function RootLayout({
           <FacebookSDKInit />
           <SnapPixelRouteTracker />
           <OpenAiPixelRouteTracker />
-          <LayoutWrapper footerData={footerData}>
+          <LayoutWrapper footerData={footerData} headerCollections={headerCollections}>
             {children}
           </LayoutWrapper>
           <Toaster position="top-right" />

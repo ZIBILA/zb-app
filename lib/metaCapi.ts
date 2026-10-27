@@ -15,7 +15,7 @@ import {
   isPlaceholderEmail, isPlaceholderEmailHash, isPlaceholderPhone, isPlaceholderPhoneHash, isPlaceholderNamePart, isPlaceholderNameHash, isPlaceholderZipHash,
 } from './tracking/placeholder-identity';
 
-import { resolveMetaServerPixelId, metaPixelIdProblem } from './meta/config';
+import { resolveMetaServerPixelId, metaPixelIdProblem, isMetaProductionSite } from './meta/config';
 import { ldUFields } from './meta/consent';
 
 // '' when Meta tracking is off on this deployment (see lib/meta/config.ts): every
@@ -29,7 +29,20 @@ if (process.env.NODE_ENV === 'production') {
   const problem = metaPixelIdProblem();
   if (problem) console.error('[Meta CAPI][ALERT] pixel configuration:', problem);
 }
-const TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE;
+// META_TEST_EVENT_CODE turns every CAPI event into an Events Manager "test event":
+// Meta shows it in the Test Events tab and never counts it for ads reporting or
+// optimisation. Left set on the live site it would silently void every real
+// conversion — and the ledger would still mark each Purchase as sent, so those
+// sales could never be re-sent once the code was removed. It is therefore
+// honoured only off the live site (dev / staging / preview builds).
+const TEST_EVENT_CODE_RAW = (process.env.META_TEST_EVENT_CODE || '').trim();
+const TEST_CODE_ON_LIVE_SITE = !!TEST_EVENT_CODE_RAW && process.env.NODE_ENV === 'production' && isMetaProductionSite();
+const TEST_EVENT_CODE = TEST_EVENT_CODE_RAW && !TEST_CODE_ON_LIVE_SITE ? TEST_EVENT_CODE_RAW : '';
+/** true when a test event code is in effect (never on the live site): gates verbose diagnostics. */
+export const META_TEST_MODE = !!TEST_EVENT_CODE;
+if (TEST_CODE_ON_LIVE_SITE) {
+  console.error('[Meta CAPI][ALERT] META_TEST_EVENT_CODE is set on the live site and is IGNORED: a test code would turn every real conversion into a test event. Unset it, or test from a staging deployment.');
+}
 
 /**
  * Compute the reported value for Meta events. Returns full real value for all events.
@@ -45,7 +58,7 @@ export function getReportedValue(eventName: string, realValue: number | undefine
  * Logs are server-side only — never sent to Meta or the client.
  */
 function validateEventPayload(eventName: string, customData: Record<string, any> | undefined): void {
-  if (process.env.NODE_ENV === 'production' && !process.env.META_TEST_EVENT_CODE) return;
+  if (process.env.NODE_ENV === 'production' && !META_TEST_MODE) return;
 
   const eventsRequiringValue = ['Purchase', 'InitiateCheckout'];
   if (!eventsRequiringValue.includes(eventName)) return;
@@ -79,9 +92,10 @@ export interface CapiEventPayload {
     client_ip_address?: string;
     fbp?: string;
     fbc?: string;
-    em?: string;
-    ph?: string;
-    external_id?: string;
+    /** Several distinct values may be sent (Meta matches on each): cookie hash + account + typed address. */
+    em?: string | string[];
+    ph?: string | string[];
+    external_id?: string | string[];
     fb_login_id?: string;
     db?: string;             // DOB (YYYYMMDD), hashed before sending
   };
@@ -175,15 +189,18 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     // Hash PII fields. Country is resolved first: phone, state and zip depend on it.
     const rawCountry = payload.userData.country;
     const countryIso = rawCountry && !isHash(rawCountry) ? toCountryIso(rawCountry) : '';
-    const emRaw = payload.userData.em;
+    const toList = (v: string | string[] | undefined): string[] => (Array.isArray(v) ? v : v ? [v] : []).filter((x): x is string => typeof x === 'string' && !!x.trim());
+    const hashAll = (vals: (string | undefined)[], normalizer: (v: string) => string): string[] =>
+      Array.from(new Set(vals.map(v => cleanAndHash(v, normalizer)).filter((h): h is string => !!h)));
     // Synthetic placeholders (guest@zicabella.com, guest_<ts>@…) are never a customer identity.
-    const emSafe = emRaw && (isHash(emRaw) ? !isPlaceholderEmailHash(emRaw) : !isPlaceholderEmail(emRaw)) ? emRaw : undefined;
-    const em = cleanAndHash(emSafe, sharedNormalizeEmail);
+    const emSafeList = toList(payload.userData.em).map(emRaw => (isHash(emRaw) ? !isPlaceholderEmailHash(emRaw) : !isPlaceholderEmail(emRaw)) ? emRaw : undefined);
+    const emList = hashAll(emSafeList, sharedNormalizeEmail);
+    const em = emList[0];
     // Dummy phones and placeholder names ('Customer', 'Valued Customer', 'Guest' …) are never sent.
-    const phRaw = payload.userData.ph;
-    const phSafe = phRaw && (isHash(phRaw) ? isPlaceholderPhoneHash(phRaw) : isPlaceholderPhone(phRaw)) ? undefined : phRaw;
+    const phSafeList = toList(payload.userData.ph).map(phRaw => (isHash(phRaw) ? isPlaceholderPhoneHash(phRaw) : isPlaceholderPhone(phRaw)) ? undefined : phRaw);
+    const phList = hashAll(phSafeList, (p) => sharedNormalizePhone(p, countryIso));
+    const ph = phList[0];
     const nameSafe = (v: string | undefined) => (v && (isHash(v) ? isPlaceholderNameHash(v) : isPlaceholderNamePart(v)) ? undefined : v);
-    const ph = cleanAndHash(phSafe, (p) => sharedNormalizePhone(p, countryIso));
     const fn = cleanAndHash(nameSafe(payload.userData.fn), sharedNormalizeName);
     const ln = cleanAndHash(nameSafe(payload.userData.ln), sharedNormalizeName);
     const country = cleanAndHash(rawCountry, sharedNormalizeCountry);
@@ -194,8 +211,10 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     const ge = cleanAndHash(payload.userData.ge, normalizeGeneric);
     const db = cleanAndHash(payload.userData.db, normalizeDob);
 
-    if (em) userData.em = [em];
-    if (ph) userData.ph = [ph];
+    // Every distinct normalized hash is sent: Meta matches on each one, and a shopper's
+    // account email / phone often differs from the one typed at checkout.
+    if (em) userData.em = emList;
+    if (ph) userData.ph = phList;
     if (fn) userData.fn = [fn];
     if (ln) userData.ln = [ln];
     if (country) userData.country = [country];
@@ -205,16 +224,15 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     if (ge) userData.ge = [ge];
     if (db) userData.db = [db];
 
-    // Hash external_id with SHA-256 as Meta requires for proper matching
-    if (payload.userData.external_id) {
-      const rawExtId = payload.userData.external_id.trim();
-      // If already hashed (64-char hex), use as-is; otherwise hash it
-      if (/^[a-f0-9]{64}$/.test(rawExtId.toLowerCase())) {
-        userData.external_id = [rawExtId.toLowerCase()];
-      } else {
-        userData.external_id = [crypto.createHash('sha256').update(rawExtId.toLowerCase()).digest('hex')];
-      }
-    }
+    // Hash every external_id with SHA-256 (Meta accepts a list): the customer id and
+    // the device id together let Meta join a shopper's pre-login funnel to the Purchase.
+    const extIds = Array.from(new Set(toList(payload.userData.external_id).map(raw => {
+      const rawExtId = raw.trim();
+      return /^[a-f0-9]{64}$/.test(rawExtId.toLowerCase())
+        ? rawExtId.toLowerCase()
+        : crypto.createHash('sha256').update(rawExtId.toLowerCase()).digest('hex');
+    })));
+    if (extIds.length) userData.external_id = extIds;
     if (payload.userData.fb_login_id) {
       userData.fb_login_id = payload.userData.fb_login_id.trim();
     }
@@ -237,7 +255,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
 
   // Dev-only assertion: if the upstream userData had no em/ph, verify the key
   // is fully absent from cleanedUserData (not present as an empty array/string).
-  if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
+  if (process.env.NODE_ENV !== 'production' || META_TEST_MODE) {
     for (const piiKey of ['em', 'ph'] as const) {
       if (!payload.userData?.[piiKey] && piiKey in cleanedUserData) {
         console.warn(
@@ -254,7 +272,7 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
 
   // Dev-only: log reported value for Purchase and InitiateCheckout events
   if (['Purchase', 'InitiateCheckout'].includes(payload.eventName) && cleanedCustomData.value !== undefined) {
-    if (process.env.NODE_ENV !== 'production' || process.env.META_TEST_EVENT_CODE) {
+    if (process.env.NODE_ENV !== 'production' || META_TEST_MODE) {
       console.log(`[Meta CAPI DEBUG] ${payload.eventName} — reportedValue=${cleanedCustomData.value}, currency=${cleanedCustomData.currency || 'NOT SET'}`);
     }
   }

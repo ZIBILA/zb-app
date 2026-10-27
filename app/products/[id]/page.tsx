@@ -30,7 +30,7 @@ export async function generateMetadata({
 
   if (!product) {
     return {
-      title: 'Product Not Found | Zica Bella®',
+      title: { absolute: 'Product Not Found | Zica Bella®' },
       robots: { index: false, follow: false },
     }
   }

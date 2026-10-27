@@ -26,6 +26,7 @@
  */
 import { pickRealEmail, pickRealName } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
+import { internalOrderReason } from '@/lib/meta/internal-orders';
 import { snapPurchasePhone } from '@/lib/snap/identity';
 import type { SnapCapiEventPayload } from '@/lib/snap-capi';
 import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
@@ -34,6 +35,7 @@ import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { snapDefaultSiteOrigin, snapStorefrontOrigin } from '@/lib/snap/config';
 import { isSnapSupportedCurrency, snapPurchaseCurrency } from '@/lib/snap/currency';
 import { isPrivateIP } from '@/lib/ip-geo';
+import { clientIpFromHeaders } from '@/lib/client-ip';
 
 const PLATFORM = 'snap';
 const EVENT = 'PURCHASE';
@@ -65,9 +67,7 @@ function readCookie(header: string, name: string): string | undefined {
 /** Snap identifiers from the shopper's own browser request (never from the body). */
 export function snapContextFromRequest(req: Request): SnapClickContext {
   const cookie = req.headers.get('cookie') || '';
-  const ip = req.headers.get('do-connecting-ip')
-    || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-    || req.headers.get('x-real-ip')
+  const ip = clientIpFromHeaders(req.headers)
     || readCookie(cookie, 'zb_client_ip')
     || undefined;
   return {
@@ -287,6 +287,31 @@ export function retryDeadline(opts: RetryRunOptions, defaultBudgetMs: number): n
 
 export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, configError }: SnapPurchaseDeps) {
   const ledger = createDeliveryLedger(prisma, '[Snap Purchase]');
+
+  /**
+   * Staff / QA / demo-account orders are never a conversion (lib/meta/internal-orders.ts,
+   * the same rule the browser pixel and the Meta server Purchase apply). The ledger row
+   * is closed so the retry cron and the recovery scan do not re-examine it every run.
+   */
+  async function closeAsInternal(orderId: string, why: string): Promise<void> {
+    const lastError = `internal order (${why}): not reported to Snap`.slice(0, 500);
+    const key = { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } };
+    try {
+      const row = await prisma.adConversionDelivery.findUnique({ where: key });
+      if (!row) {
+        await prisma.adConversionDelivery.create({
+          data: { platform: PLATFORM, eventName: EVENT, orderId, eventId: orderId, status: 'skipped', lastError },
+        });
+      } else if (row.status === 'pending' || row.status === 'failed') {
+        await prisma.adConversionDelivery.updateMany({
+          where: { id: row.id, status: { in: ['pending', 'failed'] } },
+          data: { status: 'skipped', leaseUntil: null, lastError },
+        });
+      }
+    } catch (err: any) {
+      console.warn(`[Snap Purchase] could not close internal order ${orderId}:`, isMissingTable(err) ? 'ledger table missing' : err?.message);
+    }
+  }
   const cutoverMemo: { value?: number | null } = {};
   const warnedCurrencies = new Set<string>();
 
@@ -346,6 +371,11 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
     }
     if (isUnresolvedRecoveryOrder(order)) {
       return { status: 'skipped', reason: 'webhook-recovered order with unknown items' };
+    }
+    const internal = internalOrderReason(order);
+    if (internal) {
+      await closeAsInternal(orderId, internal);
+      return { status: 'skipped', reason: `internal order (${internal})` };
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
     if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {

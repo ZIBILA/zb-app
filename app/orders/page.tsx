@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
@@ -23,7 +23,7 @@ import { formatPriceString } from "@/lib/global-pricing-client";
 import { useRouter, useSearchParams } from "next/navigation";
 import OrderReviewModal from "@/components/reviews/OrderReviewModal";
 
-export default function OrdersPage() {
+function OrdersPageInner() {
   const { data: session, status } = useSession();
   const searchParams = useSearchParams();
   const initialTab = searchParams.get('tab') || 'all';
@@ -372,5 +372,15 @@ export default function OrdersPage() {
         onReviewSubmitted={() => fetchOrders(true)}
       />
     </div>
+  );
+}
+
+/** useSearchParams() must sit under a Suspense boundary, otherwise the whole
+ *  static page bails out to client-side rendering (empty SSR HTML). */
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen" aria-hidden />}>
+      <OrdersPageInner />
+    </Suspense>
   );
 }
