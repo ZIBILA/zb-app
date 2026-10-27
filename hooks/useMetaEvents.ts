@@ -1,5 +1,5 @@
 import { isExcludedBrowser } from '@/lib/tracking/automation';
-import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
+import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256, saveUserDataToCookies } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
@@ -617,6 +617,9 @@ export function useMetaEvents() {
    */
   const trackNewsletterLead = async (email?: string) => {
     const base = getBasePayload('Lead');
+    // Keep the typed email as this visitor's bound identity cookie: every later event
+    // (next page load, next visit) then carries it on both halves instead of only this one.
+    if (email) { try { await saveUserDataToCookies({ email }); } catch { /* cookie write is best-effort */ } }
     const hashedEmail = email ? await sha256(email) : undefined;
     const customData = cleanCustomData({ content_name: 'Newsletter Signup' });
     const userData = hashedEmail ? { em: hashedEmail } : undefined;
