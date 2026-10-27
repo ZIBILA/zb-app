@@ -3,6 +3,7 @@ import { normalizePhone, normalizeState, normalizeZip, normalizeName, normalizeC
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 import {
   metaPixelId,
   initPixel,
@@ -155,7 +156,7 @@ export function MetaPixelRouteTracker() {
     // Include piiOwner so the server can verify PII cookie identity binding
     builtIdentity.piiOwner = getClientCookie('zb_pii_owner') || undefined;
 
-    if (shouldFirePageView && metaOn) {
+    if (shouldFirePageView && metaOn && !isExcludedBrowser()) {
       whenMetaConsentAllows(() => fetch('/api/meta/event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

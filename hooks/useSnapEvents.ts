@@ -1,4 +1,5 @@
 import { trackSnapClientEvent, getSnapIdentityCookies } from '@/lib/snapPixel';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { snapPurchaseCurrency } from '@/lib/snap/currency';
@@ -56,6 +57,7 @@ function sendToSnapCapiRoute(payload: {
   customData?: Record<string, any>;
   userData?: RawIdentity;
 }): void {
+  if (isExcludedBrowser()) return;
   try {
     const cookies = getSnapIdentityCookies();
 

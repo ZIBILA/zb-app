@@ -13,6 +13,7 @@ import {
   initSnapPixel,
 } from '@/lib/snapPixel';
 import { isDemoValue } from '@/lib/metaPixel';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -99,6 +100,7 @@ export function SnapPixelRouteTracker() {
     //    visitor's external_id, and the pixel half (step 5) sends the same hashes, so
     //    the server half carries them too (same identity on both halves of the pair).
     const ids = getSnapIdentityCookies();
+    if (isExcludedBrowser()) return;
     fetch('/api/snap/event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -1,3 +1,4 @@
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
@@ -87,6 +88,7 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
 }
 
 async function relayToCapiRoute(payload: Record<string, any>): Promise<any> {
+  if (isExcludedBrowser()) return null;
   try {
     // Build identity data via the shared builder — ensures demo values are filtered,
     // empty fields are omitted, and all events get consistent identity enrichment.

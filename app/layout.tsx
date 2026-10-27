@@ -260,7 +260,13 @@ export default async function RootLayout({
           id="fb-pixel-stub"
           dangerouslySetInnerHTML={{
             __html: `
-              if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              var zbInternal = /(?:^|; )zb_internal=1(?:;|$)/.test(document.cookie);
+              if (!zbInternal && /[?&]zb_internal=1(?:&|$)/.test(location.search)) {
+                document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+                zbInternal = true;
+              }
+              window.__zbInternal = zbInternal;
+              if (!zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
                 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];}(window);
@@ -309,7 +315,7 @@ export default async function RootLayout({
             id="snap-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-              if (!location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!window.__zbInternal && !/(?:^|; )zb_internal=1(?:;|$)/.test(document.cookie) && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 if (!window.snaptr) {
                   var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
                   a.queue = [];

@@ -11,6 +11,10 @@ import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/place
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
 import { parseConsentRegions } from '@/lib/meta/consent';
 import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
+import { isBotUserAgent } from '@/lib/tracking/bot-agent';
+import { internalOrderLists } from '@/lib/meta/internal-orders';
+import { isMetaProductionSite } from '@/lib/meta/config';
+import { identityCookieDomain } from '@/lib/meta/identity-cookies';
 import crypto from 'crypto';
 
 /**
@@ -51,6 +55,9 @@ function allowedHosts(): Set<string> {
   return hosts;
 }
 const ALLOWED_HOSTS = allowedHosts();
+// Crawler / automation filtering only on the live site (local checks run headless Chrome).
+const FILTER_NON_HUMANS = process.env.NODE_ENV === 'production' && isMetaProductionSite();
+const INTERNAL_COOKIE = 'zb_internal';
 
 function isAllowedSourceUrl(url: unknown): boolean {
   if (typeof url !== 'string' || url.length > 2048) return false;
@@ -156,6 +163,14 @@ export async function POST(req: NextRequest) {
     if (!isStorefrontPageRequest(req.headers, ALLOWED_HOSTS)) {
       return NextResponse.json({ error: 'Invalid event' }, { status: 400 });
     }
+    // Crawlers, link-preview fetchers and headless browsers are not shoppers; a staff /
+    // QA / demo browser (zb_internal cookie, see lib/tracking/automation.ts) is not either.
+    if (FILTER_NON_HUMANS && isBotUserAgent(req.headers.get('user-agent'))) {
+      return NextResponse.json({ success: true, skipped: true, reason: 'non_human' });
+    }
+    if (req.cookies.get(INTERNAL_COOKIE)?.value === '1') {
+      return NextResponse.json({ success: true, skipped: true, reason: 'internal' });
+    }
     const body = await req.json();
     const {
       eventName,
@@ -197,10 +212,17 @@ export async function POST(req: NextRequest) {
       ? headerIp
       : (req.cookies.get('zb_client_ip')?.value || headerIp);
 
-    // Abuse throttle (in-memory, no DB): generous for real browsing, blocks floods.
-    const limited = rateLimitInMemory(`meta-event:${ip}`, { maxRequests: 120, windowMs: 60_000 });
-    if (!limited.allowed) {
-      return NextResponse.json({ error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(limited.resetAfter) } });
+    // Abuse throttle (in-memory, no DB). Keyed per visitor (IP + the device id the
+    // middleware mints), not per IP alone: Indian mobile carriers put thousands of
+    // shoppers behind one CGNAT address, and a per-IP bucket of 120/min dropped the
+    // server half of their events during any campaign burst. A loose per-IP backstop
+    // still stops floods.
+    const visitorKey = `${ip}:${req.cookies.get('zb_external_id')?.value || ''}`;
+    const limited = rateLimitInMemory(`meta-event:${visitorKey}`, { maxRequests: 120, windowMs: 60_000 });
+    const ipLimited = rateLimitInMemory(`meta-event-ip:${ip}`, { maxRequests: 2000, windowMs: 60_000 });
+    if (!limited.allowed || !ipLimited.allowed) {
+      const l = limited.allowed ? ipLimited : limited;
+      return NextResponse.json({ error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(l.resetAfter) } });
     }
 
     // ── Purchase: never triggered from the browser ──
@@ -392,6 +414,19 @@ export async function POST(req: NextRequest) {
 
     const sessionUserData: Record<string, any> = {};
     if (session?.user) {
+      // Staff / QA / demo accounts (lib/meta/internal-orders.ts lists) never feed the
+      // funnel: skip, and mark the browser so the Pixel and the Snap relay skip too.
+      const lists = internalOrderLists();
+      const sid = String((session.user as any).id || '');
+      const semail = String(session.user.email || '').trim().toLowerCase();
+      const sphone = String((session.user as any).phone || (session as any).customer?.phone || '').replace(/\D/g, '').slice(-10);
+      if ((sid && lists.customerIds.has(sid)) || (semail && lists.emails.has(semail)) || (sphone.length >= 7 && lists.phones.has(sphone))) {
+        const res = NextResponse.json({ success: true, skipped: true, reason: 'internal' });
+        const host = req.headers.get('x-forwarded-host')?.split(',')[0].split(':')[0].trim() || req.headers.get('host')?.split(':')[0] || '';
+        const domain = identityCookieDomain(host);
+        res.cookies.set(INTERNAL_COOKIE, '1', { path: '/', maxAge: 365 * 86400, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', httpOnly: false, ...(domain ? { domain } : {}) });
+        return res;
+      }
       // Block demo account values from reaching Meta
       const rawEmail = session.user.email || undefined;
       const rawPhone = (session.user as any).phone || (session as any).customer?.phone || undefined;
