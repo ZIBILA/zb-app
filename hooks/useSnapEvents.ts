@@ -1,4 +1,4 @@
-import { trackSnapClientEvent, getSnapIdentityCookies, getClientCookie } from '@/lib/snapPixel';
+import { trackSnapClientEvent, getSnapIdentityCookies } from '@/lib/snapPixel';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { snapPurchaseCurrency } from '@/lib/snap/currency';
@@ -47,8 +47,6 @@ function shouldFireEvent(key: string, windowMs = 1000): boolean {
   return true;
 }
 
-const CHECKOUT_EVENTS = ['START_CHECKOUT', 'ADD_BILLING'];
-
 function sendToSnapCapiRoute(payload: {
   eventName: string;
   eventId: string;
@@ -60,15 +58,17 @@ function sendToSnapCapiRoute(payload: {
 }): void {
   try {
     const cookies = getSnapIdentityCookies();
-    const isLoggedIn = getClientCookie('zb_user_logged_in') === 'true';
-    const isCheckoutEvent = CHECKOUT_EVENTS.includes(payload.eventName);
 
-    // Hashed PII cookies are only attached for logged-in users or checkout events
-    // (privacy decision: avoids attributing a shared device to a previous guest).
-    const cookiePii: RawIdentity = (isLoggedIn || isCheckoutEvent)
-      ? { em: cookies.em, ph: cookies.ph, fn: cookies.fn, ln: cookies.ln,
-          ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country }
-      : { ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country };
+    // The hashed cookies getSnapIdentityCookies() returns are already bound to THIS
+    // visitor (zb_pii_owner === zb_external_id; a different shopper on a shared
+    // device gets none of them). The browser pixel sends the same hashes as
+    // user_hashed_email / user_hashed_phone_number on every event, so the server
+    // half carries them too — otherwise the two halves of one dedup pair disagree
+    // and the CAPI copy (the one Snap usually receives first) matches worse.
+    const cookiePii: RawIdentity = {
+      em: cookies.em, ph: cookies.ph, fn: cookies.fn, ln: cookies.ln,
+      ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country,
+    };
 
     // Explicit raw data (checkout form / order) wins over cookies field-by-field.
     const userData: Record<string, any> = { ...cookiePii };

@@ -82,10 +82,10 @@ export function SnapPixelRouteTracker() {
     // 5. Browser PAGE_VIEW
     trackSnapClientEvent('PAGE_VIEW', {}, eventId);
 
-    // 6. Server PAGE_VIEW. Hashed email/phone/name cookies are attached only for
-    //    logged-in shoppers (shared-device privacy); location + Snap ids always.
+    // 6. Server PAGE_VIEW. getSnapIdentityCookies() only returns hashes bound to this
+    //    visitor's external_id, and the pixel half (step 5) sends the same hashes, so
+    //    the server half carries them too (same identity on both halves of the pair).
     const ids = getSnapIdentityCookies();
-    const loggedIn = !!session?.user;
     fetch('/api/snap/event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -100,7 +100,7 @@ export function SnapPixelRouteTracker() {
         scCookie1: ids.sc_cookie1,
         externalId: ids.external_id || extId,
         userData: {
-          ...(loggedIn ? { em: ids.em, ph: ids.ph, fn: ids.fn, ln: ids.ln } : {}),
+          em: ids.em, ph: ids.ph, fn: ids.fn, ln: ids.ln,
           ct: ids.ct, st: ids.st, zp: ids.zp, country: ids.country,
         },
       }),

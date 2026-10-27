@@ -150,16 +150,8 @@ export async function POST(req: NextRequest) {
       country: u.country || own('zb_guest_country'),
     };
 
-    // Anonymous, non-checkout events: never re-attach identity cookies the
-    // client chose not to send (shared-device privacy).
-    const isCheckoutEvent = body.eventName === 'START_CHECKOUT' || body.eventName === 'ADD_BILLING';
-    const isLoggedIn = c('zb_user_logged_in') === 'true';
-    if (!isCheckoutEvent && !isLoggedIn && body.eventName !== 'SUBSCRIBE') {
-      if (!u.em) userData.em = undefined;
-      if (!u.ph) userData.ph = undefined;
-      if (!u.fn) userData.fn = undefined;
-      if (!u.ln) userData.ln = undefined;
-    }
+    // The bound cookie hashes (own()) are this visitor's and the browser pixel
+    // already sends them on every event; the server half carries the same identity.
 
     if (!userData.country && !userData.st && !userData.ct && !userData.zp && ip) {
       const ipGeo = await lookupIpGeo(ip, req).catch(() => null);
