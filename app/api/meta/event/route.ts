@@ -269,6 +269,24 @@ export async function POST(req: NextRequest) {
     const fbp = req.cookies.get('_fbp')?.value;
     const fbc = req.cookies.get('_fbc')?.value;
     const externalId = req.cookies.get('zb_external_id')?.value;
+    // Stable device id (lib/cart-context.tsx), sent alongside the customer id once the
+    // shopper is signed in so Meta can join the pre-login funnel to the account.
+    const deviceIdRaw = req.cookies.get('zb_device_id')?.value;
+    const deviceId = deviceIdRaw && EVENT_ID_RE.test(deviceIdRaw) ? deviceIdRaw : undefined;
+    /** Every distinct validated value for em / ph (cookie hash, account, typed address). */
+    const allIdentity = (key: 'em' | 'ph', cands: unknown[]): string[] => {
+      const out: string[] = [];
+      for (const c of cands) {
+        if (typeof c !== 'string' || !c.trim()) continue;
+        const v = buildServerUserData({ [key]: c } as any)[key];
+        if (typeof v === 'string' && v && !out.includes(v)) out.push(v);
+      }
+      return out;
+    };
+    const allIds = (...cands: unknown[]): string[] => Array.from(new Set(cands.filter((c): c is string => typeof c === 'string' && !!c.trim()).map(c => c.trim())));
+    const widen = (target: Record<string, any>, key: 'em' | 'ph' | 'external_id', list: string[]) => {
+      if (list.length > 1) target[key] = list; else if (list.length === 1) target[key] = list[0]; else delete target[key];
+    };
     const isLoggedIn = req.cookies.get('zb_user_logged_in')?.value === 'true';
 
     // Hashed placeholder emails (guest@zicabella.com etc.) are never a customer identity.
@@ -382,6 +400,10 @@ export async function POST(req: NextRequest) {
 
       // Remove piiOwner — it's not a Meta field
       delete (mergedUserData as any).piiOwner;
+      // Every known identity value (typed address + bound cookie hash), see the standard path.
+      if (mergedUserData.em !== undefined) widen(mergedUserData, 'em', allIdentity('em', [mergedUserData.em, userData?.em, bound(guestEmail)]));
+      if (mergedUserData.ph !== undefined) widen(mergedUserData, 'ph', allIdentity('ph', [mergedUserData.ph, userData?.ph, bound(guestPhone)]));
+      widen(mergedUserData, 'external_id', allIds(mergedUserData.external_id, deviceId));
 
       // Duplicate detection safeguard
       checkDuplicatePii('em', mergedUserData.em as string, mergedUserData.external_id as string);
@@ -500,10 +522,17 @@ export async function POST(req: NextRequest) {
 
     // Remove piiOwner — it's not a Meta field
     delete (mergedUserData as any).piiOwner;
+    // Send every known identity value, not just the first: the account email / phone,
+    // the bound cookie hash and whatever was typed for this event may all differ, and
+    // Meta matches on each. Foreign cookie values were already dropped by bound() / FIX 1c.
+    if (mergedUserData.em !== undefined) widen(mergedUserData, 'em', allIdentity('em', [mergedUserData.em, userData?.em, bound(guestEmail), sessionUserData.em]));
+    if (mergedUserData.ph !== undefined) widen(mergedUserData, 'ph', allIdentity('ph', [mergedUserData.ph, userData?.ph, bound(guestPhone), sessionUserData.ph]));
+    widen(mergedUserData, 'external_id', allIds(mergedUserData.external_id, deviceId));
 
     // Duplicate detection safeguard
-    checkDuplicatePii('em', mergedUserData.em as string, mergedUserData.external_id as string);
-    checkDuplicatePii('ph', mergedUserData.ph as string, mergedUserData.external_id as string);
+    const firstOf = (v: unknown) => (Array.isArray(v) ? v[0] : v) as string | undefined;
+    checkDuplicatePii('em', firstOf(mergedUserData.em), firstOf(mergedUserData.external_id));
+    checkDuplicatePii('ph', firstOf(mergedUserData.ph), firstOf(mergedUserData.external_id));
 
     const userIsLoggedIn = isLoggedIn || !!session?.user;
     const isCheckoutEvent = ['InitiateCheckout', 'AddPaymentInfo', 'Purchase'].includes(eventName);

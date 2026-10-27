@@ -42,6 +42,8 @@ export interface MetaClickContext {
   fbp?: string;
   fbc?: string;
   externalId?: string;
+  /** Stable device id cookie (zb_device_id), sent with the customer id so pre-login events join the account. */
+  deviceId?: string;
   ipAddress?: string;
   userAgent?: string;
   /** The shopper's consent choice at checkout (zb_consent cookie), when consent regions are configured. */
@@ -77,10 +79,17 @@ export function metaContextFromRequest(
     fbp: fbp && FBP_RE.test(fbp) ? fbp : undefined,
     fbc: fbc && FBC_RE.test(fbc) ? fbc : undefined,
     externalId: readCookie(cookie, 'zb_external_id') || str(fallback.externalId),
+    deviceId: readCookie(cookie, 'zb_device_id'),
     ipAddress: ip && !isPrivateIP(ip) ? ip : undefined,
     userAgent: req.headers.get('user-agent') || undefined,
     ...(consentRaw === 'granted' || consentRaw === 'denied' ? { consent: consentRaw as 'granted' | 'denied' } : {}),
   };
+}
+
+/** Distinct non-empty strings; a single value stays a string (Meta accepts both forms). */
+function uniqStrings(vals: (string | undefined | null)[]): string | string[] | undefined {
+  const out = Array.from(new Set(vals.filter((v): v is string => typeof v === 'string' && !!v.trim()).map(v => v.trim())));
+  return out.length > 1 ? out : out[0];
 }
 
 function clean(ctx: MetaClickContext | undefined): MetaClickContext {
@@ -142,9 +151,10 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
       client_user_agent: ctx.userAgent,
       fbp: ctx.fbp,
       fbc: ctx.fbc,
-      external_id: ctx.externalId || order.customerId || undefined,
-      em: emailCandidates[0],
-      ph: pickRealPhone(addr.phone, order.customer?.phone),
+      // Every id and every real email / phone known for this order: Meta matches on each.
+      external_id: uniqStrings([ctx.externalId, order.customerId ? String(order.customerId) : undefined, ctx.deviceId]),
+      em: uniqStrings(emailCandidates.map(e => e.trim().toLowerCase())),
+      ph: uniqStrings([pickRealPhone(addr.phone), pickRealPhone(order.customer?.phone)]),
       fn: name[0],
       ln: name.slice(1).join(' ') || undefined,
       ct: addr.city || undefined,

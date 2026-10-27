@@ -90,9 +90,10 @@ export interface CapiEventPayload {
     client_ip_address?: string;
     fbp?: string;
     fbc?: string;
-    em?: string;
-    ph?: string;
-    external_id?: string;
+    /** Several distinct values may be sent (Meta matches on each): cookie hash + account + typed address. */
+    em?: string | string[];
+    ph?: string | string[];
+    external_id?: string | string[];
     fb_login_id?: string;
     db?: string;             // DOB (YYYYMMDD), hashed before sending
   };
@@ -186,15 +187,18 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     // Hash PII fields. Country is resolved first: phone, state and zip depend on it.
     const rawCountry = payload.userData.country;
     const countryIso = rawCountry && !isHash(rawCountry) ? toCountryIso(rawCountry) : '';
-    const emRaw = payload.userData.em;
+    const toList = (v: string | string[] | undefined): string[] => (Array.isArray(v) ? v : v ? [v] : []).filter((x): x is string => typeof x === 'string' && !!x.trim());
+    const hashAll = (vals: (string | undefined)[], normalizer: (v: string) => string): string[] =>
+      Array.from(new Set(vals.map(v => cleanAndHash(v, normalizer)).filter((h): h is string => !!h)));
     // Synthetic placeholders (guest@zicabella.com, guest_<ts>@…) are never a customer identity.
-    const emSafe = emRaw && (isHash(emRaw) ? !isPlaceholderEmailHash(emRaw) : !isPlaceholderEmail(emRaw)) ? emRaw : undefined;
-    const em = cleanAndHash(emSafe, sharedNormalizeEmail);
+    const emSafeList = toList(payload.userData.em).map(emRaw => (isHash(emRaw) ? !isPlaceholderEmailHash(emRaw) : !isPlaceholderEmail(emRaw)) ? emRaw : undefined);
+    const emList = hashAll(emSafeList, sharedNormalizeEmail);
+    const em = emList[0];
     // Dummy phones and placeholder names ('Customer', 'Valued Customer', 'Guest' …) are never sent.
-    const phRaw = payload.userData.ph;
-    const phSafe = phRaw && (isHash(phRaw) ? isPlaceholderPhoneHash(phRaw) : isPlaceholderPhone(phRaw)) ? undefined : phRaw;
+    const phSafeList = toList(payload.userData.ph).map(phRaw => (isHash(phRaw) ? isPlaceholderPhoneHash(phRaw) : isPlaceholderPhone(phRaw)) ? undefined : phRaw);
+    const phList = hashAll(phSafeList, (p) => sharedNormalizePhone(p, countryIso));
+    const ph = phList[0];
     const nameSafe = (v: string | undefined) => (v && (isHash(v) ? isPlaceholderNameHash(v) : isPlaceholderNamePart(v)) ? undefined : v);
-    const ph = cleanAndHash(phSafe, (p) => sharedNormalizePhone(p, countryIso));
     const fn = cleanAndHash(nameSafe(payload.userData.fn), sharedNormalizeName);
     const ln = cleanAndHash(nameSafe(payload.userData.ln), sharedNormalizeName);
     const country = cleanAndHash(rawCountry, sharedNormalizeCountry);
@@ -205,8 +209,10 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     const ge = cleanAndHash(payload.userData.ge, normalizeGeneric);
     const db = cleanAndHash(payload.userData.db, normalizeDob);
 
-    if (em) userData.em = [em];
-    if (ph) userData.ph = [ph];
+    // Every distinct normalized hash is sent: Meta matches on each one, and a shopper's
+    // account email / phone often differs from the one typed at checkout.
+    if (em) userData.em = emList;
+    if (ph) userData.ph = phList;
     if (fn) userData.fn = [fn];
     if (ln) userData.ln = [ln];
     if (country) userData.country = [country];
@@ -216,16 +222,15 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
     if (ge) userData.ge = [ge];
     if (db) userData.db = [db];
 
-    // Hash external_id with SHA-256 as Meta requires for proper matching
-    if (payload.userData.external_id) {
-      const rawExtId = payload.userData.external_id.trim();
-      // If already hashed (64-char hex), use as-is; otherwise hash it
-      if (/^[a-f0-9]{64}$/.test(rawExtId.toLowerCase())) {
-        userData.external_id = [rawExtId.toLowerCase()];
-      } else {
-        userData.external_id = [crypto.createHash('sha256').update(rawExtId.toLowerCase()).digest('hex')];
-      }
-    }
+    // Hash every external_id with SHA-256 (Meta accepts a list): the customer id and
+    // the device id together let Meta join a shopper's pre-login funnel to the Purchase.
+    const extIds = Array.from(new Set(toList(payload.userData.external_id).map(raw => {
+      const rawExtId = raw.trim();
+      return /^[a-f0-9]{64}$/.test(rawExtId.toLowerCase())
+        ? rawExtId.toLowerCase()
+        : crypto.createHash('sha256').update(rawExtId.toLowerCase()).digest('hex');
+    })));
+    if (extIds.length) userData.external_id = extIds;
     if (payload.userData.fb_login_id) {
       userData.fb_login_id = payload.userData.fb_login_id.trim();
     }
