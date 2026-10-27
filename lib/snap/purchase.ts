@@ -34,6 +34,7 @@ import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { snapDefaultSiteOrigin, snapStorefrontOrigin } from '@/lib/snap/config';
 import { isSnapSupportedCurrency, snapPurchaseCurrency } from '@/lib/snap/currency';
 import { isPrivateIP } from '@/lib/ip-geo';
+import { clientIpFromHeaders } from '@/lib/client-ip';
 
 const PLATFORM = 'snap';
 const EVENT = 'PURCHASE';
@@ -65,9 +66,7 @@ function readCookie(header: string, name: string): string | undefined {
 /** Snap identifiers from the shopper's own browser request (never from the body). */
 export function snapContextFromRequest(req: Request): SnapClickContext {
   const cookie = req.headers.get('cookie') || '';
-  const ip = req.headers.get('do-connecting-ip')
-    || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-    || req.headers.get('x-real-ip')
+  const ip = clientIpFromHeaders(req.headers)
     || readCookie(cookie, 'zb_client_ip')
     || undefined;
   return {

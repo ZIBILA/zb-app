@@ -24,6 +24,7 @@ import { isEventTimeSendable } from '@/lib/snap-capi';
 import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder } from '@/lib/meta/order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
+import { clientIpFromHeaders } from '@/lib/client-ip';
 import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
@@ -66,10 +67,7 @@ export function metaContextFromRequest(
   fallback: { fbp?: unknown; fbc?: unknown; externalId?: unknown } = {},
 ): MetaClickContext {
   const cookie = req.headers.get('cookie') || '';
-  const liveIp = req.headers.get('do-connecting-ip')
-    || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-    || req.headers.get('x-real-ip')
-    || undefined;
+  const liveIp = clientIpFromHeaders(req.headers);
   const ip = liveIp && !isPrivateIP(liveIp) ? liveIp : readCookie(cookie, 'zb_client_ip');
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
   const fbp = readCookie(cookie, '_fbp') || str(fallback.fbp);

@@ -1,6 +1,7 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
+import { clientIpFromHeaders } from "@/lib/client-ip";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
@@ -175,11 +176,7 @@ export default withAuth(
                          !pathname.startsWith('/api/admin') &&
                          !pathname.startsWith('/api/webhooks');
 
-    const clientIp = req.headers.get('do-connecting-ip') ||
-                     req.headers.get('cf-connecting-ip') ||
-                     req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
-                     req.headers.get('x-real-ip') ||
-                     req.ip;
+    const clientIp = clientIpFromHeaders(req.headers) || req.ip;
 
     const shouldSetClientIp = isStorefront &&
                               clientIp &&
