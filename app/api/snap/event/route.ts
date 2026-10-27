@@ -153,13 +153,14 @@ export async function POST(req: NextRequest) {
     // The bound cookie hashes (own()) are this visitor's and the browser pixel
     // already sends them on every event; the server half carries the same identity.
 
+    // No address known for this visitor: the IP gives a trustworthy country, but its
+    // region / city / postcode are the carrier's egress, not the shopper's. A wrong
+    // hashed ct / zp can only fail to match, so only country is filled (the Meta relay
+    // applies the same rule).
     if (!userData.country && !userData.st && !userData.ct && !userData.zp && ip) {
       const ipGeo = await lookupIpGeo(ip, req).catch(() => null);
       if (ipGeo && !ipGeo.isDevFallback) {
         userData.country = ipGeo.countryCode || undefined;
-        userData.st = ipGeo.region || undefined;
-        userData.ct = ipGeo.city || undefined;
-        userData.zp = ipGeo.zip || undefined;
       }
     }
 
