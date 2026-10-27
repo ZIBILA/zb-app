@@ -14,3 +14,5 @@ lighthouse/
 lib/googleMapsLoader.ts
 # Pre-existing require() in the app JWT helper (auth, not touched by this branch)
 lib/appAuth.ts
+# Pre-existing require() in the Pusher helper (not touched by this branch)
+lib/pusher.ts

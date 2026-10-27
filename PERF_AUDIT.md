@@ -46,6 +46,9 @@ Storefront shell (scripts in the HTML of every storefront page, before route chu
 
 CSS: `90aa3e…css` 230 KB raw (storefront, includes dashboard Tailwind utilities + 51 KB globals.css) + 2 KB; served with gzip ≈ 32 KB.
 
+## Merge with `main` (2026-10-27)
+`main` advanced by 29 commits (PRs 28–30) after this branch was cut, and a parallel pass on `dev` had fixed several of the same things. The branch now contains a merge of `origin/main`; conflicts in twelve files were resolved by taking main's version and re-applying only what main did not have. **Superseded by main (dropped from this branch):** AppBridgeWrapper removal, hero mobile/desktop sources (main uses `<source media>`), the GTM/Meta/Snap/OpenAI vendor-file lazy loading (main loads them via `lazyOnload`), the Shopify ISR cache-mode fix (main picks `force-cache` + the `shopify-catalog` Data Cache tag inside ISR renders) and therefore my `unstable_cache` wrappers, the PDP desktop hero priority. **Kept from this branch:** fonts (Geist removal, Inter/Poppins `preload:false`, self-hosted Rocaston/HeadingPro + Rocaston preload), header collections from the root layout, theme-toggle placeholder, cart `isLoaded` gate, home card priority + unused `fetchPolicies()` removal + early poster preload, PDP zoom-library split + lightbox priority, settings `cache()`, real 404 for a missing collection, sitemap/robots host + dead entries, titles/canonical/noindex, product-card second-image prefetch, `sizes` on thumbnails, model-viewer after `load`, lint gate and tooling. The before/after numbers below were re-measured on the merged branch against a fresh build of the new `main`.
+
 ## Results — before vs. after (local, mock data, 3-run medians)
 
 | Page | Perf before → after | LCP | FCP | TBT | CLS | Transfer | Requests |
