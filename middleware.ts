@@ -13,29 +13,41 @@ import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies,
 // any failure fails open (no rewrite).
 const COLLECTION_HANDLES_TTL_MS = 5 * 60_000;
 const COLLECTION_HANDLES_RETRY_MS = 60_000;
-let collectionHandlesCache: { set: Set<string> | null; validUntil: number } = { set: null, validUntil: 0 };
+let collectionHandlesCache: { set: Set<string> | null; validUntil: number; status: string } = { set: null, validUntil: 0, status: 'init' };
 let collectionHandlesInflight: Promise<Set<string> | null> | null = null;
 
-async function knownCollectionHandles(origin: string): Promise<Set<string> | null> {
+/** The app's own listener first (no Cloudflare / WAF in the way), then the public origin. */
+function collectionHandleSources(nextUrl: URL): string[] {
+  const port = (typeof process !== 'undefined' && process.env?.PORT) || nextUrl.port || '3000';
+  const sources = [`http://127.0.0.1:${port}`];
+  if (!/^(127\.0\.0\.1|localhost)$/.test(nextUrl.hostname)) sources.push(nextUrl.origin);
+  return sources;
+}
+
+async function knownCollectionHandles(nextUrl: URL): Promise<Set<string> | null> {
   const now = Date.now();
   if (now < collectionHandlesCache.validUntil) return collectionHandlesCache.set;
   if (!collectionHandlesInflight) {
     collectionHandlesInflight = (async () => {
-      try {
-        const res = await fetch(`${origin}/api/collections/handles`, { signal: AbortSignal.timeout(2000), cache: 'no-store', headers: { accept: 'application/json' } });
-        const data = res.ok ? await res.json().catch(() => null) : null;
-        const handles: unknown = data?.handles;
-        if (Array.isArray(handles) && handles.length) {
-          collectionHandlesCache = { set: new Set(handles.map(h => String(h).toLowerCase())), validUntil: Date.now() + COLLECTION_HANDLES_TTL_MS };
-        } else {
-          collectionHandlesCache = { set: null, validUntil: Date.now() + COLLECTION_HANDLES_RETRY_MS };
+      const failures: string[] = [];
+      for (const base of collectionHandleSources(nextUrl)) {
+        try {
+          const res = await fetch(`${base}/api/collections/handles`, { signal: AbortSignal.timeout(2500), cache: 'no-store', headers: { accept: 'application/json' } });
+          const data = res.ok ? await res.json().catch(() => null) : null;
+          const handles: unknown = data?.handles;
+          if (Array.isArray(handles) && handles.length) {
+            collectionHandlesCache = { set: new Set(handles.map(h => String(h).toLowerCase())), validUntil: Date.now() + COLLECTION_HANDLES_TTL_MS, status: 'ok' };
+            collectionHandlesInflight = null;
+            return collectionHandlesCache.set;
+          }
+          failures.push(`${res.status}`);
+        } catch (e: any) {
+          failures.push(String(e?.name || e?.message || 'error').slice(0, 24));
         }
-      } catch {
-        collectionHandlesCache = { set: null, validUntil: Date.now() + COLLECTION_HANDLES_RETRY_MS };
-      } finally {
-        collectionHandlesInflight = null;
       }
-      return collectionHandlesCache.set;
+      collectionHandlesCache = { set: null, validUntil: Date.now() + COLLECTION_HANDLES_RETRY_MS, status: `unavailable:${failures.join(',')}` };
+      collectionHandlesInflight = null;
+      return null;
     })();
   }
   return collectionHandlesInflight;
@@ -214,15 +226,18 @@ export default withAuth(
                          !pathname.startsWith('/api/webhooks');
 
     // /collections/<unknown-handle> → 404 (see knownCollectionHandles above). 'all' is virtual.
+    // x-zb-handles on collection pages says whether the handle list was available (post-deploy check).
+    let collectionCheckHeader = '';
     const collectionMatch = isStorefront && req.method === 'GET' ? pathname.match(/^\/collections\/([^/]+)\/?$/) : null;
     if (collectionMatch) {
       let handle = '';
       try { handle = decodeURIComponent(collectionMatch[1]).trim().toLowerCase(); } catch { handle = collectionMatch[1].toLowerCase(); }
       if (handle && handle !== 'all') {
-        const known = await knownCollectionHandles(req.nextUrl.origin);
+        const known = await knownCollectionHandles(req.nextUrl);
         if (known && !known.has(handle)) {
           return NextResponse.rewrite(new URL('/__collection-not-found', req.url));
         }
+        collectionCheckHeader = known ? 'ok' : collectionHandlesCache.status;
       }
     }
 
@@ -299,6 +314,7 @@ export default withAuth(
     };
 
     const attachStorefrontCookies = async (res: NextResponse) => {
+      if (collectionCheckHeader) res.headers.set('x-zb-handles', collectionCheckHeader);
       attachClientIpCookie(res);
       attachMetaIdentityCookies(res);
       if (refParam) {
