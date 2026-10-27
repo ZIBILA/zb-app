@@ -51,21 +51,20 @@ CSS: `90aa3e…css` 230 KB raw (storefront, includes dashboard Tailwind utilitie
 
 ## Results — before vs. after (local, mock data, 3-run medians)
 
-| Page | Perf before → after | LCP | FCP | TBT | CLS | Transfer | Requests |
-|---|---|---|---|---|---|---|---|
-| home `/` | **75 → 81** | 7.5 s → 5.0 s | 1.2 → 1.2 s | 15 → 0 ms | 0.001 → 0.000 | 4784 → 4374 KB | 66 → 55 |
-| product (fallback item) | **69 → 85** | 16.1 s → 4.3 s | 1.2 → 1.7 s | 80 → 37 ms | 0.008 → 0.008 | 4738 → 5190 KB* | 64 → 58 |
-| cart `/cart` | **84 → 79**† | 4.6 s → 5.6 s | 1.1 → 1.2 s | 11 → 2 ms | 0.001 → 0.000 | 1100 → 1071 KB | 59 → 52 |
-| collection | not measurable without the Shopify token (the catalogue fetch throws) | | | | | | |
+Two baselines exist. The original one (`lighthouse/before/`, built from the `main` this branch was cut from on 2026-10-15) and the **current** one (`lighthouse/before-main/`, built from today's `main` after PRs 28–30). The "after" column is the merged branch (`lighthouse/after/`).
 
-A11y, Best Practices and SEO unchanged (home BP 96 = the pre-existing 502s from the placeholder token; cart SEO 58 = intended `noindex`).
+| Page | Perf: old main → new main → this branch | LCP (same order) | TBT | CLS |
+|---|---|---|---|---|
+| home `/` | 75 → 85 → **84** | 7.5 → 4.4 → 4.4 s | 15 → 1 → 0 ms | 0.001 → 0.001 → 0.000 |
+| product (fallback item) | 69 → 75 → **74** | 16.1 → 16.5 → 9.4 s | 80 → 44 → 29 ms | 0.008 → 0.008 → 0.000 |
+| cart `/cart` | 84 → 82 → **76**† | 4.6 → 4.8 → 6.3 s | 11 → 5 → 5 ms | 0.001 → 0.001 → 0.000 |
+| collection | not measurable without the Shopify token | | | |
 
-\* Product transfer is whichever 1–3 MB fallback JPGs the lazy loader happened to fetch in that run (`load-image-3.jpg` vs `load-image-4.jpg`), not a code effect.
-† Cart is inside run noise on this machine: the three baseline runs scored 54 / 85 / 84, the three "after" runs 79 / 79 / 79, and a later full-audit pair measured the baseline at LCP 8.3 s vs this branch at 7.3 s. The cart page is client-rendered after the session check in both builds; nothing in its render path changed except the SSR'd shell (which removed the CLS and the empty-body bailout).
+**Read this honestly.** Most of the headline gain between "old main" and "now" came from the parallel pass that landed on `main` via `dev` (hero media now CMS-only so no 3 MB local video, vendor scripts lazy, the App Bridge bailout removed). Measured on top of today's `main`, this branch's performance delta is **inside run-to-run noise** on this machine (±5 points, ±1 s LCP between identical runs; the cart has scored anywhere from 54 to 85 on the same build). The product LCP median (16.5 s → 9.4 s) is the one metric that still moves, from the removed hero preloads and the dropped per-card second-image prefetch. The value this branch still adds is correctness and SEO rather than Lighthouse points: real HTML for the static routes is now also on main, but the sitemap host, the five dead sitemap URLs, real 404s for missing collections, the doubled titles, canonical/noindex, the eight unused font preloads and the Google Fonts request, the header-nav and theme-toggle layout shifts (CLS 0.000 on every page now), the model-viewer gating, the committed hero `.mp4` reference and the lint gate are only here.
 
-What moved the numbers: real SSR for the static routes (group 1), the hero poster as LCP with the video deferred past `load` (groups 2/5), eight fewer font/preload requests, the product page losing two of its three high-priority hero preloads and the per-card second-image prefetch (group 2), 240 KB model-viewer + 116 KB gtm.js moved out of the critical path (groups 3/5), and the header collections/theme toggle CLS fixes (group 4).
+† Cart: `noindex` (intended) makes the SEO score 58 vs 66; the perf drop is the noise described above (CLS went to 0).
 
-**Targets.** Product ≥ 80: **met** (85). Home ≥ 75: **met** (81). Collection ≥ 80: **not measurable here** — the local collection page cannot render without the Shopify Admin token; it shares the product page's shell, so it should land in the same range, but that is an expectation, not a measurement. On the live site the absolute numbers will differ: real Shopify CDN images are far smaller than the local fallback JPGs (good), but the live hero video is a Shopify-hosted MP4 of several MB and Chrome counts the video's first frame as the LCP candidate once it plays — so **the home LCP on real phones is bounded by that file's size**. A 9:16 mobile cut ≤ 1 MB uploaded to the CMS `heroVideoMobile` field (asset work, see "Levers outside the code") is the remaining lever for home; nothing design-preserving in code moves it further.
+**Targets.** Product ≥ 80 / collection ≥ 80 / home ≥ 75: home meets it on both main and this branch (84–85). Product does not reach 80 locally on either, and the local number is dominated by the 1–3 MB fallback JPGs that only exist in the mock catalogue; with real Shopify CDN images it should be well above that, but that is a prediction until the Admin token is available. Collection is unmeasured for the same reason. On the live site the home LCP is bounded by the CMS hero MP4 (Chrome counts the video's first frame as LCP): a ≤ 1 MB 9:16 mobile cut in `heroVideoMobile` is the remaining lever, and it is an asset, not code.
 
 ## Phase 3 — Changes (running log)
 
@@ -125,7 +124,7 @@ Each group: `npm run build` ✓, `tsc --noEmit` ✓, scoped `npm run lint` ✓, 
 
 ## Phase 4 — Verification checklist
 1. `npm run build` ✓ (every group), `npx tsc --noEmit` ✓, `npm run lint` ✓ (storefront scope, 0 errors / warnings only).
-2. Every storefront route opened at 390 px (fresh tab, dark theme) on the final build: **no JavaScript exceptions**. Remaining console entries are resource errors that exist with the placeholder Shopify token (`/api/shopify/products` 502) and the pre-existing gallery 403 (A6). Pixel comparison against the baseline build at 390/1440 × light/dark: table above.
+2. Every storefront route opened at 390 px (fresh tab, dark theme) on the final **merged** build: **no JavaScript exceptions** (11 routes, only the two 502s from the placeholder Shopify token). Remaining console entries are resource errors that exist with the placeholder Shopify token (`/api/shopify/products` 502) and the pre-existing gallery 403 (A6). Pixel comparison against the baseline build at 390/1440 × light/dark: table above.
 3. Guest checkout walk to the Razorpay screen: **not run** — needs the Shopify Admin token, Storefront token and Razorpay test keys (`.env.local` placeholders are in place; the walk is scripted in AUDIT.md §6 from code).
 4. Pixel check: see "Pixel firing" below (dummy pixel ids, local only).
 5. Final Lighthouse: table at the top of this file (`lighthouse/after/`).
@@ -139,7 +138,7 @@ Built once with `NEXT_PUBLIC_META_PIXEL_ID` / `META_PIXEL_ID` set to a dummy 15-
 | `/products/…` | yes | PageView, ViewContent | PageView ✓, ViewContent ✓ | PAGE_VIEW + VIEW_CONTENT relayed + 2 pixel posts |
 | `/collections` | yes | PageView | PageView ✓ | PAGE_VIEW relayed + 2 pixel posts |
 
-So the deferred vendor download drops nothing: the queued `fbq`/`snaptr` calls replay with their original ids once the files load. **Not verified here:** AddToCart, InitiateCheckout and Purchase (need the real catalogue, a login and Razorpay test keys), and the Facebook Pixel Helper view on the live site. `dataLayer` received 4–5 pushes per page as before (the GTM container is still empty, see AUDIT.md).
+Re-run on the merged build (main's `lazyOnload` vendor loading): same result on `/` and the product page — PageView and ViewContent once each, each with a CAPI relay carrying the identical `event_id`; Snap PAGE_VIEW / VIEW_CONTENT relayed. The deferred vendor download drops nothing: the queued `fbq`/`snaptr` calls replay with their original ids once the files load. **Not verified here:** AddToCart, InitiateCheckout and Purchase (need the real catalogue, a login and Razorpay test keys), and the Facebook Pixel Helper view on the live site. `dataLayer` received 4–5 pushes per page as before (the GTM container is still empty, see AUDIT.md).
 
 ## Phase 4 — Visual check (baseline commit vs. this branch, same mock data)
 

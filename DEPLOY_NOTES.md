@@ -24,18 +24,18 @@ pm2 restart <app-name> --update-env
 `next build` needs the same env as runtime because `lib/auth/env-check.ts` throws in production mode when `NEXTAUTH_SECRET`, `DATABASE_URL` or `SHOPIFY_ADMIN_ACCESS_TOKEN` are missing.
 
 ## 3. Caches to clear / things that will look different right after deploy
-- `.next/cache` on the server now holds the `unstable_cache` entries for Shopify reads (60 s TTL, tag `shopify-catalog`). Nothing to do; it is rebuilt automatically. The CMS "Refresh live site" button and the Shopify product/collection webhooks now also bust this cache (`refreshStorefront()`).
+- The branch includes a merge of today's `main` (PRs 28–30). Shopify catalogue reads use main's Data Cache tag (`shopify-catalog`); `.next/cache` is rebuilt automatically on deploy and busted by the CMS "Refresh live site" button and the Shopify webhooks (`refreshStorefront()`).
 - Fonts moved to `/public/fonts/` (`Rocaston.ttf`, `Heading_Pro_Wide_Trial_Bold.woff2`, two Poppins subsets). They are served with the existing `Cache-Control: immutable` header for `woff2`/`woff`; `.ttf` is not in that header rule and gets Next's default caching for `/public` (fine, but add `ttf` to the `next.config.mjs` static-asset header pattern if you want the year-long cache).
 - Cloudflare: HTML is still `Cache-Control: no-store` (home is `force-dynamic`), nothing changes at the edge. If you later make the home page ISR, add a Cloudflare Cache Rule for `/`, `/collections/*`, `/products/*` with a 60 s edge TTL.
 
 ## 4. Post-deploy checks (5 minutes)
 1. `curl -s https://zicabella.com/sitemap.xml | head` → XML, not the 500 page; URLs on `zicabella.com`.
 2. `curl -s https://zicabella.com/robots.txt` → `Sitemap: https://zicabella.com/sitemap.xml`.
-3. `curl -s https://zicabella.com/collections | grep -c 'main-content'` → `1` (page body is in the HTML; before it was empty).
+3. `curl -s https://zicabella.com/collections | grep -c 'main-content'` → `1` (page body is in the HTML).
 4. `curl -s -o /dev/null -w '%{http_code}' https://zicabella.com/collections/does-not-exist` → `404`.
 5. Open the home page on a phone: poster shows immediately, video starts within ~1–2 s, header wordmark uses Rocaston without a late swap.
-6. Meta Pixel Helper on a product page: PageView then ViewContent, each once, within ~3 s of load (the vendor script is now loaded on first interaction or idle, events are queued meanwhile). Events Manager → Test Events still shows browser + server pairs deduplicated by `event_id`.
-7. Open the menu, cart and bookmark drawers once (they are now code-split; the first open after a cold load may take ~100 ms longer on 3G).
+6. Meta Pixel Helper on a product page: PageView then ViewContent, each once, shortly after load (main loads the vendor scripts with `lazyOnload`; events queue meanwhile). Events Manager → Test Events still shows browser + server pairs deduplicated by `event_id`.
+7. Open the product-page lightbox once (the zoom library is now code-split and loads on first open).
 
 ## 5. Rollback
 `git revert` the branch merge commit (or redeploy the previous build). No data migrations, no env changes, so rollback is a plain redeploy.
