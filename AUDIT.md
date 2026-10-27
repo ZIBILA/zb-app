@@ -62,6 +62,9 @@ Observed locally (production build, 390 px) and on live:
 
 ## 3. Tracking integrity (Meta / Snap / GTM / GA4 / OpenAI)
 
+> **Update 2026-10-27 — second review of the full Meta + Snap chain, fixes applied on `perf-audit` with approval.** The table and notes below are the original Phase 1 read. A deeper pass over the loaders, hooks, relay routes, CAPI senders, delivery ledger and webhooks found no Critical issue; the High/Medium findings (wrong client IP behind Cloudflare, build-time vs request-time pixel id, open relay routes, unguarded `META_TEST_EVENT_CODE`, consent hold on unknown country, first-variant ViewContent, Snap server Purchase for internal orders, Snap `external_id` type, client-clock drop, webhook blocking on Snap, ledger overwrite after lease loss) are fixed in eleven commits documented in `PERF_AUDIT.md` → "Tracking fixes". Low findings are listed there and left unchanged.
+
+
 Verified by code trace (hooks/useMetaEvents.ts, lib/meta/*, lib/metaCapi.ts, app/api/meta/event, checkout + confirmation pages) and by watching live network calls on a product page.
 
 | Event | Browser trigger | Fires once? | CAPI? | event_id match | Value |
