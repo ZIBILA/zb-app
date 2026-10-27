@@ -111,7 +111,10 @@ const nextConfig = {
               "font-src 'self' https://fonts.gstatic.com https://cdn.shopify.com",
               "img-src 'self' data: blob: https://cdn.shopify.com https://*.shopify.com https://*.shopifycdn.com https://*.shopifycdn.net https://*.supabase.co https://images.unsplash.com https://www.facebook.com https://www.google-analytics.com https://www.googletagmanager.com https://flagcdn.com https://db.zicabella.com https://maps.googleapis.com https://maps.gstatic.com https://*.googleapis.com https://*.gstatic.com https://*.fbsbx.com https://*.whatsapp.net https://tr.snapchat.com https://*.snapchat.com https://bzr.openai.com https://*.razorpay.com",
               "connect-src 'self' https://*.supabase.co https://cdn.shopify.com https://api.razorpay.com https://lux.razorpay.com https://lumberjack.razorpay.com https://cdn.razorpay.com https://*.razorpay.com https://api.postalpincode.in https://connect.facebook.net https://www.facebook.com https://www.google-analytics.com https://www.googletagmanager.com https://region1.google-analytics.com wss://*.pusher.com https://sockjs.pusher.com https://maps.googleapis.com https://*.googleapis.com https://tr.snapchat.com https://*.snapchat.com https://sc-static.net https://bzr.openai.com https://bzrcdn.openai.com",
-              "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.googletagmanager.com https://maps.google.com https://www.google.com https://tr.snapchat.com https://*.snapchat.com https://sc-static.net",
+              // www.facebook.com: the Meta Pixel SDK delivers events that carry Advanced Matching (hashed
+              // email / phone — every returning or logged-in visitor) through a hidden iframe POST, not an
+              // image GET; without it here the browser half of those events is silently blocked.
+              "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.googletagmanager.com https://maps.google.com https://www.google.com https://tr.snapchat.com https://*.snapchat.com https://sc-static.net https://www.facebook.com",
               "media-src 'self' blob: https://*.supabase.co https://cdn.shopify.com https://*.fbsbx.com https://*.whatsapp.net",
               "worker-src 'self' blob:",
             ].join("; "),
