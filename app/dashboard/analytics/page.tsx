@@ -1286,7 +1286,7 @@ export default function AnalyticsDashboard() {
                           style={{ width: `${width}%`, backgroundColor: FUNNEL_COLORS[i] || FUNNEL_COLORS[0], opacity: 0.8 }}
                         >
                           {i > 0 && stage.dropOffCount > 0 && (
-                            <span className="text-[9px] text-white/80 font-medium">
+                            <span className="text-[9px] text-foreground/80 font-medium">
                               -{formatNumber(stage.dropOffCount)}
                             </span>
                           )}

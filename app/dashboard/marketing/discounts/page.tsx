@@ -54,6 +54,10 @@ interface Campaign {
   appSettings?: AppSettings | null;
 }
 
+/** "YYYY-MM-DD" for the admin's local calendar day (matches <input type="date"> values). */
+const localDateStr = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 export default function UnifiedDiscountsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,12 +136,8 @@ export default function UnifiedDiscountsPage() {
     setDescription("");
     setTargets(["webstore", "app"]);
     
-    // Default valid dates (today, and 1 year expiry)
-    const today = new Date();
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
-    
-    setValidFrom(todayStr);
+    // Default start: today (saved as "now", so the code works immediately)
+    setValidFrom(localDateStr(new Date()));
     setValidUntil("");
     setUsageLimit("");
     setIsActive(true);
@@ -296,8 +296,13 @@ export default function UnifiedDiscountsPage() {
       code: code.toUpperCase().trim(),
       targets,
       description,
-      validFrom: validFrom ? new Date(validFrom).toISOString() : new Date().toISOString(),
-      validUntil: validUntil ? new Date(validUntil).toISOString() : null,
+      // Date inputs are "YYYY-MM-DD"; new Date() on that is UTC midnight, which for admins east of
+      // UTC (India, +5:30) makes "today" start in the future. Today (or no date) = active right now;
+      // other dates use the admin's local day boundaries.
+      validFrom: !validFrom || validFrom === localDateStr(new Date())
+        ? new Date().toISOString()
+        : new Date(`${validFrom}T00:00:00`).toISOString(),
+      validUntil: validUntil ? new Date(`${validUntil}T23:59:59.999`).toISOString() : null,
       usageLimit: usageLimit ? parseInt(usageLimit) : null,
       isActive,
       autoApply,
@@ -560,9 +565,21 @@ export default function UnifiedDiscountsPage() {
                           <Calendar className="w-3 h-3 opacity-30" />
                           <span>{campaign.validUntil ? format(new Date(campaign.validUntil), "MMM d, yyyy") : 'Infinite'}</span>
                         </div>
-                        <span className={`text-[9px] font-black uppercase tracking-widest ${campaign.validUntil && new Date(campaign.validUntil) < new Date() ? 'text-red-500/50' : 'text-emerald-500/50'}`}>
-                          {campaign.validUntil && new Date(campaign.validUntil) < new Date() ? 'Expired' : 'Live'}
-                        </span>
+                        {(() => {
+                          // Mirror the storefront's checks so "Live" means the code actually works now
+                          const now = new Date();
+                          const status =
+                            campaign.validUntil && new Date(campaign.validUntil) < now ? { label: 'Expired', cls: 'text-red-500/50' }
+                            : !campaign.isActive ? { label: 'Inactive', cls: 'text-red-500/50' }
+                            : campaign.validFrom && new Date(campaign.validFrom) > now
+                              ? { label: `Starts ${format(new Date(campaign.validFrom), "MMM d, h:mm a")}`, cls: 'text-amber-500/60' }
+                            : { label: 'Live', cls: 'text-emerald-500/50' };
+                          return (
+                            <span className={`text-[9px] font-black uppercase tracking-widest ${status.cls}`}>
+                              {status.label}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </td>
                     <td className="px-8 py-6">
@@ -680,14 +697,26 @@ export default function UnifiedDiscountsPage() {
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="space-y-3">
-                      <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Start Date</label>
-                      <input 
+                      <div className="flex items-center justify-between ml-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45">Start Date</label>
+                        <button
+                          type="button"
+                          onClick={() => setValidFrom(localDateStr(new Date()))}
+                          className="text-[9px] font-black uppercase tracking-widest text-emerald-500/70 hover:text-emerald-500"
+                        >
+                          Start now
+                        </button>
+                      </div>
+                      <input
                         required
-                        type="date" 
+                        type="date"
                         value={validFrom}
                         onChange={(e) => setValidFrom(e.target.value)}
                         className="w-full bg-foreground/[0.03] border border-foreground/[0.05] rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-foreground/20 text-foreground"
                       />
+                      <p className="text-[9px] text-foreground/35 ml-1">
+                        {validFrom === localDateStr(new Date()) ? "Active immediately after saving" : "Starts at 00:00 on this date"}
+                      </p>
                     </div>
                     <div className="space-y-3">
                       <label className="text-[9px] font-black uppercase tracking-widest text-foreground/45 ml-1">Expiration Date</label>

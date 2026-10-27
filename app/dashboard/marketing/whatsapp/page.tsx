@@ -576,7 +576,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                                 <img src={imgUrl} alt="Template Header Product" className="w-full h-full object-cover" />
                                 <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex flex-col justify-end p-2">
                                   <span className="text-[7px] text-emerald-400 font-bold uppercase tracking-wider font-mono">Premium Heavyweight Fit</span>
-                                  <span className="text-[9px] font-bold text-white tracking-wide truncate">Zica Bella® Limited Capsule</span>
+                                  <span className="text-[9px] font-bold text-foreground tracking-wide truncate">Zica Bella® Limited Capsule</span>
                                 </div>
                               </div>
                             );
@@ -604,7 +604,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
 
                 <div>
                   <div className="text-[10px] text-muted-foreground uppercase font-semibold mb-1">Components JSON</div>
-                  <pre className="bg-zinc-950 border border-foreground/10 text-zinc-400 p-3 rounded-xl font-mono text-[9px] overflow-auto max-h-[200px] scrollbar-hide select-all">{JSON.stringify(selectedDetail.components, null, 2)}</pre>
+                  <pre className="bg-background border border-foreground/10 text-foreground/60 p-3 rounded-xl font-mono text-[9px] overflow-auto max-h-[200px] scrollbar-hide select-all">{JSON.stringify(selectedDetail.components, null, 2)}</pre>
                 </div>
               </div>
               <div className="p-4 border-t border-foreground/5 flex justify-between items-center gap-2">
@@ -752,7 +752,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                               <span>API Payload</span>
                               <button type="button" onClick={() => { navigator.clipboard.writeText(JSON.stringify(getPayloadJson(), null, 2)); toast.success("Copied!"); }} className="text-emerald-500 hover:text-emerald-400 font-bold lowercase">Copy JSON</button>
                             </div>
-                            <pre className="bg-zinc-950 border border-foreground/10 text-zinc-300 p-2.5 rounded-xl font-mono text-[9px] overflow-auto max-h-[200px] select-all scrollbar-hide">{JSON.stringify(getPayloadJson(), null, 2)}</pre>
+                            <pre className="bg-background border border-foreground/10 text-foreground/80 p-2.5 rounded-xl font-mono text-[9px] overflow-auto max-h-[200px] select-all scrollbar-hide">{JSON.stringify(getPayloadJson(), null, 2)}</pre>
                           </div>
                         </div>
                       )}
@@ -794,7 +794,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                     </div>
                     {buttons.filter(b => b.type === 'CATALOG' || b.text).length > 0 && (
                       <div className="mt-1 space-y-1 self-end w-[85%]">
-                        {buttons.filter(b => b.type === 'CATALOG' || b.text).map((btn, bi) => <div key={bi} className="bg-zinc-800 text-blue-400 text-center py-2 rounded-xl shadow-sm text-[9px] font-semibold border border-foreground/5 flex items-center justify-center gap-1">{btn.text || btn.type}{btn.type === 'URL' && <ExternalLink className="w-2.5 h-2.5" />}</div>)}
+                        {buttons.filter(b => b.type === 'CATALOG' || b.text).map((btn, bi) => <div key={bi} className="bg-foreground/[0.06] text-blue-700 dark:text-blue-400 text-center py-2 rounded-xl shadow-sm text-[9px] font-semibold border border-foreground/5 flex items-center justify-center gap-1">{btn.text || btn.type}{btn.type === 'URL' && <ExternalLink className="w-2.5 h-2.5" />}</div>)}
                       </div>
                     )}
                     <div className="h-4" />
@@ -1494,7 +1494,7 @@ function BroadcastCampaigns() {
       case "sending": return "border-blue-500/20 text-blue-500 bg-blue-500/10 animate-pulse";
       case "scheduled": return "border-amber-500/20 text-amber-500 bg-amber-500/10";
       case "paused": return "border-violet-500/20 text-violet-500 bg-violet-500/10";
-      case "cancelled": return "border-zinc-500/20 text-zinc-500 bg-zinc-500/10";
+      case "cancelled": return "border-foreground/30 text-foreground/50 bg-foreground/30";
       case "draft": return "border-foreground/10 text-foreground/50 bg-foreground/5";
       default: return "border-rose-500/20 text-rose-500 bg-rose-500/10";
     }
@@ -2737,7 +2737,7 @@ function OrderNotifications() {
       ) : (
         <div className="space-y-4">
           {/* Scheduler Health status panel */}
-          <div className="p-4 rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-lg relative overflow-hidden transition-all duration-300 hover:border-white/20">
+          <div className="p-4 rounded-2xl bg-foreground/5 backdrop-blur-md border border-foreground/10 shadow-lg relative overflow-hidden transition-all duration-300 hover:border-foreground/20">
             <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
             
             <div className="flex justify-between items-start mb-3">

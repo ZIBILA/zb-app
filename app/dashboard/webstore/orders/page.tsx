@@ -266,7 +266,7 @@ function WebStoreOrdersContent() {
       case "cancelled":
         return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20"><X className="w-3 h-3" /> Cancelled</span>;
       default:
-        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-500/10 text-slate-400 border border-slate-500/20"><AlertCircle className="w-3 h-3" /> Unfulfilled</span>;
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-foreground/30 text-foreground/60 border border-foreground/30"><AlertCircle className="w-3 h-3" /> Unfulfilled</span>;
     }
   };
 

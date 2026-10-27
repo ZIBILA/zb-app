@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef, useMemo, startTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight, Volume2, VolumeX, Play } from "lucide-react";
+import { ShoppingBag, Loader2, Bookmark, X, Plus, ChevronLeft, ArrowLeft, ArrowRight, Volume2, VolumeX, Play, Banknote, Tag, Truck, RotateCw, Info } from "lucide-react";
+import { DEFAULT_PDP_TRUST_BOXES, type PdpTrustBox } from "@/lib/pdp-trust-defaults";
 import { useMetaEvents, ga4AddToWishlist } from "@/hooks/useMetaEvents";
 import { useSnapEvents } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
@@ -22,6 +23,8 @@ interface ShopSettings {
   showSizeFit: boolean;
   showDetails: boolean;
   pdpBackground?: string;
+  /** Info tiles under Buy Now — managed in Dashboard → App Integration (same as the mobile app) */
+  pdpTrustBoxes?: PdpTrustBox[];
 }
 
 /**
@@ -214,6 +217,56 @@ interface ShopSettings {
   showSizeFit: boolean;
   showDetails: boolean;
   pdpBackground?: string;
+  /** Info tiles under Buy Now — managed in Dashboard → App Integration (same as the mobile app) */
+  pdpTrustBoxes?: PdpTrustBox[];
+}
+
+/** Trust icons are stored as app (Ionicons) names or an image URL — map names to lucide equivalents */
+function TrustBoxIcon({ icon }: { icon: string }) {
+  const key = (icon || "").trim();
+  if (/^https?:\/\//.test(key)) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={key} alt="" className="w-5 h-5 object-contain" />;
+  }
+  const Icon =
+    /cash|banknote|money/.test(key) ? Banknote
+    : /tag/.test(key) ? Tag
+    : /truck|bicycle|delivery|shipping/.test(key) ? Truck
+    : /refresh|sync|return|rotate/.test(key) ? RotateCw
+    : Info;
+  return <Icon className="w-5 h-5" strokeWidth={1.75} />;
+}
+
+/** COD / prepaid offer / delivery / returns tiles shown under Buy Now (mirrors the mobile app) */
+function TrustBoxes({ boxes }: { boxes: PdpTrustBox[] }) {
+  if (!boxes.length) return null;
+  return (
+    <div className="grid grid-cols-2 gap-2.5">
+      {boxes.map((box) => {
+        const highlight = box.variant === "highlight";
+        return (
+          <div
+            key={box.id}
+            className={`flex items-start gap-3 rounded-2xl p-3.5 ${
+              highlight ? "bg-foreground text-background" : "bg-foreground/[0.04] text-foreground"
+            }`}
+          >
+            <span className="shrink-0 mt-0.5">
+              <TrustBoxIcon icon={box.icon} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold leading-snug">{box.title}</p>
+              {box.subtitle && (
+                <p className={`mt-1 text-[11px] leading-snug ${highlight ? "text-background/70" : "text-foreground/60"}`}>
+                  {box.subtitle}
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function ProductDetailsClient({ 
@@ -512,6 +565,8 @@ export default function ProductDetailsClient({
   const hideCare = tagsList.includes('hide:care');
   const hideShippingReturn = tagsList.includes('hide:shipping_return');
 
+  const trustBoxes = shopSettings?.pdpTrustBoxes?.length ? shopSettings.pdpTrustBoxes : DEFAULT_PDP_TRUST_BOXES;
+
   const tabs = [
     { id: 'details', label: 'Description', show: (shopSettings?.showDetails ?? true) && !hideDescription },
     { id: 'more-details', label: 'Details', show: (shopSettings?.showDetails ?? true) && !hideDetails && !!getMeta('DETAILS') },
@@ -765,6 +820,8 @@ export default function ProductDetailsClient({
                 </button>
               )}
             </div>
+
+            <TrustBoxes boxes={trustBoxes} />
 
             {/* Tabs details */}
             <div className="p-3.5 rounded-xl border border-foreground/5 bg-foreground/[0.01] space-y-3">
@@ -1164,6 +1221,8 @@ export default function ProductDetailsClient({
                     <p className="text-[8px] text-red-400/80 text-center mt-1 px-2">{checkoutError}</p>
                   )}
                 </div>
+
+                <TrustBoxes boxes={trustBoxes} />
 
                 <div 
                   className="mt-0.5 p-3 rounded-[1.5rem] border border-foreground/[0.06] bg-foreground/[0.01]"

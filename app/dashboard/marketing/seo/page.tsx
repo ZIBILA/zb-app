@@ -107,7 +107,7 @@ export default function SEODashboard() {
           {/* Top KPI row */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.02] flex items-center justify-between">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.02] flex items-center justify-between">
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">crawled pages</p>
                 <h3 className="text-3xl font-black mt-1 font-heading">{data.summary.crawledPages}</h3>
@@ -116,7 +116,7 @@ export default function SEODashboard() {
               <Globe className="w-8 h-8 text-primary/30" />
             </div>
 
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.02] flex items-center justify-between">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.02] flex items-center justify-between">
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">google status</p>
                 <h3 className="text-base font-bold mt-2 text-emerald-400 flex items-center gap-1.5 font-heading">
@@ -127,7 +127,7 @@ export default function SEODashboard() {
               <CheckCircle className="w-8 h-8 text-emerald-400/20" />
             </div>
 
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.02] flex items-center justify-between">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.02] flex items-center justify-between">
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">bing status</p>
                 <h3 className="text-base font-bold mt-2 text-emerald-400 flex items-center gap-1.5 font-heading">
@@ -138,7 +138,7 @@ export default function SEODashboard() {
               <CheckCircle className="w-8 h-8 text-emerald-400/20" />
             </div>
 
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.02] flex items-center justify-between">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.02] flex items-center justify-between">
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">audit fixes</p>
                 <h3 className="text-3xl font-black mt-1 text-primary font-heading">+{data.summary.fixesCount}</h3>
@@ -150,7 +150,7 @@ export default function SEODashboard() {
           </div>
 
           {/* Core Web Vitals */}
-          <div className="glass-panel p-8 rounded-3xl border border-white/5 bg-foreground/[0.02]">
+          <div className="glass-panel p-8 rounded-3xl border border-foreground/5 bg-foreground/[0.02]">
             <h2 className="text-sm font-bold uppercase tracking-widest font-heading mb-6 flex items-center gap-2">
               <BarChart className="w-4 h-4" /> Core Web Vitals Telemetry
             </h2>
@@ -195,7 +195,7 @@ export default function SEODashboard() {
           {/* Sitemap & Robots.txt details */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.01] space-y-4">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.01] space-y-4">
               <div className="flex items-center gap-2 border-b border-foreground/5 pb-3">
                 <FileCode className="w-4 h-4 text-primary/60" />
                 <h3 className="text-xs uppercase font-bold tracking-widest font-heading">Dynamic Sitemap Status</h3>
@@ -208,7 +208,7 @@ export default function SEODashboard() {
               </div>
             </div>
 
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.01] space-y-4">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.01] space-y-4">
               <div className="flex items-center gap-2 border-b border-foreground/5 pb-3">
                 <FileCode className="w-4 h-4 text-primary/60" />
                 <h3 className="text-xs uppercase font-bold tracking-widest font-heading">Robots.txt Status</h3>
@@ -226,7 +226,7 @@ export default function SEODashboard() {
           {/* Scanner Report and Fixed logs */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.01] space-y-4">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.01] space-y-4">
               <div className="flex items-center gap-2 border-b border-foreground/5 pb-3">
                 <AlertTriangle className="w-4 h-4 text-amber-500" />
                 <h3 className="text-xs uppercase font-bold tracking-widest font-heading">Warnings & Indexing Limits ({data.summary.warningsCount})</h3>
@@ -245,7 +245,7 @@ export default function SEODashboard() {
               )}
             </div>
 
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 bg-foreground/[0.01] space-y-4">
+            <div className="glass-panel p-6 rounded-3xl border border-foreground/5 bg-foreground/[0.01] space-y-4">
               <div className="flex items-center gap-2 border-b border-foreground/5 pb-3">
                 <CheckCircle className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-xs uppercase font-bold tracking-widest font-heading">Automated Fixes Applied ({data.summary.fixesCount})</h3>

@@ -526,7 +526,7 @@ export default function TicketDetailPage() {
                         isAgent 
                           ? 'bg-foreground text-background rounded-tr-none' 
                           : isAi
-                          ? 'bg-purple-950/40 text-purple-100 border border-purple-500/20 rounded-tl-none font-medium'
+                          ? 'bg-purple-500/10 text-purple-950 dark:bg-purple-950/40 dark:text-purple-100 border border-purple-500/20 rounded-tl-none font-medium'
                           : 'bg-foreground/[0.05] text-foreground border border-foreground/[0.05] rounded-tl-none'
                       }`}>
                         <p className="text-[13px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>

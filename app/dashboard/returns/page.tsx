@@ -609,7 +609,7 @@ export default function ReturnsPage() {
                           className={`w-full flex items-center gap-3 p-2 rounded-lg border transition-all ${isSelected ? "border-emerald-500/50 bg-emerald-500/5" : "border-foreground/[0.05]"}`}
                         >
                           <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? "bg-emerald-500 border-emerald-500" : "border-foreground/20"}`}>
-                            {isSelected && <Check className="w-3 h-3 text-white" />}
+                            {isSelected && <Check className="w-3 h-3 text-foreground" />}
                           </div>
                           <div className="flex-1 min-w-0 text-left">
                             <p className="text-[11px] font-semibold text-foreground truncate">{item.title}</p>

@@ -241,7 +241,7 @@ export default function LiveCartsPage() {
                               )}
                             </div>
                           <div className="absolute -bottom-1 -right-1 w-8 h-8 rounded-xl bg-emerald-500 border-4 border-background flex items-center justify-center">
-                             <Activity className="w-3 h-3 text-white" />
+                             <Activity className="w-3 h-3 text-foreground" />
                           </div>
                         </div>
                         <div className="flex-1 min-w-0">
@@ -351,7 +351,7 @@ export default function LiveCartsPage() {
                                   <ShoppingBag className="w-8 h-8" />
                                 </div>
                               )}
-                              <div className="absolute top-4 right-4 bg-background/80 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10 shadow-2xl">
+                              <div className="absolute top-4 right-4 bg-background/80 backdrop-blur-xl px-4 py-2 rounded-2xl border border-foreground/10 shadow-2xl">
                                  <span className="text-[12px] font-black italic text-foreground">x{item.quantity}</span>
                               </div>
                             </div>

@@ -95,12 +95,10 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
 
   // Bank account modal
   const [isBankModalOpen, setIsBankModalOpen] = useState(false);
-  const [bankMethod, setBankMethod] = useState<"BANK" | "UPI">("BANK");
   const [holderName, setHolderName] = useState(customer?.name || "");
   const [accountNumber, setAccountNumber] = useState("");
   const [ifsc, setIfsc] = useState("");
   const [bankName, setBankName] = useState("");
-  const [upiId, setUpiId] = useState("");
   const [savingBank, setSavingBank] = useState(false);
   const [bankError, setBankError] = useState("");
 
@@ -289,23 +287,30 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
     handleCopy(url, "master");
   };
 
-  // Save Bank / UPI Account
+  // Save bank account (Direct Bank Transfer only) — same rules as the server
   const handleSaveBank = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSavingBank(true);
     setBankError("");
 
+    const cleanAccount = accountNumber.replace(/\s+/g, "");
+    const cleanIfsc = ifsc.trim().toUpperCase();
+    if (holderName.trim().length < 2) return setBankError("Enter the account holder's name.");
+    if (!/^\d{9,18}$/.test(cleanAccount)) return setBankError("Account number must be 9–18 digits.");
+    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
+      return setBankError("Enter a valid 11-character IFSC code (e.g. HDFC0001234).");
+    }
+
+    setSavingBank(true);
     try {
       const res = await fetch("/api/affiliate/bank", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          method: bankMethod,
+          method: "BANK",
           accountHolderName: holderName.trim(),
-          accountNumber: bankMethod === "BANK" ? accountNumber.trim() : undefined,
-          ifsc: bankMethod === "BANK" ? ifsc.trim().toUpperCase() : undefined,
-          bankName: bankMethod === "BANK" ? bankName.trim() : undefined,
-          upiId: bankMethod === "UPI" ? upiId.trim() : undefined,
+          accountNumber: cleanAccount,
+          ifsc: cleanIfsc,
+          bankName: bankName.trim() || undefined,
         }),
       });
 
@@ -313,14 +318,13 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
         setIsBankModalOpen(false);
         setAccountNumber("");
         setIfsc("");
-        setUpiId("");
         await fetchAffiliateProfile(true);
       } else {
-        const err = await res.json();
-        setBankError(err.error || "Failed to save account details");
+        const err = await res.json().catch(() => ({}));
+        setBankError(err.error || "Could not save your bank details. Please try again.");
       }
-    } catch (err: any) {
-      setBankError(err.message);
+    } catch {
+      setBankError("Network error. Please check your connection and try again.");
     } finally {
       setSavingBank(false);
     }
@@ -1056,8 +1060,8 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
                     <CreditCard className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <h3 className="text-base font-bold text-white">Payout Destination</h3>
-                    <p className="text-[11px] text-zinc-400">Encrypted with AES-256-GCM</p>
+                    <h3 className="text-base font-bold text-white">Bank details</h3>
+                    <p className="text-[11px] text-zinc-400">Payouts are sent by direct bank transfer · stored encrypted</p>
                   </div>
                 </div>
                 <button
@@ -1068,120 +1072,72 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
                 </button>
               </div>
 
-              <form onSubmit={handleSaveBank} className="space-y-4 text-xs">
-                {/* Segmented Picker */}
-                <div className="flex p-1 rounded-2xl bg-white/[0.04] border border-white/10 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setBankMethod("BANK")}
-                    className={`flex-1 py-2 rounded-xl font-medium transition-all ${
-                      bankMethod === "BANK" ? "bg-white text-black font-semibold shadow-sm" : "text-zinc-400 hover:text-white"
-                    }`}
-                  >
-                    Direct Bank Transfer
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setBankMethod("UPI")}
-                    className={`flex-1 py-2 rounded-xl font-medium transition-all ${
-                      bankMethod === "UPI" ? "bg-white text-black font-semibold shadow-sm" : "text-zinc-400 hover:text-white"
-                    }`}
-                  >
-                    UPI ID
-                  </button>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 block px-1">
-                    Account Holder Legal Name *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={holderName}
-                    onChange={(e) => setHolderName(e.target.value)}
-                    placeholder="Full name as registered on account"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-white placeholder:text-zinc-600 focus:outline-none focus:border-white/30"
-                  />
-                </div>
-
-                {bankMethod === "BANK" ? (
-                  <>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 block px-1">
-                        Bank Name
-                      </label>
-                      <input
-                        type="text"
-                        value={bankName}
-                        onChange={(e) => setBankName(e.target.value)}
-                        placeholder="e.g. HDFC Bank, ICICI Bank"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-white placeholder:text-zinc-600 focus:outline-none focus:border-white/30"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 block px-1">
-                        Account Number *
-                      </label>
-                      <input
-                        type="password"
-                        required
-                        value={accountNumber}
-                        onChange={(e) => setAccountNumber(e.target.value)}
-                        placeholder="••••••••••••"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/10 font-mono text-white placeholder:text-zinc-600 focus:outline-none focus:border-white/30"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 block px-1">
-                        IFSC Code *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={ifsc}
-                        onChange={(e) => setIfsc(e.target.value)}
-                        placeholder="HDFC0001234"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/10 font-mono uppercase text-white placeholder:text-zinc-600 focus:outline-none focus:border-white/30"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 block px-1">
-                      UPI ID / VPA *
-                    </label>
+              <form onSubmit={handleSaveBank} noValidate className="space-y-4">
+                {[
+                  { label: "Account holder name", value: holderName, set: setHolderName, placeholder: "As shown on your bank account", autoComplete: "name" },
+                  { label: "Bank name", value: bankName, set: setBankName, placeholder: "e.g. HDFC Bank", optional: true },
+                ].map((f) => (
+                  <label key={f.label} className="block space-y-1.5">
+                    <span className="text-xs text-zinc-400">
+                      {f.label}
+                      {f.optional && <span className="text-zinc-600"> (optional)</span>}
+                    </span>
                     <input
                       type="text"
-                      required
-                      value={upiId}
-                      onChange={(e) => setUpiId(e.target.value)}
-                      placeholder="yourname@okaxis or handle@upi"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/10 font-mono text-white placeholder:text-zinc-600 focus:outline-none focus:border-white/30"
+                      value={f.value}
+                      onChange={(e) => f.set(e.target.value)}
+                      placeholder={f.placeholder}
+                      autoComplete={f.autoComplete}
+                      className="w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 text-[16px] sm:text-sm text-white placeholder:text-zinc-600 outline-none focus:border-white/30"
                     />
-                  </div>
-                )}
+                  </label>
+                ))}
+
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-zinc-400">Account number</span>
+                  {/* Visible while typing so creators can check every digit before submitting */}
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    value={accountNumber}
+                    onChange={(e) => setAccountNumber(e.target.value.replace(/[^\d\s]/g, ""))}
+                    placeholder="Enter account number"
+                    className="w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 font-mono tracking-wider text-[16px] sm:text-sm text-white placeholder:text-zinc-600 placeholder:font-sans placeholder:tracking-normal outline-none focus:border-white/30"
+                  />
+                </label>
+
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-zinc-400">IFSC code</span>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    maxLength={11}
+                    value={ifsc}
+                    onChange={(e) => setIfsc(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+                    placeholder="e.g. HDFC0001234"
+                    className="w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 font-mono uppercase tracking-wider text-[16px] sm:text-sm text-white placeholder:text-zinc-600 placeholder:font-sans placeholder:normal-case placeholder:tracking-normal outline-none focus:border-white/30"
+                  />
+                </label>
 
                 {bankError && (
-                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400">
-                    {bankError}
-                  </div>
+                  <p className="px-3.5 py-2.5 rounded-xl bg-rose-500/10 text-xs text-rose-300">{bankError}</p>
                 )}
 
-                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-white/[0.08]">
+                <div className="flex gap-2.5 pt-2">
                   <button
                     type="button"
                     onClick={() => setIsBankModalOpen(false)}
-                    className="h-10 px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-zinc-300 text-xs font-medium transition-colors"
+                    className="flex-1 h-11 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-zinc-300 text-sm font-medium transition-colors"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={savingBank}
-                    className="h-10 px-5 rounded-xl bg-white text-black font-semibold text-xs uppercase tracking-wider hover:bg-zinc-200 active:scale-[0.98] transition-all disabled:opacity-50"
+                    className="flex-1 h-11 rounded-xl bg-white text-black text-sm font-semibold hover:bg-zinc-200 active:scale-[0.98] transition-all disabled:opacity-50"
                   >
-                    {savingBank ? "Saving..." : "Save Account"}
+                    {savingBank ? "Saving…" : "Save bank details"}
                   </button>
                 </div>
               </form>

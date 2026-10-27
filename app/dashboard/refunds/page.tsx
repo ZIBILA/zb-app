@@ -814,7 +814,7 @@ export default function RefundsPage() {
                   type="button"
                   onClick={handleApproveRefund}
                   disabled={actionLoading || selectedRefund.qcStatus === "FAILED"}
-                  className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${
+                  className={`flex-1 py-2.5 rounded-xl text-foreground text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${
                     selectedRefund.qcStatus === "FAILED"
                       ? "bg-secondary text-muted-foreground cursor-not-allowed opacity-50"
                       : "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20"

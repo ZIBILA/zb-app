@@ -1,6 +1,7 @@
 import { fetchProductByHandle, fetchProducts, resolveShopifyGid, ShopifyProduct } from "@/lib/shopify-admin";
 import Link from "next/link";
 import { getShopSettings } from "@/lib/db";
+import { parsePdpTrustBoxes } from "@/lib/pdp-trust-defaults";
 import ProductDetailsClient from "./ProductDetailsClient";
 import { Metadata } from "next";
 import { ProductJsonLd } from "@/components/seo/ProductJsonLd";
@@ -232,6 +233,7 @@ export default async function ProductPage({ params }: { params: { id: string } }
                 showSizeFit: Boolean((shop as any).showSizeFit ?? true),
                 showDetails: Boolean((shop as any).showDetails ?? true),
                 pdpBackground: (shop as any).pdpBackground || undefined,
+                pdpTrustBoxes: parsePdpTrustBoxes((shop as any).pdpTrustBoxes),
               }
             : null
         }
