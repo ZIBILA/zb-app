@@ -311,13 +311,17 @@ export function MetaPixelRouteTracker() {
         initPixel(sessionUserData);
       } else {
         // Really logged out (status === 'unauthenticated').
-        // Clear identity cookies only on the transition from logged-in to logged-out
-        // (logout or session expiry), so a previous user's data never leaks into the
-        // next user's events on a shared device. Ordinary guest navigation keeps the
-        // guest's own checkout identity (bound to zb_external_id via zb_pii_owner).
+        // Clear identity cookies only when the shopper SIGNED OUT (zb_logout marker set
+        // by the profile page's Sign Out button), so a previous user's data never leaks
+        // into the next user's events on a shared device. A session that merely expired
+        // (10-day JWT, InvalidSessionCleaner) keeps the customer's own bound identity and
+        // customer-id external_id: treating expiry as logout turned every returning
+        // customer into a brand-new person with no email/phone on their events.
         const wasLoggedIn = getClientCookie('zb_user_logged_in') === 'true';
+        const explicitLogout = getClientCookie('zb_logout') === '1';
         setClientCookie('zb_user_logged_in', 'false', 365);
-        if (wasLoggedIn) {
+        if (explicitLogout) deleteClientCookie('zb_logout');
+        if (wasLoggedIn && explicitLogout) {
           clearGuestPiiCookies();
           // The identity was the customer id while logged in; the next visitor on
           // this device must not inherit it — mint a fresh device id.
