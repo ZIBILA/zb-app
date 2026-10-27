@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import {
-  META_PIXEL_ID,
+  metaPixelId,
   initPixel,
   getMetaIdentityCookies,
   getClientCookie,
@@ -57,7 +57,7 @@ export function MetaPixelRouteTracker() {
     // Meta tracking off on this deployment (lib/meta/config.ts): the Pixel call is a
     // no-op inside withFbq and the CAPI relay below is skipped; GA4 / first-party
     // PageViews and the identity-cookie housekeeping keep running regardless.
-    const metaOn = !!META_PIXEL_ID;
+    const metaOn = !!metaPixelId();
 
     // ─── STEP 1: Synchronous setup (cookies, fbclid capture) ───
 

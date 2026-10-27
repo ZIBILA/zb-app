@@ -1,4 +1,4 @@
-import { META_PIXEL_ID, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
+import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
@@ -75,7 +75,7 @@ function uuidv4() {
 
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
-  if (!META_PIXEL_ID) return null;
+  if (!metaPixelId()) return null;
   // Consent regions: hold the relay until the visitor's consent is known (queued,
   // flushed on grant, dropped on deny). No-op pass-through when no region is set.
   return new Promise<any>((resolve) => {

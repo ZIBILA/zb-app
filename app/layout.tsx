@@ -245,6 +245,15 @@ export default async function RootLayout({
             })
           }}
         />
+        {/* Request-time pixel ids for the browser bundle (lib/metaPixel.ts / lib/snapPixel.ts read these
+            instead of the build-time NEXT_PUBLIC_* values, so a build env that differs from the runtime env
+            cannot leave the snippet and the bundle disagreeing on whether tracking is on). */}
+        <script
+          id="zb-pixel-ids"
+          dangerouslySetInnerHTML={{
+            __html: `window.__zbMetaPixelId=${JSON.stringify(pixelId)};window.__zbSnapPixelId=${JSON.stringify(snapPixelId)};`,
+          }}
+        />
         {/* Pixel queue stubs + init (no network). External SDKs load via lazyOnload so early track() calls still queue. */}
         {pixelId && (
         <script

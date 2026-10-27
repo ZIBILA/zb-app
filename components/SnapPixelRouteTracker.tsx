@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import {
-  SNAP_PIXEL_ID,
+  snapPixelId,
   captureSnapClickId,
   getSnapIdentityCookies,
   getClientCookie,
@@ -29,7 +29,7 @@ export function SnapPixelRouteTracker() {
 
   // Persist ScCid immediately on landing, before anything else can navigate away.
   useEffect(() => {
-    if (SNAP_PIXEL_ID) captureSnapClickId();
+    if (snapPixelId()) captureSnapClickId();
   }, [pathname]);
 
   // Don't let a stuck session request block PAGE_VIEW forever.
@@ -58,7 +58,7 @@ export function SnapPixelRouteTracker() {
     }
     lastTrackedPath.current = pathname;
 
-    if (!SNAP_PIXEL_ID) {
+    if (!snapPixelId()) {
       return;
     }
 

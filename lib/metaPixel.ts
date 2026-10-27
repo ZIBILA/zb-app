@@ -7,7 +7,22 @@ import { resolveMetaPixelId } from '@/lib/meta/config';
  * See lib/meta/config.ts — the production id is used only by production builds
  * of the live site, never by a preview build that forgot the variable.
  */
-export const META_PIXEL_ID = resolveMetaPixelId();
+const BUILD_META_PIXEL_ID = resolveMetaPixelId();
+
+/**
+ * The pixel id this page is actually running with. app/layout.tsx writes the id it
+ * resolved at REQUEST time to window.__zbMetaPixelId ('' when tracking is off), so
+ * the browser bundle cannot disagree with the rendered snippet when the build-time
+ * NEXT_PUBLIC_* / NODE_ENV differ from the runtime environment (Docker build args,
+ * a preview build promoted to production). Falls back to the inlined value.
+ */
+export function metaPixelId(): string {
+  if (typeof window !== 'undefined') {
+    const v = (window as any).__zbMetaPixelId;
+    if (typeof v === 'string') return v;
+  }
+  return BUILD_META_PIXEL_ID;
+}
 
 /**
  * Demo/test account values that must NEVER be sent to Meta Pixel or CAPI.
@@ -54,7 +69,7 @@ export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): v
   if (typeof window === 'undefined') return;
   // Meta tracking is off on this deployment (no pixel id resolved): the base
   // snippet is not rendered, so fbq never appears — drop silently, no 3 s wait.
-  if (!META_PIXEL_ID) return;
+  if (!metaPixelId()) return;
 
   if ((window as any).fbq) {
     callback((window as any).fbq);
@@ -295,7 +310,7 @@ export const initPixel = (additionalData: Record<string, any> = {}) => {
     }
     lastInitHash = currentHash;
 
-    fbq('init', META_PIXEL_ID, merged);
+    fbq('init', metaPixelId(), merged);
   }, 'init');
 };
 

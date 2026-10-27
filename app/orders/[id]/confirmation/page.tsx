@@ -36,7 +36,7 @@ import {
 } from "@/lib/meta/browser-purchase";
 import { snapPurchaseCurrency } from "@/lib/snap/currency";
 import { snapPurchasePhone } from "@/lib/snap/identity";
-import { SNAP_PIXEL_ID } from "@/lib/snapPixel";
+import { snapPixelId } from "@/lib/snapPixel";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
 import { toMinorUnits } from "@/lib/openaiPixel";
 import { trackStorefrontEvent } from "@/lib/track-client";
@@ -267,7 +267,7 @@ export default function OrderConfirmationPage() {
   // Conversions API Purchase reports): the charged total in the charged currency.
   useEffect(() => {
     if (!order?.id || registrationStatus !== "confirmed") return;
-    if (!SNAP_PIXEL_ID) return; // Snap tracking is off on this deployment: nothing to wait for
+    if (!snapPixelId()) return; // Snap tracking is off on this deployment: nothing to wait for
     if (
       decideSnapBrowserPurchase(trackingOrder, {
         alreadySent: hasSnapBrowserPurchaseBeenSent(order.id),

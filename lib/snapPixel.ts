@@ -4,7 +4,16 @@ import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/trackin
 import { resolveSnapPixelId } from '@/lib/snap/config';
 
 /** The pixel id in use ('' = Snap tracking is off on this deployment). See lib/snap/config.ts. */
-export const SNAP_PIXEL_ID = resolveSnapPixelId();
+const BUILD_SNAP_PIXEL_ID = resolveSnapPixelId();
+
+/** The pixel id this page runs with: the request-time value app/layout.tsx wrote to window.__zbSnapPixelId, else the build-time one (same reasoning as lib/metaPixel.ts metaPixelId). */
+export function snapPixelId(): string {
+  if (typeof window !== 'undefined') {
+    const v = (window as any).__zbSnapPixelId;
+    if (typeof v === 'string') return v;
+  }
+  return BUILD_SNAP_PIXEL_ID;
+}
 
 /**
  * Defensive helper: ensures window.snaptr exists before calling the callback.
@@ -169,7 +178,7 @@ function initWithIdentity(snaptr: any, identity: Record<string, string>) {
   const key = JSON.stringify(identity, Object.keys(identity).sort());
   if (key === lastInitKey) return;
   lastInitKey = key;
-  snaptr('init', SNAP_PIXEL_ID, identity);
+  snaptr('init', snapPixelId(), identity);
   if (typeof window !== 'undefined') (window as any).__snapPixelInitialized = true;
 }
 
@@ -177,7 +186,7 @@ function initWithIdentity(snaptr: any, identity: Record<string, string>) {
  * Initialize Snap Pixel with advanced matching from cookies (+ optional raw PII).
  */
 export const initSnapPixel = (raw?: RawIdentity) => {
-  if (!SNAP_PIXEL_ID) return;
+  if (!snapPixelId()) return;
   withSnaptr((snaptr) => initWithIdentity(snaptr, buildPixelIdentity(raw)), 'init');
 };
 
@@ -194,7 +203,7 @@ export const trackSnapClientEvent = (
   dedupId?: string,
   rawIdentity?: RawIdentity
 ) => {
-  if (!SNAP_PIXEL_ID) return;
+  if (!snapPixelId()) return;
   withSnaptr((snaptr) => {
     initWithIdentity(snaptr, buildPixelIdentity(rawIdentity));
     const payload: Record<string, any> = {};
