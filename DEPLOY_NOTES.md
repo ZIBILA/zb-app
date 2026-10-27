@@ -37,5 +37,16 @@ pm2 restart <app-name> --update-env
 6. Meta Pixel Helper on a product page: PageView then ViewContent, each once, shortly after load (main loads the vendor scripts with `lazyOnload`; events queue meanwhile). Events Manager → Test Events still shows browser + server pairs deduplicated by `event_id`.
 7. Open the product-page lightbox once (the zoom library is now code-split and loads on first open).
 
+## 4b. Post-deploy checks for the tracking changes (10 minutes)
+1. CSP: `curl -sI https://zicabella.com/products/x | grep -io 'frame-src[^;]*'` → contains `https://www.facebook.com`.
+2. Cookies: `curl -s -D - -o /dev/null -H 'Accept: text/html' 'https://zicabella.com/?ScCid=test123456'` → `Set-Cookie: ScCid=test123456; … Max-Age=7776000; Domain=zicabella.com` next to `_fbp` / `zb_external_id`.
+3. Meta Pixel Helper (logged in, or after one checkout): PageView and ViewContent show once each **with** Advanced Matching (em, ph …). In DevTools → Network, filter `facebook.com/tr`: for a logged-in visitor the hits are `POST` (iframe) and there must be no console line "Framing 'https://www.facebook.com/' violates…". The request carries `fbp=fb.1.…` (and `fbc` after an ad click).
+4. Events Manager → Test events (browser + server): each event appears twice with the same event id and is marked deduplicated; Diagnostics shows no "missing parameters" for em / ph / external_id / fbp on Purchase and InitiateCheckout.
+5. Events Manager → Overview: Event Match Quality for ViewContent / AddToCart / InitiateCheckout / Purchase should rise over the next 48 h (logged-in and returning visitors now contribute browser + server identity).
+6. Snap Events Manager → Event quality: sc_click_id / sc_cookie1 present on server events after a Snap ad click; email / phone match on PAGE_VIEW / VIEW_CONTENT for returning shoppers.
+7. Staff devices: open `https://zicabella.com/?zb_internal=1` once in each staff browser — that browser never sends pixel or CAPI events again (cookie `zb_internal=1`, one year). Internal / demo accounts get it automatically on their first relayed event after login.
+8. Relay health: `curl -s -X POST https://zicabella.com/api/meta/event -H 'content-type: application/json' --data '{}'` → HTTP 400 (no browser provenance), while real page views keep relaying (Network tab: `/api/meta/event` 200 with `{"success":true}`).
+9. Origin: confirm the DigitalOcean app only accepts traffic from Cloudflare (firewall / allow-list), since `cf-connecting-ip` is now the trusted client IP.
+
 ## 5. Rollback
 `git revert` the branch merge commit (or redeploy the previous build). No data migrations, no env changes, so rollback is a plain redeploy.
