@@ -227,7 +227,9 @@ export function buildSnapCapiEvent(payload: SnapCapiEventPayload): Record<string
     if (h) user_data[k] = [h];
   });
   const ext = hashIfNeeded(payload.externalId?.trim());
-  if (ext) user_data.external_id = [ext];
+  // Snap documents external_id as a plain string (em/ph/… may be lists); an array here
+  // risks the only match key on anonymous funnel events being ignored.
+  if (ext) user_data.external_id = ext;
   if (payload.ipAddress) user_data.client_ip_address = payload.ipAddress.trim();
   if (payload.userAgent) user_data.client_user_agent = payload.userAgent;
   if (payload.scClickId) user_data.sc_click_id = payload.scClickId.trim();
