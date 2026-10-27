@@ -10,6 +10,7 @@ import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identi
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
 import { parseConsentRegions } from '@/lib/meta/consent';
+import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
 import crypto from 'crypto';
 
 /**
@@ -36,7 +37,9 @@ const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 /** Events whose caller-supplied identity (typed/verified for that event) survives the guest strip. */
 const EXPLICIT_IDENTITY_EVENTS = new Set(['Lead', 'Subscribe', 'CompleteRegistration']);
 const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
-const MAX_VALUE = 10_000_000;
+// Per event, in the event currency. Funnel events only (Purchase is server-authoritative);
+// a forged InitiateCheckout above this is dropped rather than fed to Meta's optimisation.
+const MAX_VALUE = 1_000_000;
 const MAX_LIST = 100;
 
 function allowedHosts(): Set<string> {
@@ -149,6 +152,10 @@ function isDemoHash(field: 'em' | 'ph', hash: string | undefined): boolean {
 
 export async function POST(req: NextRequest) {
   try {
+    // Only our own storefront pages may relay (lib/tracking/same-site-request.ts).
+    if (!isStorefrontPageRequest(req.headers, ALLOWED_HOSTS)) {
+      return NextResponse.json({ error: 'Invalid event' }, { status: 400 });
+    }
     const body = await req.json();
     const {
       eventName,

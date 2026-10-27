@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { sendSnapEvent } from '@/lib/snap-capi';
 import { isSnapExcludedPath, snapStorefrontHosts } from '@/lib/snap/config';
 import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
+import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
 
 /**
  * Public, browser-facing Snap CAPI relay for NON-monetary-authoritative web events.
@@ -13,7 +14,9 @@ import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
  *
  * Defence in depth: strict schema, event allowlist, storefront-host check on
  * event_source_url, value/quantity bounds, per-IP rate limit, opaque responses.
- * (Origin/Referer are spoofable and are not used as authentication.)
+ * Origin / Sec-Fetch-Site must name the storefront (lib/tracking/same-site-request.ts):
+ * forgeable by a script, so a bar rather than authentication, but it keeps
+ * cross-site pages and header-less clients out.
  */
 
 const RELAYED_EVENTS = [
@@ -93,6 +96,7 @@ export async function POST(req: NextRequest) {
     // per request to dodge the limit.
     const trustedIp = getClientIP(req);
     if (rateLimited(trustedIp || 'unknown')) return reject(429, 'rate_limited');
+    if (!isStorefrontPageRequest(req.headers, HOSTS)) return reject(400, 'invalid_source');
 
     let raw: unknown;
     try { raw = await req.json(); } catch { return reject(400, 'invalid_json'); }
