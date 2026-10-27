@@ -12,6 +12,7 @@ import {
   trackSnapClientEvent,
   initSnapPixel,
 } from '@/lib/snapPixel';
+import { isDemoValue } from '@/lib/metaPixel';
 
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -72,8 +73,20 @@ export function SnapPixelRouteTracker() {
       setClientCookie('zb_external_id', extId, 365);
     }
 
-    // 3. (Re)init pixel with advanced matching (only re-inits when identity changed)
-    initSnapPixel();
+    // 3. (Re)init pixel with advanced matching (only re-inits when identity changed).
+    //    Logged in: the session's own raw email / phone / name — the pixel hashes raw
+    //    values itself (cookie hashes can only feed email / phone), so the pixel half
+    //    matches on the same keys as the CAPI half. Guests: the bound cookie hashes.
+    const su = session?.user as any;
+    const sessionName = String(su?.name || '').trim();
+    const nameParts = sessionName && !isDemoValue('name', sessionName) ? sessionName.split(/\s+/) : [];
+    const sessionPhone = su?.phone || (session as any)?.customer?.phone;
+    initSnapPixel(su ? {
+      em: su.email && !isDemoValue('email', su.email) ? su.email : undefined,
+      ph: sessionPhone && !isDemoValue('phone', sessionPhone) ? sessionPhone : undefined,
+      fn: nameParts[0] || undefined,
+      ln: nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined,
+    } : undefined);
 
     // 4. Shared id: browser client_dedup_id === CAPI event_id
     const eventId = 'pv_snap_' + uuidv4();
