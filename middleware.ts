@@ -4,6 +4,43 @@ import { isPrivateIP } from "@/lib/ip-geo";
 import { clientIpFromHeaders } from "@/lib/client-ip";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
+// ── Unknown collection handles → a real 404 ─────────────────────────────────
+// The app streams every page behind app/loading.tsx, so a notFound() thrown in a
+// collection page, its metadata or its layout only yields a "soft 404" (200 +
+// not-found UI). Rewriting an unknown handle to an unmatched path makes Next answer
+// with the branded not-found page and a 404 status. Handles come from
+// /api/collections/handles (ISR 120 s) and are cached here per instance for 5 min;
+// any failure fails open (no rewrite).
+const COLLECTION_HANDLES_TTL_MS = 5 * 60_000;
+const COLLECTION_HANDLES_RETRY_MS = 60_000;
+let collectionHandlesCache: { set: Set<string> | null; validUntil: number } = { set: null, validUntil: 0 };
+let collectionHandlesInflight: Promise<Set<string> | null> | null = null;
+
+async function knownCollectionHandles(origin: string): Promise<Set<string> | null> {
+  const now = Date.now();
+  if (now < collectionHandlesCache.validUntil) return collectionHandlesCache.set;
+  if (!collectionHandlesInflight) {
+    collectionHandlesInflight = (async () => {
+      try {
+        const res = await fetch(`${origin}/api/collections/handles`, { signal: AbortSignal.timeout(2000), cache: 'no-store', headers: { accept: 'application/json' } });
+        const data = res.ok ? await res.json().catch(() => null) : null;
+        const handles: unknown = data?.handles;
+        if (Array.isArray(handles) && handles.length) {
+          collectionHandlesCache = { set: new Set(handles.map(h => String(h).toLowerCase())), validUntil: Date.now() + COLLECTION_HANDLES_TTL_MS };
+        } else {
+          collectionHandlesCache = { set: null, validUntil: Date.now() + COLLECTION_HANDLES_RETRY_MS };
+        }
+      } catch {
+        collectionHandlesCache = { set: null, validUntil: Date.now() + COLLECTION_HANDLES_RETRY_MS };
+      } finally {
+        collectionHandlesInflight = null;
+      }
+      return collectionHandlesCache.set;
+    })();
+  }
+  return collectionHandlesInflight;
+}
+
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
   DASHBOARD_HOME: ["/dashboard"],
   SUPPORT: ["/dashboard/support"],
@@ -175,6 +212,19 @@ export default withAuth(
                          !pathname.startsWith('/web-store') &&
                          !pathname.startsWith('/api/admin') &&
                          !pathname.startsWith('/api/webhooks');
+
+    // /collections/<unknown-handle> → 404 (see knownCollectionHandles above). 'all' is virtual.
+    const collectionMatch = isStorefront && req.method === 'GET' ? pathname.match(/^\/collections\/([^/]+)\/?$/) : null;
+    if (collectionMatch) {
+      let handle = '';
+      try { handle = decodeURIComponent(collectionMatch[1]).trim().toLowerCase(); } catch { handle = collectionMatch[1].toLowerCase(); }
+      if (handle && handle !== 'all') {
+        const known = await knownCollectionHandles(req.nextUrl.origin);
+        if (known && !known.has(handle)) {
+          return NextResponse.rewrite(new URL('/__collection-not-found', req.url));
+        }
+      }
+    }
 
     const clientIp = clientIpFromHeaders(req.headers) || req.ip;
 

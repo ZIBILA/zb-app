@@ -33,6 +33,7 @@ pm2 restart <app-name> --update-env
 2. `curl -s https://zicabella.com/robots.txt` → `Sitemap: https://zicabella.com/sitemap.xml`.
 3. `curl -s https://zicabella.com/collections | grep -c 'main-content'` → `1` (page body is in the HTML).
 4. `curl -s -o /dev/null -w '%{http_code}' https://zicabella.com/collections/does-not-exist` → `404`.
+   (Served by the middleware rewrite fed from `/api/collections/handles`; if it is still `200`, check `curl -s https://zicabella.com/api/collections/handles` returns `{"handles":[…]}` — a Cloudflare challenge or a 503 there makes the middleware fail open.)
 5. Open the home page on a phone: poster shows immediately, video starts within ~1–2 s, header wordmark uses Rocaston without a late swap.
 6. Meta Pixel Helper on a product page: PageView then ViewContent, each once, shortly after load (main loads the vendor scripts with `lazyOnload`; events queue meanwhile). Events Manager → Test Events still shows browser + server pairs deduplicated by `event_id`.
 7. Open the product-page lightbox once (the zoom library is now code-split and loads on first open).
