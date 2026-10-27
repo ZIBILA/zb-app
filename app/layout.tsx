@@ -18,7 +18,7 @@ import "@/lib/auth/env-check";
 import { DEMO_EMAIL_HASHES, DEMO_PHONE_HASHES } from "@/lib/buildMetaUserData";
 import { PLACEHOLDER_EMAIL_HASHES, PLACEHOLDER_NAME_HASHES, PLACEHOLDER_PHONE_HASHES, PLACEHOLDER_ZIP_HASHES } from "@/lib/tracking/placeholder-identity";
 import { resolveSnapPixelId } from "@/lib/snap/config";
-import { resolveMetaPixelId } from "@/lib/meta/config";
+import { resolveMetaServerPixelId } from "@/lib/meta/config";
 import { parseConsentRegions } from "@/lib/meta/consent";
 import MetaConsentGate from "@/components/MetaConsentGate";
 
@@ -154,7 +154,9 @@ export default async function RootLayout({
 }>) {
   // '' = Meta tracking off on this deployment (dev / test / staging without an explicit
   // NEXT_PUBLIC_META_PIXEL_ID): the base snippet below is not rendered (lib/meta/config.ts).
-  const pixelId = resolveMetaPixelId();
+  // The id the Conversions API sends with (META_PIXEL_ID, else the public id, else the
+  // built-in one): the browser must use the same one or the two halves never deduplicate.
+  const pixelId = resolveMetaServerPixelId();
   // Consent regions / Limited Data Use — both off unless the env says otherwise (lib/meta/consent.ts).
   const metaConsentRegions = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
   const metaLdu = String(process.env.NEXT_PUBLIC_META_LDU || '').trim() === '1';
@@ -265,6 +267,7 @@ export default async function RootLayout({
                 document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
                 zbInternal = true;
               }
+              if (/[?&]zb_app=1(?:&|$)/.test(location.search)) zbInternal = true; // native-app WebView page: not a website visit
               window.__zbInternal = zbInternal;
               if (!zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
