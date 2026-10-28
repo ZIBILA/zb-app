@@ -176,7 +176,9 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
 
 export interface MetaPurchaseDeps {
   db: any;
-  send: (payload: CapiEventPayload) => Promise<{ success: boolean; error?: any; skipped?: boolean }>;
+  send: (payload: CapiEventPayload) => Promise<{ success: boolean; error?: any; skipped?: boolean; blocked?: string; permanent?: boolean; code?: number }>;
+  /** Retry backoff per attempt count (ms). Injected by tests; defaults to META_RETRY_BACKOFF_MS. */
+  retryBackoffMs?: number[];
   /** Why CAPI cannot send right now (token / pixel id missing or malformed), else null. */
   configError?: () => string | null;
   /** Operational alert sink. Defaults to a structured console.error line. */
@@ -185,10 +187,28 @@ export interface MetaPurchaseDeps {
 
 export type MetaPurchaseAlert =
   | 'meta_config_missing'
+  | 'meta_auth_rejected'
+  | 'meta_rate_limited'
+  | 'meta_permanent_rejection'
   | 'ledger_table_missing'
   | 'ledger_error'
   | 'attempts_exhausted'
   | 'expired_unsent';
+
+/**
+ * Retry backoff by attempt count (same schedule as Snap): the first two retries are
+ * immediate (next cron run), then 30 min, 2 h, 6 h — a Purchase is not thrown away
+ * in the first hour of a Meta outage, and the 7-day window is still respected.
+ */
+export const META_RETRY_BACKOFF_MS = [0, 0, 30 * 60_000, 2 * 60 * 60_000, 6 * 60 * 60_000];
+export function isMetaRetryDue(row: { attempts: number; updatedAt: Date | string }, schedule = META_RETRY_BACKOFF_MS, now = Date.now()): boolean {
+  const wait = schedule[Math.max(0, Math.min(Number(row.attempts) || 0, schedule.length - 1))];
+  return now - new Date(row.updatedAt).getTime() >= wait;
+}
+/** Oldest conversion first: the one closest to Meta's 7-day limit goes before the others. */
+export function byMetaEventAge(a: { eventTime?: Date | string | null; createdAt: Date | string }, b: { eventTime?: Date | string | null; createdAt: Date | string }): number {
+  return new Date(a.eventTime || a.createdAt).getTime() - new Date(b.eventTime || b.createdAt).getTime();
+}
 
 const defaultAlert = (code: MetaPurchaseAlert, detail: Record<string, unknown>) => {
   console.error(`[Meta Purchase][ALERT] ${code}`, JSON.stringify(detail));
@@ -199,7 +219,7 @@ const RECOVERY_MIN_AGE_MS = 20 * 60_000;
 /** Meta accepts server events up to 7 days old; nothing older is ever re-dated. */
 const META_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function createMetaPurchaseDelivery({ db: prisma, send, configError, alert = defaultAlert }: MetaPurchaseDeps) {
+export function createMetaPurchaseDelivery({ db: prisma, send, configError, alert = defaultAlert, retryBackoffMs = META_RETRY_BACKOFF_MS }: MetaPurchaseDeps) {
   const ledger = createDeliveryLedger(prisma, '[Meta Purchase]');
   const key = (orderId: string) => ({ platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } });
 
@@ -209,10 +229,19 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
    * a permanent skip. Only the ledger itself decides "skipped" (already sent, or
    * older than Meta's 7-day window).
    */
+  const errText = (e: unknown) => (typeof e === 'string' ? e : JSON.stringify(e ?? '')).slice(0, 400);
   const sendRetryable: MetaPurchaseDeps['send'] = async (payload) => {
     const res = await send(payload);
-    if (res.success || !res.skipped) return res;
-    return { success: false, error: `sender_skipped: ${typeof res.error === 'string' ? res.error : JSON.stringify(res.error ?? '')}` };
+    if (res.success) return res;
+    // Setup problem (token / permission / pixel / throttle): the ledger refunds the
+    // attempt and the retry job stops this run and alerts (see retryFailedMetaPurchases).
+    if (res.blocked) return { success: false, blocked: res.blocked, error: `blocked_${res.blocked}${res.code ? ` (code ${res.code})` : ''}: ${errText(res.error)}` };
+    // Meta rejected this payload (code 100): the same bytes cannot succeed later, so the
+    // ledger closes the row as skipped with the reason; emitMetaPurchase alerts on it.
+    if (res.permanent) return { success: false, skipped: true, error: `rejected${res.code ? ` (code ${res.code})` : ''}: ${errText(res.error)}` };
+    // A sender "skip" (config missing without configError wired) must stay retryable.
+    if (res.skipped) return { success: false, error: `sender_skipped: ${errText(res.error)}` };
+    return res;
   };
 
   /** Store the shopper's Meta context against an order BEFORE payment. Never throws. */
@@ -302,6 +331,15 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
    *   the context is still stored for the confirming path. The stored order's
    *   paymentStatus is re-checked either way.
    */
+  /** ledger.deliver + the one alert a single delivery can raise (a permanent Meta rejection). */
+  async function deliverAndReport(orderId: string, args: Parameters<typeof ledger.deliver>[0]): Promise<DeliveryResult> {
+    const result = await ledger.deliver(args);
+    if (result.status === 'skipped' && /^rejected/.test(result.reason)) {
+      alert('meta_permanent_rejection', { orderId, reason: result.reason.slice(0, 300), hint: 'payload rejected by Meta (invalid parameter); fix the data and reset the row to status=failed, attempts=0 to resend' });
+    }
+    return result;
+  }
+
   async function emitMetaPurchase(
     orderId: string,
     ctx?: MetaClickContext,
@@ -368,7 +406,7 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     const cfgErr = configError?.() || null;
     if (cfgErr) return deferForConfig(order, clean(ctx), cfgErr, conversionTime);
 
-    const result = await ledger.deliver({
+    const result = await deliverAndReport(orderId, {
       platform: PLATFORM,
       eventName: EVENT,
       orderId,
@@ -488,10 +526,26 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
       const expired = await ledger.expireStalePending(PLATFORM, EVENT);
       if (expired) tally.expired = expired;
       const handled = new Set<string>();
-      for (const orderId of await ledger.retryable(PLATFORM, EVENT, limit)) {
+      // Due rows only (backoff by attempt count), oldest conversion first.
+      const due = (await ledger.retryableRows(PLATFORM, EVENT, limit * 4))
+        .filter((r) => isMetaRetryDue(r, retryBackoffMs))
+        .sort(byMetaEventAge)
+        .slice(0, limit);
+      let blockedThisRun: string | null = null;
+      for (const { orderId } of due) {
         handled.add(orderId);
         const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
         bump(`retry_${out.status}`);
+        if (out.status === 'failed' && out.blocked) {
+          // Token / permission / pixel / throttle: every further send this run would fail
+          // the same way. Attempt already refunded by the ledger; alert and stop.
+          blockedThisRun = out.blocked;
+          const code: MetaPurchaseAlert = out.blocked === 'rate' ? 'meta_rate_limited' : 'meta_auth_rejected';
+          alerts.add(code);
+          alert(code, { orderId, reason: out.reason.slice(0, 300), hint: out.blocked === 'rate' ? 'Meta throttled the Conversions API; retried next run' : 'check META_CAPI_ACCESS_TOKEN / pixel permissions in Events Manager; Purchases wait in the ledger (no attempts burned)' });
+          bump(`blocked_${out.blocked}`);
+          break;
+        }
         if (out.status === 'skipped' && TERMINAL_RETRY_SKIP.test(out.reason)) {
           await prisma.adConversionDelivery.updateMany({
             // failed rows, or "sending" rows whose lease expired (a crashed send)
@@ -504,10 +558,18 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
           bump('retry_closed');
         }
       }
-      for (const orderId of await recoverMissedMetaPurchases(limit, { since: opts.recoverSince })) {
-        if (handled.has(orderId)) continue;
-        const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
-        bump(`recovered_${out.status}`);
+      if (!blockedThisRun) {
+        for (const orderId of await recoverMissedMetaPurchases(limit, { since: opts.recoverSince })) {
+          if (handled.has(orderId)) continue;
+          const out = await emitMetaPurchase(orderId, undefined, { paymentConfirmed: true });
+          bump(`recovered_${out.status}`);
+          if (out.status === 'failed' && out.blocked) {
+            const code: MetaPurchaseAlert = out.blocked === 'rate' ? 'meta_rate_limited' : 'meta_auth_rejected';
+            alerts.add(code);
+            alert(code, { orderId, reason: out.reason.slice(0, 300) });
+            break;
+          }
+        }
       }
       const exhausted = await prisma.adConversionDelivery.findMany({
         where: { platform: PLATFORM, eventName: EVENT, status: 'failed', attempts: { gte: MAX_ATTEMPTS } },
