@@ -176,6 +176,11 @@ export async function POST(req: NextRequest) {
     if (req.cookies.get(INTERNAL_COOKIE)?.value === '1') {
       return NextResponse.json({ success: true, skipped: true, reason: 'internal' });
     }
+    // A native-app WebView page (zb_app cookie, see lib/tracking/automation.ts) is not a
+    // website visit: no `website` events from app sessions.
+    if (req.cookies.get('zb_app')?.value === '1') {
+      return NextResponse.json({ success: true, skipped: true, reason: 'app_webview' });
+    }
     const body = await req.json();
     const {
       eventName,

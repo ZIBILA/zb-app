@@ -84,6 +84,7 @@ export async function POST(req: NextRequest) {
     // set by /api/meta/event for internal accounts) never feed Snap's funnel.
     if (FILTER_NON_HUMANS && isBotUserAgent(req.headers.get('user-agent'))) return NextResponse.json({ success: true, skipped: true });
     if (req.cookies.get('zb_internal')?.value === '1') return NextResponse.json({ success: true, skipped: true });
+    if (req.cookies.get('zb_app')?.value === '1') return NextResponse.json({ success: true, skipped: true }); // native-app WebView page
     // Abuse throttle (in-memory, no DB): per visitor (trusted request IP + the device id
     // the middleware mints — never a client-rotatable value alone), with a loose per-IP
     // backstop. A per-IP bucket of 120/min dropped the server half of events for Indian
