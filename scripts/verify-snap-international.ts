@@ -246,7 +246,7 @@ async function main() {
   check('hashes are 64 lower-case hex characters', Object.values(hashedEvent.user_data).flat().filter((v: any) => typeof v === 'string' && v.length === 64).every((v: any) => /^[a-f0-9]{64}$/.test(v)));
   eq('external_id is hashed; IP, user agent, click id and _scid are sent as they are',
     [hashedEvent.user_data.external_id, hashedEvent.user_data.client_ip_address, hashedEvent.user_data.client_user_agent, hashedEvent.user_data.sc_click_id, hashedEvent.user_data.sc_cookie1],
-    [[h('cust_42')], '81.2.69.142', 'UA', 'click-1', 'scid-1']);
+    [h('cust_42'), '81.2.69.142', 'UA', 'click-1', 'scid-1']);
   const preHashed = capi.buildSnapCapiEvent({ eventName: 'PAGE_VIEW', eventId: 'pv_prehashed', eventSourceUrl: 'https://zicabella.com/', userAgent: 'UA', userData: { em: h('jane.doe@example.co.uk').toUpperCase(), ph: h('447700900123') } });
   eq('values that are already SHA-256 are passed through once (never hashed twice)', [preHashed.user_data.em, preHashed.user_data.ph], [[h('jane.doe@example.co.uk')], [h('447700900123')]]);
   check('missing fields are omitted, never sent empty or invented', !('fn' in preHashed.user_data) && !('country' in preHashed.user_data) && !('zp' in preHashed.user_data));
@@ -405,7 +405,7 @@ async function main() {
     [[h('john.smith@example.com')], [h('14155552671')], [h('ca')], [h('94105')], [h('us')], [h('sanfrancisco')], [h('john')], [h('smith')]]);
   eq('click id, _scid, visitor id, IP and user agent come from the shopper\'s own request',
     [pe?.user_data.sc_click_id, pe?.user_data.sc_cookie1, pe?.user_data.external_id, pe?.user_data.client_ip_address, pe?.user_data.client_user_agent],
-    ['click-us-1', 'scid-us-1', [h('zb.ext-us-1')], '8.8.8.8', 'Mozilla/5.0 (iPhone)']);
+    ['click-us-1', 'scid-us-1', h('zb.ext-us-1'), '8.8.8.8', 'Mozilla/5.0 (iPhone)']);
 
   // 3c. UK shopper on app.zicabella.com who never returns: the webhook sends the Purchase
   const ukAddress = { name: 'Jane Doe', email: 'jane.doe@example.co.uk', phone: '07700 900123', houseNo: '10', street: 'Downing Street', city: 'London', state: 'Greater London', zip: 'SW1A 1AA', country: 'United Kingdom', countryCode: 'GB' };
@@ -457,7 +457,7 @@ async function main() {
     snapWeb.length = 0;
     const res = await quiet(() => relay.POST(new NextRequest('https://zicabella.com/api/snap/event', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': `81.2.69.${++ipN}`, 'user-agent': 'UA', cookie: Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ') },
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': `81.2.69.${++ipN}`, 'user-agent': 'UA', origin: 'https://zicabella.com', cookie: Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ') },
       body: JSON.stringify({ eventName, eventId: `${eventName.toLowerCase()}_snap_${ipN}abcdef`, eventTime: Date.now(), eventSourceUrl: 'https://zicabella.com/checkout', userAgent: 'UA', userData }),
     })));
     return { status: res.status, event: snapWeb[0]?.event };
@@ -468,11 +468,11 @@ async function main() {
   eq('server relay, same visitor at checkout: hashed cookie details are attached', [rel.status, rel.event?.user_data.em, rel.event?.user_data.ph, rel.event?.user_data.country], [200, [piiCookies.zb_guest_email], [piiCookies.zb_guest_phone], [piiCookies.zb_guest_country]]);
   rel = await relayEvent('START_CHECKOUT', stale);
   check('server relay, different visitor: nobody else\'s email / phone / name / address is attached', rel.status === 200 && !rel.event?.user_data.em && !rel.event?.user_data.ph && !rel.event?.user_data.fn && !rel.event?.user_data.zp, rel.event?.user_data);
-  eq('…but the event still carries this visitor\'s Snap ids', [rel.event?.user_data.sc_click_id, rel.event?.user_data.sc_cookie1, rel.event?.user_data.external_id], ['click-9', 'scid-9', [h('zb.visitor-B')]]);
+  eq('…but the event still carries this visitor\'s Snap ids', [rel.event?.user_data.sc_click_id, rel.event?.user_data.sc_cookie1, rel.event?.user_data.external_id], ['click-9', 'scid-9', h('zb.visitor-B')]);
   rel = await relayEvent('START_CHECKOUT', stale, { em: 'New.Shopper@Example.com', ph: '(415) 555-2671', country: 'US' });
   eq('…and details the visitor typed themselves are used (normalized for their country)', [rel.event?.user_data.em, rel.event?.user_data.ph, rel.event?.user_data.country], [[h('new.shopper@example.com')], [h('14155552671')], [h('us')]]);
   rel = await relayEvent('VIEW_CONTENT', bound);
-  check('browsing events of a logged-out visitor never carry email / phone / name (unchanged rule)', !rel.event?.user_data.em && !rel.event?.user_data.ph && !rel.event?.user_data.fn && !!rel.event?.user_data.country, rel.event?.user_data);
+  check('browsing events of a logged-out visitor carry their OWN bound email / phone / name (same identity as the pixel half, 0be2e03a)', !!rel.event?.user_data.em && !!rel.event?.user_data.ph && !!rel.event?.user_data.fn && !!rel.event?.user_data.country, rel.event?.user_data);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

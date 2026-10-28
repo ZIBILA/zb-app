@@ -130,7 +130,7 @@ async function main() {
   eq('madid = IDFA lowercase, plain', ev.user_data.madid, 'e9228286-4c4e-4789-9d95-15827dcb291b');
   eq('ph hashed (India)', ev.user_data.ph, [h('919811122233')]);
   eq('em hashed', ev.user_data.em, [h('aarav@example.com')]);
-  eq('external_id hashed', ev.user_data.external_id, [h('cust_app_1')]);
+  eq('external_id hashed (string, per Snap reference)', ev.user_data.external_id, h('cust_app_1'));
   eq('event_id = order_id = order id', [ev.event_id, ev.custom_data.order_id], ['app_ios_1', 'app_ios_1']);
   eq('value / currency from DB', [ev.custom_data.value, ev.custom_data.currency], [3797, 'INR']);
   eq('content_ids = feed.xml variant ids', ev.custom_data.content_ids, ['51813148262681', '51813148328217']);

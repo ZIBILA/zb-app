@@ -179,7 +179,7 @@ async function main() {
   eq('full payload includes paymentStatus + orderType (it had neither)', [full.order.paymentStatus, full.order.orderType, full.order.totalPrice, full.order.currency], ['paid', 'WEB_STORE', 113.91, 'USD']);
   const trackingView: any = await (await g.fetch(`/api/orders/${apiOrder}/confirmation?bypass_auth=true&view=tracking`)).json();
   eq('tracking view = only the server facts the pixels need', [Object.keys(trackingView.order).sort(), trackingView.order.paymentStatus, trackingView.order.currency, trackingView.order.items.map((i: any) => [i.variantId, i.quantity, i.price])],
-    [['currency', 'id', 'items', 'orderType', 'paymentStatus', 'totalPrice'], 'paid', 'USD', [[V.DENIM, 2, 44.97], [V.TEE, 1, 23.97]]]);
+    [['currency', 'id', 'internal', 'items', 'orderType', 'paymentStatus', 'totalPrice'], 'paid', 'USD', [[V.DENIM, 2, 44.97], [V.TEE, 1, 23.97]]]);
   check('tracking view exposes no customer details', !/john|415|Market Street|94105/i.test(JSON.stringify(trackingView)));
   const old = await mkOrder({ createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) });
   eq('same access rule as the full payload: an order older than 24 h needs a session', (await g.fetch(`/api/orders/${old}/confirmation?bypass_auth=true&view=tracking`)).status, 401);
