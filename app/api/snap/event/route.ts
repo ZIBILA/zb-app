@@ -49,6 +49,7 @@ const customDataSchema = z.strictObject({
   })).max(MAX_IDS).optional(),
   num_items: z.union([z.number().int().min(0).max(MAX_QTY * MAX_IDS), z.string().regex(/^\d{1,4}$/)]).optional(),
   search_string: z.string().trim().max(200).optional(),
+  sign_up_method: z.string().trim().max(64).optional(),
 });
 
 const userDataSchema = z.strictObject({

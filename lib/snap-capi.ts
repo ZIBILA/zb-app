@@ -35,6 +35,8 @@ export interface SnapContentItem {
  * produced in lib/snapPixel.ts, never here.
  */
 export interface SnapCapiCustomData {
+  /** SIGN_UP: how the account was created (required by Snap's event-mapping guide). */
+  sign_up_method?: string;
   value?: number | string;
   currency?: string;
   content_ids?: string[];
@@ -241,6 +243,7 @@ export function buildSnapCapiEvent(payload: SnapCapiEventPayload): Record<string
   const value = toFiniteNumber(cd.value);
   if (value !== undefined) custom_data.value = value;
   if (cd.currency) custom_data.currency = String(cd.currency).trim().toUpperCase();
+  if (typeof cd.sign_up_method === 'string' && cd.sign_up_method.trim()) custom_data.sign_up_method = cd.sign_up_method.trim().slice(0, 64);
   const contentIds = cleanIds(cd.content_ids);
   if (contentIds) {
     custom_data.content_ids = contentIds;

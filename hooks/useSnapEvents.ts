@@ -312,10 +312,11 @@ export function snapTrackPurchase(
   }, orderId, userData);
 }
 
-export function snapTrackSignUp(userData?: RawIdentity) {
+export function snapTrackSignUp(userData?: RawIdentity, signUpMethod = 'phone_otp') {
   const b = base('SIGN_UP');
-  trackSnapClientEvent('SIGN_UP', {}, b.eventId, userData);
-  sendToSnapCapiRoute({ ...b, userData });
+  // sign_up_method is a required SIGN_UP parameter in Snap's event-mapping guide.
+  trackSnapClientEvent('SIGN_UP', { sign_up_method: signUpMethod }, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData, customData: { sign_up_method: signUpMethod } });
 }
 
 export function snapTrackLogin(userData?: RawIdentity) {
