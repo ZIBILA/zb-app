@@ -13,6 +13,7 @@ page.on('request', (req) => {
   const url = req.url();
   if (/facebook\.com\/tr/.test(url)) { const u = new URL(url); console.log('FB /tr', req.method(), req.resourceType(), 'ev=' + u.searchParams.get('ev'), 'len=' + url.length, 'coo=' + u.searchParams.get('coo'), 'fbp=' + (u.searchParams.get('fbp') || '-'), 'fbc=' + (u.searchParams.get('fbc') || '-'), 'params:', [...u.searchParams.keys()].join(','), req.method() === 'POST' ? 'post=' + (req.postData() || '').slice(0, 200) : ''); return req.respond({ status: 200, body: '' }); }
   if (/facebook\.com/.test(url)) console.log('FB other', req.method(), req.resourceType(), url.slice(0, 120));
+  if (/\/api\/(meta|snap)\/event/.test(url) && req.method() === 'POST') { let b = null; try { b = JSON.parse(req.postData() || 'null'); } catch {} console.log('relay POST', url.replace(base, ''), b?.eventName, b?.customData ? 'customData:' + Object.keys(b.customData).join(',') : ''); }
   if (/connect\.facebook\.net/.test(url)) console.log('fbevents.js requested');
   if (/tr\.snapchat\.com\/p$/.test(url)) { try { const b = JSON.parse(req.postData()); console.log('SNAP req:', JSON.stringify(b.req).slice(0, 700)); } catch {} return req.respond({ status: 200, body: '' }); }
   if (/tr\.snapchat\.com|sc-static\.net/.test(url) && !/scevent\.min\.js/.test(url)) return req.respond({ status: 200, body: '' });

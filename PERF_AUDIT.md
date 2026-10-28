@@ -202,6 +202,26 @@ Second, deeper pass asked by the owner: "what is making the events weak, so that
 ### Follow-up (2026-10-28, after deploy): missing collections were still a soft 404 on live
 The round-1 fix (notFound() in generateMetadata) does not work on this app: `app/loading.tsx` at the root streams a 200 shell for every page before any page / metadata / segment-layout code runs, so notFound() anywhere below it only renders the not-found UI with status 200 (reproduced locally with a stubbed null lookup from the page, from generateMetadata and from a `[handle]/layout.tsx`). Only an unmatched route gets a real 404. Fix: middleware rewrites `/collections/<unknown>` to an unmatched path; the known handles come from the new `/api/collections/handles` (ISR 120 s, webhook-revalidated) and are cached per instance for 5 minutes; any failure (503, Cloudflare challenge, timeout) fails open to today's behaviour. Verified locally with a stubbed handle list: unknown → 404 with the branded not-found page, known / `all` / index → 200; with the API failing → 200 (fail open). Product pages had the same soft-404 shape and get the same treatment: `/api/products/handles` (handles + numeric ids of the storefront catalogue) feeds a `/products/<unknown>` rewrite, with the same loopback-first fetch, 5-minute per-instance cache, fail-open and `x-zb-handles` header. Live verification of the collection fix: unknown → 404 on every instance, known → 200 + `x-zb-handles: ok`.
 
+## Tracking Phase 2 — fixes from META_SNAP_EVENT_QUALITY_AUDIT.md (2026-10-28, approved)
+
+| Commit | Issue | Change |
+|---|---|---|
+| `c88547e7` | tests | Meta relay suites send `Origin` (the relay requires storefront provenance) |
+| `ed6b958b` | M-C2 (High) | `sendCapiEvent` classifies Graph errors (190/102/200/10 → blocked:auth, 803 → blocked:config, 4/17/32/613/80004 → blocked:rate, 100 → permanent, else transient); the ledger refunds attempts on blocked results; retry stops the run on the first blocked send and alerts `meta_auth_rejected` / `meta_rate_limited`; code 100 closes the row with `meta_permanent_rejection`; transient retries back off 0 / 0 / 30 min / 2 h / 6 h, oldest first; injectable backoff for tests |
+| `77ee2d87` | M-C9 | Admin "Test connection" posts an empty batch (Meta answers 100 when the token and pixel are accepted) instead of a counted PageView; diagnostics tokens in `Authorization` headers |
+| `f5246a5a` | M-C10 | WhatsApp dataset forwarder: token in body, shared Graph version |
+| `97d4c3d4` | M/S-C1 | `?zb_app=1` → session cookie `zb_app=1`; flags set in the always-rendered ids script; stubs, `isExcludedBrowser()` and both relays honour it |
+| `d18015fc` | M-C3 | `/api/payments/webhook` emits the Meta Purchase (ledger-idempotent) |
+| `e488030b` | S-C2 | First logged-in PAGE_VIEW: server half falls back to the session's raw identity |
+| `62f8a2b0` | S-C4 | Snap hook clamps ids / contents / quantity / num_items / value / strings / URL to the relay limits; logs non-2xx |
+| `7acddf9b` | tests | Snap suites follow the shipped behaviour (Origin, `external_id` string, bound identity on browsing events, detached webhook sends, tracking view `internal`) |
+| `1806095b` | build | `lib/db.ts` React `cache()` tolerant of npm React (offline scripts crashed since the ISR dedupe) |
+| `8e52ec0a` | S-C11 | Product-page PAGE_VIEW carries `item_ids` / `content_ids` (variant id) |
+| `7ba83bd3` | S-C10 | SIGN_UP carries `sign_up_method: phone_otp` on both halves |
+| `7f8cfc8a` | M-H4 | Purchase without a recorded user agent borrows the Snap row's UA / IP before sending; logs when none exists |
+
+Verified: `npm run build`, `tsc`, `npm run lint` (0 errors); all Meta and Snap offline suites pass (run the Snap e2e suites with placeholder `DATABASE_URL` / `ALLOW_DB_MOCK=true`); local production build: product PAGE_VIEW `e_iids` on the pixel and `content_ids` on the relay, `?zb_app=1` page → no `fbq` / `snaptr` and no relay POST, relays answer `skipped` to `zb_app=1`, returning-visitor em/ph on every Snap relay, fresh-guest funnel unchanged. Open (P2/P3, Section 8 of the audit): Snap Bearer header, AddPaymentInfo reload guard, Meta `<noscript>`, dashboard toggles (AAM / Automated Matching / cookie settings), funnel value basis, Purchase-half parity, Snap pixel `external_id`, owner re-binding, Dataset Quality / Signal Readiness polling, ledger retention, dead code.
+
 ## Phase 4 — Visual check (baseline commit vs. this branch, same mock data)
 
 Method: the untouched `main` (45bb4e6b) was built in a separate worktree and served on :3002, this branch on :3001; `lighthouse/visual-check.mjs` captured every storefront route from both at 390 px and 1440 px, light and dark (`prefers-color-scheme` + the site's `theme` localStorage key), with CSS animations disabled, and compared them with pixelmatch (threshold 0.1). Full table: `lighthouse/visual/summary.md`. The captures and diff PNGs (44 MB) are git-ignored; regenerate with `node lighthouse/visual-check.mjs <baselineUrl> <branchUrl>` (see the script header for the setup).
