@@ -20,6 +20,9 @@ interface CheckResult {
   detail?: string;
 }
 
+/** Token in the Authorization header (Graph API accepts it), never in the URL / logs. */
+const AUTH_HEADERS = (token?: string) => ({ Authorization: `Bearer ${token || ''}` });
+
 export async function GET() {
   // Admin only: operational Meta diagnostics are never public.
   try { await requireAdmin(); } catch (authErr) { return handleAuthError(authErr); }
@@ -72,9 +75,7 @@ export async function GET() {
   // ────────────────────────────────────────
   let meData: any = null;
   try {
-    const { data: connectData, logEntry } = await fetchMetaApi(
-      graphUrl(`/me?access_token=${ACCESS_TOKEN}`),
-      { label: 'GET /me' }
+    const { data: connectData, logEntry } = await fetchMetaApi(graphUrl(`/me`), { headers: AUTH_HEADERS(ACCESS_TOKEN), label: 'GET /me' }
     );
 
     if (logEntry.success && connectData && !connectData.error) {
@@ -114,8 +115,8 @@ export async function GET() {
   let tokenDebugData: any = null;
   try {
     // Use the app token approach: input_token + access_token for debug_token
-    const debugUrl = graphUrl(`/debug_token?input_token=${ACCESS_TOKEN}&access_token=${ACCESS_TOKEN}`);
-    const { data: debugData, logEntry } = await fetchMetaApi(debugUrl, { label: 'GET /debug_token' });
+    const debugUrl = graphUrl(`/debug_token?input_token=${encodeURIComponent(ACCESS_TOKEN || '')}`);
+    const { data: debugData, logEntry } = await fetchMetaApi(debugUrl, { headers: AUTH_HEADERS(ACCESS_TOKEN), label: 'GET /debug_token' });
 
     if (logEntry.success && debugData?.data) {
       tokenDebugData = debugData.data;
@@ -178,9 +179,7 @@ export async function GET() {
   // 5. Test Token Permissions
   // ────────────────────────────────────────
   try {
-    const { data: permData, logEntry } = await fetchMetaApi(
-      graphUrl(`/me/permissions?access_token=${ACCESS_TOKEN}`),
-      { label: 'GET /me/permissions' }
+    const { data: permData, logEntry } = await fetchMetaApi(graphUrl(`/me/permissions`), { headers: AUTH_HEADERS(ACCESS_TOKEN), label: 'GET /me/permissions' }
     );
 
     if (logEntry.success && permData?.data) {
@@ -228,9 +227,7 @@ export async function GET() {
   // 6. Business Manager verification
   // ────────────────────────────────────────
   try {
-    const { data: bizData, logEntry } = await fetchMetaApi(
-      graphUrl(`/me/businesses?access_token=${ACCESS_TOKEN}`),
-      { label: 'GET /me/businesses' }
+    const { data: bizData, logEntry } = await fetchMetaApi(graphUrl(`/me/businesses`), { headers: AUTH_HEADERS(ACCESS_TOKEN), label: 'GET /me/businesses' }
     );
 
     if (logEntry.success && bizData?.data && Array.isArray(bizData.data)) {
@@ -271,9 +268,7 @@ export async function GET() {
   // ────────────────────────────────────────
   const pixelFields = 'name,id,creation_time,event_time_max,event_time_min';
   try {
-    const { data: pixelData, logEntry } = await fetchMetaApi(
-      graphUrl(`/${PIXEL_ID}?fields=${pixelFields}&access_token=${ACCESS_TOKEN}`),
-      { label: `GET /${PIXEL_ID}` }
+    const { data: pixelData, logEntry } = await fetchMetaApi(graphUrl(`/${PIXEL_ID}?fields=${pixelFields}`), { headers: AUTH_HEADERS(ACCESS_TOKEN), label: `GET /${PIXEL_ID}` }
     );
 
     if (logEntry.success && pixelData && !pixelData.error) {
@@ -314,9 +309,7 @@ export async function GET() {
   // 8. Dataset Info (event_stats field)
   // ────────────────────────────────────────
   try {
-    const { data: statsData, logEntry } = await fetchMetaApi(
-      graphUrl(`/${PIXEL_ID}?fields=event_stats&access_token=${ACCESS_TOKEN}`),
-      { label: `GET /${PIXEL_ID}?fields=event_stats` }
+    const { data: statsData, logEntry } = await fetchMetaApi(graphUrl(`/${PIXEL_ID}?fields=event_stats`), { headers: AUTH_HEADERS(ACCESS_TOKEN), label: `GET /${PIXEL_ID}?fields=event_stats` }
     );
 
     if (logEntry.success && statsData && !statsData.error) {
@@ -345,38 +338,25 @@ export async function GET() {
   }
 
   // ────────────────────────────────────────
-  // 9. Test CAPI Event Sending
+  // 9. Conversions API reachability — WITHOUT sending an event.
+  //    Meta counts every event that carries a test_event_code (they are shown in
+  //    Events Manager and used for measurement), so the earlier synthetic PageView
+  //    with a loopback IP was a real, mis-attributed event on each click. An empty
+  //    batch exercises auth + endpoint: Meta answers code 100 ("data" required)
+  //    when the token and pixel are accepted, 190 / 102 / 200 when they are not.
   // ────────────────────────────────────────
   try {
-    const capiUrl = graphUrl(`/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`);
-    const testPayload = {
-      data: [
-        {
-          event_name: 'PageView',
-          event_time: Math.floor(Date.now() / 1000),
-          action_source: 'website',
-          event_source_url: 'https://zicabella.com',
-          user_data: {
-            client_user_agent: 'Meta-Connection-Test/1.0',
-            client_ip_address: '127.0.0.1',
-          },
-        },
-      ],
-      test_event_code: 'CONNECTION_TEST_' + Date.now(),
-    };
-
+    const capiUrl = graphUrl(`/${PIXEL_ID}/events`);
     const { data: capiData, logEntry } = await fetchMetaApi(capiUrl, {
       method: 'POST',
-      body: testPayload,
-      label: `POST /${PIXEL_ID}/events [test]`,
+      body: { data: [], access_token: ACCESS_TOKEN },
+      label: `POST /${PIXEL_ID}/events [auth probe, no event]`,
     });
-
+    const code = Number(capiData?.error?.code);
     if (logEntry.success && capiData && !capiData.error) {
-      checks.push({
-        name: 'Conversions API (CAPI)',
-        status: 'pass',
-        message: `CAPI endpoint is accessible. Events processed: ${capiData.events_received || 0}`,
-      });
+      checks.push({ name: 'Conversions API (CAPI)', status: 'pass', message: 'CAPI endpoint accepted the token (no event was sent).' });
+    } else if (code === 100) {
+      checks.push({ name: 'Conversions API (CAPI)', status: 'pass', message: 'CAPI endpoint reachable and the token is accepted for this pixel (empty probe rejected as expected; no event was sent).' });
     } else if (capiData?.error) {
       const diagnostic = parseMetaError(capiData, `POST /${PIXEL_ID}/events`);
       checks.push({
@@ -385,12 +365,14 @@ export async function GET() {
         message: `CAPI error: ${diagnostic.summary}`,
         detail: `${diagnostic.detail}\n\nFix: ${diagnostic.fix}`,
       });
+    } else {
+      checks.push({ name: 'Conversions API (CAPI)', status: 'warn', message: 'Unexpected CAPI probe response.' });
     }
   } catch (err: any) {
     checks.push({
       name: 'Conversions API (CAPI)',
       status: 'warn',
-      message: `Could not test CAPI endpoint: ${err.message}`,
+      message: `Could not reach the CAPI endpoint: ${err.message}`,
     });
   }
 
@@ -398,9 +380,7 @@ export async function GET() {
   // 10. Asset Assignment Check
   // ────────────────────────────────────────
   try {
-    const { data: assignData, logEntry } = await fetchMetaApi(
-      graphUrl(`/${PIXEL_ID}/assigned_users?access_token=${ACCESS_TOKEN}`),
-      { label: `GET /${PIXEL_ID}/assigned_users` }
+    const { data: assignData, logEntry } = await fetchMetaApi(graphUrl(`/${PIXEL_ID}/assigned_users`), { headers: AUTH_HEADERS(ACCESS_TOKEN), label: `GET /${PIXEL_ID}/assigned_users` }
     );
 
     if (logEntry.success && assignData?.data && Array.isArray(assignData.data)) {

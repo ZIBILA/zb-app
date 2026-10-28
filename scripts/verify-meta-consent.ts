@@ -90,7 +90,7 @@ async function main() {
   const post = async (cookie: string) => {
     const req = new NextRequest('https://zicabella.com/api/meta/event', {
       method: 'POST', body: JSON.stringify({ eventName: 'ViewContent', eventId: 'vc-1', eventSourceUrl: 'https://zicabella.com/products/x', userAgent: 'UA', customData: { value: 10, currency: 'INR' } }),
-      headers: { 'content-type': 'application/json', cookie, 'x-forwarded-for': '81.2.69.142' },
+      headers: { 'content-type': 'application/json', cookie, 'x-forwarded-for': '81.2.69.142', origin: 'https://zicabella.com', 'user-agent': 'UA' },
     });
     const res = await MetaRoute.POST(req);
     return res.json();

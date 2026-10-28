@@ -138,7 +138,47 @@ export function metaCapiConfigError(): string | null {
   return validateTokenFormat(ACCESS_TOKEN) || validatePixelIdFormat(PIXEL_ID) || null;
 }
 
-export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ success: boolean; data?: any; error?: any; fbtrace_id?: string; skipped?: boolean }> {
+/**
+ * Outcome of one Conversions API send.
+ *  - `blocked`   our setup, not the event, stopped the send (token revoked / expired,
+ *                permission or pixel problem, throttling): the delivery ledger refunds
+ *                the attempt and the retry job alerts and stops for this run.
+ *  - `permanent` Meta rejected the payload itself (code 100 "invalid parameter"):
+ *                retrying the same payload cannot succeed; the ledger closes the row
+ *                and an alert names the order.
+ *  - neither     transient (5xx, unknown, network, timeout): retried with backoff.
+ * Classification is by Graph error `code` only (Meta: "Description string is
+ * subject to change"); see https://developers.facebook.com/docs/marketing-api/error-reference
+ */
+export type CapiSendResult = {
+  success: boolean;
+  data?: any;
+  error?: any;
+  fbtrace_id?: string;
+  skipped?: boolean;
+  blocked?: 'auth' | 'rate' | 'config';
+  permanent?: boolean;
+  code?: number;
+  subcode?: number;
+};
+
+/** Invalid / expired / unauthorised token, permission, or an unknown pixel: fix the setup, do not burn attempts. */
+const BLOCKED_AUTH_CODES = new Set([190, 102, 200, 10, 803]);
+/** Throttled: app / user / business-use-case rate limits. */
+const BLOCKED_RATE_CODES = new Set([4, 17, 32, 613, 80004]);
+/** The payload is invalid; the same payload will be rejected again. */
+const PERMANENT_CODES = new Set([100]);
+
+export function classifyMetaError(code: unknown): Pick<CapiSendResult, 'blocked' | 'permanent'> {
+  const n = Number(code);
+  if (!Number.isFinite(n)) return {};
+  if (BLOCKED_AUTH_CODES.has(n)) return { blocked: n === 803 ? 'config' : 'auth' };
+  if (BLOCKED_RATE_CODES.has(n)) return { blocked: 'rate' };
+  if (PERMANENT_CODES.has(n)) return { permanent: true };
+  return {};
+}
+
+export async function sendCapiEvent(payload: CapiEventPayload): Promise<CapiSendResult> {
   // Pre-request validation — missing local Meta env is common in dev; skip quietly
   const tokenErr = validateTokenFormat(ACCESS_TOKEN);
   if (tokenErr) {
@@ -322,10 +362,14 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<{ succes
         user_msg: typeof e.error_user_msg === 'string' ? e.error_user_msg.slice(0, 300) : undefined,
         fbtrace_id: logEntry.fbtrace_id || e.fbtrace_id,
       }));
+      const cls = classifyMetaError(e.code);
       return {
         success: false,
         error: resJson,
         fbtrace_id: logEntry.fbtrace_id,
+        code: Number.isFinite(Number(e.code)) ? Number(e.code) : undefined,
+        subcode: Number.isFinite(Number(e.error_subcode)) ? Number(e.error_subcode) : undefined,
+        ...cls,
       };
     }
 

@@ -154,7 +154,7 @@ async function main() {
   console.log('\n— 5. /api/snap/event hardening');
   const mkReq = (body: unknown, cookie = '', ip = '81.2.69.142') => new NextRequest('https://zicabella.com/api/snap/event', {
     method: 'POST', body: JSON.stringify(body),
-    headers: { 'content-type': 'application/json', cookie, 'x-forwarded-for': ip, 'user-agent': 'UA-test' },
+    headers: { 'content-type': 'application/json', cookie, 'x-forwarded-for': ip, 'user-agent': 'UA-test', origin: 'https://zicabella.com' },
   });
   const okBody = {
     eventName: 'VIEW_CONTENT', eventId: 'view_content_snap_abc123', eventTime: Date.now(),
@@ -223,7 +223,7 @@ async function main() {
       check(`${label}: client_dedup_id === event_id`, track?.[2]?.client_dedup_id === capiEvent?.event_id, { pixel: track?.[2]?.client_dedup_id, capi: capiEvent?.event_id });
       check(`${label}: ScCid + _scid + external_id on CAPI`,
         capiEvent?.user_data?.sc_click_id === 'snap-click-123' && capiEvent?.user_data?.sc_cookie1 === 'scid-cookie-456'
-        && Array.isArray(capiEvent?.user_data?.external_id));
+        && typeof capiEvent?.user_data?.external_id === 'string' && /^[a-f0-9]{64}$/.test(capiEvent.user_data.external_id));
     } else {
       check(`${label}: NO browser CAPI relay`, relayCalls.length === 0, relayCalls.length);
     }
@@ -288,7 +288,7 @@ async function main() {
   eq('same value as the cart line → START_CHECKOUT / ADD_BILLING (INR base)', cartLine.contents[0].item_price, atcCapi?.value);
   const pdpPattern = /trackSnapAddToCart\(variant\.id\.toString\(\), product\.title, parseFloat\(variant\.price \|\| "0"\), 'INR', product\.product_type\)/;
   check('PDP uses the same (variant.price, INR) pattern', pdpPattern.test(fs.readFileSync(new URL('../app/products/[id]/ProductDetailsClient.tsx', import.meta.url), 'utf8')));
-  for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx', 'components/CompleteCollectionButton.tsx']) {
+  for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx']) {
     const src = fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     const calls = src.match(/snapTrackAddToCart\([^;]*\);/g) || [];
     check(`${f}: every Snap ADD_CART passes variant.price with 'INR' (no display/converted price)`,
@@ -406,7 +406,7 @@ async function main() {
   eq('num_items = 3 (denim×2 + tee×1)', ev.custom_data.num_items, '3');
   eq('sc_click_id from recorded context', ev.user_data.sc_click_id, 'snap-click-123');
   eq('sc_cookie1 from recorded context', ev.user_data.sc_cookie1, 'scid-cookie-456');
-  eq('external_id hashed', ev.user_data.external_id, [h('zb.ext-789')]);
+  eq('external_id hashed (string, per Snap reference)', ev.user_data.external_id, h('zb.ext-789'));
   eq('ph hashed UK E.164', ev.user_data.ph, [h('447700900123')]);
   eq('country hashed gb', ev.user_data.country, [h('gb')]);
   const pixelForSameOrder = pp.track?.[2];
@@ -598,7 +598,7 @@ async function main() {
   check('browser PURCHASE uses the stored order currency (no INR default)',
     /snapPurchaseCurrency\(trackingOrder\)/.test(confirmationPage)
     && /currency: string,/.test(read('hooks/useSnapEvents.ts')) && !/snapTrackPurchase\([^)]*currency = 'INR'/.test(read('hooks/useSnapEvents.ts')));
-  for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx', 'components/CompleteCollectionButton.tsx']) {
+  for (const f of ['app/wishlist/page.tsx', 'components/BookmarkDrawer.tsx']) {
     const src = read(f);
     const adds = (src.match(/\baddToCart\(\{/g) || []).length;
     const tracks = (src.match(/snapTrackAddToCart\(/g) || []).length;

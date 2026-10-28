@@ -253,7 +253,15 @@ export default async function RootLayout({
         <script
           id="zb-pixel-ids"
           dangerouslySetInnerHTML={{
-            __html: `window.__zbMetaPixelId=${JSON.stringify(pixelId)};window.__zbSnapPixelId=${JSON.stringify(snapPixelId)};`,
+            __html: `window.__zbMetaPixelId=${JSON.stringify(pixelId)};window.__zbSnapPixelId=${JSON.stringify(snapPixelId)};
+(function(){
+  var c = document.cookie, q = location.search, sec = location.protocol === 'https:' ? '; Secure' : '';
+  var internal = /(?:^|; )zb_internal=1(?:;|$)/.test(c);
+  if (!internal && /[?&]zb_internal=1(?:&|$)/.test(q)) { document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + sec; internal = true; }
+  var app = /(?:^|; )zb_app=1(?:;|$)/.test(c);
+  if (!app && /[?&]zb_app=1(?:&|$)/.test(q)) { document.cookie = 'zb_app=1; path=/; SameSite=Lax' + sec; app = true; }
+  window.__zbInternal = internal || app;
+})();`,
           }}
         />
         {/* Pixel queue stubs + init (no network). External SDKs load via lazyOnload so early track() calls still queue. */}
@@ -262,13 +270,9 @@ export default async function RootLayout({
           id="fb-pixel-stub"
           dangerouslySetInnerHTML={{
             __html: `
-              var zbInternal = /(?:^|; )zb_internal=1(?:;|$)/.test(document.cookie);
-              if (!zbInternal && /[?&]zb_internal=1(?:&|$)/.test(location.search)) {
-                document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
-                zbInternal = true;
-              }
-              if (/[?&]zb_app=1(?:&|$)/.test(location.search)) zbInternal = true; // native-app WebView page: not a website visit
-              window.__zbInternal = zbInternal;
+              // staff / QA / demo browser (zb_internal) or a native-app WebView page (zb_app): the
+              // flags are set by the zb-pixel-ids script above and honoured by the relays too.
+              var zbInternal = !!window.__zbInternal;
               if (!zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
@@ -318,7 +322,7 @@ export default async function RootLayout({
             id="snap-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-              if (!window.__zbInternal && !/(?:^|; )zb_internal=1(?:;|$)/.test(document.cookie) && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!window.__zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 if (!window.snaptr) {
                   var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
                   a.queue = [];

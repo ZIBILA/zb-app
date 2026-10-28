@@ -76,7 +76,7 @@ const check = (name: string, cond: boolean, detail?: unknown) => {
   // 5. Relay route: bound vs foreign cookies, stable external_id
   const { POST } = await import('../app/api/meta/event/route');
   const { NextRequest } = await import('next/server');
-  const post = (cookie: string, body: any) => POST(new NextRequest('https://zicabella.com/api/meta/event', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'UA', 'x-forwarded-for': '81.2.69.142', cookie }, body: JSON.stringify(body) }) as any);
+  const post = (cookie: string, body: any) => POST(new NextRequest('https://zicabella.com/api/meta/event', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'UA', 'x-forwarded-for': '81.2.69.142', origin: 'https://zicabella.com', cookie }, body: JSON.stringify(body) }) as any);
   const base = { eventName: 'ViewContent', eventId: 'vc-1', eventSourceUrl: 'https://zicabella.com/products/x', userAgent: 'UA', eventTime: Math.floor(Date.now() / 1000) };
   const pii = `zb_guest_email=${sha('riya.kapoor@example.com')}; zb_guest_phone=${sha('919811122233')}; zb_guest_fn=${sha('riya')}; zb_guest_ct=${sha('noida')}; zb_guest_country=${sha('in')}`;
   graph.length = 0;

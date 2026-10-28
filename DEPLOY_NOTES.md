@@ -50,5 +50,9 @@ pm2 restart <app-name> --update-env
 8. Relay health: `curl -s -X POST https://zicabella.com/api/meta/event -H 'content-type: application/json' --data '{}'` → HTTP 400 (no browser provenance), while real page views keep relaying (Network tab: `/api/meta/event` 200 with `{"success":true}`).
 9. Origin: confirm the DigitalOcean app only accepts traffic from Cloudflare (firewall / allow-list), since `cf-connecting-ip` is now the trusted client IP.
 
+10. Meta cron alerts: `GET /api/cron/meta-conversions` (Bearer CRON_SECRET) must report `ok:true`; new alert codes `meta_auth_rejected` (token / permission — Purchases wait in the ledger, no attempts burned), `meta_rate_limited`, `meta_permanent_rejection` (payload rejected; fix data, reset the row). The dashboard "Test connection" no longer sends any event.
+11. Native app: pages opened by the app's WebView must carry `?zb_app=1` once per session (sets the `zb_app` cookie): then no pixel and no relay event is sent from them.
+12. Snap Pixel Test Events: PAGE_VIEW on a product page shows `item_ids`; SIGN_UP shows `sign_up_method`.
+
 ## 5. Rollback
 `git revert` the branch merge commit (or redeploy the previous build). No data migrations, no env changes, so rollback is a plain redeploy.

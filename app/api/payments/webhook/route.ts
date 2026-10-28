@@ -208,6 +208,11 @@ export async function POST(req: NextRequest) {
             // order across both endpoints, checkout and the retry job. Not
             // awaited and fully guarded: it cannot delay or fail this webhook.
             const paidOrderId = order.id;
+            // Meta Purchase: same call as /api/webhooks/razorpay; idempotent through the
+            // ledger (one send per order across checkout, both webhooks and the cron).
+            void import('@/lib/meta/purchase-server')
+              .then(({ emitMetaPurchase }) => emitMetaPurchase(paidOrderId, undefined, { paymentConfirmed: true }))
+              .catch((metaErr: any) => { console.warn('[Razorpay Webhook] Meta purchase emit failed:', metaErr?.message); });
             void (async () => {
               try {
                 const { emitSnapPurchase } = await import('@/lib/snap/purchase-server');

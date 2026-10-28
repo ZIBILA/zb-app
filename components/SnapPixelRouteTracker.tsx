@@ -82,19 +82,27 @@ export function SnapPixelRouteTracker() {
     const sessionName = String(su?.name || '').trim();
     const nameParts = sessionName && !isDemoValue('name', sessionName) ? sessionName.split(/\s+/) : [];
     const sessionPhone = su?.phone || (session as any)?.customer?.phone;
-    initSnapPixel(su ? {
+    const sessionIdentity = su ? {
       em: su.email && !isDemoValue('email', su.email) ? su.email : undefined,
       ph: sessionPhone && !isDemoValue('phone', sessionPhone) ? sessionPhone : undefined,
       fn: nameParts[0] || undefined,
       ln: nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined,
-    } : undefined);
+    } : undefined;
+    initSnapPixel(sessionIdentity);
 
     // 4. Shared id: browser client_dedup_id === CAPI event_id
     const eventId = 'pv_snap_' + uuidv4();
     const eventTime = Date.now();
 
+    // Product pages: the catalogue item id (feed g:id = variant id) on PAGE_VIEW, which
+    // Snap's Dynamic Ads requirements list alongside VIEW_CONTENT / ADD_CART / PURCHASE.
+    const pageItemId = pathname.startsWith('/products/')
+      ? (document.querySelector('[data-zb-variant-id]')?.getAttribute('data-zb-variant-id') || '').trim()
+      : '';
+    const pageItemIds = /^\d+$/.test(pageItemId) ? [pageItemId] : undefined;
+
     // 5. Browser PAGE_VIEW
-    trackSnapClientEvent('PAGE_VIEW', {}, eventId);
+    trackSnapClientEvent('PAGE_VIEW', pageItemIds ? { item_ids: pageItemIds } : {}, eventId);
 
     // 6. Server PAGE_VIEW. getSnapIdentityCookies() only returns hashes bound to this
     //    visitor's external_id, and the pixel half (step 5) sends the same hashes, so
@@ -111,11 +119,16 @@ export function SnapPixelRouteTracker() {
         eventTime,
         eventSourceUrl: window.location.href,
         userAgent: navigator.userAgent,
+        ...(pageItemIds ? { customData: { content_ids: pageItemIds, content_type: 'product' } } : {}),
         scClickId: ids.sc_click_id,
         scCookie1: ids.sc_cookie1,
         externalId: ids.external_id || extId,
+        // Bound cookie hashes, else the session's raw values (the relay hashes them): on
+        // the first page of a fresh login the hashed cookies are still being written, and
+        // without this the pixel half carried identity while the server half had none.
         userData: {
-          em: ids.em, ph: ids.ph, fn: ids.fn, ln: ids.ln,
+          em: ids.em || sessionIdentity?.em, ph: ids.ph || sessionIdentity?.ph,
+          fn: ids.fn || sessionIdentity?.fn, ln: ids.ln || sessionIdentity?.ln,
           ct: ids.ct, st: ids.st, zp: ids.zp, country: ids.country,
         },
       }),

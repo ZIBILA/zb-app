@@ -42,8 +42,8 @@ export async function GET() {
     const pixelFields = 'name,creation_time,id,event_time_max,event_time_min,event_stats';
 
     const { data: pixelData, logEntry: pixelLogEntry } = await fetchMetaApi(
-      graphUrl(`/${PIXEL_ID}?fields=${pixelFields}&access_token=${ACCESS_TOKEN}`),
-      { label: `GET /${PIXEL_ID} [dashboard]` }
+      graphUrl(`/${PIXEL_ID}?fields=${pixelFields}`),
+      { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` }, label: `GET /${PIXEL_ID} [dashboard]` }
     );
 
     // Check for errors in the primary pixel request
@@ -56,8 +56,8 @@ export async function GET() {
       let fallbackData: any = null;
       try {
         const { data: fb, logEntry: fbLog } = await fetchMetaApi(
-          graphUrl(`/${PIXEL_ID}?fields=name,id,creation_time&access_token=${ACCESS_TOKEN}`),
-          { label: `GET /${PIXEL_ID} [fallback]` }
+          graphUrl(`/${PIXEL_ID}?fields=name,id,creation_time`),
+          { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` }, label: `GET /${PIXEL_ID} [fallback]` }
         );
         if (fbLog.success && !fb?.error) {
           fallbackData = fb;

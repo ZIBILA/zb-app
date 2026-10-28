@@ -1,4 +1,8 @@
-import { cache } from 'react'
+import * as React from 'react';
+// React's per-request cache() exists in the React build Next.js bundles; the npm `react`
+// (18.3) the offline verify scripts run against does not export it. Fall back to the plain
+// function there — inside Next the dedupe is unchanged.
+const cache: <T extends (...args: any[]) => any>(fn: T) => T = (React as any).cache ?? ((fn: any) => fn);
 import { PrismaClient } from '@prisma/client'
 import { Pool } from 'pg'
 import { PrismaPg } from '@prisma/adapter-pg'
