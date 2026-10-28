@@ -82,6 +82,8 @@ export async function fetchMetaApi(
     body?: any;
     /** Human-readable label for logs, e.g. "GET /PIXEL_ID" */
     label?: string;
+    /** Extra request headers (e.g. `Authorization: Bearer <token>` so the token is never in the URL). */
+    headers?: Record<string, string>;
   }
 ): Promise<{ response: Response; data: any; logEntry: MetaApiLogEntry }> {
   const method = options?.method || 'GET';
@@ -104,10 +106,12 @@ export async function fetchMetaApi(
       cache: 'no-store',
     };
 
+    const headers: Record<string, string> = { ...(options?.headers || {}) };
     if (options?.body) {
-      fetchOptions.headers = { 'Content-Type': 'application/json' };
+      headers['Content-Type'] = 'application/json';
       fetchOptions.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
     }
+    if (Object.keys(headers).length) fetchOptions.headers = headers;
 
     // Bounded wait: a hung Graph API call must not hold a request (or a ledger lease)
     // open indefinitely. A timeout surfaces as a network error → the Purchase ledger
