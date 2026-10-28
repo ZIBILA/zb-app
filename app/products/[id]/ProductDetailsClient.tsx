@@ -682,6 +682,9 @@ export default function ProductDetailsClient({
 
   return (
     <>
+      {/* Catalogue item id of the product on this page, read by SnapPixelRouteTracker so the
+          PAGE_VIEW carries item_ids (Snap Dynamic Ads list it for product pages). */}
+      <span data-zb-variant-id={product.variants?.[0]?.id ?? ''} hidden aria-hidden />
       {/* ─── DESKTOP VIEW (md and up) ─── */}
       <div className="hidden md:block min-h-screen pt-4 pb-20 px-6 max-w-7xl mx-auto relative z-10 text-foreground product-page">
         <div className="grid grid-cols-12 gap-10 items-start">

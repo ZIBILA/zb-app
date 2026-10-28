@@ -94,8 +94,15 @@ export function SnapPixelRouteTracker() {
     const eventId = 'pv_snap_' + uuidv4();
     const eventTime = Date.now();
 
+    // Product pages: the catalogue item id (feed g:id = variant id) on PAGE_VIEW, which
+    // Snap's Dynamic Ads requirements list alongside VIEW_CONTENT / ADD_CART / PURCHASE.
+    const pageItemId = pathname.startsWith('/products/')
+      ? (document.querySelector('[data-zb-variant-id]')?.getAttribute('data-zb-variant-id') || '').trim()
+      : '';
+    const pageItemIds = /^\d+$/.test(pageItemId) ? [pageItemId] : undefined;
+
     // 5. Browser PAGE_VIEW
-    trackSnapClientEvent('PAGE_VIEW', {}, eventId);
+    trackSnapClientEvent('PAGE_VIEW', pageItemIds ? { item_ids: pageItemIds } : {}, eventId);
 
     // 6. Server PAGE_VIEW. getSnapIdentityCookies() only returns hashes bound to this
     //    visitor's external_id, and the pixel half (step 5) sends the same hashes, so
@@ -112,6 +119,7 @@ export function SnapPixelRouteTracker() {
         eventTime,
         eventSourceUrl: window.location.href,
         userAgent: navigator.userAgent,
+        ...(pageItemIds ? { customData: { content_ids: pageItemIds, content_type: 'product' } } : {}),
         scClickId: ids.sc_click_id,
         scCookie1: ids.sc_cookie1,
         externalId: ids.external_id || extId,
