@@ -406,11 +406,36 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     const cfgErr = configError?.() || null;
     if (cfgErr) return deferForConfig(order, clean(ctx), cfgErr, conversionTime);
 
+    // Meta requires client_user_agent on website events. The context normally comes
+    // from the row recorded at Razorpay pre-create (or this request). When neither has
+    // a user agent (ledger write failed, webhook-only order), borrow the one the Snap
+    // row recorded from the same browser request rather than sending a payload Meta
+    // may reject. Still none → send anyway (counted, see tally) and let the
+    // classification alert if Meta refuses it.
+    let effectiveCtx = clean(ctx);
+    if (!effectiveCtx.userAgent) {
+      try {
+        const own = await prisma.adConversionDelivery.findUnique({ where: key(orderId), select: { context: true } });
+        const ownUa = (own?.context as any)?.userAgent;
+        if (!ownUa) {
+          const snapRow = await prisma.adConversionDelivery.findUnique({
+            where: { platform_eventName_orderId: { platform: 'snap', eventName: 'PURCHASE', orderId } }, select: { context: true },
+          });
+          const sc = (snapRow?.context as any) || {};
+          if (typeof sc.userAgent === 'string' && sc.userAgent) {
+            effectiveCtx = { ...effectiveCtx, userAgent: sc.userAgent, ipAddress: effectiveCtx.ipAddress || (typeof sc.ipAddress === 'string' ? sc.ipAddress : undefined) };
+          } else {
+            console.warn(`[Meta Purchase] ${orderId}: no client_user_agent in any recorded context — sending without it`);
+          }
+        }
+      } catch { /* lookup is best-effort */ }
+    }
+
     const result = await deliverAndReport(orderId, {
       platform: PLATFORM,
       eventName: EVENT,
       orderId,
-      ctx: clean(ctx),
+      ctx: effectiveCtx,
       defaultEventTime: conversionTime,
       build: (context, eventTimeMs) => buildMetaPurchaseFromOrder(order, context as MetaClickContext, eventTimeMs),
       send: sendRetryable,
