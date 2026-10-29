@@ -25,8 +25,15 @@ const PRICE: Record<string, number> = { [V.DENIM]: 1499, [V.TEE]: 799, [V.JACKET
 
 type RzpPayment = { id: string; order_id: string; status: string; captured: boolean; amount: number; amount_refunded: number; currency: string; httpStatus?: number };
 const razorpayPayments = new Map<string, RzpPayment>();
-const shopifyOrders: any[] = []; const adminMails: string[] = [];
-let shopifyOrderSeq = 6000;
+const shopifyOrders: any[] = []; const adminMails: string[] = []; const shopifyOrderErrors: string[] = [];
+let shopifyOrderSeq = 6000; let shopifyCustomerSeq = 9100;
+// Shopify customer directory for the sync scenarios (S15–S17)
+const shopifyCustomers = new Map<number, { id: number; email: string | null; phone: string | null }>([
+  [9001, { id: 9001, email: 'guest_1760000000@zicabella.in', phone: '+919811122233' }], // local customer's Shopify record (placeholder login email)
+  [9002, { id: 9002, email: 'real.person@example.com', phone: '+919811199999' }],       // the email the shopper typed at checkout
+  [9003, { id: 9003, email: 'hidden.person@example.com', phone: '+919811188888' }],     // only visible to search after a failed create (index lag)
+]);
+const searchLag = new Set<string>(['hidden.person@example.com']);
 (globalThis as any).fetch = async (url: string, opt: any = {}) => {
   const u = String(url);
   const json = (status: number, body: any) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body), headers: new Map() });
@@ -40,12 +47,49 @@ let shopifyOrderSeq = 6000;
   if (u.startsWith('https://tr.snapchat.com/')) return json(200, { status: 'VALID' });
   if (u.startsWith('https://bzr.openai.com/')) return json(200, {});
   if (u.includes('/admin/api/')) {
-    if (u.includes('/variants.json')) {
-      const ids = new URL(u).searchParams.get('ids')?.split(',') || [];
-      return json(200, { variants: ids.filter(i => PRICE[i] !== undefined).map(i => ({ id: Number(i), price: PRICE[i].toFixed(2) })) });
+    if (u.endsWith('/graphql.json') && (opt.method || 'GET') === 'POST') {
+      const q = JSON.parse(opt.body || '{}');
+      if (String(q.query || '').includes('ZbVariantPrices')) {
+        const ids = (q.variables?.ids || []).map((g: string) => String(g).split('/').pop() || '');
+        return json(200, { data: { nodes: ids.map((i: string) => (PRICE[i] !== undefined ? { id: `gid://shopify/ProductVariant/${i}`, price: PRICE[i].toFixed(2) } : null)) } });
+      }
+      return json(200, { data: {} });
     }
-    if (u.includes('/orders.json') && (opt.method || 'GET') === 'POST') { const body = JSON.parse(opt.body).order; const id = ++shopifyOrderSeq; shopifyOrders.push(body); return json(201, { order: { id, name: `#${id}`, ...body } }); }
+    if (u.includes('/orders.json') && (opt.method || 'GET') === 'POST') {
+      const body = JSON.parse(opt.body).order;
+      // Shopify's contact-identity rules: a top-level email/phone must belong to the
+      // order's customer (customer.id, or the customer the phone resolves to).
+      const lc = (x: any) => String(x || '').trim().toLowerCase();
+      if (body.customer?.id) {
+        const c = shopifyCustomers.get(Number(body.customer.id));
+        if (c && body.email && lc(c.email) !== lc(body.email)) { shopifyOrderErrors.push('customer.email_address'); return json(422, { errors: { 'customer.email_address': ['has already been taken'] } }); }
+        if (c && body.phone && c.phone && c.phone !== body.phone) { shopifyOrderErrors.push('customer.phone'); return json(422, { errors: { 'customer.phone': ['has already been taken'] } }); }
+      } else if (body.email && body.phone) {
+        const byEmail = [...shopifyCustomers.values()].find(c => lc(c.email) === lc(body.email));
+        const byPhone = [...shopifyCustomers.values()].find(c => c.phone === body.phone);
+        if (byEmail && byPhone && byEmail.id !== byPhone.id) { shopifyOrderErrors.push('customer.phone'); return json(422, { errors: { 'customer.phone': ['has already been taken'] } }); }
+      }
+      const id = ++shopifyOrderSeq; shopifyOrders.push(body); return json(201, { order: { id, name: `#${id}`, ...body } });
+    }
     if (u.includes('/orders.json')) return json(200, { orders: [] });
+    const cm = u.match(/\/customers\/(\d+)\.json/);
+    if (cm) { const c = shopifyCustomers.get(Number(cm[1])); return c ? json(200, { customer: c }) : json(404, { errors: 'Not Found' }); }
+    if (u.includes('/customers/search.json')) {
+      const qp = new URL(u).searchParams.get('query') || '';
+      const m = qp.match(/^(email|phone):(.+)$/);
+      if (!m) return json(200, { customers: [] });
+      const val = m[2].trim().toLowerCase();
+      if (searchLag.has(val)) { searchLag.delete(val); return json(200, { customers: [] }); }
+      const hits = [...shopifyCustomers.values()].filter(c => m[1] === 'email' ? String(c.email || '').toLowerCase() === val : String(c.phone || '').toLowerCase() === val);
+      return json(200, { customers: hits });
+    }
+    if (u.includes('/customers.json') && (opt.method || 'GET') === 'POST') {
+      const c = JSON.parse(opt.body).customer || {};
+      const lc = (x: any) => String(x || '').trim().toLowerCase();
+      if (c.email && [...shopifyCustomers.values()].some(x => lc(x.email) === lc(c.email))) return json(422, { errors: { email: ['has already been taken'] } });
+      if (c.phone && [...shopifyCustomers.values()].some(x => x.phone === c.phone)) return json(422, { errors: { phone: ['has already been taken'] } });
+      const id = ++shopifyCustomerSeq; const created = { id, email: c.email || null, phone: c.phone || null }; shopifyCustomers.set(id, created); return json(201, { customer: created });
+    }
     if (u.includes('/customers')) return json(200, { customers: [], customer: { id: 777 } });
     return json(200, {});
   }
@@ -331,6 +375,76 @@ async function main() {
     const chromeAndroid = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36';
     eq('S14: Instagram / Facebook / Snapchat → redirect flow', [isInAppBrowserUA(ig), isInAppBrowserUA(fb), isInAppBrowserUA(snap)], [true, true, true]);
     eq('S14: Safari / Chrome iOS / Chrome Android → modal flow', [isInAppBrowserUA(safari), isInAppBrowserUA(chromeIos), isInAppBrowserUA(chromeAndroid)], [false, false, false]);
+  }
+
+  // ── S15–S17 Shopify sync: customer identity conflicts (order #ZB81380) ──
+  console.log('\n— S15 sync: checkout email belongs to another Shopify customer (#ZB81380)');
+  report.push('', '## S15–S17 — Shopify sync resolves customer identity instead of failing with 422');
+  const { syncOrderToShopify } = await import('../../lib/services/shopifyOrderSyncService');
+  const { repairSyncedOrderStatuses } = await import('../../lib/services/orderLifecycleService');
+  const { classifyShopifySyncError } = await import('../../lib/services/shopifyCustomerIdentity');
+  const { fetchVariantPrices, clearVariantPriceCache } = await import('../../lib/variant-prices');
+  const mkOrder = async (n: number, cust: { shopifyId: string; email: string; phone: string }, addr: { email: string; phone: string }) => {
+    const customer = await prisma.customer.create({ data: { id: `cust_s${n}`, shopId: 'shop_1', shopifyId: cust.shopifyId, name: 'Riya Kapoor', email: cust.email, phone: cust.phone } });
+    const order = await prisma.order.create({ data: { shopId: 'shop_1', customerId: customer.id, status: 'open', paymentStatus: 'cod_upfront_paid', paymentMethod: 'cod', totalPrice: 1749.75, subtotalPrice: 1749.75, codUpfrontPaid: 99, codUpfrontPaymentId: `pay_S${n}`, razorpayPaymentId: `pay_S${n}`, razorpayOrderId: `order_S${n}`, orderType: 'WEB_STORE', internalOrderNumber: `ZB9${n}`, shopifySyncStatus: 'pending', tags: 'WebStoreOrder, Web, razorpay, cod_upfront_paid', shippingAddress: JSON.stringify({ name: 'Riya Kapoor', email: addr.email, phone: addr.phone, street: '12 MG Road', city: 'Noida', state: 'Uttar Pradesh', zip: '201301', country: 'India' }), items: { create: [{ shopifyLineItemId: `li_s${n}`, title: 'CHAINSTER ZIP SHIRT', quantity: 1, price: 1749.75, sku: V.TEE, variantId: V.TEE }] } } });
+    return order;
+  };
+  { const o = await mkOrder(15, { shopifyId: '9001', email: 'guest_1760000000@zicabella.in', phone: '+919811122233' }, { email: 'real.person@example.com', phone: '9811122233' });
+    const before = shopifyOrders.length; shopifyOrderErrors.length = 0;
+    const r = await syncOrderToShopify(o.id);
+    const payload = shopifyOrders[shopifyOrders.length - 1];
+    const row = orderById(o.id);
+    eq('S15: order synced on the first attempt (no 422)', [r.success, shopifyOrders.length - before, shopifyOrderErrors.length, row?.shopifySyncStatus, /^\d+$/.test(String(row?.shopifyOrderId))], [true, 1, 0, 'synced', true]);
+    eq('S15: payload keeps the known Shopify customer and omits the conflicting top-level email', [payload?.customer?.id, payload?.email ?? null, payload?.phone], [9001, null, '+919811122233']);
+    eq('S15: the typed email is preserved as a note attribute', (payload?.note_attributes || []).some((a: any) => a.name === 'checkout_email' && a.value === 'real.person@example.com'), true);
+  }
+  { const o = await mkOrder(16, { shopifyId: 'temp_abc', email: 'real.person@example.com', phone: '+919811199999' }, { email: 'real.person@example.com', phone: '9811199999' });
+    const r = await syncOrderToShopify(o.id);
+    const payload = shopifyOrders[shopifyOrders.length - 1];
+    eq('S16: without a Shopify id the customer is found by email and linked', [r.success, payload?.customer?.id, payload?.email, (db.customer || []).find((c: any) => c.id === 'cust_s16')?.shopifyId], [true, 9002, 'real.person@example.com', '9002']);
+  }
+  { const o = await mkOrder(17, { shopifyId: 'temp_def', email: 'hidden.person@example.com', phone: '+919811188888' }, { email: 'hidden.person@example.com', phone: '9811188888' });
+    const r = await syncOrderToShopify(o.id);
+    const payload = shopifyOrders[shopifyOrders.length - 1];
+    eq('S17: customer creation conflict ("email has already been taken") → re-search → existing customer used', [r.success, payload?.customer?.id, orderById(o.id)?.shopifySyncStatus], [true, 9003, 'synced']);
+  }
+  { const o = await mkOrder(18, { shopifyId: 'temp_ghi', email: 'brand.new@example.com', phone: '+919811177777' }, { email: 'brand.new@example.com', phone: '9811177777' });
+    const r = await syncOrderToShopify(o.id);
+    const payload = shopifyOrders[shopifyOrders.length - 1];
+    eq('S18: unknown customer is created and attached', [r.success, typeof payload?.customer?.id, payload?.email], [true, 'number', 'brand.new@example.com']);
+  }
+
+  // ── S19 sync status repair (55 synced orders showed PENDING SYNC) ──
+  console.log('\n— S19 synced orders wrongly marked pending are repaired');
+  report.push('', '## S19 — status repair for orders already in Shopify');
+  { const a = await prisma.order.create({ data: { shopId: 'shop_1', status: 'approved', paymentStatus: 'paid', paymentMethod: 'razorpay', totalPrice: 100, orderType: 'WEB_STORE', internalOrderNumber: 'ZB9191', shopifyOrderId: '18976615006489', shopifySyncStatus: 'pending', shippingAddress: '{}' } });
+    const b = await prisma.order.create({ data: { shopId: 'shop_1', status: 'approved', paymentStatus: 'paid', paymentMethod: 'razorpay', totalPrice: 100, orderType: 'WEB_STORE', internalOrderNumber: 'ZB9192', shopifyOrderId: '18976615006490', shopifySyncStatus: 'failed', shopifySyncError: 'old', shippingAddress: '{}' } });
+    const c = await prisma.order.create({ data: { shopId: 'shop_1', status: 'approved', paymentStatus: 'paid', paymentMethod: 'razorpay', totalPrice: 100, orderType: 'WEB_STORE', internalOrderNumber: 'ZB9193', shopifyOrderId: 'local_x', shopifySyncStatus: 'pending', shippingAddress: '{}' } });
+    const repaired = await repairSyncedOrderStatuses();
+    eq('S19: rows with a real Shopify id are marked synced; local placeholders untouched', [repaired >= 2, orderById(a.id)?.shopifySyncStatus, orderById(b.id)?.shopifySyncStatus, orderById(b.id)?.shopifySyncError ?? null, orderById(c.id)?.shopifySyncStatus], [true, 'synced', 'synced', null, 'pending']);
+    const d = await prisma.order.create({ data: { shopId: 'shop_1', status: 'approved', paymentStatus: 'paid', paymentMethod: 'razorpay', totalPrice: 100, orderType: 'WEB_STORE', internalOrderNumber: 'ZB9194', shopifyOrderId: '18976615006491', shopifySyncStatus: 'pending', shippingAddress: '{}' } });
+    const before = shopifyOrders.length;
+    const r = await syncOrderToShopify(d.id);
+    eq('S19: sync fast path repairs the status and never re-creates', [r.success, r.shopifyOrderId, orderById(d.id)?.shopifySyncStatus, shopifyOrders.length - before], [true, '18976615006491', 'synced', 0]);
+    // /complete after a webhook-first sync keeps 'synced'
+    const pre = await precreate({ ...basePre, checkoutSessionId: 'cs_S19' });
+    await prisma.order.update({ where: { id: pre.localOrderId }, data: { shopifyOrderId: '18976615006492', shopifySyncStatus: 'synced' } });
+    pay('pay_S19', pre.razorpay_order_id, 'captured', 3797);
+    const cr = await complete({ ...basePre, localOrderId: pre.localOrderId, razorpay: { razorpay_order_id: pre.razorpay_order_id, razorpay_payment_id: 'pay_S19', razorpay_signature: sig(pre.razorpay_order_id, 'pay_S19') } });
+    await settle(150);
+    eq('S19: /complete keeps shopifySyncStatus=synced for an order the webhook already synced', [cr.status, orderById(pre.localOrderId)?.shopifySyncStatus, orderById(pre.localOrderId)?.shopifyOrderId], [200, 'synced', '18976615006492']);
+  }
+
+  // ── S20 variant prices via GraphQL + error classification ──
+  console.log('\n— S20 variant prices (GraphQL nodes) and sync error classification');
+  report.push('', '## S20 — variant prices and error classification');
+  { clearVariantPriceCache();
+    const m = await fetchVariantPrices([V.DENIM, `gid://shopify/ProductVariant/${V.TEE}`, '1']);
+    eq('S20: prices come from the GraphQL nodes query; unknown ids are missing', [m.get(V.DENIM), m.get(V.TEE), m.has('1')], [1499, 799, false]);
+    const c1 = classifyShopifySyncError(new Error('Shopify API 422: {"errors":{"customer.email_address":["has already been taken"]}}'));
+    const c2 = classifyShopifySyncError(new Error('The operation was aborted due to timeout'));
+    const c3 = classifyShopifySyncError(new Error('Shopify API 429: {"errors":"Exceeded 2 calls per second"}'));
+    eq('S20: 422 → validation (needs attention); timeout and 429 → retryable', [c1.kind, c1.retryable, c2.kind, c2.retryable, c3.kind, c3.retryable], ['validation', false, 'timeout', true, 'rate_limit', true]);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

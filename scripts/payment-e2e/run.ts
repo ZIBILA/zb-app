@@ -54,6 +54,14 @@ let shopifyOrderSeq = 6000;
   if (u.startsWith('https://tr.snapchat.com/v3/snap-app-')) { snapApp.push({ url: u, event: JSON.parse(opt.body).data[0] }); return json(200, { status: 'VALID' }); }
   if (u.startsWith('https://tr.snapchat.com/')) { snapWeb.push({ url: u, event: JSON.parse(opt.body).data[0] }); return json(200, { status: 'VALID' }); }
   if (u.includes('/admin/api/')) {
+    if (u.endsWith('/graphql.json') && (opt.method || 'GET') === 'POST') {
+      const q = JSON.parse(opt.body || '{}');
+      if (String(q.query || '').includes('ZbVariantPrices')) {
+        const ids = (q.variables?.ids || []).map((g: string) => String(g).split('/').pop() || '');
+        return json(200, { data: { nodes: ids.map((i: string) => (PRICE[i] !== undefined ? { id: `gid://shopify/ProductVariant/${i}`, price: PRICE[i].toFixed(2) } : null)) } });
+      }
+      return json(200, { data: {} });
+    }
     if (u.includes('/variants.json')) {
       const ids = new URL(u).searchParams.get('ids')?.split(',') || [];
       return json(200, { variants: ids.filter(i => PRICE[i] !== undefined).map(i => ({ id: Number(i), price: PRICE[i].toFixed(2) })) });
