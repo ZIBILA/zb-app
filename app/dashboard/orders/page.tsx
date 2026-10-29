@@ -530,7 +530,10 @@ export default function OrdersPage() {
                           </div>
                         )}
                         {order.shopifySyncStatus === 'failed' && (
-                          <div className="px-1.5 py-0.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-[8px] font-bold text-rose-500 uppercase tracking-tighter flex items-center gap-1">
+                          <div
+                            title={order.shopifySyncError || 'Shopify sync failed — open the order for details'}
+                            className="px-1.5 py-0.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-[8px] font-bold text-rose-500 uppercase tracking-tighter flex items-center gap-1 cursor-help"
+                          >
                             <span className="w-1 h-1 rounded-full bg-rose-500" />
                             SYNC FAILED
                           </div>

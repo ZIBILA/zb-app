@@ -328,8 +328,45 @@ function isUnsyncedShopifyIdFilter() {
  * After ops fix bad data (phone, address, line items), the next cron pass
  * re-pushes those orders automatically. Recovery placeholders stay excluded.
  */
+/**
+ * Orders that are in Shopify (numeric shopifyOrderId) but whose status still says
+ * pending / failed / not_synced show PENDING SYNC or SYNC FAILED on the manifest
+ * although nothing is wrong. Cause: /api/checkout/complete used to reset the
+ * status to 'pending' after a webhook-first sync, and the sync fast path never
+ * corrected it. Bounded repair; returns the number of rows fixed.
+ */
+export async function repairSyncedOrderStatuses(limit = 500): Promise<number> {
+  const candidates = await prisma.order.findMany({
+    where: {
+      shopifyOrderId: { not: null },
+      shopifySyncStatus: { in: ['pending', 'failed', 'not_synced', 'syncing'] },
+    },
+    select: { id: true, shopifyOrderId: true, shopifySyncStatus: true, updatedAt: true },
+    orderBy: { createdAt: 'desc' },
+    take: Math.min(Math.max(limit, 1), 1000),
+  });
+  const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+  type Candidate = { id: string; shopifyOrderId: string | null; shopifySyncStatus: string | null; updatedAt: Date };
+  const ids = (candidates as Candidate[])
+    .filter((o: Candidate) => /^\d+$/.test(String(o.shopifyOrderId || '')))
+    .filter((o: Candidate) => o.shopifySyncStatus !== 'syncing' || new Date(o.updatedAt).getTime() < tenMinutesAgo)
+    .map((o: Candidate) => o.id);
+  if (ids.length === 0) return 0;
+  const res = await prisma.order.updateMany({
+    where: { id: { in: ids } },
+    data: { shopifySyncStatus: 'synced', shopifySyncError: null },
+  });
+  if (res.count > 0) console.log(`[OrderLifecycle] Repaired shopifySyncStatus → synced for ${res.count} order(s) already in Shopify`);
+  return res.count;
+}
+
 export async function retryFailedPaidShopifySyncs(limit = 10): Promise<SyncRetryBatchResult> {
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+  try {
+    await repairSyncedOrderStatuses();
+  } catch (repairErr: any) {
+    console.warn('[OrderLifecycle] status repair failed:', repairErr?.message);
+  }
 
   const failedOrders = await prisma.order.findMany({
     where: {

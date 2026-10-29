@@ -5,34 +5,11 @@
 export async function fetchVariantPriceMap(
   variantIds: string[]
 ): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
-  const ids = Array.from(
-    new Set(
-      variantIds
-        .map((id) => String(id || "").split("/").pop() || "")
-        .filter((id) => id && /^\d+$/.test(id))
-    )
-  );
-  if (ids.length === 0) return map;
-
-  const { shopifyFetch } = await import("@/lib/shopify-admin");
-  const batchSize = 50;
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const batch = ids.slice(i, i + batchSize);
-    try {
-      const data = await shopifyFetch<{
-        variants: Array<{ id: number; price: string }>;
-      }>("variants.json", { ids: batch.join(","), fields: "id,price" });
-      if (data?.variants) {
-        for (const v of data.variants) {
-          map.set(String(v.id), parseFloat(v.price));
-        }
-      }
-    } catch (err) {
-      console.warn("[shopify-variant-prices] batch failed:", err);
-    }
-  }
-  return map;
+  // Delegates to the GraphQL-based lookup (lib/variant-prices.ts). The REST
+  // `variants.json?ids=` call used here before is not a Shopify endpoint, so the
+  // mobile routes never actually re-priced anything.
+  const { fetchVariantPrices } = await import("@/lib/variant-prices");
+  return fetchVariantPrices(variantIds);
 }
 
 /**

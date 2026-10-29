@@ -704,6 +704,19 @@ export async function fetchAllCustomers(limit = 250): Promise<ShopifyCustomer[]>
   return customers;
 }
 
+/** One Shopify customer by numeric id (null when missing / deleted / unreadable). */
+export async function fetchCustomerById(customerId: string): Promise<ShopifyCustomer | null> {
+  const id = String(customerId || '').trim();
+  if (!/^\d+$/.test(id)) return null;
+  try {
+    const data = await shopifyFetch<{ customer: ShopifyCustomer }>(`customers/${id}.json`, undefined, { ttlMs: 0 });
+    return data?.customer || null;
+  } catch (e: any) {
+    console.warn(`[Shopify Admin] fetchCustomerById(${id}) failed:`, e?.message || e);
+    return null;
+  }
+}
+
 export async function createCustomer(customer: any): Promise<ShopifyCustomer> {
   const normalized = { ...customer };
   if (normalized.phone) {

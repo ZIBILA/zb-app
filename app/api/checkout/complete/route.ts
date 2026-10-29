@@ -749,7 +749,14 @@ export async function POST(req: Request) {
         displayCountry: body.displayCountry || existingPreCreatedOrder.displayCountry || "IN",
         // Clear recovery hold so Shopify sync can run with real items/address;
         // an under-captured payment is held for review instead.
-        shopifySyncStatus: paymentUnderpaid ? 'needs_review' : 'pending',
+        // A webhook-first completion may already have created the Shopify order:
+        // keep that fact (the status used to be reset to 'pending' and stayed
+        // there, showing PENDING SYNC on the manifest for synced orders).
+        shopifySyncStatus: paymentUnderpaid
+          ? 'needs_review'
+          : /^\d+$/.test(String(existingPreCreatedOrder.shopifyOrderId || ''))
+            ? 'synced'
+            : 'pending',
         shopifySyncError: paymentUnderpaid ? 'Under-captured payment; held for review' : null,
       };
 
