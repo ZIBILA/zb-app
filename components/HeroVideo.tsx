@@ -81,13 +81,12 @@ export default function HeroVideo({
     };
   }, [showControlOnly]);
 
-  // Once the sources exist, (re)load so the element picks the media-matched one, then play if visible.
+  // Once the sources exist, (re)load so the element picks the media-matched one; the
+  // visibility effect below (which also depends on sourcesReady) then starts playback.
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !sourcesReady) return;
     el.load();
-    if (isInView) el.play().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourcesReady]);
 
   useEffect(() => {
