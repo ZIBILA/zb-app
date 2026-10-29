@@ -9,11 +9,27 @@ import { Breadcrumb } from "@/components/seo/Breadcrumb";
 import { getProductAggregateRating, getProductReviews } from "@/lib/reviews/getProductAggregateRating";
 import { ProductReviews } from "@/components/reviews/ProductReviews";
 import { cache } from "react";
+import { toCardProducts } from "@/lib/storefront-card-product";
 
 export const revalidate = 60; // ISR: revalidate every 60 seconds
 
+/**
+ * ISR needs this. Without `generateStaticParams`, Next.js 14 treats a dynamic route as
+ * request-time rendered: `revalidate` is ignored, the response is sent with
+ * `Cache-Control: private, no-store`, and every visit waits on the Shopify Admin calls
+ * before the first byte (measured 0.2–1.2 s TTFB on the live site). Returning no params
+ * prerenders nothing at build time; each product is rendered once on demand, cached for
+ * `revalidate` seconds, and refreshed early by the Shopify webhooks (revalidatePath).
+ */
+export async function generateStaticParams(): Promise<Array<{ id: string }>> {
+  return [];
+}
+export const dynamicParams = true;
+
+// throwOnError: with ISR a Shopify failure must fail this request (error boundary, nothing
+// cached) rather than render "not found" and cache it for a product that exists.
 const getProduct = cache(async (handle: string) => {
-  return await fetchProductByHandle(handle);
+  return await fetchProductByHandle(handle, { throwOnError: true });
 });
 
 export async function generateMetadata({
@@ -118,10 +134,14 @@ export default async function ProductPage({ params }: { params: { id: string } }
   let product: ShopifyProduct | null = null;
   let shop: any = null;
   let allProducts: ShopifyProduct[] = [];
+  let productLookupError: unknown = null;
 
   try {
     [product, shop, allProducts] = await Promise.all([
-      getProduct(params.id).catch(() => null),
+      getProduct(params.id).catch((err: unknown) => {
+        productLookupError = err;
+        return null;
+      }),
       getShopSettings().catch(() => null),
       fetchProducts(12).catch(() => [] as ShopifyProduct[])
     ]);
@@ -130,7 +150,15 @@ export default async function ProductPage({ params }: { params: { id: string } }
     // Fall through — product will be null and "not found" UI renders
   }
 
-  const recommendedProducts = (allProducts || []).filter((p: ShopifyProduct) => p.id?.toString() !== params.id);
+  if (!product && productLookupError) {
+    // Shopify unreachable (after retries): surface the error boundary for this request only.
+    // Next.js does not cache a failed ISR render, so the next visitor gets a fresh attempt.
+    console.error('[ProductPage] Product lookup failed; not caching:', (productLookupError as Error)?.message || productLookupError);
+    throw new Error('Product lookup failed');
+  }
+
+  // Card-sized copies: the "curated for you" rail only renders title / price / image / tags.
+  const recommendedProducts = toCardProducts((allProducts || []).filter((p: ShopifyProduct) => p.id?.toString() !== params.id));
 
   // Resolve metafield GIDs to URLs — wrapped in try/catch to prevent page crash
   try {
@@ -155,6 +183,7 @@ export default async function ProductPage({ params }: { params: { id: string } }
   }
 
   if (!product) {
+    // Shopify answered and has no such handle: a genuine not-found, safe to cache.
     return (
       <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
         <div className="text-center">

@@ -276,6 +276,9 @@ export default function ProductCardImage({
                         alt=""
                         aria-hidden
                         draggable={false}
+                        // Off-screen cards fetch their 20 px preview only as they approach the viewport.
+                        loading={idx === 0 && priority ? "eager" : "lazy"}
+                        decoding="async"
                         className="absolute inset-0 w-full h-full object-cover"
                         style={{
                           filter: "blur(8px)",
@@ -293,8 +296,11 @@ export default function ProductCardImage({
                         priority={idx === 0 && priority}
                         quality={75}
                         sizes={sizesAttr}
-                        placeholder={isFallback ? undefined : "blur"}
-                        blurDataURL={isFallback ? undefined : blurUrl(src)}
+                        // The <img> above already shows the blurred preview; next/image's own
+                        // background-image copy would be a second request per card, so it is
+                        // kept only for the eagerly loaded (LCP candidate) cards.
+                        placeholder={isFallback || !(idx === 0 && priority) ? undefined : "blur"}
+                        blurDataURL={isFallback || !(idx === 0 && priority) ? undefined : blurUrl(src)}
                         draggable={false}
                         onError={handleImageError}
                         onLoad={
@@ -330,8 +336,8 @@ export default function ProductCardImage({
                   loading="lazy"
                   quality={75}
                   sizes={sizesAttr}
-                  placeholder="blur"
-                  blurDataURL={blurUrl(imageSrcs[1])}
+                  // No blur background here: this layer sits at opacity 0 until hover, and the
+                  // 20 px preview of every card's second image was one extra request per card.
                   onError={handleImageError}
                   className="object-cover"
                   style={isSoldOut ? { filter: "grayscale(0.4)" } : {}}
@@ -349,6 +355,8 @@ export default function ProductCardImage({
                 alt=""
                 aria-hidden
                 draggable={false}
+                loading={priority ? "eager" : "lazy"}
+                decoding="async"
                 className="absolute inset-0 w-full h-full object-cover"
                 style={{
                   filter: "blur(8px)",
@@ -364,8 +372,8 @@ export default function ProductCardImage({
               priority={priority}
               quality={75}
               sizes={sizesAttr}
-              placeholder={isFallback ? undefined : "blur"}
-              blurDataURL={isFallback ? undefined : blurUrl(firstSrc)}
+              placeholder={isFallback || !priority ? undefined : "blur"}
+              blurDataURL={isFallback || !priority ? undefined : blurUrl(firstSrc)}
               onError={handleImageError}
               onLoad={onFirstLoad}
               className={`object-cover transition-all duration-800 ease-out ${!isSoldOut ? "group-hover:scale-[1.03]" : ""}`}
