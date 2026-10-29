@@ -385,6 +385,9 @@ export async function retryFailedPaidShopifySyncs(limit = 10): Promise<SyncRetry
           ],
         },
         { paymentStatus: { in: [...SHOPIFY_SYNC_PAID_STATUSES] } },
+        // A cancelled order that never reached Shopify must not be created there now
+        // (#ZB81170: cancelled ₹0 store-credit order retried on every run).
+        { status: { notIn: ['cancelled', 'canceled', 'CANCELLED'] } },
         // Never auto-push Razorpay recovery placeholders (dummy address / unresolved SKU)
         {
           NOT: {
