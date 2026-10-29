@@ -142,7 +142,7 @@ export default function RazorpayPaymentsPage() {
     }
   };
 
-  const webhookUrl = "https://app.zicabella.com/api/razorpay/webhook";
+  const webhookUrl = "https://zicabella.com/api/webhooks/razorpay";
   const isLive = configData?.keyId?.startsWith("rzp_live_");
   const isTest = configData?.keyId?.startsWith("rzp_test_");
 
@@ -339,11 +339,8 @@ export default function RazorpayPaymentsPage() {
           <DetailRow label="Payment Status">
             <code className="bg-foreground/5 px-3 py-1.5 rounded-lg text-[10px] font-mono">/api/app/payment/status/[id]</code>
           </DetailRow>
-          <DetailRow label="Create Order (Admin)">
-            <code className="bg-foreground/5 px-3 py-1.5 rounded-lg text-[10px] font-mono">/api/razorpay/create-order</code>
-          </DetailRow>
           <DetailRow label="Webhook">
-            <code className="bg-foreground/5 px-3 py-1.5 rounded-lg text-[10px] font-mono">/api/razorpay/webhook</code>
+            <code className="bg-foreground/5 px-3 py-1.5 rounded-lg text-[10px] font-mono">/api/webhooks/razorpay</code>
           </DetailRow>
           <DetailRow label="Refund">
             <code className="bg-foreground/5 px-3 py-1.5 rounded-lg text-[10px] font-mono">/api/razorpay/refund</code>

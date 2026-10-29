@@ -10,6 +10,7 @@ export default class FakeRazorpay {
     create: async (o: any) => ({ id: `order_rzp_${Math.random().toString(36).slice(2, 10)}`, ...o }),
     // Read through the mocked https://api.razorpay.com endpoint (used by the recovery path).
     fetch: async (id: string) => (await fetch(`https://api.razorpay.com/v1/orders/${id}`)).json(),
+    fetchPayments: async (id: string) => (await fetch(`https://api.razorpay.com/v1/orders/${id}/payments`)).json(),
   };
   payments = {
     fetch: async (id: string) => (await fetch(`https://api.razorpay.com/v1/payments/${id}`)).json(),

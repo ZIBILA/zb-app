@@ -2,7 +2,6 @@ import prisma from '@/lib/db';
 import { assignUniversalOrderNumber } from '@/lib/orderNumber';
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
 import Razorpay from 'razorpay';
-import { sendOrderConfirmationEmail } from '@/lib/services/orderEmailService';
 import { paymentLog } from '@/lib/payment-logger';
 
 export interface RecoveryOptions {
@@ -281,61 +280,29 @@ export async function recoverOrphanedRazorpayOrder(options: RecoveryOptions): Pr
       },
     });
 
-    // 9. Send Order Confirmation Email
-    if (customerEmail) {
-      try {
-        await sendOrderConfirmationEmail({
-          orderId: universalOrderNumber,
-          customerEmail,
-          customerName,
-          items: lineItemsToCreate.map((item) => ({
-            name: item.title,
-            quantity: item.quantity,
-            price: item.price,
-            image: item.image || '',
-          })),
-          total: paymentAmount,
-          currency: rzpOrder.currency || 'INR',
-          orderDate: new Date().toLocaleDateString('en-IN', { dateStyle: 'long' }),
-          paymentMethod: 'Razorpay (Prepaid)',
-          subtotal: paymentAmount,
-          shipping: 0,
-        });
-      } catch (emailErr: any) {
-        console.error('[RecoveryService] Email notification error:', emailErr.message);
-      }
-    }
-
-    // Send Order Confirmation WhatsApp
+    // 9. Notifications: this is a PLACEHOLDER (dummy address, one "Unresolved
+    // order" line) created so a captured payment is never lost. It used to email
+    // and WhatsApp the customer an "order confirmed" message for it; the real
+    // confirmation goes out when /api/checkout/complete (or an admin) replaces
+    // the items and address. Only the ops team is told here.
     try {
-      const phoneToUse = localCustomer?.phone || customerPhone;
-      if (phoneToUse) {
-        const orderIdStr = String(universalOrderNumber);
-        const { getWhatsAppSetting } = await import('@/lib/whatsapp/logger');
-        const enabled = (await getWhatsAppSetting('order_confirmed', 'true')) === 'true';
-        if (enabled) {
-          const templateName = await getWhatsAppSetting('template_order_confirmed', 'zica_order_confirmed_v1');
-          const alreadySent = await prisma.whatsAppMessage.findFirst({
-            where: { orderId: orderIdStr, templateName }
-          });
-          if (!alreadySent) {
-            const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
-            const firstItem = lineItemsToCreate[0];
-            const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://zicabella.com';
-            sendOrderConfirmation({
-              phone: phoneToUse,
-              customerName,
-              orderId: orderIdStr,
-              productImageUrl: firstItem?.image || '',
-              orderStatusUrl: `${appBaseUrl}/orders/${orderIdStr}`,
-              totalAmount: paymentAmount,
-              itemCount: lineItemsToCreate.length || 1
-            }).catch(err => console.error('[Razorpay Recovery WhatsApp Async Error]', err.message));
-          }
-        }
-      }
-    } catch (waErr: any) {
-      console.error('[Razorpay Recovery WhatsApp Setup Error]', waErr.message);
+      const { notifyAdminTeam } = await import('@/lib/services/zohoMailService');
+      await notifyAdminTeam(
+        `⚠️ Razorpay payment recovered as placeholder order ${universalOrderNumber} — needs review`,
+        `<div style="font-family: sans-serif; padding: 20px;">
+          <p>A captured Razorpay payment had no matching local order. A placeholder order was created and held from Shopify (<b>needs_review</b>). The customer has NOT been notified.</p>
+          <table style="border-collapse:collapse;">
+            <tr><td style="padding:4px 8px;font-weight:bold;">Order</td><td>${universalOrderNumber}</td></tr>
+            <tr><td style="padding:4px 8px;font-weight:bold;">Razorpay order</td><td>${razorpayOrderId}</td></tr>
+            <tr><td style="padding:4px 8px;font-weight:bold;">Payment</td><td>${capturedPaymentId || 'n/a'}</td></tr>
+            <tr><td style="padding:4px 8px;font-weight:bold;">Amount</td><td>${rzpOrder.currency || 'INR'} ${Number(paymentAmount).toLocaleString('en-IN')}</td></tr>
+            <tr><td style="padding:4px 8px;font-weight:bold;">Customer</td><td>${customerEmail || customerPhone || 'unknown'}</td></tr>
+          </table>
+          <p>Open Admin → Transactions / Orders to attach the real items and address.</p>
+        </div>`
+      );
+    } catch (notifyErr: any) {
+      console.error('[RecoveryService] Admin notification error:', notifyErr?.message);
     }
 
     // 10. Update WebhookEvent if ID provided

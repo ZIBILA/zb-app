@@ -17,6 +17,13 @@ import {
   isSparseShippingAddress,
   pickRicherShippingAddress,
 } from "@/lib/order-shipping-address";
+import {
+  razorpayWebhookEventKey,
+  claimRazorpayWebhookEvent,
+  nextOrderStatusOnCapture,
+  capturedAmountCheck,
+  underpaidAlertHtml,
+} from "@/lib/razorpay-webhook-events";
 
 export const dynamic = "force-dynamic";
 
@@ -62,29 +69,16 @@ export async function POST(req: NextRequest) {
                     payload.payload?.refund?.entity?.id ||
                     `rp_${Date.now()}`;
 
-    // Idempotency check — skip if already processed
-    const existingEvent = await prisma.webhookEvent.findFirst({
-      where: {
-        source: "razorpay",
-        eventType,
-        payload: { contains: eventId },
-      },
-    });
-
-    if (existingEvent?.processed) {
-      console.log(`[Razorpay Webhook] Event already processed: ${eventType} (${eventId})`);
+    // Idempotency: insert-first claim on a unique event key shared with
+    // /api/webhooks/razorpay (same WebhookEvent table), so a redelivered or
+    // concurrent duplicate — on either endpoint — is acknowledged, not re-run.
+    const eventKey = razorpayWebhookEventKey(req, eventType, eventId);
+    const claim = await claimRazorpayWebhookEvent({ eventType, eventKey, payload: rawBody });
+    if (claim.duplicate) {
+      console.log(`[Razorpay Webhook] Event already processed: ${eventType} (${eventId}, ${claim.reason})`);
       return NextResponse.json({ success: true, message: "Already processed" });
     }
-
-    // Insert event record (unprocessed)
-    const webhookEvent = await prisma.webhookEvent.create({
-      data: {
-        source: "razorpay",
-        eventType,
-        payload: rawBody,
-        processed: false,
-      },
-    });
+    const webhookEvent = claim.record;
 
     // Process events
     try {
@@ -168,26 +162,44 @@ export async function POST(req: NextRequest) {
 
             const capturedRupees = paymentAmountRupees(payment);
 
+            // Prepaid: compare the capture with the order total. A short capture is
+            // recorded as partially_paid + underpaid and held for review (Shopify
+            // sync blocked) instead of a clean "paid".
+            const amountCheck = capturedAmountCheck(payment, order, { isCod: isCodOrder, codUpfrontRupees: expectedCod });
+            const alreadyPaid = ['paid', 'cod_upfront_paid', 'partially_paid'].includes(String(order.paymentStatus || '').toLowerCase());
+            const underpaid = !alreadyPaid && !isCodOrder && amountCheck.underpaid;
+            if (amountCheck.currencyMismatch) {
+              console.warn(`[Razorpay Webhook] Captured currency ${payment.currency} differs from order currency ${order.currency}; amount not compared`);
+            }
+
             // For COD orders: set cod_upfront_paid and preserve payment method
-            // For prepaid orders: set paid and update payment method from Razorpay
+            // For prepaid orders: set paid (paymentMethod stays "razorpay"; the
+            // Razorpay method — upi/card — is not an order payment method)
             const updateData: any = {
-              paymentStatus: isCodOrder ? "cod_upfront_paid" : "paid",
-              status: isCodOrder ? "open" : (order.status === "payment_pending" ? "approved" : order.status),
+              paymentStatus: isCodOrder ? "cod_upfront_paid" : underpaid ? "partially_paid" : "paid",
+              // Every pre-confirmation status (incl. payment_failed / FAILED from an
+              // earlier attempt) becomes a live order on capture.
+              status: nextOrderStatusOnCapture(order.status, isCodOrder),
               razorpayPaymentId,
               paymentCapturedAt: new Date(),
               paymentFailureReason: null,
+              cancelledBy: null,
+              cancelledAt: null,
               ...(isCodOrder
                 ? {
                     codUpfrontPaid: capturedRupees,
                     codUpfrontPaymentId: razorpayPaymentId,
                   }
                 : {}),
+              ...(underpaid
+                ? {
+                    tags: [order.tags, 'underpaid', 'needs_review'].filter(Boolean).join(', '),
+                    note: `${order.note ? `${order.note} | ` : ''}UNDERPAID: captured ₹${amountCheck.capturedRupees} vs expected ₹${amountCheck.expectedRupees} (Payment ID: ${razorpayPaymentId}) — held for review`,
+                    shopifySyncStatus: 'needs_review',
+                    shopifySyncError: 'Under-captured payment; held for review',
+                  }
+                : {}),
             };
-
-            // Never override paymentMethod for COD orders — keep it as "cod"
-            if (!isCodOrder) {
-              updateData.paymentMethod = payment?.method || "razorpay";
-            }
 
             if (addressToUse) {
               updateData.shippingAddress = JSON.stringify(addressToUse);
@@ -198,6 +210,25 @@ export async function POST(req: NextRequest) {
               where: { id: order.id },
               data: updateData,
             });
+
+            if (underpaid) {
+              console.error(`[Razorpay Webhook] Under-captured payment ${razorpayPaymentId}: ₹${amountCheck.capturedRupees} of ₹${amountCheck.expectedRupees} — order ${order.id} held for review`);
+              void import('@/lib/services/zohoMailService')
+                .then(({ notifyAdminTeam }) => notifyAdminTeam(
+                  '⚠️ Under-captured Razorpay payment held for review',
+                  underpaidAlertHtml({
+                    orderId: order.id,
+                    orderNumber: order.internalOrderNumber,
+                    razorpayOrderId,
+                    razorpayPaymentId,
+                    capturedRupees: amountCheck.capturedRupees,
+                    expectedRupees: amountCheck.expectedRupees,
+                    currency: order.currency,
+                    source: '/api/payments/webhook',
+                  })
+                ))
+                .catch((alertErr: any) => console.warn('[Razorpay Webhook] Underpaid alert failed:', alertErr?.message));
+            }
 
             console.log(`[Razorpay Webhook] payment.captured → Order ${order.id} marked ${isCodOrder ? 'cod_upfront_paid' : 'paid'}`);
 
@@ -277,40 +308,44 @@ export async function POST(req: NextRequest) {
               }
             }
 
-            // Sync to Shopify if not already synced
-            if (!order.shopifyOrderId || order.shopifySyncStatus !== "synced") {
-              try {
-                console.log(`[Razorpay Webhook] Syncing CartRecovery order ${order.id} to Shopify...`);
-                
-                let shopifyCustomerId = order.customer?.shopifyId;
-                if (!shopifyCustomerId || shopifyCustomerId.startsWith('temp_')) {
-                  try {
-                    const sCustomer = await createCustomer({
-                      first_name: addressToUse?.name?.split(' ')[0] || order.customer?.name || "Customer",
-                      last_name: addressToUse?.name?.split(' ').slice(1).join(' ') || ".",
-                      email: addressToUse?.email || order.customer?.email,
-                      phone: addressToUse?.phone || order.customer?.phone,
-                      verified_email: true,
-                    });
-                    shopifyCustomerId = sCustomer.id.toString();
-                    await prisma.customer.update({
-                      where: { id: order.customerId },
-                      data: { shopifyId: shopifyCustomerId }
-                    });
-                  } catch (custErr: any) {
-                    console.error("[Razorpay Webhook] Shopify customer sync failed:", custErr.message);
-                  }
-                }
+            // Sync to Shopify if not already synced. Not awaited: Razorpay expects the
+            // 2xx within 5 s; the Shopify customer + order calls (retries, untimed)
+            // used to hold the response. The sync is idempotent and the cron retries it.
+            if (!underpaid && (!order.shopifyOrderId || order.shopifySyncStatus !== "synced")) {
+              void (async () => {
+                try {
+                  console.log(`[Razorpay Webhook] Syncing CartRecovery order ${order.id} to Shopify...`);
 
-                const syncRes = await syncOrderToShopify(order.id, { extraTags: ['CartRecovery'] });
-                if (syncRes.success) {
-                  console.log(`[Razorpay Webhook] Successfully synced Shopify order ${syncRes.shopifyOrderId} for recovered cart`);
-                } else {
-                  console.error(`[Razorpay Webhook] Failed to sync recovered order to Shopify:`, syncRes.error);
+                  let shopifyCustomerId = order.customer?.shopifyId;
+                  if (!shopifyCustomerId || shopifyCustomerId.startsWith('temp_')) {
+                    try {
+                      const sCustomer = await createCustomer({
+                        first_name: addressToUse?.name?.split(' ')[0] || order.customer?.name || "Customer",
+                        last_name: addressToUse?.name?.split(' ').slice(1).join(' ') || ".",
+                        email: addressToUse?.email || order.customer?.email,
+                        phone: addressToUse?.phone || order.customer?.phone,
+                        verified_email: true,
+                      });
+                      shopifyCustomerId = sCustomer.id.toString();
+                      await prisma.customer.update({
+                        where: { id: order.customerId },
+                        data: { shopifyId: shopifyCustomerId }
+                      });
+                    } catch (custErr: any) {
+                      console.error("[Razorpay Webhook] Shopify customer sync failed:", custErr.message);
+                    }
+                  }
+
+                  const syncRes = await syncOrderToShopify(order.id, { extraTags: ['CartRecovery'] });
+                  if (syncRes.success) {
+                    console.log(`[Razorpay Webhook] Successfully synced Shopify order ${syncRes.shopifyOrderId} for recovered cart`);
+                  } else {
+                    console.error(`[Razorpay Webhook] Failed to sync recovered order to Shopify:`, syncRes.error);
+                  }
+                } catch (syncErr: any) {
+                  console.error(`[Razorpay Webhook] Failed to sync recovered order to Shopify:`, syncErr?.message);
                 }
-              } catch (syncErr: any) {
-                console.error(`[Razorpay Webhook] Failed to sync recovered order to Shopify:`, syncErr.message);
-              }
+              })();
             }
 
             // Update corresponding MobileOrder status
@@ -401,11 +436,14 @@ export async function POST(req: NextRequest) {
         const paymentId = refund?.payment_id;
 
         if (paymentId) {
+          // refund.created only means a refund was initiated; the money is back
+          // with the customer on refund.processed (handled by /api/webhooks/razorpay,
+          // which also maps created → partial_refund). Keep the vocabularies aligned.
           await prisma.order.updateMany({
             where: { razorpayPaymentId: paymentId },
-            data: { paymentStatus: "refunded" },
+            data: { paymentStatus: "partial_refund" },
           });
-          console.log(`[Razorpay Webhook] refund.created → Order with payment_id ${paymentId}`);
+          console.log(`[Razorpay Webhook] refund.created → Order with payment_id ${paymentId} marked partial_refund`);
         }
       }
 
@@ -416,7 +454,9 @@ export async function POST(req: NextRequest) {
       });
     } catch (processErr: any) {
       console.error("[Razorpay Webhook] Processing error:", processErr.message);
-      // Event is recorded but not marked processed — will be retried
+      // The event row stays processed=false. Answer 5xx so Razorpay redelivers
+      // (a 200 here used to silently drop the event: no retry, no replayer).
+      return NextResponse.json({ error: "Webhook processing failed" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });

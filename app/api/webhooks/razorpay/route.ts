@@ -1,10 +1,18 @@
 import { NextResponse } from 'next/server';
-import Razorpay from 'razorpay';
+import crypto from 'crypto';
 import prisma from '@/lib/db';
 import { paymentLog } from '@/lib/payment-logger';
 import { recoverOrphanedRazorpayOrder } from '@/lib/services/razorpayRecoveryService';
 import { notifyAdminTeam } from '@/lib/services/zohoMailService';
 import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumber } from '@/lib/orderNumber';
+import {
+  razorpayWebhookEventKey,
+  claimRazorpayWebhookEvent,
+  nextOrderStatusOnCapture,
+  capturedAmountCheck,
+  underpaidAlertHtml,
+} from '@/lib/razorpay-webhook-events';
+import { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,10 +27,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized: Missing signature or secret' }, { status: 401 });
     }
 
-    // 1. Verify signature using Razorpay SDK's validateWebhookSignature
+    // 1. Verify signature: HMAC-SHA256 of the raw body with the webhook secret,
+    // compared in constant time (the SDK helper uses a plain string compare).
     let isValid = false;
     try {
-      isValid = Razorpay.validateWebhookSignature(payload, signature, webhookSecret);
+      const expected = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex');
+      const sigBuf = Buffer.from(signature, 'utf-8');
+      const expBuf = Buffer.from(expected, 'utf-8');
+      isValid = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
     } catch {
       isValid = false;
     }
@@ -37,29 +49,17 @@ export async function POST(req: Request) {
     const data = eventData.payload;
     const eventId = data?.payment?.entity?.id || data?.refund?.entity?.id || 'unknown';
 
-    // 2. Idempotency Check
-    const existing = await prisma.webhookEvent.findFirst({
-      where: {
-        source: 'razorpay',
-        eventType,
-        payload: { contains: eventId },
-        processed: true,
-      },
-    });
-
-    if (existing) {
-      paymentLog('info', 'webhook', { message: 'Duplicate webhook event skipped', eventId, eventType });
+    // 2+3. Idempotency: insert-first claim on a unique event key (Razorpay's
+    // x-razorpay-event-id when present, else `${event}:${entity id}`), which also
+    // records the raw event for audit. Redelivered and concurrent duplicates are
+    // acknowledged without being processed again.
+    const eventKey = razorpayWebhookEventKey(req, eventType, eventId);
+    const claim = await claimRazorpayWebhookEvent({ eventType, eventKey, payload });
+    if (claim.duplicate) {
+      paymentLog('info', 'webhook', { message: `Duplicate webhook event skipped (${claim.reason})`, eventId, eventType });
       return NextResponse.json({ success: true, duplicate: true }, { status: 200 });
     }
-
-    // 3. Log the raw event in WebhookEvent table for audit
-    const webhookRecord = await prisma.webhookEvent.create({
-      data: {
-        source: 'razorpay',
-        eventType,
-        payload,
-      },
-    });
+    const webhookRecord = claim.record;
 
     paymentLog('info', 'webhook', { message: `Received event: ${eventType}`, eventId });
 
@@ -110,34 +110,96 @@ export async function POST(req: Request) {
         const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "paid";
         const isAlreadyPaid = order.paymentStatus === 'paid' || order.paymentStatus === 'partially_paid' || order.paymentStatus === 'cod_upfront_paid';
 
+        // Captured amount vs what the order expects (prepaid total / COD upfront fee).
+        // The webhook used to mark any capture "paid" regardless of amount.
+        const expectedCodUpfront = isCOD
+          ? await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT)
+          : 0;
+        const amountCheck = capturedAmountCheck(payment, order, { isCod: isCOD, codUpfrontRupees: expectedCodUpfront });
+        if (amountCheck.currencyMismatch) {
+          paymentLog('warn', 'webhook', {
+            message: `Captured currency ${payment.currency} differs from order currency ${order.currency}; amount not compared`,
+            orderId: order.id,
+            razorpayPaymentId,
+          });
+        }
+        if (!isAlreadyPaid && isCOD && amountCheck.underpaid) {
+          // COD: the upfront fee was not collected in full — same rule as /api/payments/webhook.
+          paymentLog('warn', 'webhook', {
+            message: `COD upfront capture ₹${amountCheck.capturedRupees} below configured fee ₹${amountCheck.expectedRupees}; order left pending`,
+            orderId: order.id,
+            razorpayPaymentId,
+          });
+          await prisma.webhookEvent.update({
+            where: { id: webhookRecord.id },
+            data: { orderId: order.id, processed: true, processedAt: new Date() },
+          });
+          return NextResponse.json({ success: true, message: 'COD upfront fee not fully captured — order not confirmed' });
+        }
+        const underpaid = !isAlreadyPaid && !isCOD && amountCheck.underpaid;
+        const finalPaymentStatus = underpaid ? 'partially_paid' : targetPaymentStatus;
+
         if (!isAlreadyPaid) {
           const currentTags = order.tags || '';
           const cleanedTags = currentTags
             .split(',')
             .map((t: string) => t.trim())
             .filter((t: string) => Boolean(t) && t !== 'payment_pending' && t !== 'Order creation in process')
-            .concat(isCOD ? ['cod_upfront_paid'] : ['paid'])
+            .concat(isCOD ? ['cod_upfront_paid'] : underpaid ? ['underpaid', 'needs_review'] : ['paid'])
             .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
             .join(', ');
+          const underpaidNote = underpaid
+            ? `${order.note ? `${order.note} | ` : ''}UNDERPAID: captured ₹${amountCheck.capturedRupees} vs expected ₹${amountCheck.expectedRupees} (Payment ID: ${razorpayPaymentId}) — held for review`
+            : null;
 
           await prisma.order.update({
             where: { id: order.id },
             data: {
-              paymentStatus: targetPaymentStatus,
+              paymentStatus: finalPaymentStatus,
               razorpayPaymentId,
               paymentCapturedAt: new Date(),
-              status: (order.status === 'PENDING' || order.status === 'awaiting_approval' || order.status === 'payment_pending' || order.status === 'cancelled' || order.status === 'canceled') ? (isCOD ? 'open' : 'approved') : order.status,
+              // Every pre-confirmation status (incl. FAILED / payment_failed from an
+              // earlier attempt on the same Razorpay order) becomes a live order.
+              status: nextOrderStatusOnCapture(order.status, isCOD),
               cancelledBy: null,
               cancelledAt: null,
               paymentFailureReason: null,
               tags: cleanedTags,
-              note: isCOD ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}` : order.note,
+              note: isCOD
+                ? `COD Order (₹${payment.amount / 100} upfront fee paid via Razorpay - Payment ID: ${razorpayPaymentId}) | InternalOrderId: ${order.id}`
+                : underpaidNote ?? order.note,
+              ...(underpaid ? {
+                // Hold the Shopify order until someone reviews the short capture.
+                shopifySyncStatus: 'needs_review',
+                shopifySyncError: 'Under-captured payment; held for review',
+              } : {}),
               ...(isCOD ? {
                 codUpfrontPaid: Number(payment.amount / 100) || Number((order as any).codUpfrontPaid) || 0,
                 codUpfrontPaymentId: razorpayPaymentId,
               } : {}),
             },
           });
+
+          if (underpaid) {
+            paymentLog('error', 'webhook', {
+              message: `Under-captured payment: ₹${amountCheck.capturedRupees} of ₹${amountCheck.expectedRupees}; order marked partially_paid + needs_review`,
+              orderId: order.id,
+              razorpayPaymentId,
+            });
+            void notifyAdminTeam(
+              '⚠️ Under-captured Razorpay payment held for review',
+              underpaidAlertHtml({
+                orderId: order.id,
+                orderNumber: order.internalOrderNumber,
+                razorpayOrderId,
+                razorpayPaymentId,
+                capturedRupees: amountCheck.capturedRupees,
+                expectedRupees: amountCheck.expectedRupees,
+                currency: order.currency,
+                source: '/api/webhooks/razorpay',
+              })
+            ).catch((alertErr: any) => console.warn('[Razorpay Webhook] Underpaid alert failed:', alertErr?.message));
+          }
 
           // Promote: if order has a failed/pending prefix number, assign a real ZB number
           if (isFailedPrefixNumber(order.internalOrderNumber)) {
@@ -202,7 +264,7 @@ export async function POST(req: Request) {
             ]
           },
           data: {
-            paymentStatus: targetPaymentStatus,
+            paymentStatus: finalPaymentStatus,
             razorpayPaymentId,
             ...(isCOD ? {
               codUpfrontPaid: Number(payment.amount / 100) || 0,
@@ -230,7 +292,10 @@ export async function POST(req: Request) {
           });
         }
 
-        // Fallback Shopify sync if not yet synced to Shopify and not currently syncing
+        // Fallback Shopify sync if not yet synced to Shopify and not currently syncing.
+        // Not awaited: Razorpay expects the 2xx within 5 s and the Shopify REST call
+        // (4 retries, untimed) used to hold the response → redeliveries. The sync is
+        // idempotent (atomic claim + Idempotency-Key) and the 30-min cron retries it.
         const freshOrderForShopify = await prisma.order.findUnique({
           where: { id: order.id },
           select: { shopifyOrderId: true, shopifySyncStatus: true }
@@ -239,17 +304,17 @@ export async function POST(req: Request) {
           (!freshOrderForShopify?.shopifyOrderId ||
             freshOrderForShopify.shopifyOrderId.startsWith('local_') ||
             freshOrderForShopify.shopifyOrderId.startsWith('app_pending_')) &&
-          freshOrderForShopify?.shopifySyncStatus !== 'syncing'
+          freshOrderForShopify?.shopifySyncStatus !== 'syncing' &&
+          freshOrderForShopify?.shopifySyncStatus !== 'needs_review'
         ) {
-          try {
-            const { syncOrderToShopify } = await import('@/lib/services/shopifyOrderSyncService');
-            await syncOrderToShopify(order.id);
-          } catch (syncErr: any) {
-            console.error('[Razorpay Webhook] Shopify fallback sync error:', syncErr.message);
-          }
+          void import('@/lib/services/shopifyOrderSyncService')
+            .then(({ syncOrderToShopify }) => syncOrderToShopify(order.id))
+            .catch((syncErr: any) => {
+              console.error('[Razorpay Webhook] Shopify fallback sync error:', syncErr?.message);
+            });
         }
 
-        paymentLog('info', 'webhook', { message: `Order ${order.id} marked as ${targetPaymentStatus}`, orderId: order.id });
+        paymentLog('info', 'webhook', { message: `Order ${order.id} marked as ${finalPaymentStatus}`, orderId: order.id });
 
         // Meta CAPI Purchase safety net for orders whose browser never reached
         // checkout/complete. Only payment.captured / order.paid reach this point.

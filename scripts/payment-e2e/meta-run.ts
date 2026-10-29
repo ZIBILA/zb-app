@@ -96,8 +96,8 @@ async function main() {
   const { NextRequest } = await import('next/server');
 
   await prisma.shop.create({ data: { id: 'shop_1', name: 'Zica Bella', domain: 'test-shop.myshopify.com' } });
-  await prisma.webStoreCoupon.create({ data: { code: 'SAVE500', isActive: true, applicability: 'ALL' } });
-  await prisma.customer.create({ data: { id: 'cust_app_1', shopId: 'shop_1', shopifyId: 'GUEST_1', name: 'Aarav Mehta', email: 'aarav@example.com', phone: '+919876543210', storeCredits: 20000 } });
+  await prisma.webStoreCoupon.create({ data: { code: 'SAVE500', isActive: true, applicability: 'ALL', discountType: 'fixed', discountValue: 500, minOrderValue: 0, usedCount: 0 } });
+  await prisma.customer.create({ data: { id: 'cust_app_1', shopId: 'shop_1', shopifyId: 'GUEST_1', name: 'Aarav Mehta', email: 'aarav@example.com', phone: '+919811122244', storeCredits: 20000 } });
   await prisma.storeCredit.create({ data: { customerId: 'cust_app_1', amount: 20000, type: 'CREDIT', description: 'seed', remainingAmount: 20000 } });
   // Global store: the storefront's own formula, INR × multiplier × exchangeRate.
   await prisma.globalStoreSettings.create({ data: { id: 'singleton', globalStoreEnabled: true } });
@@ -335,10 +335,10 @@ async function main() {
     { variantId: `gid://shopify/ProductVariant/${V.DENIM}`, productId: '10227656982809', quantity: 2, price: 1499, name: 'AEROLAYER DENIM', sku: 'ZB-AERO-32' },
     { variantId: V.TEE, productId: '10227656982810', quantity: 1, price: 799, name: 'TEE', sku: 'ZB-TEE-M' },
   ];
-  const appAddress = { name: 'Aarav Mehta', line1: '1 Sector 90', city: 'Noida', state: 'Uttar Pradesh', pincode: '201304', country: 'India', phone: '+919876543210', email: 'aarav@example.com' };
+  const appAddress = { name: 'Aarav Mehta', line1: '1 Sector 90', city: 'Noida', state: 'Uttar Pradesh', pincode: '201304', country: 'India', phone: '+919811122244', email: 'aarav@example.com' };
   const post = (route: any, url: string, body: any) => route.POST(new Request(url, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', authorization: 'Bearer t', 'x-forwarded-for': '49.36.10.20', 'user-agent': 'ZicaBella/9' } }));
   async function appFlow(o: { amount: number; total: number; subtotal: number; cod?: boolean; credits?: number; device?: any; payStatus?: 'captured' | 'authorized' }) {
-    const orderData = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: appLines, appliedStoreCredits: o.credits || 0, discountAmount: 0, shippingAddress: appAddress, paymentMethod: o.cod ? 'COD' : 'PREPAID', paymentStatus: 'pending', total: o.total, total_price: o.total, subtotal: o.subtotal, codFee: o.cod ? 99 : 0, codUpfrontPaid: o.cod ? 99 : 0 };
+    const orderData = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, appliedStoreCredits: o.credits || 0, discountAmount: 0, shippingAddress: appAddress, paymentMethod: o.cod ? 'COD' : 'PREPAID', paymentStatus: 'pending', total: o.total, total_price: o.total, subtotal: o.subtotal, codFee: o.cod ? 99 : 0, codUpfrontPaid: o.cod ? 99 : 0 };
     const cr: any = await (await post(createOrder, 'https://zicabella.com/api/app/payment/create-order', { amount: o.amount, currency: 'INR', orderData, snapDevice: o.device || iosDevice })).json();
     const rzp = cr.id || cr.order_id || cr.razorpay_order_id || cr.orderId;
     const payId = `pay_${String(rzp).replace(/[^A-Za-z0-9]/g, '')}`;
@@ -366,7 +366,7 @@ async function main() {
   }
   { report.push('', '## App — 100% store credit');
     console.log('\n— MA 100% store credit');
-    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress, paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 3797, checkoutId: 'sc_meta_full_01', snapDevice: iosDevice };
+    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress, paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 3797, checkoutId: 'sc_meta_full_01', snapDevice: iosDevice };
     const j: any = await (await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', body)).json(); await settle(120);
     const o = orderById(j.orderId);
     eq('MA 100% store credit: value stored as 0 (credit = discount)', [o?.paymentStatus, o?.totalPrice], ['paid', 0]);

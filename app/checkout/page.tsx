@@ -11,6 +11,8 @@ import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zbTrackPaymentInitiated } from "@/lib/analytics-tracker";
 import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
 import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
+import { isInAppBrowser } from "@/lib/in-app-browser";
+import { isPaidLikeStatus } from "@/lib/payment-status";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { metaMoneyFrom } from "@/lib/meta/money";
 import { motion, AnimatePresence } from "framer-motion";
@@ -297,15 +299,10 @@ export default function CheckoutPage() {
   }, [address.email, address.phone, address.name, items]);
   const [error, setError] = useState("");
 
-  // Clear error automatically after 4 seconds
-  useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => {
-        setError("");
-      }, 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
+  // Errors stay on screen until the shopper dismisses them or starts another
+  // attempt (handlePlaceOrder clears them). They used to auto-clear after 4 s,
+  // which hid critical instructions such as "do NOT pay again" (pending capture)
+  // and "payment successful but order registration failed".
   const [initiatedPixel, setInitiatedPixel] = useState(false);
   const [paymentInfoFired, setPaymentInfoFired] = useState(false);
   const [isOrderPlaced, setIsOrderPlaced] = useState(false);
@@ -325,6 +322,10 @@ export default function CheckoutPage() {
     localOrderId?: string | null;
     internalOrderNumber?: string | null;
   } | null>(null);
+  // Latest prefetched order for handlePlaceOrder, which may await an in-flight
+  // prefetch and must then read the fresh value, not its render-time closure.
+  const prefetchedOrderRef = useRef<typeof prefetchedOrder>(null);
+  prefetchedOrderRef.current = prefetchedOrder;
 
   const paymentLockRef = useRef<boolean>(false);
   // Meta AddPaymentInfo fires once per checkout, at the payment step.
@@ -1148,15 +1149,26 @@ export default function CheckoutPage() {
     }
   }, [session, status]);
 
-  // Fetch saved addresses callback
+  // Fetch saved addresses callback.
+  // The session is read through a ref: next-auth replaces the session object on
+  // every refetch (focus, cross-tab broadcast from the "Get App" links), and a
+  // callback that depended on it re-ran with selectDefault=true, wiping the
+  // address the shopper had typed or selected. Only an auth-status change
+  // (loading → authenticated) should trigger the initial load now.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const fetchSavedAddresses = useCallback(async (selectDefault = false) => {
     if (status === "loading") return;
     if (status !== "authenticated") {
       setAddressesLoaded(true);
       return;
     }
+    const sess: any = sessionRef.current;
+    // Bounded wait: a hanging addresses API used to leave step 1 blank forever.
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 8000) : null;
     try {
-      const res = await fetch("/api/customer/addresses");
+      const res = await fetch("/api/customer/addresses", controller ? { signal: controller.signal } : undefined);
       const data = await res.json();
       if (data.addresses && data.addresses.length > 0) {
         setSavedAddresses(data.addresses);
@@ -1165,13 +1177,13 @@ export default function CheckoutPage() {
           setSelectedSavedId(def.id);
           // Parse saved address into new fields — fall back to signup profile for name/phone
           const parts = def.address1?.split(",").map((s: string) => s.trim()) || [];
-          const profileName = session?.user?.name || "";
+          const profileName = sess?.user?.name || "";
           const profilePhone =
-            (session as any)?.customer?.phone || (session?.user as any)?.phone || "";
+            sess?.customer?.phone || sess?.user?.phone || "";
           const isPhoneName = /^\+?[0-9\s\-]{8,15}$/.test(profileName.trim());
           setAddress({
             name: def.name || (!isPhoneName ? profileName : "") || "",
-            email: def.email || session?.user?.email || "",
+            email: def.email || sess?.user?.email || "",
             phone: def.phone || profilePhone || "",
             houseNo: parts[0] || def.address1 || "",
             street: parts.slice(1).join(", ") || def.address2 || "",
@@ -1193,9 +1205,11 @@ export default function CheckoutPage() {
       console.error("Error loading addresses:", err);
       setShowAddressForm(true);
     } finally {
+      if (timer) clearTimeout(timer);
       setAddressesLoaded(true);
     }
-  }, [status, session]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   useEffect(() => {
     fetchSavedAddresses(true);
@@ -1794,6 +1808,18 @@ export default function CheckoutPage() {
       let localOrderId = "";
       let internalOrderNumber = "";
 
+      // A prefetch may still be in flight (the shopper changed something and
+      // tapped Pay at once). Creating a second Razorpay order now would let the
+      // late prefetch re-point the pending local order away from the one the
+      // shopper pays — wait briefly for it to settle first.
+      if (prefetchInFlightKeyRef.current) {
+        const waitStart = Date.now();
+        while (prefetchInFlightKeyRef.current && Date.now() - waitStart < 4000) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      const prefetchedOrder = prefetchedOrderRef.current;
+
       const prefetchMatches =
         !!prefetchedOrder &&
         Math.round(Number(prefetchedOrder.amount)) === paymentAmountPaise &&
@@ -2039,10 +2065,19 @@ export default function CheckoutPage() {
               );
               if (lookup.ok) {
                 const data = await lookup.json();
-                if (data?.orderId) {
+                // Only a PAID order may be shown as confirmed. A pending /
+                // failed row here means the registration failed after the
+                // gateway reported success — the webhook / cron finishes it.
+                if (data?.orderId && isPaidLikeStatus(data.paymentStatus)) {
                   sessionStorage.setItem("last_placed_order_id", data.orderId);
                   clear();
                   router.replace(`/orders/${data.orderId}/confirmation`);
+                  return;
+                }
+                if (data?.orderId) {
+                  setIsConfirmingPayment(false);
+                  setError(CAPTURE_PENDING_MESSAGE);
+                  setLoading(false);
                   return;
                 }
               }
@@ -2119,6 +2154,15 @@ export default function CheckoutPage() {
       // ═══════════════════════════════════════════════════════════
       // Razorpay Standard Checkout — used for ALL payment methods
       // ═══════════════════════════════════════════════════════════
+      // In-app browsers (Instagram / Facebook / Messenger / Snapchat …) and
+      // WebViews do not support Razorpay's iframe + `handler` flow; Razorpay's
+      // docs require `callback_url` with `redirect: true` there. The callback is
+      // POSTed to /checkout/success (middleware turns it into a GET), which
+      // finishes the order from the payload persisted above.
+      const useRedirectFlow = isInAppBrowser();
+      if (useRedirectFlow) {
+        console.log("[Razorpay] In-app browser detected — using callback_url redirect flow");
+      }
       await openRazorpayStandardCheckout(
         {
           key: keyId,
@@ -2128,12 +2172,13 @@ export default function CheckoutPage() {
           description: paymentMethod === "COD" ? "COD Upfront Fee" : "Order Payment",
           order_id: orderId,
           handler: handlePaymentSuccess,
-          // Fallback when Standard handler does not fire (common after UPI app switch)
+          // Fallback when Standard handler does not fire (common after UPI app switch);
+          // the primary path in in-app browsers (redirect: true).
           callback_url:
             typeof window !== "undefined"
               ? `${window.location.origin}/checkout/success`
               : undefined,
-          redirect: false,
+          redirect: useRedirectFlow,
           prefill: {
             name: address.name,
             email: address.email,
@@ -2654,9 +2699,20 @@ export default function CheckoutPage() {
                   exit={{ opacity: 0, height: 0, y: -10 }}
                   className="overflow-hidden mb-4"
                 >
-                  <div className="flex items-start gap-2.5 p-3 rounded-xl border border-red-500/20 bg-red-500/[0.04] backdrop-blur-md text-red-400 text-[10px] font-semibold">
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2.5 p-3 rounded-xl border border-red-500/20 bg-red-500/[0.04] backdrop-blur-md text-red-400 text-[10px] font-semibold"
+                  >
                     <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400 mt-0.5" />
-                    <p className="leading-relaxed">{error}</p>
+                    <p className="leading-relaxed flex-1">{error}</p>
+                    <button
+                      type="button"
+                      onClick={() => setError("")}
+                      aria-label="Dismiss message"
+                      className="shrink-0 -mt-0.5 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider text-red-400/80 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      Dismiss
+                    </button>
                   </div>
                 </motion.div>
               )}
@@ -2681,6 +2737,17 @@ export default function CheckoutPage() {
                       WHERE SHOULD WE DELIVER?
                     </p>
                   </div>
+
+                  {/* Saved addresses still loading: show a skeleton instead of a blank step */}
+                  {!addressesLoaded && (
+                    <div className="mb-4 space-y-2.5" aria-busy="true" aria-live="polite">
+                      <p className="text-[8px] font-black uppercase tracking-[0.2em] text-foreground/40 pl-0.5">
+                        Loading your addresses…
+                      </p>
+                      <div className="h-16 rounded-xl border border-foreground/10 bg-foreground/[0.03] animate-pulse" />
+                      <div className="h-16 rounded-xl border border-foreground/10 bg-foreground/[0.03] animate-pulse" />
+                    </div>
+                  )}
 
                   {/* Saved Addresses list */}
                   {savedAddresses.length > 0 && !showAddressForm && (
