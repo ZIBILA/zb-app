@@ -267,14 +267,26 @@ export default function CheckoutPage() {
   const [step, setStep] = useState(1); // 1: Address, 2: Payment
   const [loading, setLoading] = useState(false);
 
-  // Sync cart contact details (email, phone, name) in background as user fills checkout form
+  // Sync cart contact details (email, phone, name) in background as user fills checkout form.
+  // One POST per distinct (items, name, email, phone) payload: the session prefill and
+  // the saved-address selection used to fire two identical 2-second syncs back to back.
+  // The address location is sent too, so the server skips its IP-geolocation chain
+  // (up to three external lookups) for every sync.
+  const lastCartSyncKeyRef = useRef<string>("");
+  const addressForSyncRef = useRef(address);
+  addressForSyncRef.current = address;
   useEffect(() => {
     if ((address.email || address.phone) && items.length > 0) {
+      const key = JSON.stringify({ items, name: address.name || "", email: address.email || "", phone: address.phone || "" });
+      if (lastCartSyncKeyRef.current === key) return;
       const syncCheckoutDetails = async () => {
+        if (lastCartSyncKeyRef.current === key) return;
+        lastCartSyncKeyRef.current = key;
         try {
           const guestId = getClientCookie("zb_device_id");
           const { getTrafficSource } = await import("@/lib/traffic-source");
           const trafficSource = getTrafficSource();
+          const loc = addressForSyncRef.current;
 
           await fetch("/api/cart/sync", {
             method: "POST",
@@ -285,15 +297,20 @@ export default function CheckoutPage() {
               name: address.name || undefined,
               email: address.email || undefined,
               phone: address.phone || undefined,
+              city: loc.city || undefined,
+              state: loc.state || undefined,
+              zip: loc.zip || undefined,
+              country: loc.country || undefined,
               source: trafficSource
             }),
           });
         } catch (e) {
+          lastCartSyncKeyRef.current = "";
           console.error("Failed to sync checkout details to cart session:", e);
         }
       };
 
-      const timer = setTimeout(syncCheckoutDetails, 1000);
+      const timer = setTimeout(syncCheckoutDetails, 2500);
       return () => clearTimeout(timer);
     }
   }, [address.email, address.phone, address.name, items]);
@@ -470,9 +487,12 @@ export default function CheckoutPage() {
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load Google Maps API via the singleton loader (setOptions called once globally)
+  // Load Google Maps API via the singleton loader (setOptions called once globally).
+  // Only once the address form is on screen: returning shoppers who pick a saved
+  // address never need Places, and the ~330 KB / 9-request Maps load used to run
+  // on every checkout mount alongside the address step's own API calls.
   useEffect(() => {
-    if (googleMapsLoaded) return;
+    if (googleMapsLoaded || !showAddressForm) return;
 
     loadGoogleMaps(['places', 'geocoding'])
       .then((ok) => {
@@ -490,7 +510,7 @@ export default function CheckoutPage() {
         dismissGoogleMapsErrors();
         setGoogleMapsError(true);
       });
-  }, [googleMapsLoaded]);
+  }, [googleMapsLoaded, showAddressForm]);
 
   // Initialize Place Autocomplete
   useEffect(() => {

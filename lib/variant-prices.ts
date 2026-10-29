@@ -1,15 +1,31 @@
 /**
  * Authoritative unit prices (INR) for Shopify variants, with a short in-process
- * cache so the Razorpay pre-create and the completion route can both re-price a
- * cart without a Shopify round trip per step.
+ * cache so the Razorpay pre-create, the completion route and the mobile order
+ * routes can re-price a cart without a Shopify round trip per step.
+ *
+ * Uses the Admin GraphQL `nodes` query. The previous implementation called
+ * `GET /admin/api/.../variants.json?ids=…`, which is not a Shopify endpoint
+ * (variants can only be listed per product or fetched one by one in REST), so
+ * every lookup failed silently and client prices were always used.
  *
  * Missing ids are simply absent from the result; callers decide whether a cart
  * counts as "verified" (every item priced) or falls back.
  */
-import { shopifyFetch } from '@/lib/shopify-admin';
+import { shopifyGraphqlFetch } from '@/lib/shopify-admin';
 
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { price: number; ts: number }>();
+
+const VARIANT_PRICES_QUERY = `
+  query ZbVariantPrices($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on ProductVariant {
+        id
+        price
+      }
+    }
+  }
+`;
 
 /** `gid://shopify/ProductVariant/123` → `123`; `123` → `123`. */
 export function variantNumericId(value: unknown): string {
@@ -48,17 +64,18 @@ export async function fetchVariantPrices(
     const batch = missing.slice(i, i + batchSize);
     try {
       const data = await withTimeout(
-        shopifyFetch<{ variants: Array<{ id: number; price: string }> }>('variants.json', {
-          ids: batch.join(','),
-          fields: 'id,price',
-        }),
+        shopifyGraphqlFetch<{ nodes: Array<{ id?: string; price?: string } | null> }>(
+          VARIANT_PRICES_QUERY,
+          { ids: batch.map((id) => `gid://shopify/ProductVariant/${id}`) }
+        ),
         timeoutMs
       );
-      for (const v of data?.variants || []) {
-        const price = parseFloat(v.price);
-        if (Number.isFinite(price)) {
-          cache.set(String(v.id), { price, ts: Date.now() });
-          out.set(String(v.id), price);
+      for (const node of data?.nodes || []) {
+        const id = variantNumericId(node?.id);
+        const price = parseFloat(String(node?.price ?? ''));
+        if (id && Number.isFinite(price)) {
+          cache.set(id, { price, ts: Date.now() });
+          out.set(id, price);
         }
       }
     } catch (err: any) {

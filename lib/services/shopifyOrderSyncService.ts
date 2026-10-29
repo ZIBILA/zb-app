@@ -1,9 +1,14 @@
 import prisma from '@/lib/db';
-import { createOrder, createCustomer, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
+import { createOrder, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
 import { toE164 } from '@/lib/shopify-phone';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { INV_DEDUCTED_TAG, withInventoryTag } from '@/lib/inventoryPolicy';
+import {
+  resolveShopifyCustomerIdentity,
+  classifyShopifySyncError,
+  isContactConflictError,
+} from '@/lib/services/shopifyCustomerIdentity';
 
 export interface SyncOptions {
   extraTags?: string[];
@@ -75,6 +80,14 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
   }
 
   if (existing.shopifyOrderId && /^\d+$/.test(String(existing.shopifyOrderId))) {
+    if (existing.shopifySyncStatus !== 'synced') {
+      // The order is in Shopify but the status says otherwise (e.g. /complete ran
+      // after a webhook-first sync and reset it to 'pending'): repair the flag.
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { shopifySyncStatus: 'synced', shopifySyncError: null },
+      }).catch(() => {});
+    }
     return {
       success: true,
       shopifyOrderId: existing.shopifyOrderId,
@@ -275,34 +288,31 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       }
     );
 
-    // Resolve or sync Shopify customer
-    let shopifyCustomerId = order.customer?.shopifyId;
-    if (!shopifyCustomerId || shopifyCustomerId.startsWith('temp_') || shopifyCustomerId.startsWith('google_') || shopifyCustomerId.startsWith('apple_') || shopifyCustomerId.startsWith('mobile_') || shopifyCustomerId.startsWith('GUEST_')) {
-      try {
-        const customerName = shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer';
-        const nameParts = String(customerName).trim().split(/\s+/).filter(Boolean);
-        const customerEmail = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
-        const rawCustomerPhone = shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
-        const customerPhone = toE164(rawCustomerPhone);
-
-        const sCustomer = await createCustomer({
-          first_name: nameParts[0] || 'Customer',
-          last_name: nameParts.slice(1).join(' ') || '.',
-          ...(customerEmail && customerEmail.includes('@') ? { email: customerEmail } : {}),
-          ...(customerPhone ? { phone: customerPhone } : {}),
-          verified_email: Boolean(customerEmail && customerEmail.includes('@')),
-        });
-
-        shopifyCustomerId = sCustomer.id.toString();
-        if (order.customerId) {
-          await prisma.customer.update({
-            where: { id: order.customerId },
-            data: { shopifyId: shopifyCustomerId },
-          });
-        }
-      } catch (custErr: any) {
-        console.warn(`[ShopifyOrderSync] Customer creation fallback skipped: ${custErr.message}`);
-      }
+    // Resolve the Shopify customer and which contact fields may ride on the order.
+    // Sending a checkout email/phone that belongs to a different Shopify customer
+    // than `customer.id` is rejected by Shopify (422 "has already been taken").
+    const checkoutCustomerName = shippingAddress.name || order.customer?.name || webStoreOrder?.customerName || 'Customer';
+    const checkoutEmailRaw = (shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '').trim();
+    const checkoutPhoneRaw = shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone || '';
+    const identity = await resolveShopifyCustomerIdentity({
+      localShopifyId: order.customer?.shopifyId,
+      email: checkoutEmailRaw,
+      phone: checkoutPhoneRaw,
+      name: checkoutCustomerName,
+    });
+    const shopifyCustomerId = identity.shopifyCustomerId;
+    if (identity.trail.length) {
+      console.log(`[ShopifyOrderSync] ${order.id}: customer identity — ${identity.trail.join(' | ')}`);
+    }
+    if (
+      shopifyCustomerId &&
+      order.customerId &&
+      String(order.customer?.shopifyId || '') !== shopifyCustomerId
+    ) {
+      await prisma.customer.update({
+        where: { id: order.customerId },
+        data: { shopifyId: shopifyCustomerId },
+      }).catch(() => {});
     }
 
     // Format line items — collapse duplicate variant rows so Shopify never gets ×2 from two qty-1 lines
@@ -410,7 +420,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
     }
     const codBalanceDue = getCodBalanceDue(order.totalPrice || 0, codUpfrontPaid);
     const resolvedMethodTag = isCod ? 'COD' : 'Prepaid, Razorpay';
-    const emailToUse = shippingAddress.email || order.customer?.email || webStoreOrder?.customerEmail || '';
+    const emailToUse = identity.orderEmail || '';
 
     // Build consolidated tags
     const mergedTags = new Set<string>();
@@ -478,6 +488,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         ...(isZeroPaidOrder && order.discountCode
           ? [{ name: 'discount_code', value: String(order.discountCode) }]
           : []),
+        ...identity.noteAttributes,
       ],
       total_tax: 0,
       currency: order.currency || 'INR',
@@ -516,11 +527,8 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       shopifyOrderPayload.billing_address = addrPayload;
     }
 
-    const orderPhone = toE164(
-      shippingAddress.phone || order.customer?.phone || webStoreOrder?.customerPhone
-    );
-    if (orderPhone) {
-      shopifyOrderPayload.phone = orderPhone;
+    if (identity.orderPhone) {
+      shopifyOrderPayload.phone = identity.orderPhone;
     }
 
     if (parsedCustomerId) {
@@ -583,9 +591,33 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       }
     }
 
-    const createdOrder = await createOrder(shopifyOrderPayload, {
-      idempotencyKey: universalOrderNumber,
-    });
+    let createdOrder: any;
+    try {
+      createdOrder = await createOrder(shopifyOrderPayload, {
+        idempotencyKey: universalOrderNumber,
+      });
+    } catch (createErr: any) {
+      if (!isContactConflictError(createErr)) throw createErr;
+      // Last resort for a contact-field clash Shopify still reports: make sure the
+      // first attempt created nothing, then send the order without the top-level
+      // contact identity (shipping address keeps name/phone for delivery).
+      const already = await findShopifyOrderByInternalNumber(universalOrderNumber);
+      if (already?.id) {
+        createdOrder = already;
+      } else {
+        console.warn(`[ShopifyOrderSync] ${order.id}: contact conflict (${String(createErr?.message || '').slice(0, 160)}); retrying without customer/email/phone`);
+        const stripped = { ...shopifyOrderPayload };
+        delete stripped.customer;
+        delete stripped.email;
+        delete stripped.phone;
+        stripped.note_attributes = [
+          ...(stripped.note_attributes || []),
+          ...(emailToUse ? [{ name: 'checkout_email', value: emailToUse }] : []),
+          { name: 'sync_fallback', value: 'contact_fields_stripped_after_422' },
+        ];
+        createdOrder = await createOrder(stripped, { idempotencyKey: `${universalOrderNumber}-nocontact` });
+      }
+    }
     const shopifyOrderId = String(createdOrder.id);
     const shopifyOrderName = createdOrder.name || null;
 
@@ -657,11 +689,12 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       console.warn(`[ShopifyOrderSync] Post-error self-heal check failed:`, healErr.message);
     }
 
+    const classified = classifyShopifySyncError(err);
     await prisma.order.update({
       where: { id: orderId },
       data: {
         shopifySyncStatus: 'failed',
-        shopifySyncError: err.message?.slice(0, 500),
+        shopifySyncError: `[${classified.kind}${classified.retryable ? ', retrying' : ', needs attention'}] ${classified.message}`.slice(0, 500),
       },
     }).catch(() => {});
 
