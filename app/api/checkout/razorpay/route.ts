@@ -10,6 +10,8 @@ import { assignFailedOrderNumber } from "@/lib/orderNumber";
 import { recordSnapPurchaseContext, snapContextFromRequest } from "@/lib/snap/purchase-server";
 import { normalizeVariantId } from "@/lib/snap/catalog-id";
 import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/purchase-server";
+import { resolveWebCoupon } from "@/lib/web-coupon";
+import { fetchVariantPrices, variantNumericId } from "@/lib/variant-prices";
 
 export const dynamic = 'force-dynamic';
 
@@ -46,10 +48,32 @@ function getPublicKeyId(): string {
   return process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID || "";
 }
 
+/** Guest/device cookie used to scope rate limits when nobody is signed in. */
+function deviceIdFromCookies(req: Request): string | null {
+  const cookie = req.headers.get("cookie") || "";
+  const m = cookie.match(/(?:^|;\s*)zb_device_id=([^;]+)/);
+  return m ? decodeURIComponent(m[1]).slice(0, 64) : null;
+}
+
 export async function POST(req: Request) {
-  const rateLimitResult = await checkRateLimit(req, "checkout-razorpay", { maxRequests: 30, windowMs: 60_000 });
+  // Resolve the shopper once: the rate limit is scoped per customer / device so
+  // shoppers behind one carrier (CGNAT) IP do not share a single 30/min bucket,
+  // and the same session is reused by the pending-order pre-create below.
+  const session = await getServerSession(authOptions).catch(() => null);
+  const sessionUserId: string | null = (session?.user as any)?.id || null;
+  const limitScope = sessionUserId || deviceIdFromCookies(req) || null;
+  const rateLimitResult = await checkRateLimit(req, "checkout-razorpay", {
+    maxRequests: 60,
+    windowMs: 60_000,
+    scope: limitScope,
+  });
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
+  }
+  // Coarse per-IP abuse cap (many shoppers or one script on one IP).
+  const ipCap = await checkRateLimit(req, "checkout-razorpay-ip", { maxRequests: 300, windowMs: 60_000 });
+  if (!ipCap.allowed && ipCap.response) {
+    return ipCap.response;
   }
   try {
     const {
@@ -71,8 +95,12 @@ export async function POST(req: Request) {
       checkoutSessionId,
     } = await req.json();
 
-    let finalCouponCode = couponCode ? String(couponCode).trim().toUpperCase() : null;
-    let finalCouponDiscount = Number(couponDiscount) || 0;
+    // Coupon amounts are recomputed server-side after the cart is re-priced
+    // (lib/web-coupon.ts); the client's couponDiscount is never charged.
+    let finalCouponCode: string | null = null;
+    let finalCouponDiscount = 0;
+    const requestedCouponCode = couponCode ? String(couponCode).trim().toUpperCase() : null;
+    void couponDiscount;
 
     const pmUpper = (paymentMethod || '').toUpperCase().trim();
     const isCodOrder = pmUpper === 'COD' || pmUpper.includes('COD');
@@ -82,52 +110,69 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: COD_INDIA_ONLY_ERROR }, { status: 400 });
     }
 
-    if (finalCouponCode) {
-      const dbCoupon = await prisma.webStoreCoupon.findFirst({
-        where: { code: finalCouponCode, isActive: true }
-      });
-
-      if (!dbCoupon) {
-        finalCouponCode = null;
-        finalCouponDiscount = 0;
-      } else {
-        if (dbCoupon.applicability === 'PREPAID_ONLY' && isCodOrder) {
-          console.warn(`[Razorpay Checkout] Stripped PREPAID_ONLY coupon ${finalCouponCode} from COD order`);
-          finalCouponCode = null;
-          finalCouponDiscount = 0;
-        } else if (dbCoupon.applicability === 'COD_ONLY' && !isCodOrder) {
-          console.warn(`[Razorpay Checkout] Stripped COD_ONLY coupon ${finalCouponCode} from prepaid order`);
-          finalCouponCode = null;
-          finalCouponDiscount = 0;
-        } else if (dbCoupon.applicability === 'CUSTOM_RATES') {
-          const rateType = isCodOrder ? dbCoupon.codDiscountType : dbCoupon.prepaidDiscountType;
-          const rateVal = Number(isCodOrder ? dbCoupon.codDiscountValue : dbCoupon.prepaidDiscountValue);
-          const sub = Number(subtotal || amount);
-          if (rateType === 'percentage') {
-            finalCouponDiscount = Math.round((sub * rateVal) / 100);
-          } else {
-            finalCouponDiscount = Math.min(rateVal, sub);
-          }
-          // CUSTOM_RATES with zero COD rate means no discount for COD
-          if (isCodOrder && rateVal <= 0) {
-            console.warn(`[Razorpay Checkout] CUSTOM_RATES coupon ${finalCouponCode} has zero COD discount — stripping`);
-            finalCouponCode = null;
-            finalCouponDiscount = 0;
-          }
+    // ── Server-side re-pricing (PAYMENT_AUDIT.md P2) ──
+    // The Razorpay order used to be created for the client's subtotal; a tampered
+    // cart paid ₹2 for ₹2,998 of goods and, when the webhook beat /complete, the
+    // Shopify order was created from that snapshot. Unit prices now come from
+    // Shopify (cached), converted to the checkout currency the same way the
+    // storefront displays them. If the lookup fails the client prices are used
+    // but the order is tagged `prices_unverified`, which holds the webhook-first
+    // Shopify sync for review until /complete verifies the amounts.
+    const currencyCodeForPricing = String(currency || "INR").toUpperCase();
+    let toCheckoutCurrency: ((inr: number) => number) | null = null;
+    if (currencyCodeForPricing !== "INR") {
+      try {
+        const { isGlobalStoreEnabled, getCountryConfig, formatPriceWithConfig } = await import("@/lib/global-pricing");
+        const enabled = await isGlobalStoreEnabled();
+        const cfg = await getCountryConfig(String(displayCountry || "").trim().toUpperCase());
+        if (enabled && cfg && !cfg.isBase && String(cfg.currencyCode).toUpperCase() === currencyCodeForPricing) {
+          toCheckoutCurrency = (inr: number) => formatPriceWithConfig(inr, cfg, true).amount;
         }
-      }
-
-      // Safety net: strip coupons with "PREPAID" in the code name from COD orders
-      if (finalCouponCode && isCodOrder && finalCouponCode.includes('PREPAID')) {
-        console.warn(`[Razorpay Checkout] Safety-net stripped prepaid-named coupon ${finalCouponCode} from COD order`);
-        finalCouponCode = null;
-        finalCouponDiscount = 0;
+      } catch (fxErr: any) {
+        console.warn("[Razorpay Pre-Create] Global pricing config unavailable:", fxErr?.message);
       }
     }
+    let pricedItems: any[] = Array.isArray(items) ? items : [];
+    let serverSubtotal: number | null = null;
+    if (pricedItems.length > 0 && pricedItems.every((it: any) => variantNumericId(it?.variantId))) {
+      const canConvert = currencyCodeForPricing === "INR" || Boolean(toCheckoutCurrency);
+      if (canConvert) {
+        const priceMap = await fetchVariantPrices(pricedItems.map((it: any) => String(it.variantId)), { timeoutMs: 5000 });
+        const allPriced = pricedItems.every((it: any) => priceMap.has(variantNumericId(it.variantId)));
+        if (allPriced) {
+          let sum = 0;
+          pricedItems = pricedItems.map((it: any) => {
+            const inr = priceMap.get(variantNumericId(it.variantId)) as number;
+            const unit = toCheckoutCurrency ? toCheckoutCurrency(inr) : inr;
+            sum += unit * (Number(it.quantity) || 1);
+            return { ...it, price: String(unit) };
+          });
+          serverSubtotal = Math.round(sum * 100) / 100;
+        }
+      }
+    }
+    const pricesVerified = serverSubtotal !== null;
+    const clientSubtotal = Number(subtotal || amount || 0);
+    if (pricesVerified && Math.abs((serverSubtotal as number) - clientSubtotal) > 1) {
+      console.warn(`[Razorpay Pre-Create] Client subtotal ₹${clientSubtotal} ≠ server ₹${serverSubtotal}; charging the server amount`);
+    }
+    if (!pricesVerified) {
+      console.warn("[Razorpay Pre-Create] Could not verify prices with Shopify; using client prices and tagging prices_unverified");
+    }
 
-    const rawSubtotal = Number(subtotal || amount || 0);
+    const rawSubtotal = pricesVerified ? (serverSubtotal as number) : clientSubtotal;
     const rawShipping = Number(shipping || 0);
     const rawStoreCredit = Number(storeCreditAmount || 0);
+
+    // Coupon: validity + discount from the coupon row, on the server subtotal.
+    {
+      const couponRes = await resolveWebCoupon({ code: requestedCouponCode, subtotal: rawSubtotal, isCod: isCodOrder });
+      finalCouponCode = couponRes.code;
+      finalCouponDiscount = couponRes.payableDiscount;
+      if (requestedCouponCode && !couponRes.valid) {
+        console.warn(`[Razorpay Pre-Create] Coupon ${requestedCouponCode} rejected (${couponRes.reason}); client discount ignored`);
+      }
+    }
 
     // Item #25: Store coins can only be redeemed through the mobile app
     if (rawStoreCredit > 0) {
@@ -185,6 +230,9 @@ export async function POST(req: Request) {
       currency: currencyCode,
       receipt: receipt || `rcpt_${Date.now()}`,
       notes: notes || {},
+      // Capture automatically regardless of the dashboard default (the mobile
+      // route already did; an authorized-only web payment stalls as 202 pending).
+      payment_capture: 1,
     };
 
     const rzpOrder = await razorpay.orders.create(options);
@@ -207,12 +255,10 @@ export async function POST(req: Request) {
         }
 
         // 1. Save Customer & Address (prefer logged-in session customer)
-        const session = await getServerSession(authOptions).catch(() => null);
-        const sessionUserId = (session?.user as any)?.id || null;
         const { customer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
           // 2. Resolve Line Items
-          const resolvedItems = await Promise.all(items.map(async (item: any, index: number) => {
+          const resolvedItems = await Promise.all(pricedItems.map(async (item: any, index: number) => {
             let dbProductId = null;
             let image = item.image || null;
             if (item.productId) {
@@ -255,6 +301,9 @@ export async function POST(req: Request) {
               existingPendingOrder = await tx.order.findFirst({
                 where: {
                   status: 'payment_pending',
+                  // A row that already recorded a payment attempt on its current
+                  // Razorpay order is never re-pointed (the paid order would be lost).
+                  razorpayPaymentId: null,
                   OR: [
                     { tags: { contains: sessionTag } },
                     { tags: { contains: `cs_${sessionTag}` } },
@@ -283,6 +332,10 @@ export async function POST(req: Request) {
                   billingAddress: JSON.stringify(checkoutAddress),
                   razorpayOrderId: rzpOrder.id,
                   paymentMethod: isCodOrder ? "cod" : "razorpay",
+                  tags: [
+                    ...String(existingPendingOrder.tags || '').split(',').map((t: string) => t.trim()).filter((t: string) => t && t !== 'prices_unverified'),
+                    ...(pricesVerified ? [] : ['prices_unverified']),
+                  ].join(', '),
                   // Never store the fee as "paid" before Razorpay capture
                   codUpfrontPaid: 0,
                   discountCode: finalCouponCode || null,
@@ -326,7 +379,7 @@ export async function POST(req: Request) {
                     customerEmail: address.email,
                     customerPhone: address.phone || "",
                     shippingAddress: checkoutAddress as any,
-                    items: items.map((item: any) => ({
+                    items: pricedItems.map((item: any) => ({
                       product_id: item.productId,
                       variant_id: item.variantId || "",
                       title: item.title,
@@ -384,7 +437,7 @@ export async function POST(req: Request) {
                 codUpfrontPaid: 0,
                 paymentCapturedAt: null,
                 orderType: "WEB_STORE",
-                tags: `WebStoreOrder, Web, ${isCodOrder ? "cod" : "razorpay"}, zb-order-${universalOrderNumber}, payment_pending, Order creation in process${sessionTagSuffix}`,
+                tags: `WebStoreOrder, Web, ${isCodOrder ? "cod" : "razorpay"}, zb-order-${universalOrderNumber}, payment_pending, Order creation in process${pricesVerified ? '' : ', prices_unverified'}${sessionTagSuffix}`,
                 note: rawStoreCredit > 0
                   ? `Order creation in process - ₹${rawStoreCredit} Store Credit applied - Remaining Payment pending`
                   : "Order creation in process - Payment pending",
@@ -419,7 +472,7 @@ export async function POST(req: Request) {
                   customerEmail: address.email,
                   customerPhone: address.phone || "",
                   shippingAddress: checkoutAddress as any,
-                  items: items.map((item: any) => ({
+                  items: pricedItems.map((item: any) => ({
                     product_id: item.productId,
                     variant_id: item.variantId || "",
                     title: item.title,

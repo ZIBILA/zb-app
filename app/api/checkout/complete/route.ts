@@ -16,12 +16,13 @@ import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-se
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
+import { resolveWebCoupon } from '@/lib/web-coupon';
+import { fetchVariantPrices } from '@/lib/variant-prices';
+import { isPaidLikeStatus } from '@/lib/payment-status';
+import { notifyAdminTeam } from '@/lib/services/zohoMailService';
+import { underpaidAlertHtml } from '@/lib/razorpay-webhook-events';
 
 export async function POST(req: Request) {
-  const rateLimitResult = await checkRateLimit(req, "checkout-complete", { maxRequests: 30, windowMs: 60_000 });
-  if (!rateLimitResult.allowed && rateLimitResult.response) {
-    return rateLimitResult.response;
-  }
   const requestStartedAt = Date.now();
   // Non-critical work (Shopify sync, analytics, cart cleanup, profile writes) runs
   // AFTER the response is returned so the customer isn't stuck on "Payment successful".
@@ -29,6 +30,25 @@ export async function POST(req: Request) {
   const deferredTasks: Array<{ name: string; run: () => Promise<void> }> = [];
   try {
     const body = await req.json();
+
+    // Rate limit per Razorpay order when one is present: the pending-capture poll
+    // re-sends this request every 4 s for up to 3 min, and a per-IP bucket shared
+    // by shoppers on one carrier IP used to 429 it (and the next shopper's Pay).
+    // Requests without an order (coupon-only ₹0 orders) stay per IP.
+    const rzpOrderIdForLimit =
+      typeof body?.razorpay?.razorpay_order_id === "string" && /^order_[A-Za-z0-9_]{6,60}$/.test(body.razorpay.razorpay_order_id)
+        ? body.razorpay.razorpay_order_id
+        : null;
+    const rateLimitResult = await checkRateLimit(
+      req,
+      "checkout-complete",
+      rzpOrderIdForLimit
+        ? { maxRequests: 60, windowMs: 60_000, key: `checkout-complete:order:${rzpOrderIdForLimit}` }
+        : { maxRequests: 30, windowMs: 60_000 }
+    );
+    if (!rateLimitResult.allowed && rateLimitResult.response) {
+      return rateLimitResult.response;
+    }
     const {
       address,
       paymentMethod = "razorpay",
@@ -44,8 +64,14 @@ export async function POST(req: Request) {
       storeCreditAmount = 0,
     } = body;
 
-    let finalCouponCode = couponCode ? String(couponCode).trim().toUpperCase() : null;
-    let finalCouponDiscount = Number(couponDiscount) || 0;
+    // Coupon discount / cashback are recomputed server-side from the coupon row
+    // (lib/web-coupon.ts) once the server subtotal is known below. The client's
+    // couponDiscount / cashbackAmount are never used (PAYMENT_AUDIT.md P1).
+    let finalCouponCode: string | null = null;
+    let finalCouponDiscount = 0;
+    let serverCashback = 0;
+    const requestedCouponCode = couponCode ? String(couponCode).trim().toUpperCase() : null;
+    void couponDiscount; void cashbackAmount; void applyAsStoreCredit;
 
     const pmUpper = (paymentMethod || '').toUpperCase().trim();
     const isCodOrder = pmUpper === 'COD' || pmUpper.includes('COD');
@@ -57,49 +83,6 @@ export async function POST(req: Request) {
     });
     if (isCodOrder && !isCodAllowedForCountry(checkoutCountry)) {
       return NextResponse.json({ error: COD_INDIA_ONLY_ERROR }, { status: 400 });
-    }
-
-    if (finalCouponCode) {
-      const dbCoupon = await prisma.webStoreCoupon.findFirst({
-        where: { code: finalCouponCode, isActive: true }
-      });
-
-      if (!dbCoupon) {
-        finalCouponCode = null;
-        finalCouponDiscount = 0;
-      } else {
-        if (dbCoupon.applicability === 'PREPAID_ONLY' && isCodOrder) {
-          console.warn(`[Checkout Complete] Stripped PREPAID_ONLY coupon ${finalCouponCode} from COD order`);
-          finalCouponCode = null;
-          finalCouponDiscount = 0;
-        } else if (dbCoupon.applicability === 'COD_ONLY' && !isCodOrder) {
-          console.warn(`[Checkout Complete] Stripped COD_ONLY coupon ${finalCouponCode} from prepaid order`);
-          finalCouponCode = null;
-          finalCouponDiscount = 0;
-        } else if (dbCoupon.applicability === 'CUSTOM_RATES') {
-          const rateType = isCodOrder ? dbCoupon.codDiscountType : dbCoupon.prepaidDiscountType;
-          const rateVal = Number(isCodOrder ? dbCoupon.codDiscountValue : dbCoupon.prepaidDiscountValue);
-          const sub = Number(subtotal || 0);
-          if (rateType === 'percentage') {
-            finalCouponDiscount = Math.round((sub * rateVal) / 100);
-          } else {
-            finalCouponDiscount = Math.min(rateVal, sub);
-          }
-          // CUSTOM_RATES with zero COD rate means no discount for COD
-          if (isCodOrder && rateVal <= 0) {
-            console.warn(`[Checkout Complete] CUSTOM_RATES coupon ${finalCouponCode} has zero COD discount — stripping`);
-            finalCouponCode = null;
-            finalCouponDiscount = 0;
-          }
-        }
-      }
-
-      // Safety net: strip coupons with "PREPAID" in the code name from COD orders
-      if (finalCouponCode && isCodOrder && (finalCouponCode.includes('PREPAID') || /^PREPAID/i.test(finalCouponCode))) {
-        console.warn(`[Checkout Complete] Safety-net stripped prepaid-named coupon ${finalCouponCode} from COD order`);
-        finalCouponCode = null;
-        finalCouponDiscount = 0;
-      }
     }
 
     const parsedStoreCredit = Number(storeCreditAmount) || 0;
@@ -170,28 +153,8 @@ export async function POST(req: Request) {
         .filter(Boolean);
 
       if (variantIds.length > 0 && variantIds.length === items.length) {
-        // Batch fetch variant prices from Shopify Admin API
-        const { shopifyFetch, adminUrl: buildAdminUrl } = await import('@/lib/shopify-admin');
-        const variantPriceMap = new Map<string, number>();
-
-        // Fetch variants in batches (Shopify supports comma-separated IDs)
-        const batchSize = 50;
-        for (let i = 0; i < variantIds.length; i += batchSize) {
-          const batch = variantIds.slice(i, i + batchSize);
-          try {
-            const data = await shopifyFetch<{ variants: Array<{ id: number; price: string }> }>(
-              `variants.json`,
-              { ids: batch.join(','), fields: 'id,price' }
-            );
-            if (data?.variants) {
-              for (const v of data.variants) {
-                variantPriceMap.set(String(v.id), parseFloat(v.price));
-              }
-            }
-          } catch (fetchErr) {
-            console.warn('[Checkout] Variant price fetch batch failed:', fetchErr);
-          }
-        }
+        // Authoritative unit prices (cached; shared with the Razorpay pre-create)
+        const variantPriceMap = await fetchVariantPrices(variantIds, { timeoutMs: 8000 });
 
         if (variantPriceMap.size > 0) {
           serverSubtotal = 0;
@@ -215,6 +178,20 @@ export async function POST(req: Request) {
       }
     } catch (priceErr) {
       console.warn('[Checkout] Server-side price verification failed; proceeding with client values:', priceErr);
+    }
+
+    // Coupon: validity + amounts from the coupon row, on the server subtotal.
+    {
+      const couponBaseSubtotal = priceVerified ? serverSubtotal : Math.max(0, Number(subtotal || 0));
+      const couponRes = await resolveWebCoupon({ code: requestedCouponCode, subtotal: couponBaseSubtotal, isCod: isCodOrder });
+      finalCouponCode = couponRes.code;
+      finalCouponDiscount = couponRes.payableDiscount;
+      serverCashback = couponRes.cashback;
+      if (requestedCouponCode && !couponRes.valid) {
+        console.warn(`[Checkout Complete] Coupon ${requestedCouponCode} rejected server-side (${couponRes.reason}); client discount ignored`);
+      } else if (requestedCouponCode && Math.abs(Number(couponDiscount || 0) - finalCouponDiscount) > 1) {
+        console.warn(`[Checkout Complete] Coupon ${requestedCouponCode}: client discount ₹${Number(couponDiscount || 0)} ≠ server ₹${finalCouponDiscount}; server value used`);
+      }
     }
 
     // If verified, derive server total and compare
@@ -353,6 +330,32 @@ export async function POST(req: Request) {
       }
     }
 
+    // Pre-created order lookup (by the Razorpay order that was paid first, then by
+    // the local id the client carried). Done before any write so that:
+    //  - a replay of an already-completed request is answered without re-running
+    //    coupon usage, cashback, emails or item rewrites (PAYMENT_AUDIT.md P4);
+    //  - a local order whose pointer was moved by a late prefetch is re-pointed to
+    //    the Razorpay order the shopper actually paid (P7).
+    const rzpOrderId: string | null = razorpay?.razorpay_order_id || null;
+    let existingPreCreatedOrder: any = null;
+    if (rzpOrderId) {
+      existingPreCreatedOrder = await prisma.order.findFirst({ where: { razorpayOrderId: rzpOrderId } });
+    }
+    if (!existingPreCreatedOrder && body.localOrderId) {
+      existingPreCreatedOrder = await prisma.order.findFirst({ where: { id: String(body.localOrderId) } });
+    }
+    const repointRazorpayOrderId =
+      Boolean(existingPreCreatedOrder && rzpOrderId && existingPreCreatedOrder.razorpayOrderId !== rzpOrderId);
+    if (
+      existingPreCreatedOrder &&
+      razorpay?.razorpay_payment_id &&
+      existingPreCreatedOrder.razorpayPaymentId === razorpay.razorpay_payment_id &&
+      isPaidLikeStatus(existingPreCreatedOrder.paymentStatus)
+    ) {
+      console.log(`[Checkout Complete] Replay for already-completed order ${existingPreCreatedOrder.id}; no changes`);
+      return NextResponse.json({ orderId: existingPreCreatedOrder.id, alreadyCompleted: true });
+    }
+
     // 2. Find/Sync Customer & Address using customerService
     const session = await getServerSession(authOptions);
     const sessionUserId = (session?.user as any)?.id || null;
@@ -465,51 +468,49 @@ export async function POST(req: Request) {
       }
     }
 
-    // Sync with Shopify if needed
-    let shopifyCustomerId = localCustomer.shopifyId;
-    if (shopifyCustomerId.startsWith('temp_') || shopifyCustomerId.startsWith('google_') || shopifyCustomerId.startsWith('apple_')) {
-      try {
-        const hasValidEmail = Boolean(address.email && String(address.email).includes('@'));
-        const sCustomer = await createCustomer({
-          first_name: address.name.split(' ')[0],
-          last_name: address.name.split(' ').slice(1).join(' ') || '.',
-          email: hasValidEmail ? address.email : undefined,
-          phone: address.phone,
-          verified_email: hasValidEmail,
-          addresses: [{
-            address1: address.street,
-            city: address.city,
-            province: address.state,
-            zip: address.zip,
-            country: address.country,
-            default: true
-          }]
+    // Sync the customer to Shopify after the response (deferred): the Shopify
+    // customer call (retries, previously untimed) sat between the capture check
+    // and the order write, so a slow Shopify delayed or failed order registration
+    // after the money was taken. The order sync does not depend on it.
+    {
+      const shopifyCustomerId = localCustomer.shopifyId;
+      if (shopifyCustomerId.startsWith('temp_') || shopifyCustomerId.startsWith('google_') || shopifyCustomerId.startsWith('apple_')) {
+        const customerIdForSync = localCustomer.id;
+        deferredTasks.push({
+          name: 'shopify-customer-sync',
+          run: async () => {
+            try {
+              const hasValidEmail = Boolean(address.email && String(address.email).includes('@'));
+              const sCustomer = await createCustomer({
+                first_name: address.name.split(' ')[0],
+                last_name: address.name.split(' ').slice(1).join(' ') || '.',
+                email: hasValidEmail ? address.email : undefined,
+                phone: address.phone,
+                verified_email: hasValidEmail,
+                addresses: [{
+                  address1: address.street,
+                  city: address.city,
+                  province: address.state,
+                  zip: address.zip,
+                  country: address.country,
+                  default: true
+                }]
+              });
+              await prisma.customer.update({
+                where: { id: customerIdForSync },
+                data: { shopifyId: sCustomer.id.toString() }
+              });
+            } catch (e) {
+              console.error("Shopify Customer Sync Error:", e);
+            }
+          },
         });
-        shopifyCustomerId = sCustomer.id.toString();
-        await prisma.customer.update({
-          where: { id: localCustomer.id },
-          data: { shopifyId: shopifyCustomerId }
-        });
-      } catch (e) {
-        console.error("Shopify Customer Sync Error:", e);
       }
     }
 
     // ─── BUG 1 FIX: Determine final order number BEFORE Shopify creation ───
     // Look up any pre-created order FIRST so we can reuse its number if it
     // already has a real ZB number, avoiding the Shopify/DB divergence bug.
-    const rzpOrderId = razorpay?.razorpay_order_id;
-    let existingPreCreatedOrder: any = null;
-    if (rzpOrderId || body.localOrderId) {
-      existingPreCreatedOrder = await prisma.order.findFirst({
-        where: {
-          OR: [
-            ...(rzpOrderId ? [{ razorpayOrderId: rzpOrderId }] : []),
-            ...(body.localOrderId ? [{ id: body.localOrderId }] : [])
-          ]
-        }
-      });
-    }
 
     // The Razorpay webhook may already have confirmed capture for this order.
     const CAPTURE_CONFIRMED_STATUSES = ['paid', 'cod_upfront_paid', 'partially_paid'];
@@ -605,7 +606,7 @@ export async function POST(req: Request) {
     }
 
     // Resolve products from DB
-    const resolvedItems = [];
+    const resolvedItems: any[] = [];
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
       let dbProductId = null;
@@ -725,7 +726,8 @@ export async function POST(req: Request) {
           : 'unfulfilled',
         codUpfrontPaid: !awaitingCapture && isCodOrder ? resolvedCodFee : 0,
         codUpfrontPaymentId: !awaitingCapture && isCodOrder ? (razorpay?.razorpay_payment_id || null) : null,
-        tags: orderTags,
+        tags: paymentUnderpaid ? `${orderTags}, underpaid, needs_review` : orderTags,
+        ...(repointRazorpayOrderId ? { razorpayOrderId: rzpOrderId } : {}),
         note: awaitingCapture
           ? awaitingCaptureNote
           : isFullStoreCredit
@@ -745,9 +747,10 @@ export async function POST(req: Request) {
         // change of country.
         currency: requestCurrency,
         displayCountry: body.displayCountry || existingPreCreatedOrder.displayCountry || "IN",
-        // Clear recovery hold so Shopify sync can run with real items/address
-        shopifySyncStatus: 'pending',
-        shopifySyncError: null,
+        // Clear recovery hold so Shopify sync can run with real items/address;
+        // an under-captured payment is held for review instead.
+        shopifySyncStatus: paymentUnderpaid ? 'needs_review' : 'pending',
+        shopifySyncError: paymentUnderpaid ? 'Under-captured payment; held for review' : null,
       };
 
       if (awaitingCapture) {
@@ -762,29 +765,48 @@ export async function POST(req: Request) {
         }
         localOrder = await prisma.order.findUnique({ where: { id: existingPreCreatedOrder.id } });
       } else {
-        localOrder = await prisma.order.update({
-          where: { id: existingPreCreatedOrder.id },
-          data: updateData,
+        // Order update + line-item replacement in one transaction so a failure
+        // cannot leave a paid order without items (or items without the status).
+        localOrder = await prisma.$transaction(async (tx: any) => {
+          const updated = await tx.order.update({
+            where: { id: existingPreCreatedOrder.id },
+            data: updateData,
+          });
+          await tx.orderItem.deleteMany({ where: { orderId: updated.id } });
+          await tx.orderItem.createMany({
+            data: resolvedItems.map((item: any) => ({
+              orderId: updated.id,
+              shopifyLineItemId: item.shopifyLineItemId,
+              productId: item.productId,
+              title: item.title,
+              quantity: Number(item.quantity) || 1,
+              price: item.price,
+              sku: item.sku,
+              variantId: item.variantId ?? null,
+              image: item.image,
+            })),
+          });
+          return updated;
         });
       }
 
-      // Always replace line items from the verified checkout payload.
-      // Pre-create refresh used to call a non-existent prisma.lineItem model, so
-      // stale quantities (e.g. qty 2) could survive while totals/Razorpay charged qty 1.
-      await prisma.orderItem.deleteMany({ where: { orderId: localOrder.id } });
-      await prisma.orderItem.createMany({
-        data: resolvedItems.map((item: any) => ({
-          orderId: localOrder.id,
-          shopifyLineItemId: item.shopifyLineItemId,
-          productId: item.productId,
-          title: item.title,
-          quantity: Number(item.quantity) || 1,
-          price: item.price,
-          sku: item.sku,
-          variantId: item.variantId ?? null,
-          image: item.image,
-        })),
-      });
+      if (awaitingCapture) {
+        // Pending rows keep the verified line items (quantities/prices) current.
+        await prisma.orderItem.deleteMany({ where: { orderId: localOrder.id } });
+        await prisma.orderItem.createMany({
+          data: resolvedItems.map((item: any) => ({
+            orderId: localOrder.id,
+            shopifyLineItemId: item.shopifyLineItemId,
+            productId: item.productId,
+            title: item.title,
+            quantity: Number(item.quantity) || 1,
+            price: item.price,
+            sku: item.sku,
+            variantId: item.variantId ?? null,
+            image: item.image,
+          })),
+        });
+      }
       console.log(`[Checkout Complete] Updated pre-created order ${localOrder.id} (${universalOrderNumber}) + refreshed ${resolvedItems.length} item(s)`);
 
       // If a recovery placeholder already synced to Shopify, cancel it and clear the
@@ -840,12 +862,13 @@ export async function POST(req: Request) {
           storeCreditAmount: parsedStoreCredit,
           paymentCapturedAt: awaitingCapture ? null : (razorpay || isFullStoreCredit) ? new Date() : null,
           orderType: "WEB_STORE",
-          tags: orderTags,
+          tags: paymentUnderpaid ? `${orderTags}, underpaid, needs_review` : orderTags,
           discountCode: finalCouponCode || null,
           discountAmount: Number(finalCouponDiscount) || 0,
           internalOrderNumber: universalOrderNumber,
-          shopifySyncStatus: 'pending',
-          shopifySyncError: null,
+          // An under-captured payment is held for review instead of synced.
+          shopifySyncStatus: paymentUnderpaid ? 'needs_review' : 'pending',
+          shopifySyncError: paymentUnderpaid ? 'Under-captured payment; held for review' : null,
           note: awaitingCapture
             ? awaitingCaptureNote
             : underpayNote
@@ -865,6 +888,23 @@ export async function POST(req: Request) {
           }
         }
       });
+    }
+
+    if (paymentUnderpaid && !awaitingCapture) {
+      console.error(`[Checkout Complete] Under-captured payment ${razorpay?.razorpay_payment_id}: ₹${capturedRupees} of ₹${isCodOrder ? resolvedCodFee : orderTotalPrice} — order ${localOrder.id} held for review`);
+      void notifyAdminTeam(
+        '⚠️ Under-captured Razorpay payment held for review',
+        underpaidAlertHtml({
+          orderId: localOrder.id,
+          orderNumber: universalOrderNumber,
+          razorpayOrderId: rzpOrderId,
+          razorpayPaymentId: razorpay?.razorpay_payment_id || null,
+          capturedRupees: Number(capturedRupees) || 0,
+          expectedRupees: isCodOrder ? resolvedCodFee : orderTotalPrice,
+          currency: requestCurrency,
+          source: '/api/checkout/complete',
+        })
+      ).catch((alertErr: any) => console.warn('[Checkout Complete] Underpaid alert failed:', alertErr?.message));
     }
 
     // ─── Capture not confirmed: stop here — order saved as pending, nothing confirmed ───
@@ -1101,9 +1141,9 @@ export async function POST(req: Request) {
     }
 
     // Issue cashback if coupon has cashback store credits enabled
-    if (finalCouponCode && Number(cashbackAmount) > 0) {
+    if (finalCouponCode && serverCashback > 0) {
       try {
-        const cbAmt = parseFloat(String(cashbackAmount));
+        const cbAmt = Number(serverCashback);
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 90);
 
@@ -1122,13 +1162,19 @@ export async function POST(req: Request) {
               description: `Cashback for applying coupon code ${finalCouponCode.toUpperCase()}`,
               orderId: localOrder.id,
               expiresAt,
-              remainingAmount: cbAmt
+              remainingAmount: cbAmt,
+              // One cashback credit per order, whatever happens to this request.
+              idempotencyKey: `cashback:${localOrder.id}`,
             }
           })
         ]);
         console.log(`[Checkout Store Credit] Successfully credited ₹${cbAmt} (90-day expiry) to customer ${localCustomer.id}`);
       } catch (storeCreditErr: any) {
-        console.error("[Checkout Store Credit] Failed to issue cashback:", storeCreditErr.message);
+        if (storeCreditErr?.code === 'P2002') {
+          console.log(`[Checkout Store Credit] Cashback for order ${localOrder.id} already issued; skipped`);
+        } else {
+          console.error("[Checkout Store Credit] Failed to issue cashback:", storeCreditErr.message);
+        }
       }
     }
 
@@ -1434,6 +1480,11 @@ export async function POST(req: Request) {
         }
 
         try {
+          // The Shopify customer id may have been minted by the deferred customer
+          // sync above; read the current value rather than the pre-checkout one.
+          const freshCustomer = await prisma.customer.findUnique({ where: { id: localCustomer.id }, select: { shopifyId: true } });
+          const shopifyCustomerId = freshCustomer?.shopifyId || '';
+          if (!/^\d+$/.test(shopifyCustomerId)) throw new Error('no Shopify customer id yet');
           await updateCustomer(shopifyCustomerId, {
             first_name: address.name.split(' ')[0],
             last_name: address.name.split(' ').slice(1).join(' ') || '.',

@@ -157,17 +157,46 @@ export async function rateLimit(
 import { NextResponse } from "next/server";
 
 /**
+ * The real client IP. Behind Cloudflare the trustworthy value is cf-connecting-ip;
+ * x-forwarded-for may hold a list (client, proxies) of which only the first entry
+ * is the client. The raw header used to be the whole key, so every hop appended by
+ * the platform changed the bucket and a list value never matched itself.
+ */
+export function clientIpFromRequest(req: Request): string {
+  const cf = req.headers.get("cf-connecting-ip");
+  if (cf && cf.trim()) return cf.trim();
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    const first = xff.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  const real = req.headers.get("x-real-ip");
+  if (real && real.trim()) return real.trim();
+  return "127.0.0.1";
+}
+
+/**
  * Higher-level helper to check rate limit for a request.
  * Automatically resolves the client's IP, computes the key, and formats the 429 response if rate limit is exceeded.
+ *
+ * `scope` narrows the bucket below the IP (e.g. the signed-in customer id or the
+ * device cookie) so shoppers sharing a carrier / office IP do not share one quota;
+ * `key` replaces the IP-derived key entirely (e.g. per Razorpay order for the
+ * pending-capture poll).
  */
 export async function checkRateLimit(
   req: Request,
   keyPrefix: string,
-  options: { maxRequests?: number; windowMs?: number } = {}
+  options: { maxRequests?: number; windowMs?: number; scope?: string | null; key?: string | null } = {}
 ): Promise<{ allowed: boolean; response?: NextResponse }> {
-  const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || "127.0.0.1";
-  const key = `${keyPrefix}:${ip}`;
-  const { allowed, resetAfter } = await rateLimit(key, options);
+  const ip = clientIpFromRequest(req);
+  const scope = options.scope ? String(options.scope).slice(0, 64) : "";
+  const key = options.key
+    ? String(options.key).slice(0, 200)
+    : scope
+      ? `${keyPrefix}:${ip}:${scope}`
+      : `${keyPrefix}:${ip}`;
+  const { allowed, resetAfter } = await rateLimit(key, { maxRequests: options.maxRequests, windowMs: options.windowMs });
 
   if (!allowed) {
     return {
