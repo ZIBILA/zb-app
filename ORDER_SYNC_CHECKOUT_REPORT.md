@@ -30,10 +30,12 @@ Code path: `lib/services/shopifyOrderSyncService.ts` built `email` from the ship
 
 ## 4. Are other orders affected?
 
-Scan of the 300 most recent manifest orders (admin API, pages of 100):
-- **Genuinely unsynced: 1** — #ZB81380.
-- **55 orders since 2026-09-27 are in Shopify (numeric `shopifyOrderId`) but carry `shopifySyncStatus: "pending"`**, so the manifest shows them as PENDING SYNC although nothing is wrong. Cause: when the Razorpay webhook syncs the order before the browser's `/api/checkout/complete` runs, `/complete` overwrote the status with `pending`; the sync fast path then returned success without correcting it, and the retry cron ignored them (it only looks at rows without a Shopify id).
+Scan of the 500 most recent manifest orders (admin API, pages of 100):
+- **Genuinely unsynced: 1 visible** — #ZB81380. The retry batch after deploy surfaced one more, hidden from the default manifest list because it is cancelled: **#ZB81170** (2026-09-14, 100 % store-credit, ₹0 total, status `cancelled`). Shopify rejects it with `422 transactions: Amount must be greater than zero for sale transactions`; it was retried on every cron run for six weeks. A cancelled order must not be created in Shopify at all, so the retry now excludes cancelled orders (commit after this report). No other ₹0 or cancelled order is unsynced in the last 500.
+- **55 orders since 2026-09-27 were in Shopify (numeric `shopifyOrderId`) but carried `shopifySyncStatus: "pending"`**, so the manifest showed them as PENDING SYNC although nothing was wrong. Cause: when the Razorpay webhook syncs the order before the browser's `/api/checkout/complete` runs, `/complete` overwrote the status with `pending`; the sync fast path then returned success without correcting it, and the retry cron ignored them (it only looks at rows without a Shopify id). **Repaired on the first retry run after deploy** (all 100 most recent orders read `synced` at 09:13 UTC).
 - Orders older than 2026-09-27: all `synced`.
+
+**Why the existing retry did not resolve #ZB81380:** (1) it re-sent the identical payload, and a 422 validation error is deterministic; (2) the "every 30 minutes" retry and the "every 15 minutes" pending-order sync are GitHub Actions schedules, and GitHub ran them every **4–6 hours** in practice (runs at 13:25, 19:01, 23:26, 02:44 UTC for the retry; 05:31, 11:36, 17:21, 21:45, 01:19, 07:16 for the pending sync — scheduled workflows on this repository are heavily delayed). Any reconciliation that assumes a 15/30-minute cadence is optimistic; see §11.
 
 ## 5. The synchronization fix
 
@@ -79,7 +81,7 @@ Changes (`app/checkout/page.tsx`, `app/checkout/layout.tsx`, `app/api/checkout/r
 - Razorpay's SDK loads after the page is interactive (`lazyOnload`); the Pay button already waits for or injects it.
 - The pre-create route's per-IP abuse cap no longer costs three database round trips (in-memory).
 
-Before/after numbers: see §10 — the "after" column is filled from the same Chrome measurement once this change is deployed (it cannot be measured on localhost without a logged-in customer session).
+Before/after numbers: §10 (measured in the owner's Chrome before and after the deploy of PR #38, same cart, same account, three after-deploy samples).
 
 ## 9. Files changed
 
@@ -105,25 +107,33 @@ Real route handlers + in-memory Prisma, Shopify faked at the HTTP layer with its
 - `scripts/payment-e2e/run.ts` 191/0, `meta-run.ts` 126/0, `verify-snap-webhook` 25/0, `verify-snap-app` 62/0, `verify-meta-purchase` all pass. `tsc --noEmit` clean; `next build` green.
 - Live, read-only: admin API reads of the affected and neighbouring orders; three timing passes of each checkout GET endpoint; two instrumented cart → checkout transitions.
 
-Checkout before/after (same procedure, owner's Chrome, warm cache):
+Checkout before/after (same procedure, owner's Chrome, 16-item cart, saved address; after = three samples at 09:02–09:08 UTC on 2026-10-29):
 
-| Metric | Before | After deploy |
+| Metric | Before | After deploy (3 samples) |
 |---|---|---|
-| Click → address step rendered | 149 ms | _(to be measured)_ |
-| `/api/cart/sync` calls / durations | 2 / 2,242 + 2,355 ms | _(to be measured)_ |
-| Google Maps requests on mount (saved address) | 9 / 328 KB | _(to be measured)_ |
-| Razorpay SDK requests before interactive | 74 / 777 KB | _(to be measured)_ |
+| Click → address step rendered | 149 ms | 461 / 123 / 115 ms (first sample fetched the new build's chunks) |
+| Long tasks during the transition | 1 × 51 ms | 1 × 62 ms / 0 / 0 |
+| `/api/cart/sync` calls per checkout | **2** (2,242 + 2,355 ms) | **1** (6,184 / 2,502 / 641 ms — server-side variance; 641 ms is the floor once the IP-geolocation chain is skipped) |
+| Google Maps requests on mount (saved address) | 9 / 328 KB | **0** |
+| API calls fired by the click | 16 | 14–15 |
+| Cold mobile Lighthouse (unauthenticated shell): total blocking time | 270 ms | 140 ms |
+| Cold mobile Lighthouse: Razorpay SDK requests / transfer | 74 / 777 KB | 70 / 776 KB (same bytes, now fetched after `load` instead of before the page is interactive) |
+
+Server-side latency remains the dominant variable: `/api/customer/addresses` measured 1,967 / 1,835 / 835 ms across the three after-deploy samples (1,187 ms before) for an account with ~70 saved addresses — it did not change in this PR and tracks database/pooler load at the time of the sample.
 
 ## 11. Remaining risks and unavailable evidence
 
 - No DigitalOcean logs: the exact Shopify latency and the IP-geolocation provider timings in production are inferred from client-side durations, not server logs.
 - Server-side slowness is partly structural (Supabase pooler round trips, pool of 8 per instance). `PG_POOL_MAX` is an environment setting; raising it to 16 is worth a try after this deploy, but it was not changed here.
 - The owner's account is a pathological case (70 saved addresses, 16-item cart); real customers see smaller numbers for the address call.
-- The 55 PENDING SYNC rows are repaired by the first cron run after deploy (every 30 min); the fix is idempotent.
+- The scheduled GitHub Actions crons run every 4–6 hours in practice, not every 15/30 minutes. Reconciliation that must be timely (pending-order sync, Shopify retry) should move to a scheduler that honours the interval (DigitalOcean scheduled job, an external cron hitting the same endpoints, or an in-process timer on the long-running server) — not changed here; worth deciding.
+- Shopify rejected a ₹0 manual sale transaction on the one cancelled store-credit order; if a live 100 % store-credit order ever fails the same way, the zero-amount `transactions` entry should be dropped in favour of `financial_status: paid` alone.
 - `verify-snap-international.ts` has 4 pre-existing failures (also on the committed main) unrelated to these changes.
 
-## 12. Recovery actions that need your authorization
+## 12. Recovery actions — status
 
-1. **Deploy** (merge the PR): required for every fix above.
-2. **Retry #ZB81380** after deploy: either the 30-minute cron does it automatically, or press "Sync with Shopify" on the order page (same code path). Risk assessment: none of the duplicate paths apply (nothing exists in Shopify for it; idempotency key and name/tag lookup guard the create). It will attach the order to the shopper's existing Shopify customer and put the typed email in a note attribute.
-3. Nothing else: no order is cancelled, refunded or edited by this work.
+1. **Deployed:** PR #38 merged 2026-10-29 08:31 UTC, live on all instances by ~08:45 (verified: Razorpay preload gone from the checkout HTML; `/api/admin/diagnostics/variant-prices` returns real Shopify prices in 447 ms).
+2. **#ZB81380 recovered:** the retry workflow was dispatched manually at 09:13 UTC (the scheduled run would have waited hours, see §4); result `{"processed":2,"ok":1,"failed":1}` — #ZB81380 synced as Shopify order `18981124833561` (store name `#ZB72203`) at 09:13:20 UTC, attached to the shopper's existing Shopify customer with the typed email kept as a note attribute. No duplicate: nothing existed before, the create carried the idempotency key, and exactly one Shopify order id is linked.
+3. **55 PENDING SYNC rows repaired** in the same run.
+4. **Still failing, by design now excluded:** #ZB81170 (cancelled ₹0 order, §4). If you want it in Shopify after all, un-cancel it first; otherwise nothing to do.
+5. No order was cancelled, refunded or edited by this work.
