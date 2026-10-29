@@ -187,7 +187,7 @@ export function clientIpFromRequest(req: Request): string {
 export async function checkRateLimit(
   req: Request,
   keyPrefix: string,
-  options: { maxRequests?: number; windowMs?: number; scope?: string | null; key?: string | null } = {}
+  options: { maxRequests?: number; windowMs?: number; scope?: string | null; key?: string | null; memoryOnly?: boolean } = {}
 ): Promise<{ allowed: boolean; response?: NextResponse }> {
   const ip = clientIpFromRequest(req);
   const scope = options.scope ? String(options.scope).slice(0, 64) : "";
@@ -196,7 +196,11 @@ export async function checkRateLimit(
     : scope
       ? `${keyPrefix}:${ip}:${scope}`
       : `${keyPrefix}:${ip}`;
-  const { allowed, resetAfter } = await rateLimit(key, { maxRequests: options.maxRequests, windowMs: options.windowMs });
+  // memoryOnly: coarse abuse caps that do not justify three database round trips
+  // per request (the DB limiter costs DELETE + COUNT + INSERT on every call).
+  const { allowed, resetAfter } = options.memoryOnly
+    ? inMemoryRateLimit(key, options.maxRequests ?? 10, options.windowMs ?? 60_000)
+    : await rateLimit(key, { maxRequests: options.maxRequests, windowMs: options.windowMs });
 
   if (!allowed) {
     return {

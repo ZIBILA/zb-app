@@ -71,7 +71,7 @@ export async function POST(req: Request) {
     return rateLimitResult.response;
   }
   // Coarse per-IP abuse cap (many shoppers or one script on one IP).
-  const ipCap = await checkRateLimit(req, "checkout-razorpay-ip", { maxRequests: 300, windowMs: 60_000 });
+  const ipCap = await checkRateLimit(req, "checkout-razorpay-ip", { maxRequests: 300, windowMs: 60_000, memoryOnly: true });
   if (!ipCap.allowed && ipCap.response) {
     return ipCap.response;
   }
