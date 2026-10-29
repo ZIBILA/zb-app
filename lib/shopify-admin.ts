@@ -66,6 +66,8 @@ async function shopifyFetchPageOnce<T>(
         method: 'GET',
         headers: await headers(),
         ...shopifyGetFetchInit(cacheMode),
+        // Bounded: an unresponsive Shopify must not hold a checkout request open.
+        signal: AbortSignal.timeout(12_000),
       });
     } catch (networkErr) {
       // Network blip: serve the last good copy instead of failing the whole page.
@@ -317,6 +319,7 @@ async function shopifyPost<T>(endpoint: string, body: unknown, customHeaders?: R
       method: 'POST',
       headers: requestHeaders,
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
     });
 
     if (res.ok) {
@@ -352,6 +355,7 @@ async function shopifyPatch<T>(endpoint: string, body: unknown): Promise<T> {
       method: 'PUT',
       headers: await headers(),
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
     });
 
     if (res.ok) {

@@ -185,14 +185,14 @@ export default withAuth(
 
     // Allow webhook / payment-provider callbacks through without auth or CSRF.
     // These are authenticated by signature headers, not browser Origin.
-    // Razorpay: only public create/verify — refund & capture require admin auth.
+    // Razorpay: webhooks only — refund & capture require admin auth; the legacy
+    // public create-order / verify-payment routes were removed (no callers).
     if (
       pathname.startsWith('/api/webhooks') ||
       pathname.startsWith('/api/shopify/webhooks') ||
       pathname.startsWith('/api/whatsapp/webhook') ||
       pathname.startsWith('/api/payments/webhook') ||
-      pathname === '/api/razorpay/create-order' ||
-      pathname === '/api/razorpay/verify-payment'
+      pathname === '/api/razorpay/webhook'
     ) {
       return NextResponse.next();
     }

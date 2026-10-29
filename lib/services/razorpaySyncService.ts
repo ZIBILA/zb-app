@@ -1,6 +1,11 @@
 import prisma from "@/lib/db";
 import { resolveRazorpayCredentials } from "@/lib/razorpay-credentials";
 import Razorpay from "razorpay";
+import { nextOrderStatusOnCapture } from "@/lib/razorpay-webhook-events";
+import { PAID_LIKE_STATUSES } from "@/lib/payment-status";
+
+/** Pending web orders older than this with no capture / authorization at Razorpay are closed as timed out. */
+export const PENDING_ORDER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 export interface SyncedOrderInfo {
   id: string;
@@ -321,7 +326,7 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                     internalOrderNumber: mintedNumber,
                     previousOrderNumbers: previousNumbers || null,
                     paymentStatus: finalPaymentStatus,
-                    status: "open",
+                    status: nextOrderStatusOnCapture(mOrder.status as string, isCOD),
                     razorpayPaymentId: newPaymentId || undefined,
                     paymentFailureReason: null,
                     cancelledBy: null,
@@ -354,7 +359,7 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                   where: { id: mOrder.id },
                   data: {
                     paymentStatus: finalPaymentStatus,
-                    status: "open",
+                    status: nextOrderStatusOnCapture(mOrder.status as string, isCOD),
                     razorpayPaymentId: newPaymentId || undefined,
                     paymentFailureReason: null,
                     cancelledBy: null,
@@ -431,4 +436,217 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
     updatedCount: syncedOrders.length,
     syncedOrders,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main `Order` reconciliation (PAYMENT_AUDIT.md P5 / P22).
+//
+// syncPendingWebStoreOrders() scans the `web_store_orders` mirror only, so an
+// `Order` whose mirror row never got inserted, or whose mirror is already paid
+// while the Order is not, was never repaired, and abandoned checkouts stayed
+// `payment_pending` forever. This pass works on the `Order` table itself.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface MainOrderReconcileResult {
+  checked: number;
+  markedPaid: string[];
+  timedOut: string[];
+  statusRepaired: number;
+}
+
+const PENDING_MAIN_STATUSES = ["pending", "payment_pending", "awaiting_confirmation"];
+
+/**
+ * Paid-like orders whose Order.status still says a payment attempt failed or is
+ * pending (a successful retry recorded by a webhook that did not reset the
+ * status) are invisible in the customer's order list. Cancelled orders are left
+ * alone: a paid + cancelled order may be a legitimate post-payment cancellation.
+ */
+export async function repairPaidOrderStatuses(): Promise<number> {
+  const paidLike = [...PAID_LIKE_STATUSES];
+  const broken = await prisma.order.findMany({
+    where: {
+      orderType: "WEB_STORE",
+      paymentStatus: { in: paidLike },
+      status: { in: ["FAILED", "failed", "payment_failed", "payment_pending", "PENDING"] },
+      cancelledAt: null,
+    },
+    select: { id: true, status: true, paymentMethod: true, tags: true, internalOrderNumber: true },
+    take: 200,
+  });
+  let repaired = 0;
+  for (const o of broken) {
+    const isCOD = (o.paymentMethod || "").toLowerCase().trim() === "cod" || (o.tags || "").toLowerCase().includes("cod");
+    const res = await prisma.order.updateMany({
+      where: { id: o.id, status: o.status },
+      data: { status: nextOrderStatusOnCapture(o.status, isCOD), paymentFailureReason: null },
+    });
+    if (res.count > 0) {
+      repaired++;
+      console.log(`[RazorpaySync] Repaired status of paid order ${o.internalOrderNumber || o.id}: ${o.status} -> ${nextOrderStatusOnCapture(o.status, isCOD)}`);
+    }
+  }
+  return repaired;
+}
+
+export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileResult> {
+  const result: MainOrderReconcileResult = { checked: 0, markedPaid: [], timedOut: [], statusRepaired: 0 };
+  try {
+    result.statusRepaired = await repairPaidOrderStatuses();
+  } catch (repairErr: unknown) {
+    console.error("[RazorpaySync] Status repair failed:", repairErr instanceof Error ? repairErr.message : String(repairErr));
+  }
+
+  const creds = await resolveRazorpayCredentials().catch(() => null);
+  if (!creds) return result;
+  const razorpay = new Razorpay({ key_id: creds.key_id, key_secret: creds.key_secret });
+
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const pending = await prisma.order.findMany({
+    where: {
+      orderType: "WEB_STORE",
+      razorpayOrderId: { not: null },
+      paymentStatus: { in: PENDING_MAIN_STATUSES },
+      createdAt: { gte: since },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
+  const { isCapturedPaymentEntity, paymentAmountRupees } = await import("@/lib/razorpay-payment");
+  const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import("@/lib/cod-upfront");
+  const { assignUniversalOrderNumber, isFailedPrefixNumber } = await import("@/lib/orderNumber");
+  const expectedCodUpfront = await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT);
+
+  for (const order of pending) {
+    result.checked++;
+    const rzpOrderId = order.razorpayOrderId as string;
+    try {
+      const isCOD = (order.paymentMethod || "").toLowerCase().trim() === "cod" || (order.tags || "").toLowerCase().includes("cod");
+      let payments: Record<string, unknown>[] = [];
+      let rzpOrderStatus = "";
+      try {
+        const rzpOrder = (await razorpay.orders.fetch(rzpOrderId)) as unknown as Record<string, unknown>;
+        rzpOrderStatus = String(rzpOrder?.status || "");
+        const list = (await razorpay.orders.fetchPayments(rzpOrderId)) as unknown as Record<string, unknown>;
+        payments = (list?.items as Record<string, unknown>[]) || [];
+      } catch (fetchErr: unknown) {
+        console.warn(`[RazorpaySync] Razorpay lookup failed for ${rzpOrderId}:`, fetchErr instanceof Error ? fetchErr.message : String(fetchErr));
+        continue; // unknown state — never time out on a lookup failure
+      }
+
+      const captured = payments.find((p) =>
+        isCapturedPaymentEntity(p, {
+          orderId: rzpOrderId,
+          minRupees: isCOD ? expectedCodUpfront : Number(order.totalPrice) || 0,
+        })
+      ) || null;
+      const authorizedPending = payments.some((p) => p.status === "authorized");
+
+      if (captured) {
+        const paymentId = String(captured.id);
+        const paidRupees = paymentAmountRupees(captured as { amount?: number | null });
+        const targetPaymentStatus = isCOD ? "cod_upfront_paid" : "paid";
+        const cleanedTags = (order.tags || "")
+          .split(",")
+          .map((t: string) => t.trim())
+          .filter((t: string) => Boolean(t) && t !== "payment_pending" && t !== "Order creation in process")
+          .concat([targetPaymentStatus])
+          .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
+          .join(", ");
+
+        // Guard against a concurrent webhook: only flip rows still pending.
+        const updated = await prisma.order.updateMany({
+          where: { id: order.id, paymentStatus: { in: PENDING_MAIN_STATUSES } },
+          data: {
+            paymentStatus: targetPaymentStatus,
+            status: nextOrderStatusOnCapture(order.status, isCOD),
+            razorpayPaymentId: paymentId,
+            paymentCapturedAt: new Date(),
+            paymentFailureReason: null,
+            cancelledBy: null,
+            cancelledAt: null,
+            tags: cleanedTags,
+            shopifySyncStatus: order.shopifySyncStatus === "needs_review" ? "needs_review" : "pending",
+            ...(isCOD ? { codUpfrontPaid: paidRupees, codUpfrontPaymentId: paymentId } : {}),
+          },
+        });
+        if (updated.count === 0) continue;
+
+        // Promote ZBPP → ZB (compare-and-set, winner adoption as elsewhere)
+        if (isFailedPrefixNumber(order.internalOrderNumber)) {
+          const oldNumber = order.internalOrderNumber as string;
+          let minted = "";
+          try { minted = await assignUniversalOrderNumber(prisma); } catch { minted = `ZB${Date.now().toString().slice(-8)}`; }
+          const promoted = await prisma.order.updateMany({
+            where: { id: order.id, internalOrderNumber: oldNumber },
+            data: { internalOrderNumber: minted, previousOrderNumbers: [order.previousOrderNumbers, oldNumber].filter(Boolean).join(",") || null },
+          });
+          if (promoted.count > 0) {
+            await prisma.webStoreOrder.updateMany({ where: { orderNumber: oldNumber }, data: { orderNumber: minted } }).catch(() => {});
+            await prisma.mobileOrder.updateMany({ where: { orderNumber: oldNumber }, data: { orderNumber: minted } }).catch(() => {});
+          }
+        }
+
+        await prisma.webStoreOrder.updateMany({
+          where: { razorpayOrderId: rzpOrderId, paymentStatus: { notIn: [...PAID_LIKE_STATUSES] } },
+          data: {
+            paymentStatus: targetPaymentStatus,
+            razorpayPaymentId: paymentId,
+            paymentFailureReason: null,
+            ...(isCOD ? { codUpfrontPaid: paidRupees, codUpfrontPaymentId: paymentId } : {}),
+          },
+        }).catch(() => {});
+
+        const existingPayment = await prisma.payment.findFirst({ where: { orderId: order.id, gateway: "razorpay" } });
+        if (!existingPayment) {
+          await prisma.payment.create({
+            data: { orderId: order.id, customerId: order.customerId, amount: paidRupees, type: "CAPTURE", status: "success", gateway: "razorpay" },
+          }).catch(() => {});
+        }
+
+        if (order.shopifySyncStatus !== "needs_review") {
+          try {
+            const { syncOrderToShopify } = await import("@/lib/services/shopifyOrderSyncService");
+            await syncOrderToShopify(order.id);
+          } catch (syncErr: unknown) {
+            console.error("[RazorpaySync] Shopify sync error (cron retries):", syncErr instanceof Error ? syncErr.message : String(syncErr));
+          }
+        }
+        void import("@/lib/meta/purchase-server")
+          .then(({ emitMetaPurchase }) => emitMetaPurchase(order.id, undefined, { paymentConfirmed: true }))
+          .catch(() => {});
+        void import("@/lib/snap/purchase-server")
+          .then(({ emitSnapPurchase }) => emitSnapPurchase(order.id, undefined, { paymentConfirmed: true }))
+          .catch(() => {});
+
+        result.markedPaid.push(order.internalOrderNumber || order.id);
+        console.log(`[RazorpaySync] Order ${order.internalOrderNumber || order.id} marked ${targetPaymentStatus} from Razorpay capture ${paymentId}`);
+        continue;
+      }
+
+      // No capture. Keep waiting while a payment is still authorized (bank polling
+      // can take days) or the Razorpay order says paid (capture pending). Otherwise,
+      // close checkouts abandoned long ago so they stop accumulating as pending.
+      if (authorizedPending || rzpOrderStatus === "paid") continue;
+      const ageMs = Date.now() - new Date(order.createdAt).getTime();
+      if (ageMs > PENDING_ORDER_TIMEOUT_MS) {
+        const closed = await prisma.order.updateMany({
+          where: { id: order.id, paymentStatus: { in: PENDING_MAIN_STATUSES } },
+          data: { paymentStatus: "failed", status: "FAILED", paymentFailureReason: "payment_timed_out" },
+        });
+        if (closed.count > 0) {
+          await prisma.webStoreOrder.updateMany({
+            where: { razorpayOrderId: rzpOrderId, paymentStatus: { in: PENDING_MAIN_STATUSES } },
+            data: { paymentStatus: "failed", paymentFailureReason: "payment_timed_out" },
+          }).catch(() => {});
+          result.timedOut.push(order.internalOrderNumber || order.id);
+        }
+      }
+    } catch (orderErr: unknown) {
+      console.error(`[RazorpaySync] Error reconciling order ${order.id}:`, orderErr instanceof Error ? orderErr.message : String(orderErr));
+    }
+  }
+
+  return result;
 }
