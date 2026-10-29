@@ -56,3 +56,10 @@ pm2 restart <app-name> --update-env
 
 ## 5. Rollback
 `git revert` the branch merge commit (or redeploy the previous build). No data migrations, no env changes, so rollback is a plain redeploy.
+
+## Payment fixes (2026-10-29, PAYMENT_AUDIT.md §10)
+
+1. Apply the Prisma migration `20261029120000_webhook_event_key` (`npx prisma migrate deploy`, or run its two SQL statements) — the build only runs `prisma generate`. Until applied, webhooks fall back to the old de-duplication and log `WebhookEvent.eventKey column missing`.
+2. Razorpay Dashboard → Webhooks: URL `https://zicabella.com/api/webhooks/razorpay` (alias `/api/razorpay/webhook`), events `payment.captured`, `order.paid`, `payment.authorized`, `payment.failed`, `refund.created`, `refund.processed`, `refund.failed`, secret = `RAZORPAY_WEBHOOK_SECRET`.
+3. Watch the `needs_review` queue (under-captured payments, placeholder orders) — ops now receive an email for each.
+4. Legacy `/api/razorpay/create-order` and `/api/razorpay/verify-payment` were removed; `/api/pay/[cartId]` redirects to `/cart`.

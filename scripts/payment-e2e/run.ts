@@ -98,8 +98,9 @@ async function main() {
 
   // seed
   await prisma.shop.create({ data: { id: 'shop_1', name: 'Zica Bella', domain: 'test-shop.myshopify.com' } });
-  await prisma.webStoreCoupon.create({ data: { code: 'SAVE500', isActive: true, applicability: 'ALL' } });
-  await prisma.customer.create({ data: { id: 'cust_app_1', shopId: 'shop_1', shopifyId: 'GUEST_1', name: 'Aarav Mehta', email: 'aarav@example.com', phone: '+919876543210', storeCredits: 10000 } });
+  await prisma.webStoreCoupon.create({ data: { code: 'SAVE500', isActive: true, applicability: 'ALL', discountType: 'fixed', discountValue: 500, minOrderValue: 0, usedCount: 0 } });
+  await prisma.webStoreCoupon.create({ data: { code: 'CASH10', isActive: true, applicability: 'ALL', discountType: 'percentage', discountValue: 10, minOrderValue: 0, usedCount: 0, cashbackEnabled: true, cashbackType: 'percentage', cashbackValue: 10 } });
+  await prisma.customer.create({ data: { id: 'cust_app_1', shopId: 'shop_1', shopifyId: 'GUEST_1', name: 'Aarav Mehta', email: 'aarav@example.com', phone: '+919811122244', storeCredits: 10000 } });
   await prisma.storeCredit.create({ data: { customerId: 'cust_app_1', amount: 10000, type: 'CREDIT', description: 'seed', remainingAmount: 10000 } });
 
   const ordersByRzp = (rzp: string) => (db.order || []).filter(o => o.razorpayOrderId === rzp);
@@ -236,7 +237,7 @@ async function main() {
 
   // ── Confirmation side effects observed per order ──
   const { isFailedPrefixNumber } = await import('../../lib/orderNumber');
-  const couponUses = () => Number((db.webStoreCoupon || []).find(c => c.code === 'SAVE500')?.usedCount || 0);
+  const couponUses = () => (db.webStoreCoupon || []).filter(c => c.code === 'SAVE500' || c.code === 'CASH10').reduce((n, c) => n + Number(c.usedCount || 0), 0);
   const effects = (orderId: string) => ({
     metaPurchase: metaEvents.filter(e => e.event_id === orderId && e.event_name === 'Purchase').length,
     openAiOrderCreated: openAiEvents.filter(e => e.id === orderId && e.type === 'order_created').length,
@@ -254,15 +255,15 @@ async function main() {
   const EFFECT_KEYS = ['metaPurchase', 'openAiOrderCreated', 'snapPurchase', 'shopifyOrders', 'analyticsPurchase', 'confirmationEmail', 'whatsapp', 'couponUses', 'cashback', 'cartConverted'];
   const NONE = Object.fromEntries(EFFECT_KEYS.map(k => [k, 0]));
 
-  // W7 authorized only (pre-created order, prepaid + coupon + cashback) → nothing confirmed;
+  // W7 authorized only (pre-created order, prepaid + CASH10 coupon: 10% off + 10% cashback, both computed server-side) → nothing confirmed;
   // page keeps re-sending; once captured the normal path runs exactly once.
   report.push('', '## Web — authorized but not captured: NO confirmation side effects');
   console.log('\n— W7 web authorized/unverified capture → no side effects');
-  { const rzp = newRzpOrder(); pay('pay_W7', rzp, 'authorized', 3297);
-    const pre = await prisma.order.create({ data: { shopId: 'shop_1', status: 'payment_pending', paymentStatus: 'payment_pending', razorpayOrderId: rzp, internalOrderNumber: 'ZBPP77001', orderType: 'WEB_STORE', totalPrice: 3297, subtotalPrice: 3797, paymentMethod: 'razorpay', shippingAddress: '{}', tags: 'WebStoreOrder, Web, razorpay, zb-order-ZBPP77001, payment_pending, Order creation in process' } });
-    await prisma.webStoreOrder.create({ data: { orderNumber: 'ZBPP77001', paymentStatus: 'payment_pending', razorpayOrderId: rzp, customerName: 'Riya Kapoor', customerEmail: 'riya@example.com', customerPhone: '9811122233', shippingAddress: {}, items: [], subtotal: 3797, totalAmount: 3297, paymentMethod: 'razorpay', source: 'web' } });
+  { const rzp = newRzpOrder(); pay('pay_W7', rzp, 'authorized', 3417);
+    const pre = await prisma.order.create({ data: { shopId: 'shop_1', status: 'payment_pending', paymentStatus: 'payment_pending', razorpayOrderId: rzp, internalOrderNumber: 'ZBPP77001', orderType: 'WEB_STORE', totalPrice: 3417, subtotalPrice: 3797, paymentMethod: 'razorpay', shippingAddress: '{}', tags: 'WebStoreOrder, Web, razorpay, zb-order-ZBPP77001, payment_pending, Order creation in process' } });
+    await prisma.webStoreOrder.create({ data: { orderNumber: 'ZBPP77001', paymentStatus: 'payment_pending', razorpayOrderId: rzp, customerName: 'Riya Kapoor', customerEmail: 'riya@example.com', customerPhone: '9811122233', shippingAddress: {}, items: [], subtotal: 3797, totalAmount: 3417, paymentMethod: 'razorpay', source: 'web' } });
     await prisma.cart.create({ data: { status: 'active', email: 'riya@example.com', phone: '9811122233', convertedOrderId: null, lastActivityAt: new Date() } });
-    const body = { address: webAddress, items: webItems, subtotal: 3797, total: 3297, couponCode: 'SAVE500', couponDiscount: 500, cashbackAmount: 100, paymentMethod: 'razorpay', razorpay: { razorpay_order_id: rzp, razorpay_payment_id: 'pay_W7', razorpay_signature: sig(rzp, 'pay_W7') } };
+    const body = { address: webAddress, items: webItems, subtotal: 3797, total: 3417, couponCode: 'CASH10', couponDiscount: 380, cashbackAmount: 100, paymentMethod: 'razorpay', razorpay: { razorpay_order_id: rzp, razorpay_payment_id: 'pay_W7', razorpay_signature: sig(rzp, 'pay_W7') } };
     const base = effects(pre.id);
 
     const r1 = await complete(body); const j1: any = await r1.json(); await settle(200);
@@ -280,7 +281,7 @@ async function main() {
     eq('W7: still NO side effects after the re-send', delta(base, effects(pre.id), EFFECT_KEYS), NONE);
     eq('W7: still one local order', ordersByRzp(rzp).length, 1);
 
-    pay('pay_W7', rzp, 'captured', 3297);
+    pay('pay_W7', rzp, 'captured', 3417);
     const r3 = await complete(body); const j3: any = await r3.json(); await settle(250);
     o = orderById(pre.id);
     eq('W7: after capture → 200 with the same order', [r3.status, j3.orderId, j3.paymentState], [200, pre.id, undefined]);
@@ -289,7 +290,7 @@ async function main() {
     check('W7: real ZB number assigned on capture', !isFailedPrefixNumber(o.internalOrderNumber), o.internalOrderNumber);
     const once = { metaPurchase: 1, openAiOrderCreated: 1, snapPurchase: 1, shopifyOrders: 1, analyticsPurchase: 1, confirmationEmail: 1, whatsapp: 1, couponUses: 1, cashback: 1, cartConverted: 1 };
     eq('W7: normal completion ran exactly once after capture', delta(base, effects(pre.id), EFFECT_KEYS), once);
-    verifyPurchase('W7', snapWeb, o.id, { value: 3297, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'WEB' });
+    verifyPurchase('W7', snapWeb, o.id, { value: 3417, ids: [V.DENIM, V.TEE], contents: [[V.DENIM, 2], [V.TEE, 1]], numItems: 3, source: 'WEB' });
 
     await hook('payment.captured', 'pay_W7', rzp, 'captured');
     const after = delta(base, effects(pre.id), EFFECT_KEYS);
@@ -328,12 +329,12 @@ async function main() {
     { variantId: `gid://shopify/ProductVariant/${V.DENIM}`, productId: '10227656982809', quantity: 2, price: 1499, name: 'AEROLAYER DENIM', sku: 'ZB-AERO-32' },
     { variantId: V.TEE, productId: '10227656982810', quantity: 1, price: 799, name: 'TEE', sku: 'ZB-TEE-M' },
   ];
-  const appAddress = { name: 'Aarav Mehta', line1: '1 Sector 90', city: 'Noida', state: 'Uttar Pradesh', pincode: '201304', country: 'India', phone: '+919876543210', email: 'aarav@example.com' };
+  const appAddress = { name: 'Aarav Mehta', line1: '1 Sector 90', city: 'Noida', state: 'Uttar Pradesh', pincode: '201304', country: 'India', phone: '+919811122244', email: 'aarav@example.com' };
   const post = (route: any, url: string, body: any) => route.POST(new Request(url, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', authorization: 'Bearer t', 'x-forwarded-for': '49.36.10.20', 'user-agent': 'ZicaBella/9' } }));
   async function appFlow(o: { amount: number; total: number; subtotal: number; cod?: boolean; credits?: number; coupon?: number; lines?: any[]; device?: any; payStatus?: 'captured' | 'authorized'; headless?: boolean; clientStatus?: string }) {
     const orderData = {
-      customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210',
-      lineItems: o.lines || appLines, appliedStoreCredits: o.credits || 0, discountAmount: o.coupon || 0,
+      customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244',
+      lineItems: o.lines || appLines, appliedStoreCredits: o.credits || 0, discountAmount: o.coupon || 0, ...(o.coupon ? { discountCode: 'SAVE500' } : {}),
       shippingAddress: appAddress, paymentMethod: o.cod ? 'COD' : 'PREPAID', paymentStatus: 'pending',
       total: o.total, total_price: o.total, subtotal: o.subtotal, codFee: o.cod ? 99 : 0, codUpfrontPaid: o.cod ? 99 : 0,
     };
@@ -377,19 +378,19 @@ async function main() {
   // A3 partial store credit: ₹4,500 order, ₹1,000 credit, Razorpay ₹3,500
   report.push('', '## iOS — partial store credit (₹4,500 − ₹1,000)');
   console.log('\n— A3 app partial store credit');
-  { const lines = [{ variantId: V.DENIM, productId: 'p1', quantity: 2, price: 1499, name: 'DENIM', sku: 'ZB-AERO-32' }, { variantId: V.JACKET, productId: 'p3', quantity: 1, price: 1502, name: 'JACKET', sku: 'ZB-JKT' }];
+  { const lines = [{ variantId: V.DENIM, productId: 'p1', quantity: 2, price: 1499, name: 'DENIM', sku: 'ZB-AERO-32' }, { variantId: V.JACKET, productId: 'p3', quantity: 1, price: 2201, name: 'JACKET', sku: 'ZB-JKT' }];
     const b0 = balance();
-    const r = await appFlow({ amount: 3500, total: 3500, subtotal: 4500, credits: 1000, lines });
+    const r = await appFlow({ amount: 4199, total: 4199, subtotal: 5199, credits: 1000, lines });
     eq('A3: local paymentStatus', r.order?.paymentStatus, 'paid');
     eq('A3: wallet debited exactly ₹1,000 once', b0 - balance(), 1000);
-    verifyPurchase('A3 (products − store credit)', snapApp, r.order.id, { value: 3500, ids: [V.DENIM, V.JACKET], contents: [[V.DENIM, 2], [V.JACKET, 1]], numItems: 3, source: 'MOBILE_APP' });
+    verifyPurchase('A3 (products − store credit)', snapApp, r.order.id, { value: 4199, ids: [V.DENIM, V.JACKET], contents: [[V.DENIM, 2], [V.JACKET, 1]], numItems: 3, source: 'MOBILE_APP' });
   }
 
   // A4 100% store credit (no Razorpay)
   report.push('', '## iOS — 100% store credit');
   console.log('\n— A4 app 100% store credit');
   { const b0 = balance();
-    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress,
+    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress,
       paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 3797, snapDevice: iosDevice };
     const res = await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', body);
     const j: any = await res.json(); await settle(120);
@@ -409,12 +410,12 @@ async function main() {
   // A5 coupon + store credit: ₹5,000 − ₹500 − ₹1,000 = ₹3,500
   report.push('', '## Android — coupon ₹500 + store credit ₹1,000 on ₹5,000');
   console.log('\n— A5 app coupon + store credit');
-  { const lines = [{ variantId: V.DENIM, productId: 'p1', quantity: 2, price: 1499, name: 'DENIM', sku: 'a' }, { variantId: V.JACKET, productId: 'p3', quantity: 1, price: 2002, name: 'JACKET', sku: 'b' }];
+  { const lines = [{ variantId: V.DENIM, productId: 'p1', quantity: 2, price: 1499, name: 'DENIM', sku: 'a' }, { variantId: V.JACKET, productId: 'p3', quantity: 1, price: 2201, name: 'JACKET', sku: 'b' }];
     const b0 = balance();
-    const r = await appFlow({ amount: 3500, total: 3500, subtotal: 5000, credits: 1000, coupon: 500, lines, device: androidDevice });
+    const r = await appFlow({ amount: 3699, total: 3699, subtotal: 5199, credits: 1000, coupon: 500, lines, device: androidDevice });
     eq('A5: local paymentStatus', r.order?.paymentStatus, 'paid');
     eq('A5: wallet debited ₹1,000', b0 - balance(), 1000);
-    verifyPurchase('A5 (products − coupon − store credit)', snapApp, r.order.id, { value: 3500, ids: [V.DENIM, V.JACKET], contents: [[V.DENIM, 2], [V.JACKET, 1]], numItems: 3, source: 'MOBILE_APP' });
+    verifyPurchase('A5 (products − coupon − store credit)', snapApp, r.order.id, { value: 3699, ids: [V.DENIM, V.JACKET], contents: [[V.DENIM, 2], [V.JACKET, 1]], numItems: 3, source: 'MOBILE_APP' });
   }
 
   // A6 UPI success (HEADLESS verify) + stale client "pending" must not downgrade
@@ -456,7 +457,7 @@ async function main() {
   report.push('', '## iOS — duplicate orders/create with store credit');
   console.log('\n— A9 app duplicate request');
   { const b0 = balance();
-    const r = await appFlow({ amount: 3500, total: 3500, subtotal: 4500, credits: 1000, lines: [{ variantId: V.DENIM, productId: 'p1', quantity: 2, price: 1499, name: 'D', sku: 'x' }, { variantId: V.JACKET, productId: 'p3', quantity: 1, price: 1502, name: 'J', sku: 'y' }] });
+    const r = await appFlow({ amount: 4199, total: 4199, subtotal: 5199, credits: 1000, lines: [{ variantId: V.DENIM, productId: 'p1', quantity: 2, price: 1499, name: 'D', sku: 'x' }, { variantId: V.JACKET, productId: 'p3', quantity: 1, price: 2201, name: 'J', sku: 'y' }] });
     const again = await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', lineItems: appLines, appliedStoreCredits: 1000, shippingAddress: appAddress, paymentMethod: 'PREPAID', paymentStatus: 'paid', total: 3500, subtotal: 4500, paymentId: r.payId, razorpayOrderId: r.rzp });
     await again.json(); await settle(120);
     eq('A9: wallet debited ₹1,000 only once', b0 - balance(), 1000);
@@ -475,7 +476,7 @@ async function main() {
     const b0 = balance();
     const ordersBefore = (db.order || []).length, shopifyBefore = shopifyOrders.length;
     const checkoutId = 'sc_lz4k2p_9f3a1c7e2b';
-    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress,
+    const body = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, appliedStoreCredits: 3797, shippingAddress: appAddress,
       paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 3797, checkoutId, snapDevice: androidDevice };
     const results = await Promise.all([1, 2, 3].map(() => post(ordersCreate, 'https://zicabella.com/api/app/orders/create', body).then((r: Response) => r.json())));
     await settle(200);
@@ -505,7 +506,7 @@ async function main() {
   { const checkoutId = 'sc_crash_retry_01';
     await prisma.storeCredit.create({ data: { customerId: 'cust_app_1', amount: -799, type: 'DEBIT', description: 'Applied to order #ZB99901', orderId: '#ZB99901', remainingAmount: 0, idempotencyKey: `checkout:cust_app_1:${checkoutId}` } });
     const b0 = balance();
-    const r: any = await (await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919876543210', lineItems: [appLines[1]], appliedStoreCredits: 799, shippingAddress: appAddress,
+    const r: any = await (await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: [appLines[1]], appliedStoreCredits: 799, shippingAddress: appAddress,
       paymentMethod: 'Store Credit', paymentStatus: 'paid', total: 0, total_price: 0, subtotal: 799, checkoutId, snapDevice: iosDevice })).json();
     await settle(120);
     eq('A11b: order created under the reserved number', [r.success, r.orderNumber, orderById(r.orderId)?.internalOrderNumber], [true, 'ZB99901', 'ZB99901']);
