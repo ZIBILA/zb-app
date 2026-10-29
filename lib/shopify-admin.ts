@@ -2104,17 +2104,7 @@ export async function fetchProductById(productId: string, includeMetafields = fa
   return { ...data.product, metafields };
 }
 
-export async function fetchProductByHandle(
-  handle: string,
-  opts?: {
-    /**
-     * Rethrow a Shopify failure (after retries) instead of answering null / a placeholder.
-     * ISR pages need this: a null would be cached as "not found" for a product that exists.
-     * Handles that exist in the local fallback catalogue still resolve, as before.
-     */
-    throwOnError?: boolean;
-  }
-): Promise<ShopifyProduct | null> {
+export async function fetchProductByHandle(handle: string): Promise<ShopifyProduct | null> {
   // Clients sometimes pass "foo.json" or encoded paths — normalize before Shopify
   const normalized = String(handle || '')
     .trim()
@@ -2161,7 +2151,6 @@ export async function fetchProductByHandle(
     if (shouldLogThrottled(`shopify:handle:${normalized}`, 60_000)) {
       console.warn(`[Shopify Admin] fetchProductByHandle("${normalized}") failed:`, err?.message || err);
     }
-    if (opts?.throwOnError && !fromFallback()) throw err;
   }
 
   // Local/dev resilience when Shopify is unavailable (402) or product missing remotely
