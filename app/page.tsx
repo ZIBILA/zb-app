@@ -16,7 +16,7 @@ import SpotlightSection from "@/components/SpotlightSection";
 import LazyVideo from "@/components/LazyVideo";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import { Metadata } from "next";
-import { toCardCollections, toCardProducts } from "@/lib/storefront-card-product";
+import { preload } from "react-dom";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
 
@@ -77,10 +77,11 @@ export default async function Home() {
     getShopSettings(),
   ]);
 
-  // The hero poster is preloaded by the priority <Image> inside HeroVideo. A server-side
-  // react-dom preload() was dropped on purpose: Flight serialises it as a hint that the browser
-  // honours whenever this page's payload is *prefetched*, so every other page (cart, product,
-  // collection) was downloading the 140 KB home poster via the logo link's prefetch.
+  // Hint the hero poster (the mobile LCP image) before the catalogue fetches below, so the
+  // <link rel="preload"> lands in the streamed <head> instead of in the body after the data.
+  if (s?.heroVideo && s?.heroImage) {
+    preload(s.heroImage, { as: "image", fetchPriority: "high" });
+  }
 
   // Concurrently fetch all independent assets to optimize TTFB and speed up the homepage loading
   const [collections, banners, fetchedProducts] = await Promise.all([
@@ -133,8 +134,6 @@ export default async function Home() {
     const have = new Set(products.map((p) => p.id));
     products = [...products, ...shopAll.products.filter((p) => !have.has(p.id))].slice(0, Math.max(16, products.length));
   }
-  // Only the fields the cards render travel to the client (see lib/storefront-card-product.ts).
-  const cardProducts = toCardProducts(products);
 
   const nullIfEmpty = (val: string | null | undefined): string | null => {
     if (val === undefined || val === null) return null;
@@ -310,7 +309,7 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 1 ─── */}
         <section className="mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {cardProducts.slice(0, 4).map((p: ShopifyProduct) => (
+            {products.slice(0, 4).map((p: ShopifyProduct) => (
               <ProductCard key={p.id} product={p} />
             ))}
           </div>
@@ -364,7 +363,7 @@ export default async function Home() {
               <span className="glass-label">— {archiveTitle} —</span>
             </div>
           )}
-          <CollectionCarousel collections={toCardCollections(collections)} />
+          <CollectionCarousel collections={collections} />
           {s?.showArchive && archiveSubtitle && (
             <div className="flex justify-center mt-3 mb-2">
               <span className="text-[8px] font-extralight uppercase tracking-[0.4em] text-foreground/15">{archiveSubtitle}</span>
@@ -403,7 +402,7 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 2 ─── */}
         <section className="render-deferred-section mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {cardProducts.slice(4, 8).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
+            {products.slice(4, 8).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
           </div>
         </section>
 
@@ -555,7 +554,7 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 3 ─── */}
         <section className="render-deferred-section mt-4 mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {cardProducts.slice(12, 16).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
+            {products.slice(12, 16).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
           </div>
         </section>
 

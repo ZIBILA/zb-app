@@ -10,22 +10,8 @@ import { CollectionJsonLd } from "@/components/seo/CollectionJsonLd";
 import { Breadcrumb } from "@/components/seo/Breadcrumb";
 import { CategorySEOContent } from "@/components/seo/CategorySEOContent";
 import { cache } from "react";
-import { toCardCollections, toCardProducts } from "@/lib/storefront-card-product";
 
 export const revalidate = 120; // ISR: re-render at most every 2 minutes (also refreshed instantly by Shopify webhooks / CMS)
-
-/**
- * ISR needs this. Without `generateStaticParams`, Next.js 14 treats a dynamic route as
- * request-time rendered: `revalidate` is ignored, the response is sent with
- * `Cache-Control: private, no-store`, and every visit waits on the Shopify Admin calls
- * (collections list + full catalogue page) before the first byte. Returning no params
- * prerenders nothing at build time; each collection is rendered once on demand, cached
- * for `revalidate` seconds, and refreshed early by the Shopify webhooks (revalidatePath).
- */
-export async function generateStaticParams(): Promise<Array<{ handle: string }>> {
-  return [];
-}
-export const dynamicParams = true;
 
 const getCollection = cache(async (handle: string) => {
   return await fetchCollectionByHandle(handle).catch(() => ({ collection: null, products: [] as ShopifyProduct[], failed: true as const }));
@@ -122,18 +108,12 @@ export default async function CollectionPage({
   params: { handle: string };
 }) {
   // No searchParams here — keeps the route ISR. Sort/filter run on the client.
-  const [lookup, allCollections] = await Promise.all([
+  const [{ collection, products: rawProducts }, allCollections] = await Promise.all([
     getCollection(params.handle),
     fetchEnabledCollections('page'),
   ]);
-  const { collection, products: rawProducts } = lookup;
 
-  if ('failed' in lookup) {
-    // Shopify unreachable: fail this request (error boundary) instead of caching a 404 for a
-    // collection that exists. Next.js does not cache a failed ISR render.
-    throw new Error('Collection lookup failed');
-  }
-  if (!collection) notFound(); // genuine 404 — cacheable
+  if (!collection) notFound();
 
   const allSizes = Array.from(new Set(
     rawProducts.flatMap(p =>
@@ -172,7 +152,7 @@ export default async function CollectionPage({
             <CollectionHeaderClient
               currentHandle={params.handle}
               currentTitle={collection.title}
-              allCollections={toCardCollections(allCollections)}
+              allCollections={allCollections}
               currentImage={collection.image?.src}
             />
           </div>
@@ -182,8 +162,7 @@ export default async function CollectionPage({
         <Suspense fallback={
           <div className="relative z-10 w-full pb-16 min-h-[40vh]" aria-hidden />
         }>
-          {/* Card-sized copies: drops body_html / options / metafields from the HTML payload */}
-          <CollectionBrowseClient products={toCardProducts(rawProducts)} allSizes={allSizes} />
+          <CollectionBrowseClient products={rawProducts} allSizes={allSizes} />
         </Suspense>
 
         <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-32 text-foreground">

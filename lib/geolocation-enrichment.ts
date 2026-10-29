@@ -2,15 +2,8 @@
  * One-Shot Geolocation Enrichment for Meta EMQ
  *
  * Silently captures the visitor's city/state/postcode/country via the browser's
- * Geolocation API + the server-side reverse geocoder (/api/geo/reverse), then
- * feeds them into the shared Meta PII cookie pipeline so subsequent events
- * include address fields.
- *
- * Google Maps is deliberately not loaded here: the Maps key is referrer-restricted
- * to the checkout, so on product / collection / home pages the ~300 KB Maps SDK
- * always failed with RefererNotAllowedMapError (a console error on every product
- * page for shoppers who had granted location) and the code fell back to the
- * server geocoder anyway. Checkout keeps its own Maps loader.
+ * Geolocation API + Google Maps reverse geocoding, then feeds them into the
+ * shared Meta PII cookie pipeline so subsequent events include address fields.
  *
  * Behavior:
  * - Runs at most ONCE per session (sessionStorage guard).
@@ -24,6 +17,8 @@
  */
 
 import { saveUserDataToCookies, initPixel } from './metaPixel';
+import { parseGeoAddressComponents } from './parseGeoAddressComponents';
+import { loadGoogleMaps, getLoadedLibrary } from './googleMapsLoader';
 
 const SESSION_KEY = 'zb_geo_done';
 
@@ -160,9 +155,37 @@ export async function enrichSessionWithGeolocation(): Promise<void> {
 
     let parsed: any = null;
 
-    // Server-side reverse geocode via Nominatim / OSM (see the header comment for why the
-    // client-side Google Maps geocoder is not attempted on storefront pages).
-    {
+    // 1. Try Google Maps Geocoding API if available
+    try {
+      const mapsOk = await loadGoogleMaps(['geocoding']);
+      if (mapsOk) {
+        const geocodingLib = getLoadedLibrary('geocoding');
+        const Geocoder = geocodingLib?.Geocoder ?? (window as any).google?.maps?.Geocoder;
+        if (Geocoder) {
+          const geocoder = new Geocoder();
+          const geoResult = await new Promise<any>((resolve) => {
+            geocoder.geocode(
+              { location: { lat: latitude, lng: longitude } },
+              (results: any, status: any) => {
+                if (status === 'OK' && results && results[0]) {
+                  resolve(results[0]);
+                } else {
+                  resolve(null);
+                }
+              }
+            );
+          });
+          if (geoResult?.address_components) {
+            parsed = parseGeoAddressComponents(geoResult.address_components);
+          }
+        }
+      }
+    } catch {
+      // Ignore Google Maps errors and proceed to server fallback
+    }
+
+    // 2. Server-side reverse geocode fallback via Nominatim / OSM
+    if (!parsed || (!parsed.city && !parsed.state && !parsed.zip)) {
       try {
         const revRes = await fetch(`/api/geo/reverse?lat=${latitude}&lng=${longitude}`);
         if (revRes.ok) {
