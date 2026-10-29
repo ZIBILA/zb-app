@@ -320,7 +320,7 @@ All through the **real route handlers** (`app/api/...`) with the in-memory Prism
 
 **C. Existing suites after the fixes:** `scripts/payment-e2e/run.ts` **191 passed, 0 failed** (was 185/6 before the fixture fixes; the W7 scenario now uses a coupon that really carries cashback), `scripts/payment-e2e/meta-run.ts` **126 passed, 0 failed**, `scripts/verify-snap-webhook.ts` 25/0, `scripts/verify-snap-app.ts` 62/0, `scripts/verify-meta-purchase.ts` all passed, `scripts/verify-meta-internal-orders.ts` all passed. `scripts/verify-snap-international.ts` has 4 failures (phone-repair script and its international pre-create section) that **also fail on the committed HEAD before these changes** (verified in a clean worktree) — pre-existing, unrelated.
 
-**D. Static checks:** `tsc --noEmit` clean; `next build` — see the final status in the handover message.
+**D. Static checks:** `tsc --noEmit` clean; `next build` (production) completed successfully with all routes compiled.
 
 **E. Live, non-destructive probes (unchanged):** see §7/§8.
 
