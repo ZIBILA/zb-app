@@ -43,9 +43,21 @@ import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackPurchase as zbTrackPurchase } from "@/lib/analytics-tracker";
 import { formatPriceString } from "@/lib/global-pricing-client";
 import { resetGuestIdentity } from "@/lib/metaPixel";
-import { postCheckoutComplete } from "@/lib/checkout-complete-client";
+import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
+import { isPaidLikeStatus, isUnconfirmedStatus } from "@/lib/payment-status";
+import { useCart } from "@/lib/cart-context";
 
-type RegistrationStatus = "confirming" | "confirmed" | "failed";
+/**
+ * confirming   — completion request in flight (optimistic paint)
+ * confirmed    — the server says the order is PAID (cod_upfront_paid / partially_paid count)
+ * unconfirmed  — the gateway reported success but the server has not confirmed the
+ *                capture (authorized-only, lost webhook, failed registration); the
+ *                page keeps polling and tells the shopper not to pay again
+ * failed       — registration failed after payment; support needed
+ */
+type RegistrationStatus = "confirming" | "confirmed" | "unconfirmed" | "failed";
+const UNCONFIRMED_POLL_INTERVAL_MS = 10_000;
+const UNCONFIRMED_POLL_MAX = 90; // ≈ 15 minutes
 
 export default function OrderConfirmationPage() {
   const { id } = useParams();
@@ -59,6 +71,11 @@ export default function OrderConfirmationPage() {
   const [purchasedPixel, setPurchasedPixel] = useState(false);
   const completeStartedRef = useRef(false);
   const guestResetDeferredRef = useRef(false);
+  // True only when this visit is the tail of a checkout (a completion payload was
+  // found). The cart is cleared on confirmation only then — never for an old
+  // order opened from My Orders or a shared link.
+  const fromCheckoutRef = useRef(false);
+  const { clear: clearCart } = useCart();
   const { trackPurchase } = useMetaEvents();
   const { trackPurchase: trackSnapPurchase } = useSnapEvents();
   const { trackOrderCreated: trackOpenAiOrderCreated } = useOpenAiEvents();
@@ -364,6 +381,47 @@ export default function OrderConfirmationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, order?.id, trackingOrder?.paymentStatus, registrationStatus]);
 
+  // Payment not confirmed yet (authorized-only, delayed webhook, failed
+  // registration): poll the server facts until the row is PAID, then flip to
+  // confirmed. Bounded; afterwards the message on screen stands.
+  useEffect(() => {
+    if (!id || !order?.id || registrationStatus !== "unconfirmed") return;
+    const polledOrderId = String(order.id);
+    let polls = 0;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (cancelled) return;
+      if (++polls > UNCONFIRMED_POLL_MAX) {
+        clearInterval(timer);
+        return;
+      }
+      if (typeof document !== "undefined" && document.hidden) return;
+      const facts = await fetchOrderServerFacts(polledOrderId);
+      if (!facts || cancelled) return;
+      if (isPaidLikeStatus(facts.paymentStatus)) {
+        clearInterval(timer);
+        applyServerFacts(polledOrderId, facts);
+        setOrder((prev: any) => {
+          if (!prev || String(prev.id) !== polledOrderId) return prev;
+          const next = { ...prev, paymentStatus: facts.paymentStatus, registrationStatus: "confirmed" };
+          try {
+            sessionStorage.setItem(`zb_confirmation_${polledOrderId}`, JSON.stringify({ ...next, serverFacts: facts }));
+            sessionStorage.removeItem(`zb_complete_pending_${polledOrderId}`);
+          } catch {}
+          return next;
+        });
+        setRegistrationError(null);
+        setRegistrationStatus("confirmed");
+        if (fromCheckoutRef.current) clearCart();
+      }
+    }, UNCONFIRMED_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, order?.id, registrationStatus]);
+
   useEffect(() => {
     if (!id) return;
     const orderId = String(id);
@@ -382,7 +440,10 @@ export default function OrderConfirmationPage() {
           painted = true;
           paintedOrder = parsed;
           const status = (parsed.registrationStatus as RegistrationStatus) || "confirmed";
-          setRegistrationStatus(status === "confirming" ? "confirming" : "confirmed");
+          setRegistrationStatus(
+            status === "confirming" ? "confirming" : status === "unconfirmed" ? "unconfirmed" : "confirmed"
+          );
+          if (status === "unconfirmed") setRegistrationError(CAPTURE_PENDING_MESSAGE);
           sessionStorage.setItem("last_placed_order_id", orderId);
         }
       }
@@ -403,6 +464,7 @@ export default function OrderConfirmationPage() {
       if (!pendingRaw) return false;
 
       completeStartedRef.current = true;
+      fromCheckoutRef.current = true;
       setRegistrationStatus("confirming");
 
       let pending: { body: any; paymentId?: string | null } | null = null;
@@ -421,9 +483,11 @@ export default function OrderConfirmationPage() {
       try {
         const completion = await postCheckoutComplete(pending.body);
         if (completion.pendingCapture) {
-          // Keep confirming UI; capture webhook will make a later visit succeed.
-          setRegistrationStatus("confirming");
-          setRegistrationError(null);
+          // Still not captured after the re-send window: say so (no green check),
+          // keep the payload for the next visit and poll the server facts below
+          // until the payment.captured webhook / cron confirms it.
+          setRegistrationStatus("unconfirmed");
+          setRegistrationError(CAPTURE_PENDING_MESSAGE);
           return true;
         }
         const verifyRes = completion.res!;
@@ -473,10 +537,14 @@ export default function OrderConfirmationPage() {
           setOrder(confirmed);
           setRegistrationStatus("confirmed");
           setRegistrationError(null);
+          clearCart();
           return true;
         }
 
-        // Recovery by Razorpay order id
+        // Recovery by Razorpay order id — trusted only when the row is PAID.
+        // The lookup also returns pending / failed rows (a registration that
+        // failed after the gateway reported success); those must show the
+        // "not confirmed yet" state, never a green check.
         const rzpOrderId = pending.body?.razorpay?.razorpay_order_id;
         if (rzpOrderId) {
           try {
@@ -485,7 +553,7 @@ export default function OrderConfirmationPage() {
             );
             if (lookup.ok) {
               const data = await lookup.json();
-              if (data?.orderId) {
+              if (data?.orderId && isPaidLikeStatus(data.paymentStatus)) {
                 const slim = await fetch(
                   `/api/orders/${encodeURIComponent(data.orderId)}/confirmation?bypass_auth=true`
                 );
@@ -497,6 +565,8 @@ export default function OrderConfirmationPage() {
                   };
                   setOrder(confirmed);
                   setRegistrationStatus("confirmed");
+                  setRegistrationError(null);
+                  clearCart();
                   try {
                     sessionStorage.setItem(
                       `zb_confirmation_${data.orderId}`,
@@ -510,6 +580,15 @@ export default function OrderConfirmationPage() {
                   }
                   return true;
                 }
+              } else if (data?.orderId) {
+                // Order exists but is not paid on the server yet.
+                setRegistrationStatus("unconfirmed");
+                setRegistrationError(
+                  verifyData?.error
+                    ? `${verifyData.error} ${CAPTURE_PENDING_MESSAGE}`
+                    : CAPTURE_PENDING_MESSAGE
+                );
+                return true;
               }
             }
           } catch {
@@ -539,9 +618,14 @@ export default function OrderConfirmationPage() {
         );
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          const fetched = { ...(data.order || data), registrationStatus: "confirmed" };
+          const raw = data.order || data;
+          // A refresh / shared link must reflect the server's payment state:
+          // pending / failed rows are shown as "not confirmed yet", not confirmed.
+          const unpaid = isUnconfirmedStatus(raw?.paymentStatus) && !isPaidLikeStatus(raw?.paymentStatus);
+          const fetched = { ...raw, registrationStatus: unpaid ? "unconfirmed" : "confirmed" };
           setOrder(fetched);
-          setRegistrationStatus("confirmed");
+          setRegistrationStatus(unpaid ? "unconfirmed" : "confirmed");
+          if (unpaid) setRegistrationError(CAPTURE_PENDING_MESSAGE);
           setFetchError(null);
           try {
             sessionStorage.setItem("last_placed_order_id", orderId);
@@ -664,13 +748,25 @@ export default function OrderConfirmationPage() {
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ duration: 0.5, ease: "backOut" }}
-            className="inline-flex items-center justify-center w-14 h-14 rounded-2xl apple-glass-capsule text-emerald-500 mb-1 border border-foreground/10"
+            className={`inline-flex items-center justify-center w-14 h-14 rounded-2xl apple-glass-capsule mb-1 border border-foreground/10 ${
+              registrationStatus === "unconfirmed" || registrationStatus === "failed"
+                ? "text-amber-500"
+                : "text-emerald-500"
+            }`}
           >
-            <CheckCircle2 className="w-7 h-7" />
+            {registrationStatus === "unconfirmed" || registrationStatus === "failed" ? (
+              <AlertTriangle className="w-7 h-7" />
+            ) : (
+              <CheckCircle2 className="w-7 h-7" />
+            )}
           </motion.div>
           <div className="space-y-1">
             <h1 className="text-2xl font-black tracking-tight">
-              {registrationStatus === "failed" ? "Payment Received" : "Order Confirmed!"}
+              {registrationStatus === "failed"
+                ? "Payment Received"
+                : registrationStatus === "unconfirmed"
+                  ? "Payment Not Confirmed Yet"
+                  : "Order Confirmed!"}
             </h1>
             <p className="text-foreground/50 text-[11px] font-bold tracking-[0.1em] uppercase font-mono inline-flex items-center justify-center gap-1.5">
               {displayOrderNumber}
@@ -682,9 +778,11 @@ export default function OrderConfirmationPage() {
           <p className="text-foreground/60 text-[12px] font-medium leading-relaxed max-w-[300px] mx-auto">
             {registrationStatus === "failed"
               ? "Your payment went through. We’re finishing order registration — please don’t pay again."
-              : registrationStatus === "confirming"
-                ? "Payment received. Finalizing your order details…"
-                : "Thank you! Your order has been placed successfully and is being prepared."}
+              : registrationStatus === "unconfirmed"
+                ? "Your bank reported the payment, but it has not been confirmed to us yet. This page updates automatically."
+                : registrationStatus === "confirming"
+                  ? "Payment received. Finalizing your order details…"
+                  : "Thank you! Your order has been placed successfully and is being prepared."}
           </p>
         </div>
 
@@ -692,6 +790,18 @@ export default function OrderConfirmationPage() {
           <div className="flex items-center gap-2 px-4 py-3 rounded-xl border border-foreground/10 bg-foreground/[0.02] text-[11px] text-foreground/60">
             <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
             Confirming payment with our servers…
+          </div>
+        )}
+
+        {registrationStatus === "unconfirmed" && (
+          <div className="flex items-start gap-2 px-4 py-3 rounded-xl border border-amber-500/30 bg-amber-500/[0.06] text-[11px] text-amber-200">
+            <Loader2 className="w-4 h-4 shrink-0 mt-0.5 animate-spin text-amber-500" />
+            <div className="space-y-1">
+              <p className="font-semibold text-amber-400">Do not pay again</p>
+              <p className="text-amber-200/80 leading-relaxed">
+                {registrationError || CAPTURE_PENDING_MESSAGE}
+              </p>
+            </div>
           </div>
         )}
 
@@ -722,7 +832,11 @@ export default function OrderConfirmationPage() {
               </span>
             </div>
             <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-foreground/10 text-foreground border border-foreground/10">
-              {isCod ? "Partial COD" : "Paid"}
+              {registrationStatus === "unconfirmed" || registrationStatus === "failed"
+                ? "Pending"
+                : isCod
+                  ? "Partial COD"
+                  : "Paid"}
             </span>
           </div>
 
@@ -734,12 +848,19 @@ export default function OrderConfirmationPage() {
               <p className="text-lg font-black text-foreground tracking-tight mt-0.5">
                 {formatPriceString(upfrontPaid, currency, "en-US")}
               </p>
-              <p className="text-[8px] font-semibold text-emerald-500 mt-0.5 inline-flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" />
-                {registrationStatus === "confirming"
-                  ? "Payment received — confirming…"
-                  : "Payment Confirmed"}
-              </p>
+              {registrationStatus === "unconfirmed" || registrationStatus === "failed" ? (
+                <p className="text-[8px] font-semibold text-amber-500 mt-0.5 inline-flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  Awaiting payment confirmation
+                </p>
+              ) : (
+                <p className="text-[8px] font-semibold text-emerald-500 mt-0.5 inline-flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  {registrationStatus === "confirming"
+                    ? "Payment received — confirming…"
+                    : "Payment Confirmed"}
+                </p>
+              )}
             </div>
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-foreground/40">

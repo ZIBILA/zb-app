@@ -204,11 +204,23 @@ export default withAuth(
         try {
           const contentType = req.headers.get('content-type') || '';
           const url = req.nextUrl.clone();
+          // In redirect mode (in-app browsers) Razorpay also POSTs failures here as
+          // error[code] / error[description] / error[reason]; forward them so the
+          // success page can send the shopper back to checkout instead of waiting.
+          const errorKeys: Array<[string, string]> = [
+            ['error[code]', 'rzp_error_code'],
+            ['error[description]', 'rzp_error_description'],
+            ['error[reason]', 'rzp_error_reason'],
+          ];
           if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
             const formData = await req.formData();
             for (const key of ['razorpay_payment_id', 'razorpay_order_id', 'razorpay_signature']) {
               const val = formData.get(key);
               if (typeof val === 'string' && val) url.searchParams.set(key, val);
+            }
+            for (const [from, to] of errorKeys) {
+              const val = formData.get(from);
+              if (typeof val === 'string' && val) url.searchParams.set(to, val.slice(0, 200));
             }
           } else {
             // Some gateways POST JSON; also accept already-present query params
@@ -216,6 +228,12 @@ export default withAuth(
               const body = await req.json();
               for (const key of ['razorpay_payment_id', 'razorpay_order_id', 'razorpay_signature']) {
                 if (body?.[key]) url.searchParams.set(key, String(body[key]));
+              }
+              const err = body?.error && typeof body.error === 'object' ? body.error : null;
+              if (err) {
+                for (const [field, to] of [['code', 'rzp_error_code'], ['description', 'rzp_error_description'], ['reason', 'rzp_error_reason']]) {
+                  if (err[field]) url.searchParams.set(to, String(err[field]).slice(0, 200));
+                }
               }
             } catch {
               /* keep any existing query */
