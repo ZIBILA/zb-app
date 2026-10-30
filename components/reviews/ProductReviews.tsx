@@ -106,6 +106,16 @@ export async function ProductReviews({
             <p itemProp="reviewBody" className="text-[9.5px] text-foreground/60 leading-relaxed font-sans">
               {review.body}
             </p>
+            {review.photos?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {review.photos.map((src) => (
+                  <a key={src} href={src} target="_blank" rel="noopener noreferrer" className="block w-16 h-16 rounded-md overflow-hidden border border-foreground/[0.06]">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt="Customer photo" loading="lazy" className="w-full h-full object-cover" itemProp="image" />
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>

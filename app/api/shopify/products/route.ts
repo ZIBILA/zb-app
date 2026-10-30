@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchCatalogForAdmin, fetchCollectionByHandle } from '@/lib/shopify-admin';
+import { fetchCatalogForAdmin, fetchCollectionByHandle, fetchStorefrontCatalog } from '@/lib/shopify-admin';
 import { isStorefrontEligible } from '@/lib/storefrontCatalog';
 
 export const dynamic = 'force-dynamic';
@@ -9,6 +9,7 @@ export const dynamic = 'force-dynamic';
  *   (no params)           → EVERY Shopify product (all pages, any status) for CMS pickers.
  *                           Each product carries `live: boolean` = visible to customers on the website.
  *   ?collection=<handle>  → the products customers see in that collection, in CMS order.
+ *   ?ids=<id|gid>,...     → those products in the given order, live (active + published) ones only.
  *   ?limit=N              → optional cap (only when explicitly requested).
  *
  * Errors are reported honestly (HTTP 502) instead of returning placeholder products.
@@ -20,8 +21,23 @@ export async function GET(req: Request) {
     const rawLimit = parseInt(url.searchParams.get('limit') || '', 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
 
+    const idsParam = url.searchParams.get('ids');
+
     let products: any[];
-    if (collectionHandle) {
+    if (idsParam && idsParam.trim()) {
+      // Hand-picked storefront products (e.g. Spotlight). Resolved against the live catalog, so a
+      // product moved to Draft drops out instead of being served to customers.
+      const wanted = idsParam
+        .split(',')
+        .map((raw) => raw.trim().split('/').pop() || '')
+        .filter(Boolean);
+      const byId = new Map((await fetchStorefrontCatalog()).map((p) => [String(p.id), p]));
+      products = wanted
+        .map((id) => byId.get(id))
+        .filter((p): p is NonNullable<typeof p> => Boolean(p))
+        .map((p) => ({ ...p, live: true }));
+      if (limit) products = products.slice(0, limit);
+    } else if (collectionHandle) {
       const result = await fetchCollectionByHandle(collectionHandle, limit);
       products = result.products.map((p) => ({ ...p, live: true }));
     } else {

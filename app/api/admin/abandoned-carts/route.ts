@@ -130,10 +130,20 @@ export async function GET(req: Request) {
     const curY = istNow.getUTCFullYear();
     const curM = istNow.getUTCMonth();
     const curD = istNow.getUTCDate();
+    const istDay = istNow.getUTCDay();
+    const mondayOffset = istDay === 0 ? 6 : istDay - 1;
 
     const todayRange = getUtcDayRange(curY, curM, curD);
     const yesterdayRange = getUtcDayRange(curY, curM, curD - 1);
     const tomorrowRange = getUtcDayRange(curY, curM, curD + 1);
+    const thisWeekRange = {
+      start: getUtcDayRange(curY, curM, curD - mondayOffset).start,
+      end: todayRange.end,
+    };
+    const lastWeekRange = {
+      start: getUtcDayRange(curY, curM, curD - mondayOffset - 7).start,
+      end: getUtcDayRange(curY, curM, curD - mondayOffset - 1).end,
+    };
 
     const computeNextFollowup = (c: any) => {
       const phone = c.phone || c.customer?.phone;
@@ -231,16 +241,21 @@ export async function GET(req: Request) {
     ];
 
     // Filter by date range
+    let dateFilterClause: any = null;
     if (dateRange === "today") {
-      andClauses.push({ createdAt: { gte: todayRange.start, lte: todayRange.end } });
+      dateFilterClause = { createdAt: { gte: todayRange.start, lte: todayRange.end } };
     } else if (dateRange === "yesterday") {
-      andClauses.push({ createdAt: { gte: yesterdayRange.start, lte: yesterdayRange.end } });
+      dateFilterClause = { createdAt: { gte: yesterdayRange.start, lte: yesterdayRange.end } };
     } else if (dateRange === "last7days") {
       const start7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      andClauses.push({ createdAt: { gte: start7 } });
+      dateFilterClause = { createdAt: { gte: start7, lte: now } };
+    } else if (dateRange === "thisweek") {
+      dateFilterClause = { createdAt: { gte: thisWeekRange.start, lte: thisWeekRange.end } };
+    } else if (dateRange === "lastweek") {
+      dateFilterClause = { createdAt: { gte: lastWeekRange.start, lte: lastWeekRange.end } };
     } else if (dateRange === "last30days") {
       const start30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      andClauses.push({ createdAt: { gte: start30 } });
+      dateFilterClause = { createdAt: { gte: start30, lte: now } };
     } else if (dateRange === "custom" && customStartDate) {
       const [sy, sm, sd] = customStartDate.split("-").map(Number);
       const start = new Date(Date.UTC(sy, sm - 1, sd, 0, 0, 0, 0) - IST_OFFSET_MS);
@@ -249,7 +264,10 @@ export async function GET(req: Request) {
         const [ey, em, ed] = customEndDate.split("-").map(Number);
         end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59, 999) - IST_OFFSET_MS);
       }
-      andClauses.push({ createdAt: { gte: start, lte: end } });
+      dateFilterClause = { createdAt: { gte: start, lte: end } };
+    }
+    if (dateFilterClause) {
+      andClauses.push(dateFilterClause);
     }
 
     // Filter by scheduled follow-up activity
@@ -309,6 +327,14 @@ export async function GET(req: Request) {
 
     const where = { AND: andClauses };
 
+    const sourceClause = sourceFilter !== "all" ? { source: sourceFilter } : {};
+    const statsWhereBase = {
+      items: { some: {} },
+      status: { not: "merged" },
+      ...(dateFilterClause ? dateFilterClause : {}),
+      ...sourceClause,
+    };
+
     // Parallel fetch: Page of carts + KPI summary counts + total count (high performance)
     const [
       carts,
@@ -317,7 +343,8 @@ export async function GET(req: Request) {
       convertedCount,
       expiredCount,
       convertedAggregate,
-      rawTotal
+      rawTotal,
+      cartCustomers
     ] = await Promise.all([
       prisma.cart.findMany({
         where,
@@ -359,7 +386,7 @@ export async function GET(req: Request) {
       }),
       prisma.cart.count({
         where: {
-          items: { some: {} },
+          ...statsWhereBase,
           status: "active",
           lastActivityAt: { gt: abandonmentThreshold },
           convertedOrderId: null
@@ -367,7 +394,7 @@ export async function GET(req: Request) {
       }),
       prisma.cart.count({
         where: {
-          items: { some: {} },
+          ...statsWhereBase,
           convertedOrderId: null,
           OR: [
             { status: "abandoned" },
@@ -377,26 +404,37 @@ export async function GET(req: Request) {
       }),
       prisma.cart.count({
         where: {
-          items: { some: {} },
+          ...statsWhereBase,
           ...validConvertedOrderClause
         }
       }),
       prisma.cart.count({
         where: {
-          items: { some: {} },
+          ...statsWhereBase,
           status: "expired",
           convertedOrderId: null
         }
       }),
       prisma.cart.aggregate({
         where: {
-          items: { some: {} },
+          ...statsWhereBase,
           ...validConvertedOrderClause
         },
         _sum: { subtotal: true }
       }),
-      prisma.cart.count({ where })
+      prisma.cart.count({ where }),
+      prisma.cart.findMany({
+        where: statsWhereBase,
+        select: { customerId: true, email: true, phone: true }
+      })
     ]);
+
+    const customerIdentities = new Set<string>();
+    for (const c of cartCustomers) {
+      const id = c.customerId || (c.email ? c.email.trim().toLowerCase() : null) || (c.phone ? c.phone.trim() : null);
+      if (id) customerIdentities.add(id);
+    }
+    const totalCustomers = customerIdentities.size;
 
     // Enrich only the active page of carts (15-20 records) with repeat customer conversion context
     const { previousConversionMap, isRaceDuplicateMap } = await enrichCartsWithConversionData(carts);
@@ -493,8 +531,10 @@ export async function GET(req: Request) {
       },
       stats: {
         totalTracked,
+        totalCustomers,
         liveCount,
         abandonedCount,
+        pendingCarts: abandonedCount,
         convertedCount,
         expiredCount,
         convertedRevenue,

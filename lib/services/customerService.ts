@@ -1,5 +1,6 @@
 import prisma from '@/lib/db';
 import { isValidName } from '@/lib/utils/customerName';
+import { composeStreetLine } from '@/lib/address-lines';
 
 export interface CheckoutAddressPayload {
   name: string;
@@ -28,9 +29,9 @@ export async function resolveAndSyncCustomerAddress(
   // skipSideEffects: find/create customer only — merge + Address writes run deferred
   const skipSideEffects = Boolean(opts?.skipSideEffects);
 
-  // Combine address lines into a single street string for storage
-  const streetParts = [rawAddress.houseNo, rawAddress.street, rawAddress.landmark, rawAddress.apartment].filter(Boolean);
-  const fullStreet = streetParts.length > 0 ? streetParts.join(', ') : (rawAddress.street || 'Default Street');
+  // Combine address lines into a single street string for storage. Idempotent: the web checkout sends
+  // the composed line in `street` together with houseNo/landmark, which must not be merged in again.
+  const fullStreet = composeStreetLine(rawAddress) || 'Default Street';
 
   const normalizedAddress = {
     ...rawAddress,

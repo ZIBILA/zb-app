@@ -7,8 +7,8 @@ export const dynamic = 'force-dynamic';
 
 /**
  * PATCH /api/admin/reviews/[id]
- * Toggle review status between VISIBLE and HIDDEN.
- * Body: { status: 'VISIBLE' | 'HIDDEN' }
+ * Approve (VISIBLE), reject / take down (HIDDEN), or send back to the queue (PENDING).
+ * Body: { status: 'VISIBLE' | 'HIDDEN' | 'PENDING' }
  */
 export async function PATCH(
   request: NextRequest,
@@ -30,9 +30,9 @@ export async function PATCH(
     const dataToUpdate: any = {};
 
     if (status) {
-      if (!['VISIBLE', 'HIDDEN'].includes(status)) {
+      if (!['VISIBLE', 'HIDDEN', 'PENDING'].includes(status)) {
         return NextResponse.json(
-          { error: 'status must be VISIBLE or HIDDEN' },
+          { error: 'status must be VISIBLE, HIDDEN or PENDING' },
           { status: 400 }
         );
       }

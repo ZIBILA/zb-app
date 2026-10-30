@@ -152,13 +152,40 @@ export async function GET(req: Request) {
       }),
 
       // C. Returns Counts (Live Backlog filtered by order channel)
-      prisma.returnRequest.count({ where: channelReturnWhere }),
-      prisma.returnRequest.count({
-        where: {
-          ...channelReturnWhere,
-          status: { notIn: ['refunded', 'rejected', 'cancelled', 'completed'] },
-        },
-      }),
+      (async () => {
+        const [reqTotal, standTotal] = await Promise.all([
+          prisma.returnRequest.count({ where: channelReturnWhere }),
+          prisma.return.count({
+            where: {
+              returnRequestId: null,
+              ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
+            },
+          }),
+        ]);
+        return reqTotal + standTotal;
+      })(),
+      (async () => {
+        // Genuine pending returns: awaiting approval/acceptance or pickup creation (not received, not refunded, not rejected, not cancelled)
+        const [reqPending, standPending] = await Promise.all([
+          prisma.returnRequest.count({
+            where: {
+              ...channelReturnWhere,
+              status: { in: ['pending', 'pending_approval', 'submitted', 'approved'] },
+              receivedAt: null,
+              refundReleasedAt: null,
+              reverseAwb: null,
+            },
+          }),
+          prisma.return.count({
+            where: {
+              returnRequestId: null,
+              status: { in: ['pending', 'pending_approval', 'submitted', 'approved', 'REQUESTED'] },
+              ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
+            },
+          }),
+        ]);
+        return reqPending + standPending;
+      })(),
       prisma.returnRequest.count({
         where: {
           ...channelReturnWhere,
@@ -168,13 +195,39 @@ export async function GET(req: Request) {
       }),
 
       // D. Exchanges Counts (Live Backlog filtered by order channel)
-      prisma.exchangeRequest.count({ where: channelExchangeWhere }),
-      prisma.exchangeRequest.count({
-        where: {
-          ...channelExchangeWhere,
-          status: { notIn: ['completed', 'rejected', 'cancelled'] },
-        },
-      }),
+      (async () => {
+        const [reqTotal, standTotal] = await Promise.all([
+          prisma.exchangeRequest.count({ where: channelExchangeWhere }),
+          prisma.exchange.count({
+            where: {
+              exchangeRequestId: null,
+              ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
+            },
+          }),
+        ]);
+        return reqTotal + standTotal;
+      })(),
+      (async () => {
+        // Genuine pending exchanges: awaiting approval or replacement creation (not received, not completed, not rejected, not cancelled)
+        const [reqPending, standPending] = await Promise.all([
+          prisma.exchangeRequest.count({
+            where: {
+              ...channelExchangeWhere,
+              status: { in: ['pending', 'pending_approval', 'submitted', 'approved'] },
+              receivedAt: null,
+              reverseAwb: null,
+            },
+          }),
+          prisma.exchange.count({
+            where: {
+              exchangeRequestId: null,
+              status: { in: ['pending', 'pending_approval', 'submitted', 'approved', 'REQUESTED'] },
+              ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
+            },
+          }),
+        ]);
+        return reqPending + standPending;
+      })(),
 
       // E. Pending Refunds (Live Backlog filtered by order channel)
       prisma.returnRequest.findMany({

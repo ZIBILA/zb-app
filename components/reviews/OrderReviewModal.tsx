@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ReviewPhotoPicker from "./ReviewPhotoPicker";
 import Image from "next/image";
 import { Star, X, CheckCircle2, Loader2, Sparkles, ShoppingBag } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -48,6 +49,7 @@ export default function OrderReviewModal({
   const [hoveredRating, setHoveredRating] = useState(0);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [photos, setPhotos] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submittedSuccess, setSubmittedSuccess] = useState(false);
@@ -78,6 +80,7 @@ export default function OrderReviewModal({
           rating,
           title: title.trim() || undefined,
           body: body.trim(),
+          photos,
         }),
       });
 
@@ -89,6 +92,7 @@ export default function OrderReviewModal({
           setSubmittedSuccess(false);
           setTitle("");
           setBody("");
+          setPhotos([]);
         }, 2000);
       } else {
         setError(data.error || "Failed to submit review");
@@ -222,7 +226,7 @@ export default function OrderReviewModal({
                   <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto" />
                   <h4 className="text-xs font-bold text-emerald-300">Review Submitted!</h4>
                   <p className="text-[10px] text-neutral-400">
-                    Thank you for sharing your feedback.
+                    Thank you! It will appear on the product page once our team approves it.
                   </p>
                 </div>
               ) : (
@@ -289,6 +293,14 @@ export default function OrderReviewModal({
                       onChange={(e) => setBody(e.target.value)}
                       className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-white placeholder:text-neutral-600 focus:outline-none focus:border-amber-500/50 resize-none"
                     />
+                  </div>
+
+                  {/* Photos */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                      Photos (optional)
+                    </label>
+                    <ReviewPhotoPicker photos={photos} onChange={setPhotos} variant="dark" />
                   </div>
 
                   {/* Action buttons */}

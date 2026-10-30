@@ -1,4 +1,4 @@
-import { searchProducts, fetchCollections, fetchProducts } from "@/lib/shopify-admin";
+import { searchProducts, fetchCollections, fetchCollectionByHandle } from "@/lib/shopify-admin";
 import { ShopifyProduct } from "@/lib/shopify-admin";
 import SearchResultsClient from "@/components/SearchResultsClient";
 import type { Metadata } from "next";
@@ -44,7 +44,7 @@ export default async function SearchPage({
   const [productsRaw, collections, trendingProducts] = await Promise.all([
     query ? searchProducts(query, 48).catch(() => [] as ShopifyProduct[]) : Promise.resolve([] as ShopifyProduct[]),
     fetchCollections().catch(() => [] as any[]),
-    fetchProducts(24).catch(() => [] as ShopifyProduct[]),
+    fetchCollectionByHandle('all', 24).then((r) => r.products).catch(() => [] as ShopifyProduct[]),
   ]);
 
   // Filter raw products by price range if specified

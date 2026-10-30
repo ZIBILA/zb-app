@@ -10,10 +10,12 @@ import ProductCard from "@/components/ProductCard";
 import { ShopifyProduct } from "@/lib/shopify-admin";
 import FeaturedUsersSection from "@/components/FeaturedUsersSection";
 import HeroVideo from "@/components/HeroVideo";
+import StableHeroSection from "@/components/StableHeroSection";
 import FlipbookSection from "@/components/FlipbookSection";
 import RingCarouselSection from "@/components/RingCarouselSection";
 import SpotlightSection from "@/components/SpotlightSection";
 import LazyVideo from "@/components/LazyVideo";
+import AspectFitImage from "@/components/AspectFitImage";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import { Metadata } from "next";
 
@@ -189,7 +191,7 @@ export default async function Home() {
       <div className="hidden md:block absolute top-[180vh] right-1/4 translate-x-1/2 w-[min(700px,100vw)] h-[700px] rounded-full bg-foreground/[0.02] blur-[150px] pointer-events-none z-0" />
 
       {/* ═══ HERO: Full-screen ═══ */}
-      <section className="relative w-full h-screen overflow-hidden min-h-[500px] bg-black">
+      <StableHeroSection className="relative w-full h-screen [height:100lvh] overflow-hidden min-h-[500px] bg-black">
         {/* Background video */}
         {heroVideo ? (
           <HeroVideo
@@ -248,7 +250,7 @@ export default async function Home() {
           <div className="w-8 h-[1px] bg-white/20 rounded-full" />
         </div>
         
-      </section>
+      </StableHeroSection>
 
       {/* ─── CONTENT BELOW HERO ─── */}
       <div className="content-stable relative z-10 w-full pb-16 rounded-t-2xl md:-mt-6 overflow-x-hidden">
@@ -267,7 +269,7 @@ export default async function Home() {
                       sizes="(max-width: 768px) 100vw, 50vw"
                       quality={75}
                       loading="lazy"
-                      className="object-cover group-hover:scale-105 transition-transform duration-700"
+                      className="object-cover [@media(hover:hover)]:group-hover:scale-105 transition-transform duration-700"
                       onError={handleImageError}
                     />
                     {banner.title && (
@@ -407,13 +409,14 @@ export default async function Home() {
             {(() => {
               const hasLink = featuredMediaLink && featuredMediaLink.trim() !== '';
               const hasText = blueprintTitle || blueprintSubtitle;
+              const mobileIsImage = !featuredMediaMobile && Boolean(featuredMediaImageMobile || featuredMediaImage);
               const Wrapper = hasLink ? Link : 'div';
               const wrapperProps = hasLink ? { href: `/collections/${featuredMediaLink}` } : {};
               return (
                 <>
                   <Wrapper
                     {...wrapperProps as any}
-                    className={`render-deferred-media hidden md:block relative w-full overflow-hidden group shadow-xl border-y border-foreground/[0.03] dark:border-white/[0.04] aspect-[21/9] md:h-[80vh] md:aspect-auto ${hasLink ? 'cursor-pointer' : ''}`}
+                    className={`render-deferred-media hidden md:block relative w-full overflow-hidden group shadow-xl border-y border-foreground/[0.03] dark:border-white/[0.04] ${featuredMedia ? 'aspect-[21/9] md:h-[80vh] md:aspect-auto' : ''} ${hasLink ? 'cursor-pointer' : ''}`}
                     aria-label={hasLink ? `Featured collection - Open collection ${featuredMediaLink}` : 'Featured collection'}
                     itemScope
                     itemType="https://schema.org/CollectionPage"
@@ -428,18 +431,15 @@ export default async function Home() {
                       <LazyVideo
                         src={featuredMedia}
                         fallbackImage={featuredMediaImage || "/section-image1.webp"}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-1000"
+                        className="w-full h-full object-cover [@media(hover:hover)]:group-hover:scale-105 transition-transform duration-1000"
                       />
                     ) : (
-                      <NextImage
+                      // Banner images render at their own aspect ratio so nothing is cropped
+                      <AspectFitImage
                         src={featuredMediaImage || "/section-image1.webp"}
-                        alt="Featured Media"
-                        fill
-                        sizes="100vw"
-                        quality={75}
-                        loading="lazy"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-1000"
-                        onError={handleImageError}
+                        alt={blueprintTitle || "Featured Media"}
+                        defaultRatio={21 / 9}
+                        maxHeight="85vh"
                       />
                     )}
                     {/* Gradient overlay for text */}
@@ -468,7 +468,7 @@ export default async function Home() {
                   {/* Mobile View (Portrait - Full Width) */}
                   <Wrapper
                     {...wrapperProps as any}
-                    className={`render-deferred-media block md:hidden relative w-full overflow-hidden group shadow-xl border-y border-foreground/[0.03] dark:border-white/[0.04] aspect-[9/16] ${hasLink ? 'cursor-pointer' : ''}`}
+                    className={`render-deferred-media block md:hidden relative w-full overflow-hidden group shadow-xl border-y border-foreground/[0.03] dark:border-white/[0.04] ${mobileIsImage ? '' : 'aspect-[9/16]'} ${hasLink ? 'cursor-pointer' : ''}`}
                     aria-label={hasLink ? `Featured collection - Open collection ${featuredMediaLink}` : 'Featured collection'}
                     itemScope
                     itemType="https://schema.org/CollectionPage"
@@ -483,24 +483,19 @@ export default async function Home() {
                       <LazyVideo
                         src={featuredMediaMobile}
                         fallbackImage={featuredMediaImageMobile || featuredMediaImage || "/section-image1.webp"}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-1000"
+                        className="w-full h-full object-cover [@media(hover:hover)]:group-hover:scale-105 transition-transform duration-1000"
                       />
-                    ) : (featuredMediaImageMobile || featuredMediaImage) ? (
-                      <NextImage
-                        src={featuredMediaImageMobile || featuredMediaImage || "/section-image1.webp"}
-                        alt="Featured Media Mobile"
-                        fill
-                        sizes="100vw"
-                        quality={75}
-                        loading="lazy"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-1000"
-                        onError={handleImageError}
+                    ) : mobileIsImage ? (
+                      <AspectFitImage
+                        src={(featuredMediaImageMobile || featuredMediaImage)!}
+                        alt={blueprintTitle || "Featured Media"}
+                        defaultRatio={4 / 5}
                       />
                     ) : featuredMedia ? (
                       <LazyVideo
                         src={featuredMedia}
                         fallbackImage={featuredMediaImage || "/section-image1.webp"}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-1000"
+                        className="w-full h-full object-cover [@media(hover:hover)]:group-hover:scale-105 transition-transform duration-1000"
                       />
                     ) : (
                       <NextImage
@@ -510,7 +505,7 @@ export default async function Home() {
                         sizes="100vw"
                         quality={75}
                         loading="lazy"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-1000"
+                        className="w-full h-full object-cover [@media(hover:hover)]:group-hover:scale-105 transition-transform duration-1000"
                         onError={handleImageError}
                       />
                     )}

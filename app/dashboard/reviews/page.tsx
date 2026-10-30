@@ -25,6 +25,8 @@ import {
   ThumbsUp,
   MessageSquare,
   X,
+  Check,
+  Clock,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -51,17 +53,21 @@ type Review = {
   title: string | null;
   body: string;
   verifiedPurchase: boolean;
-  status: "VISIBLE" | "HIDDEN";
+  status: ReviewStatus;
+  photos?: string[];
   createdAt: string;
   updatedAt: string;
   product: ReviewProduct | null;
   user: ReviewUser | null;
 };
 
+type ReviewStatus = "PENDING" | "VISIBLE" | "HIDDEN";
+
 type Stats = {
   totalReviews: number;
   visibleCount: number;
   hiddenCount: number;
+  pendingCount: number;
   avgRating: number;
   fiveStarRatio: number;
 };
@@ -85,6 +91,7 @@ export default function AdminReviewsPage() {
     totalReviews: 0,
     visibleCount: 0,
     hiddenCount: 0,
+    pendingCount: 0,
     avgRating: 0,
     fiveStarRatio: 0,
   });
@@ -101,7 +108,8 @@ export default function AdminReviewsPage() {
   // Filters
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "VISIBLE" | "HIDDEN">("ALL");
+  // Opens on the approval queue: new customer reviews wait here until approved.
+  const [statusFilter, setStatusFilter] = useState<"ALL" | ReviewStatus>("PENDING");
   const [ratingFilter, setRatingFilter] = useState<string>("ALL");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest" | "rating_desc" | "rating_asc">("newest");
 
@@ -128,7 +136,7 @@ export default function AdminReviewsPage() {
   const [formReviewerName, setFormReviewerName] = useState("");
   const [formReviewerEmail, setFormReviewerEmail] = useState("");
   const [formVerified, setFormVerified] = useState(true);
-  const [formStatus, setFormStatus] = useState<"VISIBLE" | "HIDDEN">("VISIBLE");
+  const [formStatus, setFormStatus] = useState<ReviewStatus>("VISIBLE");
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -209,9 +217,8 @@ export default function AdminReviewsPage() {
     }
   };
 
-  // Toggle Visibility
-  const toggleVisibility = async (review: Review) => {
-    const newStatus = review.status === "VISIBLE" ? "HIDDEN" : "VISIBLE";
+  // Approve (VISIBLE), reject / hide (HIDDEN)
+  const setReviewStatus = async (review: Review, newStatus: ReviewStatus) => {
     setActionLoadingId(review.id);
 
     try {
@@ -226,12 +233,15 @@ export default function AdminReviewsPage() {
         setReviews((prev) =>
           prev.map((r) => (r.id === review.id ? { ...r, status: newStatus } : r))
         );
+        const countKey = { PENDING: "pendingCount", VISIBLE: "visibleCount", HIDDEN: "hiddenCount" } as const;
         setStats((prev) => ({
           ...prev,
-          visibleCount: newStatus === "VISIBLE" ? prev.visibleCount + 1 : prev.visibleCount - 1,
-          hiddenCount: newStatus === "HIDDEN" ? prev.hiddenCount + 1 : prev.hiddenCount - 1,
+          [countKey[review.status]]: Math.max(0, prev[countKey[review.status]] - 1),
+          [countKey[newStatus]]: prev[countKey[newStatus]] + 1,
         }));
-        showNotification(`Review status updated to ${newStatus}`);
+        showNotification(
+          newStatus === "VISIBLE" ? "Review approved — now live on the product page" : newStatus === "HIDDEN" ? "Review hidden from the store" : "Review moved back to pending"
+        );
       } else {
         showNotification(data.error || "Failed to update review status", "error");
       }
@@ -438,7 +448,7 @@ export default function AdminReviewsPage() {
         </div>
 
         {/* Metrics Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
           <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-foreground/5 backdrop-blur-xl relative overflow-hidden group hover:border-foreground/10 transition-colors">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-widest text-foreground/60">Total Reviews</span>
@@ -459,6 +469,19 @@ export default function AdminReviewsPage() {
             </div>
             <p className="text-[10px] text-foreground/50 mt-1">From visible reviews</p>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setStatusFilter("PENDING")}
+            className="text-left p-4 rounded-2xl bg-foreground/[0.03] border border-sky-500/20 backdrop-blur-xl relative overflow-hidden group hover:border-sky-500/40 transition-colors"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-sky-400">Awaiting Approval</span>
+              <Clock className="w-4 h-4 text-sky-400" />
+            </div>
+            <p className="text-2xl font-extrabold text-sky-400 mt-2">{stats.pendingCount}</p>
+            <p className="text-[10px] text-sky-500/70 mt-1">Not live until approved</p>
+          </button>
 
           <div className="p-4 rounded-2xl bg-foreground/[0.03] border border-emerald-500/10 backdrop-blur-xl relative overflow-hidden group hover:border-emerald-500/20 transition-colors">
             <div className="flex items-center justify-between">
@@ -523,6 +546,16 @@ export default function AdminReviewsPage() {
                 }`}
               >
                 All
+              </button>
+              <button
+                onClick={() => setStatusFilter("PENDING")}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
+                  statusFilter === "PENDING"
+                    ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
+                    : "text-neutral-400 hover:text-white"
+                }`}
+              >
+                Pending{stats.pendingCount > 0 ? ` (${stats.pendingCount})` : ""}
               </button>
               <button
                 onClick={() => setStatusFilter("VISIBLE")}
@@ -611,6 +644,8 @@ export default function AdminReviewsPage() {
                   className={`p-4 rounded-2xl bg-foreground/[0.03] border transition-all ${
                     review.status === "VISIBLE"
                       ? "border-white/5 hover:border-white/15"
+                      : review.status === "PENDING"
+                      ? "border-sky-500/25"
                       : "border-rose-500/20 bg-rose-950/10"
                   }`}
                 >
@@ -656,6 +691,8 @@ export default function AdminReviewsPage() {
                             className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
                               review.status === "VISIBLE"
                                 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                : review.status === "PENDING"
+                                ? "bg-sky-500/10 text-sky-400 border border-sky-500/20"
                                 : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
                             }`}
                           >
@@ -703,13 +740,43 @@ export default function AdminReviewsPage() {
                         <p className="text-xs text-neutral-300 leading-relaxed bg-black/20 p-2.5 rounded-xl border border-foreground/5">
                           "{review.body}"
                         </p>
+                        {review.photos && review.photos.length > 0 && (
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {review.photos.map((src) => (
+                              <a key={src} href={src} target="_blank" rel="noopener noreferrer" className="block w-16 h-16 rounded-lg overflow-hidden border border-foreground/10">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img src={src} alt="Customer photo" className="w-full h-full object-cover" />
+                              </a>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     {/* Right: Actions */}
                     <div className="flex items-center md:flex-col gap-2 shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-foreground/5">
+                      {review.status === "PENDING" ? (
+                        <>
+                          <button
+                            onClick={() => setReviewStatus(review, "VISIBLE")}
+                            disabled={actionLoadingId === review.id}
+                            className="flex-1 md:w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                          >
+                            {actionLoadingId === review.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                            <span>Approve</span>
+                          </button>
+                          <button
+                            onClick={() => setReviewStatus(review, "HIDDEN")}
+                            disabled={actionLoadingId === review.id}
+                            className="flex-1 md:w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/30"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                        </>
+                      ) : (
                       <button
-                        onClick={() => toggleVisibility(review)}
+                        onClick={() => setReviewStatus(review, review.status === "VISIBLE" ? "HIDDEN" : "VISIBLE")}
                         disabled={actionLoadingId === review.id}
                         className={`flex-1 md:w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
                           review.status === "VISIBLE"
@@ -731,6 +798,7 @@ export default function AdminReviewsPage() {
                           </>
                         )}
                       </button>
+                      )}
 
                       <div className="flex items-center gap-2">
                         <button
@@ -951,6 +1019,7 @@ export default function AdminReviewsPage() {
                     >
                       <option value="VISIBLE">VISIBLE</option>
                       <option value="HIDDEN">HIDDEN</option>
+                      <option value="PENDING">PENDING</option>
                     </select>
                   </div>
                 </div>
@@ -1084,6 +1153,7 @@ export default function AdminReviewsPage() {
                     >
                       <option value="VISIBLE">VISIBLE</option>
                       <option value="HIDDEN">HIDDEN</option>
+                      <option value="PENDING">PENDING</option>
                     </select>
                   </div>
                 </div>

@@ -16,6 +16,7 @@ import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-se
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
+import { fetchVariantPrices } from '@/lib/variant-prices';
 
 export async function POST(req: Request) {
   const rateLimitResult = await checkRateLimit(req, "checkout-complete", { maxRequests: 30, windowMs: 60_000 });
@@ -170,27 +171,11 @@ export async function POST(req: Request) {
         .filter(Boolean);
 
       if (variantIds.length > 0 && variantIds.length === items.length) {
-        // Batch fetch variant prices from Shopify Admin API
-        const { shopifyFetch, adminUrl: buildAdminUrl } = await import('@/lib/shopify-admin');
-        const variantPriceMap = new Map<string, number>();
-
-        // Fetch variants in batches (Shopify supports comma-separated IDs)
-        const batchSize = 50;
-        for (let i = 0; i < variantIds.length; i += batchSize) {
-          const batch = variantIds.slice(i, i + batchSize);
-          try {
-            const data = await shopifyFetch<{ variants: Array<{ id: number; price: string }> }>(
-              `variants.json`,
-              { ids: batch.join(','), fields: 'id,price' }
-            );
-            if (data?.variants) {
-              for (const v of data.variants) {
-                variantPriceMap.set(String(v.id), parseFloat(v.price));
-              }
-            }
-          } catch (fetchErr) {
-            console.warn('[Checkout] Variant price fetch batch failed:', fetchErr);
-          }
+        let variantPriceMap = new Map<string, number>();
+        try {
+          variantPriceMap = await fetchVariantPrices(variantIds as string[]);
+        } catch (fetchErr) {
+          console.warn('[Checkout] Variant price fetch failed:', fetchErr);
         }
 
         if (variantPriceMap.size > 0) {
@@ -1002,7 +987,12 @@ export async function POST(req: Request) {
       console.warn('[Checkout Complete] OpenAI CAPI order_created fire failed:', oaiErr.message);
     }
 
-    // Record purchase event in analytics (deferred; non-fatal)
+    // Record purchase event in analytics (deferred; non-fatal).
+    // anonymousId must be the analytics tracker's browser id (zb_external_id cookie) so Omnichannel
+    // Analytics can link this order to the sessions/channels that led to it; the cart device id
+    // (guestId) is kept in metadata.
+    const analyticsAnonymousId =
+      /(?:^|;\s*)zb_external_id=([^;]+)/.exec(req.headers.get('cookie') || '')?.[1] || body.guestId || null;
     deferredTasks.push({
       name: 'analytics-purchase-event',
       run: async () => {
@@ -1012,7 +1002,7 @@ export async function POST(req: Request) {
               eventId: `purchase_${localOrder.id}`,
               eventName: 'purchase',
               customerId: localCustomer.id,
-              anonymousId: body.guestId || null,
+              anonymousId: analyticsAnonymousId ? decodeURIComponent(analyticsAnonymousId) : null,
               sessionId: null,
               platform: 'web',
               orderId: localOrder.id,
@@ -1026,6 +1016,7 @@ export async function POST(req: Request) {
                 couponCode: finalCouponCode || null,
                 discountAmount: Number(finalCouponDiscount) || 0,
                 storeCreditAmount: parsedStoreCredit,
+                guestId: body.guestId || null,
               },
             },
           });

@@ -1,3 +1,5 @@
+import { composeStreetLine } from './address-lines';
+
 /**
  * Normalize shipping address shapes from web checkout, mobile app, Razorpay,
  * and legacy imports into a consistent structure for Shopify sync + dashboard.
@@ -76,38 +78,19 @@ export function normalizeOrderShippingAddress(
   const rawStreet = String(a.street || '').trim();
   const primaryLine = String(a.address1 || a.line1 || '').trim();
   const landmark = String(a.landmark || a.apartment || '').trim();
-  const address2Raw = String(a.address2 || a.line2 || landmark || '').trim();
+  const explicitLine2 = String(a.address2 || a.line2 || '').trim();
 
-  let address1 = '';
-  if (rawStreet && houseNo && rawStreet.toLowerCase().includes(houseNo.toLowerCase())) {
-    // Already merged by checkout/customerService — don't double-prefix houseNo
-    address1 = rawStreet;
-  } else if (primaryLine && houseNo && primaryLine.toLowerCase().includes(houseNo.toLowerCase())) {
-    // Already merged in primaryLine (e.g. from mobile app DeliveryAddressScreen)
-    address1 = primaryLine;
-  } else if (houseNo && (rawStreet || primaryLine)) {
-    address1 = [houseNo, rawStreet || primaryLine].filter(Boolean).join(', ');
-  } else if (primaryLine) {
-    address1 = primaryLine;
-  } else if (rawStreet) {
-    address1 = [houseNo, rawStreet].filter(Boolean).join(', ');
-  } else {
-    address1 = houseNo;
-  }
+  // Web checkout stores the composed "House, Street, Landmark" line in `street` and keeps the parts
+  // alongside; composeStreetLine recognises a composed line structurally (exact house prefix +
+  // landmark suffix) and never re-adds the parts. Words inside the address are never de-duplicated.
+  const address1 = composeStreetLine({ houseNo, street: rawStreet || primaryLine, landmark });
 
-  // Append landmark to address1 only when street wasn't already a full merge that includes it
-  if (
-    landmark &&
-    !address1.toLowerCase().includes(landmark.toLowerCase()) &&
-    !address2Raw
-  ) {
-    address1 = [address1, landmark].filter(Boolean).join(', ');
-  }
-
-  const address2 =
-    address2Raw && !address1.toLowerCase().includes(address2Raw.toLowerCase())
-      ? address2Raw
-      : '';
+  // A separate second line (mobile line2 / Shopify address2) is kept unless it is exactly the landmark
+  // already placed at the end of address1.
+  const line2AlreadyInLine1 =
+    explicitLine2 === address1 ||
+    composeStreetLine({ street: address1, landmark: explicitLine2 }) === address1;
+  const address2 = explicitLine2 && !line2AlreadyInLine1 ? explicitLine2 : '';
 
 
   const name = String(a.name || fallbacks?.name || '').trim();

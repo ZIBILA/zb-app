@@ -58,6 +58,7 @@ import { toast } from "sonner";
 import { loadGoogleMaps, dismissGoogleMapsErrors, resetGoogleMaps, getLoadedLibrary, hasGoogleMapsAuthFailed } from "@/lib/googleMapsLoader";
 import { getExplicitBrowserPosition } from "@/lib/browser-geolocation";
 import { formatPriceString } from "@/lib/global-pricing-client";
+import { withComposedStreet } from "@/lib/address-lines";
 import {
   COUNTRIES,
   INDIAN_STATES,
@@ -1041,8 +1042,7 @@ export default function CheckoutPage() {
 
       const prefetchRazorpayOrder = async () => {
         try {
-          const fullStreet = [address.houseNo, address.street, address.landmark].filter(Boolean).join(", ");
-          const checkoutAddress = { ...address, street: fullStreet || address.street };
+          const checkoutAddress = withComposedStreet(address);
           const convertedItems = items.map(item => ({
             ...item,
             price: fmtPrice(parseFloat(item.price)).amount,
@@ -1689,9 +1689,9 @@ export default function CheckoutPage() {
         return;
       }
 
-      // Combine address fields into a single street for storage
-      const fullStreet = [address.houseNo, address.street, address.landmark].filter(Boolean).join(", ");
-      const checkoutAddress = { ...address, street: fullStreet };
+      // Combine address fields into a single street for storage (idempotent — the server composes
+      // with the same helper, so the line is never built twice)
+      const checkoutAddress = withComposedStreet(address);
 
       // Case 1: ₹0 payable — 100% store credit and/or 100% coupon (no Razorpay)
       if (finalTotal === 0 && (appliedStoreCredit > 0 || (couponValid && couponDiscount > 0))) {
@@ -2228,26 +2228,26 @@ export default function CheckoutPage() {
 
         {/* Payment info banners */}
         <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-300 mb-4 w-full">
-          {paymentMethod === "COD" && (
-            <div className="flex items-center gap-2 p-2.5 rounded-xl bg-foreground/[0.02] border border-foreground/5">
-              <Banknote className="w-3.5 h-3.5 text-foreground/40 shrink-0" />
-              <p className="text-[9px] font-light text-foreground/60 leading-relaxed">
-                {isInternational
+          {/* One layout for every method: same box, same icon slot, same text block — only the content changes */}
+          {(paymentMethod === "COD" || paymentMethod === "PAYNOW") && (() => {
+            const Icon = paymentMethod === "COD" ? Banknote : CreditCard;
+            const text =
+              paymentMethod === "COD"
+                ? isInternational
                   ? `Pay ${codFeeFormatted} upfront (10% of order value, deducted from total). Remaining ${fmtAmount(Math.max(0, finalTotal - codFeeBase))} due at delivery.`
-                  : `Pay ₹${configuredCodFee.toLocaleString("en-IN")} upfront (deducted from total). Remaining ₹${Math.max(0, finalTotal - configuredCodFee).toLocaleString("en-IN")} due at delivery.`}
-              </p>
-            </div>
-          )}
-          {paymentMethod === "PAYNOW" && (
-            <div className="flex items-center gap-2 p-2.5 rounded-xl bg-foreground/[0.02] border border-foreground/5">
-              <CreditCard className="w-3.5 h-3.5 text-foreground/40 shrink-0" />
-              <p className="text-[9px] font-light text-foreground/60 leading-relaxed">
-                {isInternational
-                  ? `Pay securely using any Credit/Debit Card or supported payment method in ${countryConfig?.currencyCode || "USD"}.`
-                  : "Pay securely via UPI, Credit/Debit Cards, Netbanking, Wallets, Pay Later, or EMI in the next screen."}
-              </p>
-            </div>
-          )}
+                  : `Pay ₹${configuredCodFee.toLocaleString("en-IN")} upfront (deducted from total). Remaining ₹${Math.max(0, finalTotal - configuredCodFee).toLocaleString("en-IN")} due at delivery.`
+                : isInternational
+                ? `Pay securely using any Credit/Debit Card or supported payment method in ${countryConfig?.currencyCode || "USD"}.`
+                : "Pay securely via UPI, Credit/Debit Cards, Netbanking, Wallets, Pay Later, or EMI in the next screen.";
+            return (
+              <div className="flex items-center gap-2.5 p-2.5 min-h-[52px] rounded-xl bg-foreground/[0.02] border border-foreground/5">
+                <span className="w-7 h-7 rounded-lg bg-foreground/[0.04] flex items-center justify-center shrink-0">
+                  <Icon className="w-3.5 h-3.5 text-foreground/50" strokeWidth={2} />
+                </span>
+                <p className="text-[9px] font-light text-foreground/60 leading-relaxed">{text}</p>
+              </div>
+            );
+          })()}
         </div>
 
       </div>
@@ -2261,7 +2261,7 @@ export default function CheckoutPage() {
         <div className="apple-glass-capsule px-5 py-5 rounded-[24px] flex flex-col gap-4">
           {items.map((item) => (
             <div key={item.id} className="flex gap-3.5 items-center">
-              <div className="w-10 h-13 rounded-lg bg-foreground/[0.02] border border-foreground/10 overflow-hidden shrink-0 relative">
+              <div className="w-10 h-[52px] rounded-lg bg-foreground/[0.02] border border-foreground/10 overflow-hidden shrink-0 relative">
                 {item.image ? (
                   <img src={item.image} className="w-full h-full object-cover animate-in fade-in duration-300" alt={item.title} />
                 ) : (
@@ -2550,8 +2550,10 @@ export default function CheckoutPage() {
               type="button"
               onClick={handlePlaceOrder}
               disabled={loading}
-              className={`w-full ${paymentMethod === "COD" ? "h-13 pl-13" : "h-11 pl-11"
-                } rounded-xl bg-black dark:bg-white text-white dark:text-black hover:opacity-95 active:scale-[0.98] border border-black/10 dark:border-white/10 transition-all flex items-center justify-between pr-1.5 disabled:opacity-50 shadow-sm`}
+              // Same size for every payment method. (The COD variant used h-13/pl-13, which aren't in
+              // Tailwind's spacing scale, so it rendered with no height or left inset.) pl-[38px] mirrors the
+              // 32px arrow box + 6px right padding so the label stays optically centred.
+              className={`w-full h-11 pl-[38px] rounded-xl bg-black dark:bg-white text-white dark:text-black hover:opacity-95 active:scale-[0.98] border border-black/10 dark:border-white/10 transition-all flex items-center justify-between pr-1.5 disabled:opacity-50 shadow-sm`}
             >
               <span className="text-[9.5px] font-bold tracking-[0.16em] uppercase text-center flex-1 whitespace-nowrap">
                 {loading

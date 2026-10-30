@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Eye, EyeOff, Lock, Loader2, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, Lock, Loader2, ShieldCheck, Fingerprint } from 'lucide-react';
+import { startAuthentication, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import Image from 'next/image';
 import { signIn, useSession } from 'next-auth/react';
 import { toast } from 'sonner';
@@ -18,6 +19,11 @@ export default function DashboardLoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [show, setShow] = useState(false);
+  const [passkeySupported, setPasskeySupported] = useState(false);
+
+  useEffect(() => {
+    setPasskeySupported(browserSupportsWebAuthn());
+  }, []);
 
   const from = searchParams.get('callbackUrl') || searchParams.get('from') || '/dashboard';
 
@@ -83,6 +89,33 @@ export default function DashboardLoginPage() {
     }
   };
 
+  const handlePasskeyLogin = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const optionsRes = await fetch('/api/auth/passkey/options', { method: 'POST' });
+      if (!optionsRes.ok) throw new Error('Could not start passkey sign-in.');
+      const assertion = await startAuthentication({ optionsJSON: await optionsRes.json() });
+
+      const result = await signIn('admin-passkey', {
+        response: JSON.stringify(assertion),
+        redirect: false,
+        callbackUrl: from,
+      });
+      if (result?.error) throw new Error('This passkey is not registered to an active admin account.');
+
+      toast.success('Authentication successful. Redirecting...');
+      window.location.href = from;
+    } catch (err: any) {
+      // NotAllowedError = the user dismissed the passkey prompt; not worth an error banner.
+      if (err?.name !== 'NotAllowedError') {
+        const msg = err?.message || 'Passkey sign-in failed.';
+        setError(msg);
+        toast.error(msg);
+      }
+      setLoading(false);
+    }
+  };
 
   if (status === 'loading') {
     return (
@@ -204,6 +237,20 @@ export default function DashboardLoginPage() {
               )}
             </span>
           </button>
+
+          {passkeySupported && (
+            <button
+              type="button"
+              onClick={handlePasskeyLogin}
+              disabled={loading}
+              className="login-continue-btn mt-1 !bg-transparent border border-black/10 dark:border-white/15"
+            >
+              <span className="login-continue-text !text-current">
+                <Fingerprint className="w-4 h-4 mr-2" />
+                Sign in with passkey
+              </span>
+            </button>
+          )}
         </form>
 
         {/* ─── Footer ─── */}

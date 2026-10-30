@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchProductByHandle, flattenProduct } from '@/lib/shopify-admin';
+import { isStorefrontEligible } from '@/lib/storefrontCatalog';
 import {
   getCachedAppProduct,
   getInflightAppProduct,
@@ -45,7 +46,8 @@ export async function GET(
 
     const fetchPromise = (async () => {
       const rawProduct = await fetchProductByHandle(handle);
-      if (!rawProduct) return null;
+      // Drafted / unpublished products are not sold in the app either.
+      if (!rawProduct || !isStorefrontEligible(rawProduct)) return null;
       const flattened = await flattenProduct(rawProduct);
       setCachedAppProduct(handle, flattened);
       return flattened;

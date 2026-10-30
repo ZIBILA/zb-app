@@ -66,6 +66,7 @@ const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
     "/dashboard/wishlist",
     "/dashboard/notifications",
     "/dashboard/marketing/discounts",
+    "/dashboard/marketing/sales",
     "/dashboard/marketing/whatsapp",
     "/dashboard/marketing/email",
     "/dashboard/marketing/sms",
@@ -342,7 +343,7 @@ export default withAuth(
     if (token?.role === "SUPER_ADMIN") return NextResponse.next();
 
     // Map pathnames to modules for RBAC
-    const moduleMap: Record<string, string> = {
+    const moduleMap: Record<string, string | string[]> = {
       "/dashboard/orders": "ORDERS",
       "/api/admin/orders": "ORDERS",
       "/dashboard/products": "PRODUCTS",
@@ -380,6 +381,46 @@ export default withAuth(
       "/api/admin/global-store": "STOREFRONT",
       "/dashboard/affiliates": "AFFILIATES",
       "/api/admin/affiliates": "AFFILIATES",
+
+      // Every other admin API, by the dashboard section(s) whose pages call it (Developer Brief #21).
+      // Arrays = shared by several sections; any one of them grants access.
+      "/api/admin/customers": ["CUSTOMERS", "MARKETING"],
+      "/api/admin/mobile-orders": "MOBILE_ORDERS",
+      "/api/admin/products-list": ["PRODUCTS", "ORDERS"],
+      "/api/admin/products-list/feed-toggle": "MARKETING",
+      "/api/admin/collections": "PRODUCTS",
+      "/api/admin/reviews": "PRODUCTS",
+      "/api/admin/inventory": "INVENTORY",
+      "/api/admin/price-tags": "INVENTORY",
+      "/api/admin/scanner-records": "INVENTORY",
+      "/api/admin/logistics": ["LOGISTICS", "ORDERS"],
+      "/api/admin/linked-id": ["ORDERS", "RETURNS_EXCHANGES"],
+      "/api/admin/refunds": "RETURNS_EXCHANGES",
+      "/api/admin/payments": "FINANCIAL",
+      "/api/admin/transactions": "FINANCIAL",
+      "/api/admin/payment-status": "INTEGRATIONS",
+      "/api/admin/live-carts": "INTEGRATIONS",
+      "/api/admin/app-logins": "INTEGRATIONS",
+      "/api/admin/sync-stats": "INTEGRATIONS",
+      "/api/admin/zoho": "INTEGRATIONS",
+      "/api/admin/marketing": "MARKETING",
+      "/api/admin/sales": "MARKETING",
+      "/api/admin/feeds": "MARKETING",
+      "/api/admin/wishlist": "MARKETING",
+      "/api/admin/notifications": ["MARKETING", "DASHBOARD_HOME"],
+      "/api/admin/blogs": "COMMUNITY",
+      "/api/admin/community": "COMMUNITY",
+      "/api/admin/chat-settings": "COMMUNITY",
+      "/api/admin/featured-users": "COMMUNITY",
+      "/api/admin/policies": "STOREFRONT",
+      "/api/admin/support": "SUPPORT",
+      "/api/admin/ai": ["SUPPORT", "MARKETING", "AI_SERVICES"],
+      "/api/admin/dashboard": "DASHBOARD_HOME",
+      "/api/admin/design-tasks": "MANUFACTURING",
+      "/api/admin/claude": "SETTINGS",
+      "/api/admin/db-status": "SETTINGS",
+      "/api/admin/settings": ["SETTINGS", "STOREFRONT", "COMMUNITY", "INTEGRATIONS"],
+      "/api/admin/settings/feed-collections": "MARKETING",
     };
 
     // Check module-specific page/API access
@@ -413,90 +454,103 @@ export default withAuth(
         }
 
         const permissions = (token?.permissions as any[]) || [];
-        const permission = permissions.find(p => p.module === moduleMap[route]);
-        
         const isApi = pathname.startsWith('/api/');
-        let hasAccess = false;
-        
-        // 1. Run real-time check using secure internal API
-        try {
-          const checkUrl = new URL(`/api/admin/users/check-permissions`, req.url);
-          checkUrl.searchParams.set("userId", token?.id as string);
-          checkUrl.searchParams.set("module", moduleMap[route]);
-          checkUrl.searchParams.set("path", pathname);
-          checkUrl.searchParams.set("method", req.method);
+        // An API shared by pages in several sections lists every section that may use it;
+        // access is granted when any one of them allows it.
+        const routeModules = ([] as string[]).concat(moduleMap[route]);
+
+        const checkModuleAccess = async (moduleName: string): Promise<boolean> => {
+          const permission = permissions.find(p => p.module === moduleName);
+          let hasAccess = false;
+          // 1. Run real-time check using secure internal API
+          try {
+            const checkUrl = new URL(`/api/admin/users/check-permissions`, req.url);
+            checkUrl.searchParams.set("userId", token?.id as string);
+            checkUrl.searchParams.set("module", moduleName);
+            checkUrl.searchParams.set("path", pathname);
+            checkUrl.searchParams.set("method", req.method);
           
-          const res = await fetch(checkUrl.toString(), {
-            headers: {
-              "x-internal-secret": process.env.INTERNAL_API_SECRET || ""
+            const res = await fetch(checkUrl.toString(), {
+              headers: {
+                "x-internal-secret": process.env.INTERNAL_API_SECRET || ""
+              }
+            });
+            if (res.ok) {
+              const data = await res.json();
+              hasAccess = data.hasAccess;
+            } else {
+              throw new Error(`Response status: ${res.status}`);
             }
-          });
-          if (res.ok) {
-            const data = await res.json();
-            hasAccess = data.hasAccess;
-          } else {
-            throw new Error(`Response status: ${res.status}`);
-          }
-        } catch (err) {
-          console.warn("Middleware real-time permissions check failed, falling back to token validation:", err);
+          } catch (err) {
+            console.warn("Middleware real-time permissions check failed, falling back to token validation:", err);
           
-          // Fallback to token permissions
-          if (permission) {
-            if (isApi) {
-              const isWrite = ["POST", "PUT", "DELETE", "PATCH"].includes(req.method);
-              if (isWrite) {
-                hasAccess = req.method === "DELETE" ? permission.canDelete || permission.canEdit : permission.canEdit;
+            // Fallback to token permissions
+            if (permission) {
+              if (isApi) {
+                const isWrite = ["POST", "PUT", "DELETE", "PATCH"].includes(req.method);
+                if (isWrite) {
+                  hasAccess = req.method === "DELETE" ? permission.canDelete || permission.canEdit : permission.canEdit;
+                } else {
+                  hasAccess = permission.canView;
+                }
               } else {
                 hasAccess = permission.canView;
               }
-            } else {
-              hasAccess = permission.canView;
-            }
 
-            // Enforce granular page-level check with crossing prevention
-            if (hasAccess && permission.pages) {
-              const allowedPages = (permission.pages as string).split(',');
-              // Admins who could manage the old Homepage Products / All Products pages keep access to the merged "Products & Order" page.
-              if (allowedPages.includes('/web-store/homepage') || allowedPages.includes('/web-store/products')) {
-                allowedPages.push('/web-store/merchandising');
-              }
-              const knownPagesForModule = ALL_KNOWN_MODULE_PAGES[moduleMap[route]] || [];
-              if (isApi) {
-                let targetPage: string | null = null;
-                for (const [apiPrefix, pageRoute] of Object.entries(apiPageMap)) {
-                  if (pathname.startsWith(apiPrefix)) {
-                    targetPage = pageRoute;
-                    break;
-                  }
+              // Enforce granular page-level check with crossing prevention
+              if (hasAccess && permission.pages) {
+                const allowedPages = (permission.pages as string).split(',');
+                // Admins who could manage the old Homepage Products / All Products pages keep access to the merged "Products & Order" page.
+                if (allowedPages.includes('/web-store/homepage') || allowedPages.includes('/web-store/products')) {
+                  allowedPages.push('/web-store/merchandising');
                 }
-                if (targetPage && !allowedPages.includes(targetPage)) {
-                  hasAccess = false;
-                }
-              } else {
-                let isAllowed = false;
-                for (const allowedPage of allowedPages) {
-                  if (pathname === allowedPage || pathname.startsWith(allowedPage + "/")) {
-                    const isCrossingIntoOtherRestrictedPage = knownPagesForModule.some(kp => 
-                      kp !== allowedPage && 
-                      !allowedPages.includes(kp) && 
-                      (pathname === kp || pathname.startsWith(kp + "/"))
-                    );
-                    if (!isCrossingIntoOtherRestrictedPage) {
-                      isAllowed = true;
+                const knownPagesForModule = ALL_KNOWN_MODULE_PAGES[moduleName] || [];
+                if (isApi) {
+                  let targetPage: string | null = null;
+                  for (const [apiPrefix, pageRoute] of Object.entries(apiPageMap)) {
+                    if (pathname.startsWith(apiPrefix)) {
+                      targetPage = pageRoute;
                       break;
                     }
                   }
+                  if (targetPage && !allowedPages.includes(targetPage)) {
+                    hasAccess = false;
+                  }
+                } else {
+                  let isAllowed = false;
+                  for (const allowedPage of allowedPages) {
+                    if (pathname === allowedPage || pathname.startsWith(allowedPage + "/")) {
+                      const isCrossingIntoOtherRestrictedPage = knownPagesForModule.some(kp => 
+                        kp !== allowedPage && 
+                        !allowedPages.includes(kp) && 
+                        (pathname === kp || pathname.startsWith(kp + "/"))
+                      );
+                      if (!isCrossingIntoOtherRestrictedPage) {
+                        isAllowed = true;
+                        break;
+                      }
+                    }
+                  }
+                  hasAccess = isAllowed;
                 }
-                hasAccess = isAllowed;
               }
             }
           }
+          return hasAccess;
+        };
+
+        let hasAccess = false;
+        for (const moduleName of routeModules) {
+          if (await checkModuleAccess(moduleName)) {
+            hasAccess = true;
+            break;
+          }
         }
-        
+
         if (!hasAccess) {
           if (isApi) {
             return new NextResponse(
-              JSON.stringify({ error: `Forbidden: Insufficient permissions for module ${moduleMap[route]}` }), 
+              JSON.stringify({ error: `Forbidden: Insufficient permissions for module ${routeModules.join(' / ')}` }), 
               {
                 status: 403,
                 headers: { "Content-Type": "application/json" }
@@ -559,6 +613,11 @@ export default withAuth(
         
         // Skip auth for login page to avoid redirect loop
         if (pathname === '/dashboard/login') return true;
+
+        // Middleware's own real-time permission lookup. It has no session cookie; the route itself
+        // rejects any call without INTERNAL_API_SECRET. (Gating it here redirected every lookup to the
+        // login page, so permission checks silently fell back to the stale JWT copy.)
+        if (pathname === '/api/admin/users/check-permissions') return true;
         
         // Allow public app APIs
         if (pathname.startsWith('/api/app/')) return true;

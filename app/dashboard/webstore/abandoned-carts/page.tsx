@@ -97,9 +97,10 @@ export default function AbandonedCartsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "live" | "abandoned" | "converted" | "expired">("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "webstore" | "app">("all");
-  const [dateRange, setDateRange] = useState<"all" | "today" | "yesterday" | "last7days" | "last30days" | "custom">("all");
+  const [dateRange, setDateRange] = useState<"all" | "today" | "yesterday" | "last7days" | "thisweek" | "lastweek" | "last30days" | "custom">("all");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
+  const [activeSection, setActiveSection] = useState<"all_carts" | "followups">("all_carts");
   const [followupFilter, setFollowupFilter] = useState<"all" | "today" | "tomorrow">("all");
   const [selectedCart, setSelectedCart] = useState<Cart | null>(null);
   const [stats, setStats] = useState<any>(null);
@@ -387,34 +388,23 @@ export default function AbandonedCartsPage() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <GlassCard className="p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-foreground/40 mb-3">
-            <span className="text-[9px] font-black uppercase tracking-widest">Total Tracked</span>
-            <ShoppingCart className="w-4 h-4 text-foreground/50" />
+            <span className="text-[9px] font-black uppercase tracking-widest">Total Customers</span>
+            <Users className="w-4 h-4 text-foreground/50" />
           </div>
           <div>
-            <div className="text-3xl font-black italic text-foreground tracking-tight">{stats?.totalTracked || 0}</div>
-            <span className="text-[9px] font-bold text-foreground/30 uppercase tracking-wider block mt-1">Sessions</span>
-          </div>
-        </GlassCard>
-
-        <GlassCard className="p-5 flex flex-col justify-between">
-          <div className="flex items-center justify-between text-emerald-400 mb-3">
-            <span className="text-[9px] font-black uppercase tracking-widest">Live Carts</span>
-            <Activity className="w-4 h-4 animate-pulse text-emerald-400" />
-          </div>
-          <div>
-            <div className="text-3xl font-black italic text-emerald-400 tracking-tight">{stats?.liveCount || 0}</div>
-            <span className="text-[9px] font-bold text-emerald-500/50 uppercase tracking-wider block mt-1">Active Now</span>
+            <div className="text-3xl font-black italic text-foreground tracking-tight">{stats?.totalCustomers ?? stats?.totalTracked ?? 0}</div>
+            <span className="text-[9px] font-bold text-foreground/30 uppercase tracking-wider block mt-1">Unique Shoppers</span>
           </div>
         </GlassCard>
 
         <GlassCard className="p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-amber-500 mb-3">
-            <span className="text-[9px] font-black uppercase tracking-widest">Abandoned</span>
+            <span className="text-[9px] font-black uppercase tracking-widest">Abandoned Carts</span>
             <Clock className="w-4 h-4 text-amber-500" />
           </div>
           <div>
             <div className="text-3xl font-black italic text-amber-500 tracking-tight">{stats?.abandonedCount || 0}</div>
-            <span className="text-[9px] font-bold text-amber-500/50 uppercase tracking-wider block mt-1">Need Recovery</span>
+            <span className="text-[9px] font-bold text-amber-500/50 uppercase tracking-wider block mt-1">Pending Recovery</span>
           </div>
         </GlassCard>
 
@@ -431,6 +421,17 @@ export default function AbandonedCartsPage() {
 
         <GlassCard className="p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-foreground/40 mb-3">
+            <span className="text-[9px] font-black uppercase tracking-widest">Conversion Rate</span>
+            <Zap className="w-4 h-4 text-amber-400" />
+          </div>
+          <div>
+            <div className="text-3xl font-black italic text-foreground tracking-tight">{stats?.recoveryRate || 0}%</div>
+            <span className="text-[9px] font-bold text-foreground/30 uppercase tracking-wider block mt-1">Conversion %</span>
+          </div>
+        </GlassCard>
+
+        <GlassCard className="p-5 flex flex-col justify-between">
+          <div className="flex items-center justify-between text-foreground/40 mb-3">
             <span className="text-[9px] font-black uppercase tracking-widest">Recovered Revenue</span>
             <TrendingUp className="w-4 h-4 text-emerald-400" />
           </div>
@@ -442,14 +443,45 @@ export default function AbandonedCartsPage() {
 
         <GlassCard className="p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between text-foreground/40 mb-3">
-            <span className="text-[9px] font-black uppercase tracking-widest">Recovery Rate</span>
-            <Zap className="w-4 h-4 text-amber-400" />
+            <span className="text-[9px] font-black uppercase tracking-widest">Total Sessions</span>
+            <ShoppingCart className="w-4 h-4 text-foreground/50" />
           </div>
           <div>
-            <div className="text-3xl font-black italic text-foreground tracking-tight">{stats?.recoveryRate || 0}%</div>
-            <span className="text-[9px] font-bold text-foreground/30 uppercase tracking-wider block mt-1">Conversion %</span>
+            <div className="text-3xl font-black italic text-foreground tracking-tight">{stats?.totalTracked || 0}</div>
+            <span className="text-[9px] font-bold text-emerald-500/70 uppercase tracking-wider block mt-1">{stats?.liveCount || 0} live now</span>
           </div>
         </GlassCard>
+      </div>
+
+      {/* Section Mode Switcher: All Abandoned Carts vs Automated Follow-ups */}
+      <div className="flex items-center gap-3 p-1.5 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[2rem] w-fit">
+        <button
+          onClick={() => { setActiveSection("all_carts"); setFollowupFilter("all"); setPage(1); }}
+          className={`flex items-center gap-2 px-6 py-3 rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest transition-all ${
+            activeSection === "all_carts"
+              ? "bg-foreground text-background shadow-lg shadow-black/10 dark:shadow-white/5"
+              : "text-foreground/50 hover:text-foreground hover:bg-foreground/[0.04]"
+          }`}
+        >
+          <ShoppingCart className="w-3.5 h-3.5" />
+          <span>All Abandoned Carts</span>
+        </button>
+        <button
+          onClick={() => { setActiveSection("followups"); setPage(1); }}
+          className={`flex items-center gap-2 px-6 py-3 rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest transition-all ${
+            activeSection === "followups"
+              ? "bg-foreground text-background shadow-lg shadow-black/10 dark:shadow-white/5"
+              : "text-foreground/50 hover:text-foreground hover:bg-foreground/[0.04]"
+          }`}
+        >
+          <Clock className="w-3.5 h-3.5" />
+          <span>Automated Follow-ups Queue</span>
+          {(stats?.followupsTodayCount || 0) > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500 text-white">
+              {stats.followupsTodayCount} today
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Filter and Search Bar */}
@@ -479,6 +511,8 @@ export default function AbandonedCartsPage() {
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
               <option value="last7days">Last 7 Days</option>
+              <option value="thisweek">This Week</option>
+              <option value="lastweek">Last Week</option>
               <option value="last30days">Last 30 Days</option>
               <option value="custom">Custom Range</option>
             </select>
@@ -544,61 +578,63 @@ export default function AbandonedCartsPage() {
           </motion.div>
         )}
 
-        {/* Upcoming Scheduled Follow-up Activity Tabs */}
-        <div className="flex items-center justify-between gap-4 flex-wrap pt-2 border-t border-foreground/[0.05]">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[9px] font-black uppercase tracking-widest text-foreground/40 mr-1 flex items-center gap-1.5">
-              <Clock className="w-3 h-3 text-foreground/40" />
-              Upcoming Follow-ups:
-            </span>
-            <button
-              onClick={() => { setFollowupFilter("all"); setPage(1); }}
-              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                followupFilter === "all"
-                  ? "bg-foreground text-background shadow-md"
-                  : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
-              }`}
-            >
-              All Sessions
-            </button>
-            <button
-              onClick={() => { setFollowupFilter("today"); setPage(1); }}
-              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${
-                followupFilter === "today"
-                  ? "bg-amber-500 text-white shadow-md shadow-amber-500/20"
-                  : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
-              }`}
-            >
-              <Clock className="w-3 h-3" />
-              <span>Today</span>
-              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
-                followupFilter === "today" ? "bg-foreground/20 text-foreground" : "bg-foreground/10 text-foreground/75"
-              }`}>
-                {stats?.followupsTodayCount || 0}
+        {/* Upcoming Scheduled Follow-up Activity Tabs — shown in followups section or when active */}
+        {activeSection === "followups" && (
+          <div className="flex items-center justify-between gap-4 flex-wrap pt-2 border-t border-foreground/[0.05]">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[9px] font-black uppercase tracking-widest text-foreground/40 mr-1 flex items-center gap-1.5">
+                <Clock className="w-3 h-3 text-foreground/40" />
+                Follow-up Filter:
               </span>
-            </button>
-            <button
-              onClick={() => { setFollowupFilter("tomorrow"); setPage(1); }}
-              className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${
-                followupFilter === "tomorrow"
-                  ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
-                  : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
-              }`}
-            >
-              <Calendar className="w-3 h-3" />
-              <span>Tomorrow</span>
-              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
-                followupFilter === "tomorrow" ? "bg-foreground/20 text-foreground" : "bg-foreground/10 text-foreground/75"
-              }`}>
-                {stats?.followupsTomorrowCount || 0}
-              </span>
-            </button>
-          </div>
+              <button
+                onClick={() => { setFollowupFilter("all"); setPage(1); }}
+                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                  followupFilter === "all"
+                    ? "bg-foreground text-background shadow-md"
+                    : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
+                }`}
+              >
+                All Follow-up Candidates
+              </button>
+              <button
+                onClick={() => { setFollowupFilter("today"); setPage(1); }}
+                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${
+                  followupFilter === "today"
+                    ? "bg-amber-500 text-white shadow-md shadow-amber-500/20"
+                    : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
+                }`}
+              >
+                <Clock className="w-3 h-3" />
+                <span>Due Today</span>
+                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                  followupFilter === "today" ? "bg-foreground/20 text-foreground" : "bg-foreground/10 text-foreground/75"
+                }`}>
+                  {stats?.followupsTodayCount || 0}
+                </span>
+              </button>
+              <button
+                onClick={() => { setFollowupFilter("tomorrow"); setPage(1); }}
+                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${
+                  followupFilter === "tomorrow"
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
+                    : "bg-foreground/[0.03] text-foreground/60 hover:text-foreground hover:bg-foreground/[0.06]"
+                }`}
+              >
+                <Calendar className="w-3 h-3" />
+                <span>Due Tomorrow</span>
+                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                  followupFilter === "tomorrow" ? "bg-foreground/20 text-foreground" : "bg-foreground/10 text-foreground/75"
+                }`}>
+                  {stats?.followupsTomorrowCount || 0}
+                </span>
+              </button>
+            </div>
 
-          <div className="text-[10px] font-mono text-foreground/40">
-            Showing {carts.length} of {totalCarts} results
+            <div className="text-[10px] font-mono text-foreground/40">
+              Showing {carts.length} of {totalCarts} results
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Carts Table/List */}

@@ -1,4 +1,5 @@
-import { fetchProductByHandle, fetchProducts, resolveShopifyGid, ShopifyProduct } from "@/lib/shopify-admin";
+import { fetchProductByHandle, fetchCollectionByHandle, resolveShopifyGid, ShopifyProduct } from "@/lib/shopify-admin";
+import { isStorefrontEligible } from "@/lib/storefrontCatalog";
 import Link from "next/link";
 import { getShopSettings } from "@/lib/db";
 import { parsePdpTrustBoxes } from "@/lib/pdp-trust-defaults";
@@ -13,7 +14,9 @@ import { cache } from "react";
 export const revalidate = 60; // ISR: revalidate every 60 seconds
 
 const getProduct = cache(async (handle: string) => {
-  return await fetchProductByHandle(handle);
+  const product = await fetchProductByHandle(handle);
+  // Draft / archived / unpublished products are not part of the live store — treat as not found.
+  return isStorefrontEligible(product) ? product : null;
 });
 
 export async function generateMetadata({
@@ -123,7 +126,8 @@ export default async function ProductPage({ params }: { params: { id: string } }
     [product, shop, allProducts] = await Promise.all([
       getProduct(params.id).catch(() => null),
       getShopSettings().catch(() => null),
-      fetchProducts(12).catch(() => [] as ShopifyProduct[])
+      // Curated Pairs: live catalog only (active + published, CMS hiding respected) — never drafts.
+      fetchCollectionByHandle('all', 24).then((r) => r.products).catch(() => [] as ShopifyProduct[])
     ]);
   } catch (err) {
     console.error('[ProductPage] Fatal error fetching product data:', err);

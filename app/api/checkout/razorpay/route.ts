@@ -9,6 +9,7 @@ import { toMinorUnits } from "@/lib/global-pricing";
 import { assignFailedOrderNumber } from "@/lib/orderNumber";
 import { recordSnapPurchaseContext, snapContextFromRequest } from "@/lib/snap/purchase-server";
 import { normalizeVariantId } from "@/lib/snap/catalog-id";
+import { withComposedStreet } from "@/lib/address-lines";
 import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/purchase-server";
 
 export const dynamic = 'force-dynamic';
@@ -242,8 +243,9 @@ export async function POST(req: Request) {
             };
           }));
 
-          const fullStreet = [address.houseNo, address.street, address.landmark, address.apartment].filter(Boolean).join(", ");
-          const checkoutAddress = { ...address, street: fullStreet || address.street };
+          // The checkout page already sends the composed line in `street` alongside the parts;
+          // composeStreetLine recognises that and doesn't prepend/append the parts a second time.
+          const checkoutAddress = withComposedStreet(address);
 
           // Reuse pending order for this checkout session (advisory lock vs parallel prefetch)
           const sessionTag = checkoutSessionTag(checkoutSessionId);

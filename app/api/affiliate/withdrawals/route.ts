@@ -14,6 +14,18 @@ const WithdrawalRequestSchema = z.object({
   amount: z.number().positive('Withdrawal amount must be greater than zero'),
 });
 
+/** Developer Brief #14: settlement can be requested at most once per week. */
+const SETTLEMENT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+// Rejected / failed requests never paid out, so they don't use up the week.
+const COUNTS_TOWARD_WEEKLY_LIMIT = ['REQUESTED', 'APPROVED', 'PROCESSING', 'PAID'];
+
+/** When the creator may next request a settlement (null = now). */
+function nextSettlementAt(lastCounted: { requestedAt: Date } | null): Date | null {
+  if (!lastCounted) return null;
+  const next = new Date(lastCounted.requestedAt.getTime() + SETTLEMENT_INTERVAL_MS);
+  return next > new Date() ? next : null;
+}
+
 export async function GET(req: NextRequest) {
   const customer = await getAuthenticatedCustomer(req);
   if (!customer) {
@@ -36,7 +48,8 @@ export async function GET(req: NextRequest) {
       take: 50,
     });
 
-    return NextResponse.json({ withdrawals });
+    const lastCounted = withdrawals.find((w: { status: string }) => COUNTS_TOWARD_WEEKLY_LIMIT.includes(w.status)) || null;
+    return NextResponse.json({ withdrawals, nextSettlementAt: nextSettlementAt(lastCounted) });
   } catch (error: any) {
     console.error('[Affiliate Withdrawals] Error fetching withdrawals:', error);
     return NextResponse.json({ error: 'Failed to fetch withdrawal history' }, { status: 500 });
@@ -97,6 +110,19 @@ export async function POST(req: NextRequest) {
 
       if (openWithdrawal) {
         throw new Error('You already have a pending withdrawal request in progress');
+      }
+
+      // 3b. Enforce one settlement request per week
+      const lastCounted = await tx.affiliateWithdrawal.findFirst({
+        where: { affiliateId: affiliate.id, status: { in: COUNTS_TOWARD_WEEKLY_LIMIT } },
+        orderBy: { requestedAt: 'desc' },
+        select: { requestedAt: true },
+      });
+      const nextAllowed = nextSettlementAt(lastCounted);
+      if (nextAllowed) {
+        throw new Error(
+          `Settlements can be requested once a week. Your next request is available on ${nextAllowed.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}.`
+        );
       }
 
       // 4. Derive authoritative available balance

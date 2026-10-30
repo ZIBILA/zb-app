@@ -19,14 +19,36 @@ export function RecentlyViewedProvider({ children }: { children: React.ReactNode
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
+    let stored: ShopifyProduct[] = [];
     if (saved) {
       try {
-        setRecentlyViewed(JSON.parse(saved));
+        stored = JSON.parse(saved);
+        setRecentlyViewed(stored);
       } catch (e) {
         console.error("Failed to parse recently viewed", e);
       }
     }
     setIsLoaded(true);
+
+    // Stored snapshots go stale: a product may since have been set to Draft, or its price changed.
+    // Re-resolve them against the live catalog and drop anything no longer sold.
+    const checkedIds = stored.map((p) => String(p.id));
+    if (checkedIds.length === 0) return;
+    fetch(`/api/shopify/products?ids=${encodeURIComponent(checkedIds.join(","))}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.products)) return;
+        const live = new Map<string, ShopifyProduct>(
+          data.products.map((p: ShopifyProduct) => [String(p.id), p])
+        );
+        setRecentlyViewed((prev) =>
+          prev
+            // Items added after the check started weren't part of it — keep them as they are.
+            .filter((p) => live.has(String(p.id)) || !checkedIds.includes(String(p.id)))
+            .map((p) => live.get(String(p.id)) || p)
+        );
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { composeStreetLine } from "@/lib/address-lines";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
 import {
@@ -247,9 +248,9 @@ export default function WebStoreOrderDetail() {
     if (addr.houseNo || addr.street) {
       return (
         <div className="space-y-1 text-[12px] pt-2 text-foreground/75 font-medium">
-          {addr.houseNo && <p>{addr.houseNo}</p>}
-          {addr.street && <p>{addr.street}</p>}
-          {addr.landmark && <p className="text-foreground/50">{addr.landmark}</p>}
+          {/* `street` is already the composed "House, Street, Landmark" line on new orders; composing is
+              idempotent, so older orders with only the parts render the same way. */}
+          <p>{composeStreetLine(addr)}</p>
           <p>
             {addr.city}{addr.city && addr.state ? ", " : ""}{addr.state}{(addr.city || addr.state) && (addr.zip || addr.pincode) ? " - " : ""}{addr.zip || addr.pincode}
           </p>

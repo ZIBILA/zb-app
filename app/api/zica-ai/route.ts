@@ -5,6 +5,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { callClaude } from "@/lib/ai/claudeClient";
 import { getFastModel } from "@/lib/ai/models";
 import type Anthropic from "@anthropic-ai/sdk";
+import { callOpenAiChat, isOpenAiFallbackConfigured } from "@/lib/ai/openaiFallback";
 
 const ZICA_SYSTEM_PROMPT = `You are Zica, the intelligent personal fashion AI for Zica Bella — a premium fashion brand based in India.
 
@@ -56,6 +57,23 @@ function toClaudeMessages(
     out.push({ role: "user", content: "Please continue." });
   }
   return out;
+}
+
+/** One structured log line per provider failure, with the reason the team needs to act on. */
+function logAiFailure(provider: "claude" | "openai", error: any) {
+  const status = Number(error?.status) || null;
+  const text = `${error?.message || ""} ${error?.error?.message || ""}`;
+  const reason = /credit balance|too low|billing|purchase credits|insufficient_quota/i.test(text)
+    ? "billing / out of credits"
+    : status === 401 || /api key|api_key|authentication|No valid Anthropic/i.test(text)
+      ? "invalid or missing API key"
+      : status === 429 || /rate_limit|overloaded/i.test(text)
+        ? "rate limited / overloaded"
+        : /timeout|aborted/i.test(text)
+          ? "timeout"
+          : "error";
+  console.error(`[Zica AI] ${provider} failed — ${reason}`, { status, message: (error?.message || String(error)).slice(0, 300) });
+  if (error && typeof error === "object") error.zicaLogged = true;
 }
 
 export async function POST(req: NextRequest) {
@@ -172,14 +190,38 @@ export async function POST(req: NextRequest) {
     const claudeMessages = toClaudeMessages(rawMessages);
     const fast = getFastModel();
 
-    const { response } = await callClaude({
-      systemPrompt,
-      messages: claudeMessages,
-      maxTokens: Math.min(1024, fast.maxTokens),
-      modelChain: [fast],
-    });
+    const maxTokens = Math.min(1024, fast.maxTokens);
 
-    const text = extractText(response.content);
+    let text: string;
+    let provider: "claude" | "openai" = "claude";
+    try {
+      const { response } = await callClaude({
+        systemPrompt,
+        messages: claudeMessages,
+        maxTokens,
+        modelChain: [fast],
+      });
+      text = extractText(response.content);
+      if (!text.trim()) throw new Error("Claude returned an empty response");
+    } catch (claudeError: any) {
+      logAiFailure("claude", claudeError);
+      // Claude is down / out of credits / rate-limited — answer through OpenAI instead of failing.
+      if (!isOpenAiFallbackConfigured()) throw claudeError;
+      try {
+        text = await callOpenAiChat({
+          systemPrompt,
+          messages: rawMessages.map((m) => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content,
+          })),
+          maxTokens,
+        });
+        provider = "openai";
+      } catch (openAiError: any) {
+        logAiFailure("openai", openAiError);
+        throw claudeError;
+      }
+    }
 
     const returnConversationHistory = [
       ...rawMessages.map((m) => ({ role: m.role, content: m.content })),
@@ -189,42 +231,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       message: text,
       response: text,
+      provider,
       conversationHistory: returnConversationHistory.slice(-30),
     });
   } catch (error: any) {
-    const statusCode = error?.status || 500;
-    const { shouldLogThrottled } = await import("@/lib/log-throttle");
-    if (shouldLogThrottled(`anthropic:zica:${statusCode}`, 120_000)) {
-      console.warn("[Zica AI] Anthropic API error:", statusCode, error?.message || error);
-    }
-
-    const errText = `${error?.message || ""} ${error?.error?.message || ""}`;
-
-    let userMessage = "Zica AI is temporarily unavailable. Please try again.";
-
-    if (/credit balance|too low|billing|purchase credits/i.test(errText)) {
-      userMessage =
-        "Zica AI is paused — the Anthropic account needs credits. Add billing at console.anthropic.com.";
-    } else if (
-      errText.includes("API key") ||
-      errText.includes("api_key") ||
-      errText.includes("No valid Anthropic") ||
-      errText.includes("authentication_error") ||
-      statusCode === 401
-    ) {
-      userMessage =
-        "Zica AI authentication failed. Please verify the Anthropic (Claude) API configuration.";
-    } else if (
-      statusCode === 429 ||
-      /rate_limit|overloaded/i.test(errText)
-    ) {
-      userMessage =
-        "Zica AI is experiencing high demand. Please try again in a moment.";
-    }
-
+    // Shoppers get one neutral message; the real reason (billing, auth, rate limit…) is in the
+    // server logs from logAiFailure — never shown to customers.
+    const statusCode = Number(error?.status) || 500;
+    if (!error?.zicaLogged) console.error("[Zica AI] Request failed:", error?.message || error);
     return NextResponse.json(
-      { error: userMessage },
-      { status: statusCode >= 400 && statusCode < 600 ? statusCode : 500 }
+      { error: "Zica AI is taking a short break. Please try again in a moment." },
+      { status: statusCode === 429 ? 429 : 503 }
     );
   }
 }

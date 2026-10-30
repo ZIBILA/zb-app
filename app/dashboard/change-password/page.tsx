@@ -14,6 +14,7 @@ import { motion } from 'framer-motion';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import PasskeyManager from '@/components/admin/PasskeyManager';
 
 export default function ChangePasswordPage() {
   const { data: session, update } = useSession();
@@ -152,6 +153,10 @@ export default function ChangePasswordPage() {
           </p>
         </div>
       </motion.div>
+
+      <div className="mt-8">
+        <PasskeyManager />
+      </div>
 
       <style jsx global>{`
         .glass-card {

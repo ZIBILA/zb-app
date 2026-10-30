@@ -44,8 +44,25 @@ interface CartContextType {
 const CartContext = createContext<CartContextType | null>(null);
 
 import { getClientCookie, setClientCookie } from "@/lib/metaPixel";
+import { decideCartRestore, EMPTY_META, type CartMeta } from "@/lib/cart-restore";
 
 const STORAGE_KEY = "zb_cart_v1";
+/** Bookkeeping (see CartMeta) that tells which copy is newer — this browser's or the account's DB cart. */
+const META_KEY = "zb_cart_meta_v1";
+
+function readMeta(): CartMeta {
+  try {
+    const raw = localStorage.getItem(META_KEY);
+    if (raw) return { ...EMPTY_META, ...JSON.parse(raw) };
+  } catch {}
+  return { ...EMPTY_META };
+}
+
+function writeMeta(meta: CartMeta) {
+  try {
+    localStorage.setItem(META_KEY, JSON.stringify(meta));
+  } catch {}
+}
 
 /** Ignore accidental double-taps of the same line within this window. */
 const ADD_DEBOUNCE_MS = 500;
@@ -74,7 +91,9 @@ function acceptAdd(lineId: string): boolean {
 // ─── Provider ────────────────────────────────────────────
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
-  const { status } = useSession();
+  const { data: session, status } = useSession();
+  const userKey: string | null =
+    (session?.user as any)?.id || session?.user?.email || null;
   // Start empty on both server and first client paint to avoid hydration mismatch.
   // Hydrate once from localStorage in the effect below — do not re-read after that,
   // or a concurrent add can be overwritten / appear to "double".
@@ -83,10 +102,24 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const restoredRef = useRef(false);
   const hydratedRef = useRef(false);
   const syncInFlightRef = useRef(false);
+  const metaRef = useRef<CartMeta>({ ...EMPTY_META });
+  const lastSyncedJsonRef = useRef<string | null>(null);
+  const syncDirtyRef = useRef(false);
+  const syncFailuresRef = useRef(0);
+  // Bumped to re-run the sync effect when something other than `items` changes (restore done, retry).
+  const [syncTick, setSyncTick] = useState(0);
+  const [restoreDone, setRestoreDone] = useState(false);
+
+  /** Record a user change to the cart (add / remove / quantity / clear). */
+  const touch = useCallback(() => {
+    metaRef.current = { ...metaRef.current, updatedAt: Date.now() };
+    writeMeta(metaRef.current);
+  }, []);
 
   useEffect(() => {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
+    metaRef.current = readMeta();
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -99,6 +132,73 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     setIsLoaded(true);
   }, []);
 
+  // Keep tabs consistent: a cart changed in another tab replaces this tab's copy, so a stale tab
+  // can't write removed items back on its next change.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === META_KEY) {
+        metaRef.current = readMeta();
+        return;
+      }
+      if (e.key !== STORAGE_KEY || e.newValue == null) return;
+      try {
+        const parsed = JSON.parse(e.newValue);
+        if (Array.isArray(parsed)) setItems(parsed);
+      } catch {}
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Keep line prices current. A line keeps the price it was added at; when a sale starts or ends that
+  // price is stale and checkout (which re-verifies against Shopify) would reject the order.
+  const itemsRef = useRef<CartItem[]>([]);
+  itemsRef.current = items;
+  useEffect(() => {
+    if (!isLoaded) return;
+    let lastRun = 0;
+    const refreshPrices = async () => {
+      const variantIds = Array.from(
+        new Set(itemsRef.current.map((i) => String(i.variantId || "").split("/").pop() || "").filter(Boolean))
+      );
+      if (variantIds.length === 0 || Date.now() - lastRun < 30_000) return;
+      lastRun = Date.now();
+      try {
+        const res = await fetch(`/api/cart/prices?variants=${variantIds.join(",")}`);
+        if (!res.ok) return;
+        const { prices } = (await res.json()) as { prices: Record<string, string> };
+        setItems((prev) => {
+          let changed = false;
+          const next = prev.map((i) => {
+            const live = prices[String(i.variantId || "").split("/").pop() || ""];
+            if (live && Math.abs(parseFloat(live) - parseFloat(i.price)) >= 0.005) {
+              changed = true;
+              return { ...i, price: live };
+            }
+            return i;
+          });
+          return changed ? next : prev;
+        });
+      } catch {}
+    };
+    refreshPrices();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshPrices();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+    // Re-runs once after the account restore, which may swap in DB lines carrying older prices.
+  }, [isLoaded, restoreDone]);
+
+  // Remember that this browser's cart was built while logged out, so the next login merges it in.
+  useEffect(() => {
+    if (!isLoaded || status !== "unauthenticated") return;
+    if (metaRef.current.owner !== "guest") {
+      metaRef.current = { ...metaRef.current, owner: "guest" };
+      writeMeta(metaRef.current);
+    }
+  }, [status, isLoaded]);
+
   // Persist to localStorage on change (only after client mount)
   useEffect(() => {
     if (!isLoaded) return;
@@ -107,13 +207,17 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, [items, isLoaded]);
 
-  // ── Login restore: one-time merge from DB when user authenticates ──
+  // ── Account cart restore (once per page load when authenticated) ──
+  // The DB cart is only UNION-merged on an actual login (guest cart + account cart). On every other
+  // load the newer copy wins outright, so items removed on this device are never merged back in.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (status !== "authenticated" || restoredRef.current) return;
+    if (!isLoaded || status !== "authenticated" || restoredRef.current) return;
     // Mark in-progress so sync waits; finalize in finally so a failed restore
     // still unblocks sync (and a success path doesn't race ahead of the merge).
     let cancelled = false;
+
+    const startedAt = Date.now();
 
     const restoreFromDB = async () => {
       try {
@@ -121,27 +225,37 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;
-        if (data && Array.isArray(data.items) && data.items.length > 0) {
-          const dbItems: CartItem[] = data.items;
-          // Merge DB items with local items — keep higher quantity (Math.max),
-          // never sum, to prevent inflation on repeated logins
-          setItems((prev) => {
-            const map = new Map(prev.map((i) => [i.id, { ...i }]));
-            for (const di of dbItems) {
-              const ex = map.get(di.id);
-              if (ex) {
-                ex.quantity = Math.max(ex.quantity, di.quantity);
-              } else {
-                map.set(di.id, di);
-              }
-            }
-            return Array.from(map.values());
-          });
+        const decision = decideCartRestore<CartItem>({
+          meta: metaRef.current,
+          localItems: itemsRef.current,
+          dbItems: Array.isArray(data?.items) ? data.items : [],
+          dbUpdatedAt: data?.updatedAt || null,
+          userKey,
+          requestStartedAt: startedAt,
+        });
+        if (decision.action === "replace") {
+          setItems(decision.items);
+          if (decision.adoptedServerAt !== undefined) {
+            // Took the account cart as-is: it is already what the DB holds.
+            lastSyncedJsonRef.current = JSON.stringify(decision.items);
+            metaRef.current = {
+              ...metaRef.current,
+              syncedLocalAt: metaRef.current.updatedAt,
+              syncedServerAt: decision.adoptedServerAt,
+            };
+          }
         }
+        if (decision.push) touch();
+        metaRef.current = { ...metaRef.current, owner: userKey };
+        writeMeta(metaRef.current);
       } catch (err) {
-        console.error("Cart login restore failed:", err);
+        console.error("Cart restore failed:", err);
       } finally {
-        if (!cancelled) restoredRef.current = true;
+        if (!cancelled) {
+          restoredRef.current = true;
+          setRestoreDone(true);
+          setSyncTick((t) => t + 1);
+        }
       }
     };
 
@@ -149,10 +263,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [status]);
-
-  const lastSyncedJsonRef = useRef<string | null>(null);
-  const syncDirtyRef = useRef(false);
+  }, [status, isLoaded, userKey, touch]);
 
   // Synchronize cart with backend on updates (debounced)
   useEffect(() => {
@@ -178,6 +289,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       }
       syncInFlightRef.current = true;
       syncDirtyRef.current = false;
+      const sentUpdatedAt = metaRef.current.updatedAt;
       try {
         let geoDetails = {};
         try {
@@ -212,9 +324,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         const { getTrafficSource } = await import("@/lib/traffic-source");
         const trafficSource = getTrafficSource();
 
-        await fetch("/api/cart/sync", {
+        const res = await fetch("/api/cart/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          keepalive: true,
           body: JSON.stringify({
             items,
             guestId: deviceId,
@@ -223,29 +336,44 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
             ...guestContact
           })
         });
+        // fetch() doesn't throw on 429/500 — only a 2xx means the DB really holds this cart.
+        if (!res.ok) throw new Error(`cart sync HTTP ${res.status}`);
+        const data = await res.json().catch(() => null);
         lastSyncedJsonRef.current = payloadJson;
+        syncFailuresRef.current = 0;
+        metaRef.current = {
+          ...metaRef.current,
+          syncedLocalAt: Math.max(metaRef.current.syncedLocalAt, sentUpdatedAt),
+          syncedServerAt: data?.updatedAt || metaRef.current.syncedServerAt,
+        };
+        writeMeta(metaRef.current);
       } catch (err) {
         console.error("Cart background sync failed:", err);
+        // Unsynced edits stay flagged (updatedAt > syncedLocalAt), so a reload keeps this device's
+        // cart instead of the stale DB copy. Retry a few times meanwhile.
+        if (syncFailuresRef.current < 3) {
+          syncFailuresRef.current += 1;
+          setTimeout(() => setSyncTick((t) => t + 1), 5000 * syncFailuresRef.current);
+        }
       } finally {
         syncInFlightRef.current = false;
         if (syncDirtyRef.current) {
           syncDirtyRef.current = false;
-          // Re-run with latest items after in-flight request finishes
-          setTimeout(() => {
-            lastSyncedJsonRef.current = null;
-          }, 0);
+          // Items changed while the request was in flight — sync again with the latest cart.
+          setSyncTick((t) => t + 1);
         }
       }
     };
 
-    // Hold sync until login restore has completed — prevents overwriting
-    // the DB cart with stale local-only data before merge finishes
+    // Hold sync until we know who the user is and the account restore has completed — prevents
+    // overwriting a newer DB cart (edited on another device) with this device's older copy.
+    if (status === "loading") return;
     if (status === "authenticated" && !restoredRef.current) return;
 
     // 1s debounce + single-flight avoids session_token unique races under rapid UI updates
     const timer = setTimeout(syncCartWithBackend, 1000);
     return () => clearTimeout(timer);
-  }, [items, status, isLoaded]);
+  }, [items, status, isLoaded, syncTick]);
 
   const add = useCallback((item: Omit<CartItem, "id" | "quantity">) => {
     const id = cartLineId(item.productId, item.variantId, item.size);
@@ -270,6 +398,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     // even across multiple add-to-cart actions. Fully fire-and-forget.
     enrichSessionWithGeolocation().catch(() => {});
 
+    touch();
     setItems((prev) => {
       const existing = prev.find((i) => i.id === id);
       if (existing) {
@@ -279,9 +408,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       }
       return [...prev, { ...item, id, quantity: 1 }];
     });
-  }, []);
+  }, [touch]);
 
   const remove = useCallback((id: string) => {
+    touch();
     // Find item details first to track Removal
     setItems((prev) => {
       const item = prev.find((i) => i.id === id);
@@ -300,9 +430,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       }
       return prev.filter((i) => i.id !== id);
     });
-  }, []);
+  }, [touch]);
 
   const update = useCallback((id: string, quantity: number) => {
+    touch();
     if (quantity <= 0) {
       setItems((prev) => prev.filter((i) => i.id !== id));
     } else {
@@ -310,16 +441,18 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         prev.map((i) => (i.id === id ? { ...i, quantity } : i))
       );
     }
-  }, []);
+  }, [touch]);
 
   const clear = useCallback(() => {
+    touch();
     setItems([]);
     // Clear guest PII from both storage types on checkout/clear
     clearGuestPII();
-  }, []);
+  }, [touch]);
 
   // Replace local cart state with items fetched from the database (merges with existing)
   const loadFromDB = useCallback((dbItems: CartItem[]) => {
+    touch();
     setItems((prev) => {
       if (prev.length === 0) return dbItems;
       const map = new Map(prev.map((i) => [i.id, { ...i }]));
@@ -333,7 +466,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       }
       return Array.from(map.values());
     });
-  }, []);
+  }, [touch]);
 
   const count = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
   const subtotal = useMemo(

@@ -8,40 +8,13 @@
 import { type ShopifyProduct } from '@/lib/shopify-admin';
 import { getGoogleCategory } from '@/lib/google-product-categories';
 import {
+  csvCell,
   getProductSiteUrl,
+  getVariantAttributes,
   loadFeedProducts,
   recordFeedBuildStatus,
+  stripHtml,
 } from '@/lib/product-feed';
-
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-
-const SITE_URL = getProductSiteUrl();
-const BRAND = 'Zica Bella';
-
-function csvCell(value: string | number | null | undefined): string {
-  const s = value === null || value === undefined ? '' : String(value);
-  if (s === '') return '';
-  if (/[",\r\n]/.test(s)) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/p>/gi, ' ')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
 
 function formatPrice(price: string | number): string {
   const num = typeof price === 'string' ? parseFloat(price) : price;
@@ -49,21 +22,11 @@ function formatPrice(price: string | number): string {
   return `${num.toFixed(2)} INR`;
 }
 
-function getVariantAttributes(
-  product: ShopifyProduct,
-  variant: ShopifyProduct['variants'][0]
-): { size: string | null; color: string | null } {
-  const options = product.options || [];
-  let size: string | null = null;
-  let color: string | null = null;
-  for (let i = 0; i < options.length; i++) {
-    const name = options[i].name.toLowerCase();
-    const value = i === 0 ? variant.option1 : i === 1 ? variant.option2 : variant.option3;
-    if (name === 'size' && value) size = value;
-    else if ((name === 'color' || name === 'colour') && value) color = value;
-  }
-  return { size, color };
-}
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+const SITE_URL = getProductSiteUrl();
+const BRAND = 'Zica Bella';
 
 const HEADER = [
   'id',

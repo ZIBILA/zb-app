@@ -18,6 +18,8 @@
     "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^7.5.0",
     "@sendgrid/mail": "^8.1.6",
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.3",
     "@supabase/supabase-js": "^2.108.2",
     "@types/bcryptjs": "^2.4.6",
     "@types/imap-simple": "^4.2.10",

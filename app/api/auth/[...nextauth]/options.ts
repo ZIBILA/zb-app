@@ -1,6 +1,7 @@
 import GoogleProvider from "next-auth/providers/google";
 import AppleProvider from "next-auth/providers/apple";
 import CredentialsProvider from "next-auth/providers/credentials";
+import { buildAdminSessionUser } from "@/lib/auth/admin-session-user";
 import prisma from "@/lib/db";
 import { AuthOptions } from "next-auth";
 import { searchCustomerByPhone, fetchOrdersByCustomerId } from "@/lib/shopify-admin";
@@ -1016,32 +1017,7 @@ export const authOptions: AuthOptions = {
             }
           } catch (e) {}
 
-          let permissions: any[] = [];
-          try {
-            permissions = await prisma.permission.findMany({
-              where: { userId: user.id }
-            });
-          } catch (pErr: any) {
-            console.error('[AUTH] Permission query error:', pErr.message);
-          }
-
-          if ((user.role === 'SUPER_ADMIN' || user.role === 'ADMIN') && permissions.length === 0) {
-            permissions = superAdminPermissions as any;
-          }
-
-          return {
-            id: user.id,
-            name: user.name || "Admin",
-            email: user.email,
-            role: user.role,
-            permissions: permissions.map((p: any) => ({
-              module: p.module,
-              canView: p.canView,
-              canEdit: p.canEdit,
-              canDelete: p.canDelete,
-              pages: p.pages,
-            }))
-          };
+          return await buildAdminSessionUser(user);
         } catch (error: any) {
           console.error("[AUTH] Admin authorize error:", error);
           if (process.env.SUPER_ADMIN_PASSWORD && credentials?.email?.toLowerCase().trim() === (process.env.SUPER_ADMIN_EMAIL || 'admin@zicabella.com').toLowerCase().trim()
@@ -1062,6 +1038,61 @@ export const authOptions: AuthOptions = {
             };
           }
           throw new Error(error.message || "Invalid credentials");
+        }
+      },
+    }),
+    // Admin dashboard passkey sign-in (Developer Brief #21). The browser signs the challenge issued by
+    // /api/auth/passkey/options; we verify it against the stored public key for that credential.
+    CredentialsProvider({
+      id: "admin-passkey",
+      name: "Admin Passkey",
+      credentials: {
+        response: { label: "WebAuthn response", type: "text" },
+      },
+      async authorize(credentials, req) {
+        try {
+          const { verifyAuthenticationResponse } = await import("@simplewebauthn/server");
+          const { PASSKEY_CHALLENGE_COOKIE, readChallenge, cookieFromHeader, relyingParty, fromBase64Url } =
+            await import("@/lib/auth/passkeys");
+
+          const headers = (req?.headers || {}) as Record<string, any>;
+          const challenge = readChallenge(
+            cookieFromHeader(headers.cookie, PASSKEY_CHALLENGE_COOKIE),
+            "authenticate"
+          );
+          if (!challenge || !credentials?.response) return null;
+
+          const response = JSON.parse(credentials.response);
+          const passkey = await prisma.adminPasskey.findUnique({ where: { credentialId: String(response?.id || "") } });
+          if (!passkey) return null;
+
+          const user = await prisma.user.findUnique({ where: { id: passkey.userId } });
+          if (!user || !user.isActive || (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN")) return null;
+
+          const { rpID, expectedOrigin } = relyingParty(headers);
+          const verification = await verifyAuthenticationResponse({
+            response,
+            expectedChallenge: challenge.challenge,
+            expectedOrigin,
+            expectedRPID: rpID,
+            credential: {
+              id: passkey.credentialId,
+              publicKey: fromBase64Url(passkey.publicKey),
+              counter: passkey.counter,
+              transports: passkey.transports ? (passkey.transports.split(",") as any) : undefined,
+            },
+            requireUserVerification: true,
+          });
+          if (!verification.verified) return null;
+
+          await prisma.adminPasskey.update({
+            where: { id: passkey.id },
+            data: { counter: verification.authenticationInfo.newCounter, lastUsedAt: new Date() },
+          });
+          return await buildAdminSessionUser(user);
+        } catch (error: any) {
+          console.error("[AUTH] Admin passkey authorize error:", error?.message || error);
+          return null;
         }
       },
     }),

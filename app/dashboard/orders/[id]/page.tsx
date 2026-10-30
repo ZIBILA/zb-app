@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { normalizeOrderShippingAddress } from "@/lib/order-shipping-address";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -484,24 +485,11 @@ export default function OrderDetailPage() {
     order.customer?.email ||
     "—";
 
+  // Same normalisation the Shopify sync and shipping use, so the dashboard shows exactly what was sent.
   const primaryAddressLine = (() => {
     if (!shippingAddr) return "";
-    const houseNo = String(shippingAddr.houseNo || "").trim();
-    const street = String(
-      shippingAddr.street || shippingAddr.address1 || shippingAddr.line1 || ""
-    ).trim();
-    const landmark = String(
-      shippingAddr.landmark || shippingAddr.address2 || shippingAddr.line2 || ""
-    ).trim();
-    // Avoid "4, 4, kilo" when street already starts with houseNo
-    const line =
-      houseNo && street.toLowerCase().startsWith(houseNo.toLowerCase())
-        ? street
-        : [houseNo, street].filter(Boolean).join(", ");
-    if (landmark && !line.toLowerCase().includes(landmark.toLowerCase())) {
-      return [line, landmark].filter(Boolean).join(", ");
-    }
-    return line || [shippingAddr.address1, shippingAddr.address2].filter(Boolean).join(", ");
+    const n = normalizeOrderShippingAddress(shippingAddr);
+    return [n.address1, n.address2].filter(Boolean).join(", ");
   })();
   const latestShipment = order.shipments?.[0];
 

@@ -602,7 +602,10 @@ model ProductReview {
   title            String?
   body             String
   verifiedPurchase Boolean  @default(true)
-  status           String   @default("VISIBLE")
+  /// PENDING (awaiting admin approval) | VISIBLE (approved, live) | HIDDEN (rejected / taken down)
+  status           String   @default("PENDING")
+  /// Customer photo URLs; shown only once the review is approved
+  photos           String[] @default([])
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -2386,4 +2389,86 @@ model NewsletterSubscriber {
   updatedAt DateTime @updatedAt
 
   @@map("newsletter_subscribers")
+}
+
+/// Store-wide sale run from Dashboard → Marketing → Sale Management.
+/// Applying a sale writes the discounted price + compare-at price onto the Shopify variants, so every
+/// surface (web store, app, feeds, checkout price verification) sees the same prices. Each variant's
+/// pre-sale prices are kept in SaleItem so ending the sale restores them exactly.
+model Sale {
+  id        String     @id @default(cuid())
+  name      String
+  percent   Float
+  /// active | ended
+  status    String     @default("active")
+  startedAt DateTime   @default(now()) @map("started_at")
+  endedAt   DateTime?  @map("ended_at")
+  createdBy String?    @map("created_by")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  items     SaleItem[]
+
+  @@index([status])
+  @@map("sales")
+}
+
+model SaleItem {
+  id                     String  @id @default(cuid())
+  saleId                 String  @map("sale_id")
+  sale                   Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  shopifyProductId       String  @map("shopify_product_id")
+  shopifyVariantId       String  @map("shopify_variant_id")
+  productTitle           String? @map("product_title")
+  variantTitle           String? @map("variant_title")
+  originalPrice          String  @map("original_price")
+  originalCompareAtPrice String? @map("original_compare_at_price")
+  salePrice              String  @map("sale_price")
+  /// applied | failed | restored | kept (price was changed by hand during the sale, left as-is on end)
+  status                 String  @default("applied")
+  error                  String?
+
+  @@index([saleId])
+  @@index([shopifyProductId])
+  @@map("sale_items")
+}
+
+/// Admin dashboard passkeys (WebAuthn). One row per registered authenticator (Developer Brief #21).
+model AdminPasskey {
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  /// base64url credential id from the authenticator
+  credentialId String    @unique @map("credential_id")
+  /// base64url COSE public key
+  publicKey    String    @map("public_key")
+  counter      Int       @default(0)
+  transports   String?
+  deviceType   String?   @map("device_type")
+  backedUp     Boolean   @default(false) @map("backed_up")
+  name         String    @default("Passkey")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+
+  @@index([userId])
+  @@map("admin_passkeys")
+}
+
+/// One row per customer notification actually attempted (Developer Brief #23/#24). The unique
+/// (eventKey, channel) pair is what guarantees an event is never sent twice on the same channel.
+/// eventKey examples: "return:<id>:accepted", "order:ZB72210:shipped", "credit:<id>:expiry:3".
+model CustomerEventDelivery {
+  id         String   @id @default(cuid())
+  eventKey   String   @map("event_key")
+  eventType  String   @map("event_type")
+  /// email | whatsapp (later)
+  channel    String
+  recipient  String?
+  /// sending | sent | failed | skipped
+  status     String   @default("sending")
+  error      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([eventKey, channel])
+  @@index([eventType, createdAt])
+  @@map("customer_event_deliveries")
 }
