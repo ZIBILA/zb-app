@@ -4,7 +4,7 @@
  * Fetches the Admin access token dynamically from the local database.
  */
 
-import prisma from './db';
+import prisma, { getPrimaryShop } from './db';
 import { parseShopifyRichText } from './utils';
 import { toE164 } from './shopify-phone';
 import { isStorefrontEligible, parseOrderConfig, readPlacement, applyProductOrder } from './storefrontCatalog';
@@ -948,7 +948,7 @@ export async function fetchCatalogForAdmin(): Promise<ShopifyProduct[]> {
 /** Reads the CMS ordering/hiding config; a DB failure just means "no custom order", never a broken page. */
 export async function loadOrderConfig() {
   try {
-    const shop = await prisma.shop.findFirst({ select: { collectionProductOrders: true } });
+    const shop = await getPrimaryShop({ collectionProductOrders: true });
     return parseOrderConfig(shop?.collectionProductOrders);
   } catch {
     return parseOrderConfig(null);

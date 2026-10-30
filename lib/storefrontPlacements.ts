@@ -1,4 +1,4 @@
-import prisma from '@/lib/db';
+import prisma, { getPrimaryShop } from '@/lib/db';
 import {
   fetchCatalogForAdmin,
   fetchCollections,
@@ -78,7 +78,7 @@ export async function listPlacements(): Promise<{
   const [catalog, collections, shop] = await Promise.all([
     fetchCatalogForAdmin(),
     fetchCollections(),
-    prisma.shop.findFirst({ select: { collectionProductOrders: true } }),
+    getPrimaryShop({ collectionProductOrders: true }),
   ]);
   const live = catalog.filter(isStorefrontEligible);
   const cfg = parseOrderConfig(shop?.collectionProductOrders);
@@ -129,9 +129,7 @@ export async function loadPlacement(key: string): Promise<PlacementDetail | null
   const info = placements.find((p) => p.key === key);
   if (!info) return null;
 
-  const shop = await prisma.shop.findFirst({
-    select: { homepageProducts: true, homepageCollection: true, collectionProductOrders: true },
-  });
+  const shop = await getPrimaryShop({ homepageProducts: true, homepageCollection: true, collectionProductOrders: true });
   const cfg = parseOrderConfig(shop?.collectionProductOrders);
 
   if (info.kind === 'homepage') {
@@ -202,7 +200,7 @@ export async function savePlacement(
   order: string[],
   hidden: string[]
 ): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
-  const shop = await prisma.shop.findFirst();
+  const shop = await getPrimaryShop();
   if (!shop) return { ok: false, error: 'Shop not found', status: 404 };
 
   if (key === 'homepage') {

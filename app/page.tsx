@@ -1,4 +1,4 @@
-import { fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle } from "@/lib/shopify-admin";
+import { fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle, fetchStorefrontCatalog } from "@/lib/shopify-admin";
 import { isStorefrontEligible } from "@/lib/storefrontCatalog";
 import prisma, { getStoreSettings, getShopSettings, DEFAULT_SHOP_SETTINGS } from "@/lib/db";
 import NextImage from "next/image";
@@ -94,19 +94,28 @@ export default async function Home() {
       }
     })(),
     (async (): Promise<ShopifyProduct[]> => {
+      // A Shopify/network error must NOT quietly turn into a different set of products (and then be cached
+      // for a minute): re-throw so Next keeps serving the last good page. Only the build step swallows it.
+      const keepLastGoodPage = (err: unknown) => {
+        console.error("[Storefront Home] Shopify product fetch failed:", err);
+        if (process.env.NEXT_PHASE !== 'phase-production-build') throw err;
+      };
+
       // 1) Products hand-picked in the CMS (in the saved order). Anything no longer live on Shopify is skipped.
+      // Resolved from the cached live catalogue in ONE call — not one Shopify request per product, which
+      // trips Shopify's rate limit right after a cache refresh (e.g. every product webhook during a sale).
       try {
         if (s.homepageProducts && s.homepageProducts.trim()) {
-          const { fetchProductById } = await import("@/lib/shopify-admin");
-          const ids = s.homepageProducts.split(',').map((id: string) => id.trim()).filter(Boolean);
-          const fetched = await Promise.all(
-            ids.map((id: string) => fetchProductById(id).catch(() => null))
-          );
-          const valid = fetched.filter((p): p is ShopifyProduct => p !== null && isStorefrontEligible(p));
+          const ids = s.homepageProducts
+            .split(',')
+            .map((id: string) => id.trim().split('/').pop() || '')
+            .filter(Boolean);
+          const live = new Map((await fetchStorefrontCatalog()).map((p): [string, ShopifyProduct] => [String(p.id), p]));
+          const valid = ids.map((id: string) => live.get(id)).filter((p: ShopifyProduct | undefined): p is ShopifyProduct => Boolean(p));
           if (valid.length > 0) return valid;
         }
       } catch (err) {
-        console.error("Error fetching hand-picked homepage products:", err);
+        keepLastGoodPage(err);
       }
       // 2) A whole collection, in its CMS order.
       try {
@@ -116,7 +125,7 @@ export default async function Home() {
           if (result.products.length > 0) return result.products;
         }
       } catch (err) {
-        console.error("Error fetching homepage collection:", err);
+        keepLastGoodPage(err);
       }
       return [];
     })(),
@@ -126,7 +135,10 @@ export default async function Home() {
   // from Shop All (in its CMS order) — never with placeholder products.
   let products: ShopifyProduct[] = fetchedProducts || [];
   if (products.length < 16) {
-    const shopAll = await fetchCollectionByHandle('all').catch(() => ({ products: [] as ShopifyProduct[] }));
+    const shopAll = await fetchCollectionByHandle('all').catch((err) => {
+      if (process.env.NEXT_PHASE !== 'phase-production-build') throw err;
+      return { products: [] as ShopifyProduct[] };
+    });
     const have = new Set(products.map((p) => p.id));
     products = [...products, ...shopAll.products.filter((p) => !have.has(p.id))].slice(0, Math.max(16, products.length));
   }
