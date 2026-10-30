@@ -69,11 +69,11 @@ export default function ChangePasswordPage() {
   };
 
   return (
-    <div className="min-h-[80vh] flex items-center justify-center p-4">
-      <motion.div 
+    <div className="min-h-[80vh] flex flex-col items-center justify-center gap-8 p-4">
+      <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="glass-card max-w-md w-full p-10 rounded-[2.5rem] border border-foreground/10 shadow-2xl space-y-8"
+        className="glass-card max-w-md w-full p-6 sm:p-10 rounded-[2rem] sm:rounded-[2.5rem] border border-foreground/10 shadow-2xl space-y-8"
       >
         <div className="text-center space-y-3">
           <div className="w-16 h-16 bg-blue-500/10 rounded-3xl flex items-center justify-center mx-auto mb-2 border border-blue-500/20">
@@ -154,7 +154,7 @@ export default function ChangePasswordPage() {
         </div>
       </motion.div>
 
-      <div className="mt-8">
+      <div className="w-full max-w-md">
         <PasskeyManager />
       </div>
 

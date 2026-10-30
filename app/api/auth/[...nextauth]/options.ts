@@ -1060,14 +1060,26 @@ export const authOptions: AuthOptions = {
             cookieFromHeader(headers.cookie, PASSKEY_CHALLENGE_COOKIE),
             "authenticate"
           );
-          if (!challenge || !credentials?.response) return null;
+          if (!challenge || !credentials?.response) {
+            console.warn("[AUTH] Admin passkey: challenge cookie missing/expired or no response", {
+              hasCookieHeader: Boolean(headers.cookie),
+              hasChallenge: Boolean(challenge),
+            });
+            return null;
+          }
 
           const response = JSON.parse(credentials.response);
           const passkey = await prisma.adminPasskey.findUnique({ where: { credentialId: String(response?.id || "") } });
-          if (!passkey) return null;
+          if (!passkey) {
+            console.warn("[AUTH] Admin passkey: no stored credential for id", String(response?.id || "").slice(0, 12));
+            return null;
+          }
 
           const user = await prisma.user.findUnique({ where: { id: passkey.userId } });
-          if (!user || !user.isActive || (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN")) return null;
+          if (!user || !user.isActive || (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN")) {
+            console.warn("[AUTH] Admin passkey: owner is missing, inactive or not an admin", { userId: passkey.userId });
+            return null;
+          }
 
           const { rpID, expectedOrigin } = relyingParty(headers);
           const verification = await verifyAuthenticationResponse({
@@ -1083,7 +1095,10 @@ export const authOptions: AuthOptions = {
             },
             requireUserVerification: true,
           });
-          if (!verification.verified) return null;
+          if (!verification.verified) {
+            console.warn("[AUTH] Admin passkey: signature not verified");
+            return null;
+          }
 
           await prisma.adminPasskey.update({
             where: { id: passkey.id },

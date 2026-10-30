@@ -73,7 +73,7 @@ export default function PasskeyManager() {
   };
 
   return (
-    <div className="glass-card p-8 rounded-[2rem] border border-foreground/[0.05] space-y-5">
+    <div className="glass-card w-full p-5 sm:p-8 rounded-[2rem] border border-foreground/[0.05] space-y-5">
       <div className="flex items-center gap-3">
         <Fingerprint className="w-5 h-5 text-foreground/60" />
         <div>
@@ -91,7 +91,7 @@ export default function PasskeyManager() {
             onChange={(e) => setName(e.target.value)}
             placeholder='Name this passkey, e.g. "MacBook"'
             maxLength={60}
-            className="flex-1 h-11 px-4 rounded-xl bg-foreground/[0.03] border border-foreground/10 outline-none focus:border-foreground/30 text-sm"
+            className="flex-1 min-w-0 h-11 px-4 rounded-xl bg-foreground/[0.03] border border-foreground/10 outline-none focus:border-foreground/30 text-sm"
           />
           <button
             onClick={addPasskey}
@@ -111,8 +111,8 @@ export default function PasskeyManager() {
       ) : (
         <ul className="divide-y divide-foreground/[0.05]">
           {passkeys.map((p) => (
-            <li key={p.id} className="flex items-center justify-between py-3">
-              <div>
+            <li key={p.id} className="flex items-center justify-between gap-3 py-3">
+              <div className="min-w-0">
                 <p className="text-sm font-semibold">{p.name}</p>
                 <p className="text-[10px] text-foreground/40">
                   Added {format(new Date(p.createdAt), "d MMM yyyy")}
@@ -120,7 +120,7 @@ export default function PasskeyManager() {
                   {p.backedUp ? " · synced" : ""}
                 </p>
               </div>
-              <button onClick={() => removePasskey(p.id)} className="p-2 rounded-lg hover:bg-red-500/10 text-foreground/40 hover:text-red-500" aria-label={`Remove ${p.name}`}>
+              <button onClick={() => removePasskey(p.id)} className="shrink-0 p-2 rounded-lg hover:bg-red-500/10 text-foreground/40 hover:text-red-500" aria-label={`Remove ${p.name}`}>
                 <Trash2 className="w-4 h-4" />
               </button>
             </li>
