@@ -419,14 +419,34 @@ function serializeShopField(value: unknown): unknown {
 let lastGoodShopSettings: Record<string, any> | null = null;
 const lastGoodStoreSettings = new Map<string, any>();
 
+/**
+ * The store this deployment talks to — resolved exactly like lib/shopify-client.ts does, so the shop row we
+ * read/write is always the row of the store whose products we fetch. The literal is only a last-resort default.
+ */
+const primaryShopDomain = () =>
+  process.env.SHOPIFY_STORE_DOMAIN || process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN || '8tiahf-bk.myshopify.com';
+
+/**
+ * THE shop row: the row of this deployment's store, else the oldest one. A bare `shop.findFirst()` has no defined order,
+ * so with more than one Shop row it can return a different row after every UPDATE — the homepage list and
+ * the Products & Order CMS then read and write different rows and saved changes appear to revert.
+ * Everything that reads or writes storefront merchandising must go through this.
+ */
+export async function getPrimaryShop(select?: Record<string, boolean>): Promise<any> {
+  const args: any = select ? { select } : {};
+  return (
+    (await prisma.shop.findUnique({ where: { domain: primaryShopDomain() }, ...args })) ??
+    (await prisma.shop.findFirst({ ...args, orderBy: { installedAt: 'asc' } }))
+  );
+}
+
 export const getShopSettings = cache(async function getShopSettings() {
   try {
     const isMock = (prisma as any)._isMock;
     if (isMock) {
       return getPersistentSettings();
     }
-    const shop = await prisma.shop.findUnique({ where: { domain: '8tiahf-bk.myshopify.com' } })
-      ?? await prisma.shop.findFirst();
+    const shop = await getPrimaryShop();
     if (shop) {
       const persistent = getPersistentSettings();
       const cleanShop: Record<string, any> = {};
@@ -460,8 +480,7 @@ export async function updateShopSettings(updates: Record<string, any>) {
       return updatedPersistent;
     }
 
-    let shop = await prisma.shop.findUnique({ where: { domain: '8tiahf-bk.myshopify.com' } })
-      ?? await prisma.shop.findFirst();
+    let shop = await getPrimaryShop();
 
     if (!shop) {
       shop = await prisma.shop.create({
