@@ -258,6 +258,118 @@ const PRODUCTION_TEMPLATES = [
         ]
       }
     ]
+  },
+  {
+    name: 'zb_return_confirmed',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, your return request for order {{2}} has been accepted. Your refund of {{3}} will be processed once we receive and inspect the item.',
+        example: {
+          body_text: [
+            ['Karthik', 'ZB1024', '₹2,499']
+          ]
+        }
+      }
+    ]
+  },
+  {
+    name: 'zb_return_received',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, we have received your returned parcel for order {{2}} at our warehouse. We will update you once it has been checked.',
+        example: {
+          body_text: [
+            ['Karthik', 'ZB1024']
+          ]
+        }
+      }
+    ]
+  },
+  {
+    name: 'zb_exchange_delivered',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, your replacement for order {{2}} has been delivered. We hope you love it.',
+        example: {
+          body_text: [
+            ['Karthik', 'ZB1024']
+          ]
+        }
+      }
+    ]
+  },
+  {
+    name: 'zb_order_cancelled',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, your order {{2}} has been cancelled. If you have any questions, just reply to this message.',
+        example: {
+          body_text: [
+            ['Karthik', 'ZB1024']
+          ]
+        }
+      }
+    ]
+  },
+  {
+    name: 'zb_refund_initiated',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, a refund of {{3}} for order {{2}} has been initiated to your original payment method. It may take a few business days to show in your account.',
+        example: {
+          body_text: [
+            ['Karthik', 'ZB1024', '₹2,499']
+          ]
+        }
+      }
+    ]
+  },
+  {
+    name: 'zb_store_credit_earned',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, you have earned {{2}} in Store Credit on order {{3}}. It will be added to your account after your order is delivered.',
+        example: {
+          body_text: [
+            ['Karthik', '₹360', 'ZB1024']
+          ]
+        }
+      }
+    ]
+  },
+  {
+    name: 'zb_store_coins_earned',
+    category: 'UTILITY',
+    language: 'en',
+    components: [
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, {{2}} in Store Coins have been added to your account for order {{3}}. Thank you for shopping with Zica Bella.',
+        example: {
+          body_text: [
+            ['Karthik', '₹99', 'ZB1024']
+          ]
+        }
+      }
+    ]
   }
 ];
 

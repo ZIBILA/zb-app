@@ -112,7 +112,7 @@ export async function GET(req: Request) {
     ]);
     const rawDelay1 = delay1Setting ? (parseInt(delay1Setting.value, 10) || 15) : 15;
     const delay1 = Math.max(rawDelay1, 15);
-    const delay2 = delay2Setting ? (parseInt(delay2Setting.value, 10) || 1440) : 1440;
+    const delay2 = delay2Setting ? (parseInt(delay2Setting.value, 10) || 240) : 240;
     const delay3 = delay3Setting ? (parseInt(delay3Setting.value, 10) || 10080) : 10080;
     const abandonmentThreshold = new Date(Date.now() - delay1 * 60 * 1000);
 

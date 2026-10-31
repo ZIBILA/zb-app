@@ -4,6 +4,7 @@ import * as templates from '@/lib/whatsapp/templates';
 import { runBroadcastInBackground, sendCampaignRecipient, finalizeCampaignIfComplete, SENDER_MAP } from '../../whatsapp/broadcast/helper';
 import { WhatsAppService } from '@/lib/services/whatsapp.service';
 import { getWhatsAppSetting } from '@/lib/whatsapp/logger';
+import { CART_RECOVERY_DELAY_DEFAULTS } from '@/lib/whatsapp/automation-defaults';
 import { formatPhone } from '@/lib/whatsapp/client';
 import { isOrderValidConverted } from '@/lib/cartValidation';
 
@@ -441,9 +442,10 @@ export async function GET(req: NextRequest) {
       const isStep2Enabled = await getWhatsAppSetting('cart_recovery_step2_enabled', 'true') === 'true';
       const isStep3Enabled = await getWhatsAppSetting('cart_recovery_step3_enabled', 'true') === 'true';
 
-      const delay1 = parseInt(await getWhatsAppSetting('delay_abandoned_cart_step1', '5'), 10) || 5;
-      const delay2 = parseInt(await getWhatsAppSetting('delay_abandoned_cart_step2', '1440'), 10) || 1440;
-      const delay3 = parseInt(await getWhatsAppSetting('delay_abandoned_cart_step3', '10080'), 10) || 10080;
+      // Defaults: 15 minutes, 4 hours, 7 days (same values the Automations tab shows).
+      const delay1 = parseInt(await getWhatsAppSetting('delay_abandoned_cart_step1', CART_RECOVERY_DELAY_DEFAULTS.delay_abandoned_cart_step1), 10) || 15;
+      const delay2 = parseInt(await getWhatsAppSetting('delay_abandoned_cart_step2', CART_RECOVERY_DELAY_DEFAULTS.delay_abandoned_cart_step2), 10) || 240;
+      const delay3 = parseInt(await getWhatsAppSetting('delay_abandoned_cart_step3', CART_RECOVERY_DELAY_DEFAULTS.delay_abandoned_cart_step3), 10) || 10080;
 
       const now = new Date();
       // Use the maximum configured delay + 1 day buffer as lookback window.

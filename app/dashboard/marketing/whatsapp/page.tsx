@@ -2573,6 +2573,7 @@ function OrderNotifications() {
   const [approvedTemplates, setApprovedTemplates] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(true);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
 
   useEffect(() => {
     async function fetchAll() {
@@ -2707,11 +2708,17 @@ function OrderNotifications() {
     { key: "order_shipped", templateKey: "template_order_shipped", defaultTemplate: "zica_order_shipped", title: "Order Shipped", desc: "Auto-send on order fulfillment containing courier tracking (orders/fulfilled webhook)." },
     { key: "out_for_delivery", templateKey: "template_out_for_delivery", defaultTemplate: "zb_out_for_delivery", title: "Out for Delivery", desc: "Auto-send when carrier status marks package as out for delivery." },
     { key: "order_delivered", templateKey: "template_order_delivered", defaultTemplate: "zica_order_delivered_v1", title: "Delivered Confirmation", desc: "Auto-send notification validating package drop-off." },
-    { key: "return_confirmed", templateKey: "template_return_confirmed", defaultTemplate: "zb_return_confirmed", title: "Return Request Confirmed", desc: "Auto-send receipt validation containing credit processing status." },
+    { key: "return_confirmed", templateKey: "template_return_confirmed", defaultTemplate: "zb_return_confirmed", title: "Return Accepted", desc: "Sent once when a return request is approved, with the refund amount. Checked every 15 minutes." },
     { key: "return_pickup_scheduled_enabled", templateKey: "template_return_pickup", defaultTemplate: "zb_return_pickup_scheduled", title: "Return Pickup Scheduled", desc: "Auto-send when reverse pickup is scheduled for an approved return." },
     { key: "exchange_confirmed_enabled", templateKey: "template_exchange_confirmed", defaultTemplate: "zb_exchange_confirmed", title: "Exchange Confirmed", desc: "Auto-send when an exchange request is approved." },
     { key: "exchange_pickup_scheduled_enabled", templateKey: "template_exchange_pickup", defaultTemplate: "zb_exchange_pickup_scheduled", title: "Exchange Pickup Scheduled", desc: "Auto-send when reverse pickup is scheduled for an approved exchange." },
     { key: "exchange_shipped_enabled", templateKey: "template_exchange_shipped", defaultTemplate: "zb_exchange_shipped", title: "Exchange Item Shipped", desc: "Auto-send when the replacement item ships after QC." },
+    { key: "return_received_enabled", templateKey: "template_return_received", defaultTemplate: "zb_return_received", title: "Return Received at Warehouse", desc: "Sent once when the returned parcel reaches our warehouse. Checked every 15 minutes." },
+    { key: "exchange_delivered_enabled", templateKey: "template_exchange_delivered", defaultTemplate: "zb_exchange_delivered", title: "Exchange Delivered", desc: "Sent once when the replacement parcel is delivered. Checked every 15 minutes." },
+    { key: "order_cancelled_enabled", templateKey: "template_order_cancelled", defaultTemplate: "zb_order_cancelled", title: "Order Cancelled", desc: "Sent once when an order is cancelled. Separate from the refund message." },
+    { key: "refund_initiated_enabled", templateKey: "template_refund_initiated", defaultTemplate: "zb_refund_initiated", title: "Refund Initiated", desc: "Sent only after the refund has actually been started to the original payment source, with the refund amount." },
+    { key: "store_credit_earned_enabled", templateKey: "template_store_credit_earned", defaultTemplate: "zb_store_credit_earned", title: "Store Credit Earned (Prepaid)", desc: "Sent when a prepaid order is paid: 10% of the final amount paid after discounts, as calculated at checkout." },
+    { key: "store_coins_earned_enabled", templateKey: "template_store_coins_earned", defaultTemplate: "zb_store_coins_earned", title: "Store Coins Earned (COD)", desc: "Sent only after a COD order is delivered and the coins have actually been released." },
     { key: "cod_confirmation_enabled", templateKey: "template_cod_confirmation", defaultTemplate: "zica_cod_confirmation_v1", title: "COD Confirmation", desc: "Auto-send confirmation request to Cash on Delivery orders." },
     { key: "cart_recovery_enabled", templateKey: "template_abandoned_cart", defaultTemplate: "abandoned_cart_a1", delayKey: "delay_abandoned_cart_step1", title: "Cart Recovery (Step 1)", desc: "Initial abandoned cart reminder sent when a cart goes inactive." },
     { key: "cart_recovery_step2_enabled", templateKey: "template_cart_followup", defaultTemplate: "abandoned_cart_a2", delayKey: "delay_abandoned_cart_step2", title: "Cart Recovery (Step 2)", desc: "Second reminder containing a discount code to recover abandoned items." },
@@ -2850,6 +2857,25 @@ function OrderNotifications() {
                     </div>
                   )}
 
+                  {/* Preview of the template this event will send */}
+                  {a.templateKey && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewKey(previewKey === a.key ? null : a.key)}
+                        className="text-[11px] text-emerald-500 hover:underline"
+                      >
+                        {previewKey === a.key ? "Hide preview" : "Preview message"}
+                      </button>
+                      {previewKey === a.key && (
+                        <TemplatePreview
+                          name={settings[a.templateKey] || a.defaultTemplate}
+                          template={approvedTemplates.find((t: any) => t.name === (settings[a.templateKey] || a.defaultTemplate))}
+                        />
+                      )}
+                    </div>
+                  )}
+
                   {/* Delay Input */}
                   {a.delayKey && (
                     <DelayInput
@@ -2913,6 +2939,49 @@ function OrderNotifications() {
       </div>
     );
   }
+}
+
+/** Sample values shown in a preview, in {{1}}, {{2}}… order. Real sends use the customer's own data. */
+const PREVIEW_SAMPLES = ["Aarav", "ZB72210", "₹360", "ZB-TRACK-123", "https://zicabella.com"];
+
+function TemplatePreview({ name, template }: { name: string; template?: any }) {
+  if (!template) {
+    return (
+      <p className="mt-2 text-[11px] text-amber-500">
+        "{name}" is not an approved template on Meta yet, so it can't be previewed or sent. Submit it from the Templates tab and wait for approval.
+      </p>
+    );
+  }
+  const fill = (text: string) =>
+    String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, v) => {
+      const i = parseInt(v, 10);
+      return Number.isFinite(i) ? PREVIEW_SAMPLES[i - 1] ?? `{{${v}}}` : `{{${v}}}`;
+    });
+  const comps: any[] = Array.isArray(template.components) ? template.components : [];
+  const header = comps.find((c) => c?.type === "HEADER");
+  const body = comps.find((c) => c?.type === "BODY");
+  const footer = comps.find((c) => c?.type === "FOOTER");
+  const buttons: any[] = comps.find((c) => c?.type === "BUTTONS")?.buttons || [];
+  return (
+    <div className="mt-2 max-w-xs rounded-2xl rounded-tl-sm bg-emerald-500/10 border border-emerald-500/20 p-3 space-y-1.5">
+      {header?.text && <p className="text-xs font-bold">{fill(header.text)}</p>}
+      {header && header.format && header.format !== "TEXT" && (
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">[{header.format} header]</p>
+      )}
+      <p className="text-xs whitespace-pre-line">{body?.text ? fill(body.text) : "(This template has no body text.)"}</p>
+      {footer?.text && <p className="text-[10px] text-muted-foreground">{footer.text}</p>}
+      {buttons.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {buttons.map((b, i) => (
+            <span key={i} className="text-[10px] px-2 py-1 rounded-full border border-emerald-500/30 text-emerald-500">
+              {b.text}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="text-[9px] text-muted-foreground pt-1">Preview with sample values — {template.category} · {template.status}</p>
+    </div>
+  );
 }
 
 /* ==========================================================================

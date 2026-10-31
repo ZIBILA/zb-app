@@ -8,6 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { getWhatsAppSetting, setWhatsAppSetting } from '@/lib/whatsapp/logger';
+import { toggleDefault, CART_RECOVERY_DELAY_DEFAULTS } from '@/lib/whatsapp/automation-defaults';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +32,13 @@ const TOGGLE_KEYS = [
   'sale_alert_enabled',
   'restock_alert_enabled',
   'welcome_enabled',
-  'account_created_enabled'
+  'account_created_enabled',
+  'return_received_enabled',
+  'exchange_delivered_enabled',
+  'order_cancelled_enabled',
+  'refund_initiated_enabled',
+  'store_credit_earned_enabled',
+  'store_coins_earned_enabled'
 ];
 
 // String keys for template name mappings (admin can override which template
@@ -56,7 +63,13 @@ const TEMPLATE_MAPPING_KEYS = [
   'template_sale_alert',
   'template_restock_alert',
   'template_welcome',
-  'template_account_created'
+  'template_account_created',
+  'template_return_received',
+  'template_exchange_delivered',
+  'template_order_cancelled',
+  'template_refund_initiated',
+  'template_store_credit_earned',
+  'template_store_coins_earned'
 ];
 
 // Timing keys for delays (in minutes)
@@ -68,11 +81,8 @@ const TIMING_KEYS = [
 
 const ALL_KEYS = [...TOGGLE_KEYS, ...TEMPLATE_MAPPING_KEYS, ...TIMING_KEYS];
 
-const TIMING_DEFAULTS = {
-  delay_abandoned_cart_step1: '5',
-  delay_abandoned_cart_step2: '60',
-  delay_abandoned_cart_step3: '10080'
-};
+// Reminder 1 after 15 minutes, 2 after 4 hours, 3 after 7 days (matches the cart-recovery scheduler).
+const TIMING_DEFAULTS = CART_RECOVERY_DELAY_DEFAULTS;
 
 /**
  * GET — Retrieve all order notification toggle settings + template mappings
@@ -80,9 +90,9 @@ const TIMING_DEFAULTS = {
 export async function GET() {
   try {
     const settings = {};
-    // Load toggle keys (default to 'true')
+    // Load toggle keys (default 'true', except lifecycle automations that wait for an approved template)
     for (const key of TOGGLE_KEYS) {
-      const val = await getWhatsAppSetting(key, 'true');
+      const val = await getWhatsAppSetting(key, toggleDefault(key));
       settings[key] = val === 'true';
     }
     // Load template mapping keys (default to empty string = use built-in default)

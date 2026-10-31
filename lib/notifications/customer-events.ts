@@ -29,6 +29,7 @@ export type CustomerEventType =
   | 'REPLACEMENT_DELIVERED'
   | 'FEEDBACK_REQUEST'
   | 'STORE_CREDIT_EARNED'
+  | 'STORE_COINS_EARNED'
   | 'STORE_CREDIT_EXPIRING';
 
 export type DeliveryChannel = 'email' | 'whatsapp';
