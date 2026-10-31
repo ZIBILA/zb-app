@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { runBroadcastInBackground } from '../broadcast/helper';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,6 +65,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     let newStatus = campaign.status;
+    let restart = false;
 
     switch (action) {
       case 'pause':
@@ -76,6 +78,7 @@ export async function PATCH(req: NextRequest) {
       case 'resume':
         if (campaign.status === 'paused') {
           newStatus = 'sending';
+          restart = true;
         } else {
           return NextResponse.json({ error: 'Can only resume a paused campaign' }, { status: 400 });
         }
@@ -92,6 +95,25 @@ export async function PATCH(req: NextRequest) {
           return NextResponse.json({ error: 'Cannot cancel a campaign that is already completed or failed' }, { status: 400 });
         }
         break;
+      case 'retry_failed': {
+        if (!['completed', 'failed'].includes(campaign.status)) {
+          return NextResponse.json({ error: 'Failed messages can be retried once the campaign has finished' }, { status: 400 });
+        }
+        const reset = await prisma.whatsAppCampaignRecipient.updateMany({
+          where: { campaignId: id, status: 'failed' },
+          data: { status: 'queued', errorMessage: null, nextRetryAt: null, retryCount: 0 }
+        });
+        if (reset.count === 0) {
+          return NextResponse.json({ error: 'No failed messages to retry' }, { status: 400 });
+        }
+        await prisma.whatsAppCampaign.update({
+          where: { id },
+          data: { statsFailed: Math.max(0, campaign.statsFailed - reset.count) }
+        });
+        newStatus = 'sending';
+        restart = true;
+        break;
+      }
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
@@ -100,6 +122,13 @@ export async function PATCH(req: NextRequest) {
       where: { id },
       data: { status: newStatus }
     });
+
+    if (restart) {
+      const payload = updated.templateParams ? JSON.parse(updated.templateParams) : {};
+      runBroadcastInBackground(updated.id, updated.templateName, payload).catch((e: any) => {
+        console.error(`[WhatsApp Campaigns API] restart failed for ${updated.id}:`, e);
+      });
+    }
 
     return NextResponse.json({ success: true, campaign: updated });
   } catch (error: any) {

@@ -199,6 +199,22 @@ const TEMPLATE_PRESETS = [
     preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, enjoy up to {{2}}% OFF on your favorites! Sale ends {{3}}. Shop now!', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Sale', url: 'https://app.zicabella.com/collections/{{1}}' }] }
   },
   {
+    id: 'new_product', label: '🆕 New Product Launch', desc: 'Introduce a new product with image and link',
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, meet our newest piece: {{2}}. {{3}} Be the first to get yours.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'View Product', url: 'https://app.zicabella.com/products/{{1}}' }] }
+  },
+  {
+    id: 'festival_sale', label: '🪔 Festival Sale', desc: 'Festival offer with end date and shop link',
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our {{2}} sale is on! Enjoy {{3}} on selected styles until {{4}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop the Sale', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+  },
+  {
+    id: 'discount_offer', label: '🏷️ Discount Offer', desc: 'Discount with a copy-code button',
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, here is {{2}} off your next order. Use the code below at checkout before {{3}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'COPY_CODE', example: 'ZICA20' }, { type: 'URL', text: 'Shop Now', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+  },
+  {
+    id: 'announcement', label: '📣 Announcement', desc: 'Special announcement, text only',
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, {{2}}', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Learn More', url: 'https://app.zicabella.com/{{1}}' }] }
+  },
+  {
     id: 'order_confirmation', label: '📦 Order Confirm', desc: 'Confirm order with tracking link',
     preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Thank you for your order, {{1}}! Your order {{2}} has been confirmed successfully.', footerText: '', buttons: [{ type: 'URL', text: 'View Order', url: 'https://app.zicabella.com/orders/{{1}}' }] }
   },
@@ -311,6 +327,10 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
     if (type === 'URL') setButtons([...buttons, { type: 'URL', text: '', url: '' }]);
     else if (type === 'QUICK_REPLY') setButtons([...buttons, { type: 'QUICK_REPLY', text: '' }]);
     else if (type === 'PHONE_NUMBER') setButtons([...buttons, { type: 'PHONE_NUMBER', text: '', phone_number: '' }]);
+    else if (type === 'COPY_CODE') {
+      if (buttons.some(b => b.type === 'COPY_CODE')) { toast.error("Only one discount-code button per template."); return; }
+      setButtons([...buttons, { type: 'COPY_CODE', example: '' }]);
+    }
     else if (type === 'CATALOG') setButtons([...buttons, { type: 'CATALOG' }]);
   };
 
@@ -325,7 +345,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
     else if (headerType === "DOCUMENT") cl.push({ type: "HEADER", format: "DOCUMENT", example: { header_url: ["https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"] } });
     cl.push({ type: "BODY", text: bodyText });
     if (footerText) cl.push({ type: "FOOTER", text: footerText });
-    if (buttons.length > 0) cl.push({ type: "BUTTONS", buttons: buttons.filter(b => b.type === 'CATALOG' || b.text) });
+    if (buttons.length > 0) cl.push({ type: "BUTTONS", buttons: buttons.filter(b => b.type === 'CATALOG' || b.type === 'COPY_CODE' || b.text) });
     return { name: name || "template_name", category, language, components: cl };
   };
 
@@ -717,6 +737,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                             <button onClick={() => addButton('URL')} className="text-xs bg-blue-500/10 text-blue-500 border border-blue-500/20 px-3 py-1.5 rounded-xl hover:bg-blue-500/20 flex items-center gap-1"><ExternalLink className="w-3 h-3" /> URL</button>
                             <button onClick={() => addButton('QUICK_REPLY')} className="text-xs bg-violet-500/10 text-violet-500 border border-violet-500/20 px-3 py-1.5 rounded-xl hover:bg-violet-500/20 flex items-center gap-1"><MessageCircle className="w-3 h-3" /> Quick Reply</button>
                             <button onClick={() => addButton('PHONE_NUMBER')} className="text-xs bg-amber-500/10 text-amber-500 border border-amber-500/20 px-3 py-1.5 rounded-xl hover:bg-amber-500/20 flex items-center gap-1">📞 Phone</button>
+                            <button onClick={() => addButton('COPY_CODE')} className="text-xs bg-rose-500/10 text-rose-500 border border-rose-500/20 px-3 py-1.5 rounded-xl hover:bg-rose-500/20 flex items-center gap-1">🏷 Discount Code</button>
                             <button onClick={() => addButton('CATALOG')} className="text-xs bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-3 py-1.5 rounded-xl hover:bg-emerald-500/20 flex items-center gap-1">🛍 Catalog</button>
                           </div>
                           <div className="space-y-3">
@@ -724,11 +745,12 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                             {buttons.map((btn, idx) => (
                               <div key={idx} className="bg-foreground/[0.02] border border-foreground/10 rounded-xl p-3 space-y-2">
                                 <div className="flex justify-between items-center">
-                                  <span className={`text-[9px] font-bold uppercase font-mono px-2 py-0.5 rounded ${btn.type === 'URL' ? 'bg-blue-500/10 text-blue-500' : btn.type === 'QUICK_REPLY' ? 'bg-violet-500/10 text-violet-500' : btn.type === 'PHONE_NUMBER' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'}`}>{btn.type}</span>
+                                  <span className={`text-[9px] font-bold uppercase font-mono px-2 py-0.5 rounded ${btn.type === 'URL' ? 'bg-blue-500/10 text-blue-500' : btn.type === 'QUICK_REPLY' ? 'bg-violet-500/10 text-violet-500' : btn.type === 'PHONE_NUMBER' ? 'bg-amber-500/10 text-amber-500' : btn.type === 'COPY_CODE' ? 'bg-rose-500/10 text-rose-500' : 'bg-emerald-500/10 text-emerald-500'}`}>{btn.type === 'COPY_CODE' ? 'DISCOUNT CODE' : btn.type}</span>
                                   <button onClick={() => removeButton(idx)} className="text-rose-500/50 hover:text-rose-500 text-xs">Remove</button>
                                 </div>
-                                {btn.type !== 'CATALOG' && <input type="text" placeholder="Button Label" value={btn.text || ''} onChange={(e) => updateButton(idx, 'text', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs" />}
+                                {btn.type !== 'CATALOG' && btn.type !== 'COPY_CODE' && <input type="text" placeholder="Button Label" value={btn.text || ''} onChange={(e) => updateButton(idx, 'text', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs" />}
                                 {btn.type === 'URL' && <input type="text" placeholder="https://app.zicabella.com/{{1}}" value={btn.url || ''} onChange={(e) => updateButton(idx, 'url', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
+                                {btn.type === 'COPY_CODE' && <input type="text" placeholder="Example code, e.g. ZICA20 (the real code is entered per campaign)" value={btn.example || ''} onChange={(e) => updateButton(idx, 'example', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
                                 {btn.type === 'PHONE_NUMBER' && <input type="text" placeholder="+919876543210" value={btn.phone_number || ''} onChange={(e) => updateButton(idx, 'phone_number', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
                               </div>
                             ))}
@@ -1164,6 +1186,52 @@ function QuickSendMessage() {
   );
 }
 
+/** WhatsApp-style preview of an approved template with the campaign's values filled in. */
+function CampaignMessagePreview({ template, payload }: { template: any; payload: Record<string, string> }) {
+  const fill = (text: string) =>
+    text.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_m, key: string) => {
+      const typed = payload[key];
+      if (typed) return typed;
+      return template.fields[0] === key ? "Priya" : `{{${key}}}`;
+    });
+  const isMedia = template.header && ["IMAGE", "VIDEO", "DOCUMENT"].includes(template.header.format);
+  const mediaUrl = payload.headerMediaUrl;
+
+  return (
+    <div>
+      <span className="text-[10px] text-foreground/50 uppercase font-bold tracking-wider block mb-1.5">Message preview</span>
+      <div className="bg-[#0b141a] rounded-2xl p-3">
+        <div className="max-w-[300px] bg-[#005c4b] text-white rounded-xl rounded-tl-sm overflow-hidden shadow">
+          {isMedia && (
+            mediaUrl && template.header.format === "IMAGE" ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={mediaUrl} alt="" className="w-full max-h-48 object-cover" />
+            ) : (
+              <div className="h-24 bg-black/20 flex items-center justify-center text-[10px] uppercase tracking-wider text-white/60">
+                {template.header.format.toLowerCase()} header{mediaUrl ? "" : " — add URL"}
+              </div>
+            )
+          )}
+          <div className="p-3 space-y-1">
+            {template.header?.format === "TEXT" && <p className="text-sm font-bold">{fill(template.header.text || "")}</p>}
+            <p className="text-sm whitespace-pre-wrap leading-snug">{fill(template.text)}</p>
+            {template.footer && <p className="text-[11px] text-white/60">{template.footer}</p>}
+          </div>
+          {template.buttons.length > 0 && (
+            <div className="border-t border-white/10 divide-y divide-white/10">
+              {template.buttons.map((b: any, i: number) => (
+                <div key={i} className="py-2 text-center text-sm text-sky-300 font-medium">
+                  {b.type === "COPY_CODE" ? `Copy code${payload.couponCode ? `: ${payload.couponCode}` : ""}` : b.text || b.type}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ==========================================================================
    SECTION D: BROADCAST CAMPAIGNS TAB
    ========================================================================== */
@@ -1188,6 +1256,7 @@ function BroadcastCampaigns() {
   const [selectedCampaign, setSelectedCampaign] = useState<any>(null);
   const [campaignDetail, setCampaignDetail] = useState<any>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [recipientFilter, setRecipientFilter] = useState<'all' | 'failed' | 'skipped'>('all');
 
   // Dynamic WABA templates state
   const [dbTemplates, setDbTemplates] = useState<any[]>([]);
@@ -1222,21 +1291,26 @@ function BroadcastCampaigns() {
     loadDbTemplates();
   }, []);
 
-  // Merge hardcoded templates with dynamic synced ones from the DB
+  // Merge built-in templates with the Meta-approved ones from the library
   const mergedTemplates = [
-    ...campaignTemplates.map(t => ({ ...t, isCustom: false, text: "" })),
-    ...dbTemplates.map(t => {
-      const bodyComp = t.components?.find((c: any) => c.type === "BODY");
+    ...campaignTemplates.map(t => ({ ...t, isCustom: false, text: "", header: null as any, footer: "", buttons: [] as any[], extras: [] as any[] })),
+    ...dbTemplates.filter(t => t.status === "APPROVED").map(t => {
+      const comps: any[] = t.components || [];
+      const bodyComp = comps.find((c: any) => c.type === "BODY");
+      const header = comps.find((c: any) => c.type === "HEADER") || null;
+      const footer = comps.find((c: any) => c.type === "FOOTER")?.text || "";
+      const buttons: any[] = comps.find((c: any) => c.type === "BUTTONS")?.buttons || [];
       const text = bodyComp?.text || "";
-      const matches = text.match(/\{\{(\d+)\}\}/g) || [];
-      const fields = matches.map((m: string) => m.replace(/[{}]/g, ""));
-      return {
-        id: t.name,
-        label: `${t.name} (${t.category})`,
-        fields: fields,
-        isCustom: true,
-        text: text
-      };
+      const fields: string[] = Array.from(new Set<string>((text.match(/\{\{[a-zA-Z0-9_]+\}\}/g) || []).map((m: string) => m.replace(/[{}]/g, ""))));
+      const extras: { key: string; label: string; placeholder: string }[] = [];
+      if (header && ["IMAGE", "VIDEO", "DOCUMENT"].includes(header.format)) {
+        extras.push({ key: "headerMediaUrl", label: `Header ${header.format.toLowerCase()} URL`, placeholder: "https://… (public link)" });
+      }
+      buttons.forEach((b: any, i: number) => {
+        if (b.type === "URL" && /\{\{\d+\}\}/.test(b.url || "")) extras.push({ key: `button_${i}`, label: `"${b.text}" link ending`, placeholder: `Added after ${String(b.url).replace(/\{\{\d+\}\}/, "")}` });
+        if (b.type === "COPY_CODE") extras.push({ key: "couponCode", label: "Discount code", placeholder: "e.g. FESTIVE20" });
+      });
+      return { id: t.name, label: `${t.name} (${t.category})`, fields, isCustom: true, text, header, footer, buttons, extras };
     })
   ];
 
@@ -1386,12 +1460,17 @@ function BroadcastCampaigns() {
           recipients,
           payload,
           name: campaignName || undefined,
-          scheduledAt: scheduledAt || undefined
+          audience,
+          scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
         })
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        toast.success(data.message || "Broadcast successfully queued in background!", { id: toastId });
+        const skipped = (data.skippedNotOptedIn || 0) + (data.skippedInvalid || 0);
+        toast.success(
+          `${data.message || "Broadcast queued."} ${data.totalQueued} recipients${skipped ? `, ${skipped} skipped (not opted in or invalid)` : ""}.`,
+          { id: toastId }
+        );
         setRecipientsText("");
         setCampaignName("");
         setScheduledAt("");
@@ -1410,6 +1489,7 @@ function BroadcastCampaigns() {
   // Campaign detail loader
   const loadCampaignDetail = async (campaign: any) => {
     setSelectedCampaign(campaign);
+    setRecipientFilter('all');
     setLoadingDetail(true);
     try {
       const res = await fetch(`/api/whatsapp/campaigns/${campaign.id}`);
@@ -1461,7 +1541,7 @@ function BroadcastCampaigns() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        toast.success(`Campaign ${action}d successfully!`, { id: toastId });
+        toast.success(action === "retry_failed" ? "Retrying failed messages." : `Campaign ${action}d successfully!`, { id: toastId });
         fetchCampaigns();
         if (selectedCampaign?.id === campaignId) {
           loadCampaignDetail({ ...selectedCampaign, status: data.campaign.status });
@@ -1542,13 +1622,6 @@ function BroadcastCampaigns() {
                 )}
               </div>
 
-              {currentTemplate.text && (
-                <div className="bg-foreground/5 p-3 rounded-xl border border-foreground/10 text-xs font-mono text-muted-foreground whitespace-pre-wrap leading-relaxed">
-                  <strong className="block text-[10px] text-foreground/50 uppercase mb-1">WABA Approved Body Preview:</strong>
-                  {currentTemplate.text}
-                </div>
-              )}
-
               {currentTemplate.fields.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {currentTemplate.fields.map((field: string, idx: number) => {
@@ -1560,10 +1633,10 @@ function BroadcastCampaigns() {
                         </label>
                         <input
                           type="text"
-                          required
+                          required={!(isFirst && currentTemplate.isCustom)}
                           placeholder={
                             isFirst && currentTemplate.isCustom
-                              ? "First placeholder defaults to Customer Name"
+                              ? "Leave blank to use each customer's name"
                               : `Value for placeholder ${field}`
                           }
                           value={payload[field] || ""}
@@ -1579,6 +1652,26 @@ function BroadcastCampaigns() {
                   This template does not require any variables or placeholders.
                 </div>
               )}
+
+              {currentTemplate.extras.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {currentTemplate.extras.map((x: any) => (
+                    <div key={x.key}>
+                      <label className="text-xs text-muted-foreground block mb-1">{x.label}</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder={x.placeholder}
+                        value={payload[x.key] || ""}
+                        onChange={(e) => setPayload((p: any) => ({ ...p, [x.key]: e.target.value }))}
+                        className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-3.5 py-2 outline-none focus:border-emerald-500/50 text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {currentTemplate.isCustom && <CampaignMessagePreview template={currentTemplate} payload={payload} />}
             </div>
           )}
 
@@ -1895,6 +1988,22 @@ function BroadcastCampaigns() {
                     ))}
                   </div>
 
+                  {/* Delivery rates */}
+                  {campaignDetail.statsSent > 0 && (
+                    <div className="grid grid-cols-3 gap-3 text-center text-xs">
+                      {[
+                        { label: "Delivery rate", n: campaignDetail.statsDelivered },
+                        { label: "Read rate", n: campaignDetail.statsRead },
+                        { label: "Failure rate", n: campaignDetail.statsFailed },
+                      ].map(r => (
+                        <div key={r.label} className="rounded-xl border border-foreground/10 py-2">
+                          <span className="text-[9px] uppercase tracking-wider text-muted-foreground block">{r.label}</span>
+                          <strong>{Math.min(100, Math.round((r.n / campaignDetail.statsSent) * 100))}%</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Campaign Metadata */}
                   <div className="grid grid-cols-2 gap-4 bg-foreground/[0.02] p-4 rounded-xl border border-foreground/5 text-xs">
                     <div>
@@ -1920,9 +2029,26 @@ function BroadcastCampaigns() {
                   {/* Recipients Table */}
                   {campaignDetail.recipients && campaignDetail.recipients.length > 0 && (
                     <div className="space-y-2">
-                      <h4 className="text-xs font-bold text-foreground/60 uppercase tracking-wider">
-                        Recipients ({campaignDetail.recipients.length})
-                      </h4>
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-foreground/60 uppercase tracking-wider">
+                          Recipients ({campaignDetail.recipients.length})
+                        </h4>
+                        <div className="flex items-center gap-1">
+                          {(['all', 'failed', 'skipped'] as const).map(f => {
+                            const n = f === 'all' ? campaignDetail.recipients.length : campaignDetail.recipients.filter((r: any) => r.status === f).length;
+                            return (
+                              <button key={f} onClick={() => setRecipientFilter(f)} className={`px-2 py-1 rounded-lg text-[10px] font-semibold capitalize ${recipientFilter === f ? 'bg-emerald-500 text-foreground' : 'bg-foreground/5 text-muted-foreground hover:text-foreground'}`}>
+                                {f} ({n})
+                              </button>
+                            );
+                          })}
+                          {campaignDetail.recipients.some((r: any) => r.status === 'failed') && ['completed', 'failed'].includes(selectedCampaign.status) && (
+                            <button onClick={() => handleCampaignAction(selectedCampaign.id, "retry_failed", "Retrying failed messages")} className="px-2 py-1 rounded-lg text-[10px] font-semibold text-blue-500 bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20">
+                              Retry failed
+                            </button>
+                          )}
+                        </div>
+                      </div>
                       <div className="max-h-[300px] overflow-y-auto rounded-xl border border-foreground/10">
                         <table className="w-full text-xs">
                           <thead className="bg-foreground/[0.02] sticky top-0 border-b border-foreground/10">
@@ -1931,11 +2057,11 @@ function BroadcastCampaigns() {
                               <th className="text-left font-medium text-foreground/60 px-4 py-2.5">Name</th>
                               <th className="text-left font-medium text-foreground/60 px-4 py-2.5">Status</th>
                               <th className="text-left font-medium text-foreground/60 px-4 py-2.5">Sent At</th>
-                              <th className="text-right font-medium text-foreground/60 px-4 py-2.5">Message ID</th>
+                              <th className="text-left font-medium text-foreground/60 px-4 py-2.5">Details</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-foreground/5">
-                            {campaignDetail.recipients.map((r: any) => (
+                            {campaignDetail.recipients.filter((r: any) => recipientFilter === 'all' || r.status === recipientFilter).map((r: any) => (
                               <tr key={r.id} className="hover:bg-foreground/[0.02] transition-colors">
                                 <td className="px-4 py-2 font-mono">{r.phone}</td>
                                 <td className="px-4 py-2">{r.name || "—"}</td>
@@ -1943,7 +2069,7 @@ function BroadcastCampaigns() {
                                   <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold border ${
                                     r.status === "sent" || r.status === "delivered" || r.status === "read" 
                                       ? "border-emerald-500/20 text-emerald-500 bg-emerald-500/10"
-                                      : r.status === "failed" || r.status === "cancelled"
+                                      : r.status === "failed" || r.status === "cancelled" || r.status === "skipped"
                                       ? "border-rose-500/20 text-rose-500 bg-rose-500/10"
                                       : "border-amber-500/20 text-amber-500 bg-amber-500/10"
                                   }`}>
@@ -1953,8 +2079,8 @@ function BroadcastCampaigns() {
                                 <td className="px-4 py-2 text-muted-foreground">
                                   {r.sentAt ? new Date(r.sentAt).toLocaleString('en-IN') : "—"}
                                 </td>
-                                <td className="px-4 py-2 text-right font-mono text-muted-foreground truncate max-w-[120px]" title={r.messageId}>
-                                  {r.messageId ? r.messageId.substring(0, 16) + '...' : "—"}
+                                <td className="px-4 py-2 text-muted-foreground max-w-[200px] truncate" title={r.errorMessage || r.messageId || ''}>
+                                  {r.errorMessage || (r.readAt ? 'Read' : r.deliveredAt ? 'Delivered' : '—')}
                                 </td>
                               </tr>
                             ))}

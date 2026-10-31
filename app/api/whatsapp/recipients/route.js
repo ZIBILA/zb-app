@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { isOptedIn } from '@/lib/whatsapp/templates';
+import { isCampaignEligible } from '../broadcast/helper';
 import { formatPhone } from '@/lib/whatsapp/client';
 import { shopifyFetch } from '@/lib/shopify-admin';
 
@@ -103,15 +103,17 @@ export async function GET(req) {
 
     // Map and filter by marketing opt-in consent
     const recipients = [];
+    const seenPhones = new Set();
     for (const c of customers) {
       const rawPhone = c.phone;
       if (!rawPhone) continue;
 
       const formatted = formatPhone(rawPhone);
-      if (!formatted || formatted.length < 10) continue;
+      if (!formatted || formatted.length < 10 || seenPhones.has(formatted)) continue;
+      seenPhones.add(formatted);
 
       // Check consent
-      const consented = await isOptedIn(formatted);
+      const consented = await isCampaignEligible(formatted);
       if (consented) {
         recipients.push({
           phone: formatted,

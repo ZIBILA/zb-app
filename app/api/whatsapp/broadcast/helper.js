@@ -1,6 +1,7 @@
 import prisma from '@/lib/db';
 import * as templates from '@/lib/whatsapp/templates';
 import { WhatsAppService } from '@/lib/services/whatsapp.service';
+import { formatPhone } from '@/lib/whatsapp/client';
 
 export const SENDER_MAP = {
   order_confirmed: templates.sendOrderConfirmation,
@@ -42,17 +43,71 @@ async function resolveGenericTemplate(templateName) {
     }
   }
 
-  return { templateRecord, numVars: varNames.length, varNames, lang };
+  return {
+    templateRecord,
+    numVars: varNames.length,
+    varNames,
+    lang,
+    components: Array.isArray(templateRecord.components) ? templateRecord.components : [],
+  };
+}
+
+const isNameLike = (key, index) => index === 0 || key.includes('name') || key.includes('customer');
+
+function headerMedia(templateComponents) {
+  const header = templateComponents.find(c => c.type === 'HEADER');
+  const format = header?.format;
+  return format === 'IMAGE' || format === 'VIDEO' || format === 'DOCUMENT' ? format.toLowerCase() : null;
+}
+
+function buttonSlots(templateComponents) {
+  const buttons = templateComponents.find(c => c.type === 'BUTTONS')?.buttons || [];
+  return buttons
+    .map((b, index) => {
+      if (b.type === 'URL' && /\{\{\d+\}\}/.test(b.url || '')) return { index, kind: 'url', key: `button_${index}` };
+      if (b.type === 'COPY_CODE') return { index, kind: 'copy_code', key: 'couponCode' };
+      return null;
+    })
+    .filter(Boolean);
 }
 
 /**
- * Builds body components for a generic template from the campaign payload
- * and recipient name.
+ * Lists the campaign inputs a generic template needs that the payload does not
+ * provide, so a campaign is rejected up front instead of sending a half-filled
+ * message. The first body variable (and name-like ones) default to the
+ * recipient's name.
  */
-function buildGenericComponents(varNames, payload, recipientName) {
+export function findMissingVariables(varNames, payload, templateComponents = []) {
+  const missing = [];
+  const names = Array.isArray(varNames) ? varNames : [];
+  names.forEach((vKey, i) => {
+    const lower = vKey.toLowerCase();
+    const val = payload[vKey] ?? payload[lower] ?? payload[i + 1] ?? payload[String(i + 1)];
+    if (!val && !isNameLike(lower, i)) missing.push(`{{${vKey}}}`);
+  });
+  if (headerMedia(templateComponents) && !payload.headerMediaUrl) missing.push('header media URL');
+  for (const slot of buttonSlots(templateComponents)) {
+    if (!payload[slot.key]) missing.push(slot.kind === 'copy_code' ? 'discount code' : `button ${slot.index + 1} link ending`);
+  }
+  return missing;
+}
+
+/**
+ * Builds the header, body and button components for a generic template from the
+ * campaign payload and recipient name.
+ */
+function buildGenericComponents(varNames, payload, recipientName, templateComponents = []) {
   const components = [];
   const bodyParams = [];
   const names = Array.isArray(varNames) ? varNames : Array.from({ length: Number(varNames) || 0 }, (_, i) => String(i + 1));
+
+  const media = headerMedia(templateComponents);
+  if (media && payload.headerMediaUrl) {
+    components.push({
+      type: 'header',
+      parameters: [{ type: media, [media]: { link: payload.headerMediaUrl } }]
+    });
+  }
 
   for (let i = 0; i < names.length; i++) {
     const vKey = names[i];
@@ -60,7 +115,7 @@ function buildGenericComponents(varNames, payload, recipientName) {
     let val = payload[vKey] || payload[lowerKey] || payload[i + 1] || payload[String(i + 1)] || payload[`var_${vKey}`] || payload[`param_${vKey}`];
 
     if (!val) {
-      if (lowerKey.includes('name') || lowerKey.includes('customer') || i === 0) {
+      if (isNameLike(lowerKey, i)) {
         val = recipientName || payload.name || payload.customerName || 'Customer';
       } else if (lowerKey.includes('order') || lowerKey.includes('id')) {
         val = payload.orderId || payload.order_id || 'Order';
@@ -88,7 +143,44 @@ function buildGenericComponents(varNames, payload, recipientName) {
     });
   }
 
+  for (const slot of buttonSlots(templateComponents)) {
+    const value = payload[slot.key];
+    if (!value) continue;
+    components.push(
+      slot.kind === 'copy_code'
+        ? { type: 'button', sub_type: 'copy_code', index: String(slot.index), parameters: [{ type: 'coupon_code', coupon_code: String(value) }] }
+        : { type: 'button', sub_type: 'url', index: String(slot.index), parameters: [{ type: 'text', text: String(value) }] }
+    );
+  }
+
   return components;
+}
+
+/**
+ * Strict marketing consent for campaigns: a number must be explicitly opted in,
+ * or belong to a known customer / community member who has not opted out.
+ * Unknown numbers (e.g. pasted or CSV-uploaded) are NOT eligible, and any lookup
+ * error blocks the send.
+ */
+export async function isCampaignEligible(phone) {
+  const formatted = formatPhone(phone);
+  if (!formatted) return false;
+  const tail = formatted.slice(-10);
+  try {
+    const optIn = await prisma.whatsAppOptIn.findFirst({
+      where: { OR: [{ phone: formatted }, { phone: { endsWith: tail } }] }
+    });
+    if (optIn) return optIn.status === 'opted_in';
+
+    const customer = await prisma.customer.findFirst({ where: { phone: { endsWith: tail } } });
+    if (customer) return !customer.whatsappOptedOut;
+
+    const member = await prisma.communityMember.findFirst({ where: { phone: { endsWith: tail } } });
+    return member ? member.whatsappOptIn !== false : false;
+  } catch (err) {
+    console.warn('[WhatsApp Campaign] consent lookup failed, blocking send:', err.message);
+    return false;
+  }
 }
 
 /**
@@ -111,6 +203,26 @@ export async function sendCampaignRecipient(recipient, campaignId, type, payload
   const senderFn = SENDER_MAP[type];
   const isGeneric = !senderFn;
 
+  // Paused/cancelled campaigns send nothing, and only one worker may claim a recipient.
+  const parent = await prisma.whatsAppCampaign.findUnique({ where: { id: campaignId }, select: { status: true } });
+  if (!parent || parent.status === 'paused' || parent.status === 'cancelled') {
+    return { success: false, skipped: true, error: 'Campaign is not sending' };
+  }
+  const claimed = await prisma.whatsAppCampaignRecipient.updateMany({
+    where: { id: recipient.id, status: 'queued' },
+    data: { status: 'sending' }
+  });
+  if (claimed.count === 0) return { success: false, skipped: true, error: 'Recipient already handled' };
+
+  // Marketing consent is re-checked at send time; it may have changed since the audience was built.
+  if (!(await isCampaignEligible(recipient.phone))) {
+    await prisma.whatsAppCampaignRecipient.update({
+      where: { id: recipient.id },
+      data: { status: 'skipped', errorMessage: 'Not opted in to marketing messages' }
+    });
+    return { success: false, skipped: true, error: 'Not opted in' };
+  }
+
   try {
     let res = null;
 
@@ -118,16 +230,18 @@ export async function sendCampaignRecipient(recipient, campaignId, type, payload
       // Resolve generic template details if not pre-resolved
       let varNames = genericTemplateInfo?.varNames ?? genericTemplateInfo?.numVars ?? 0;
       let lang = genericTemplateInfo?.lang ?? 'en';
+      let templateComponents = genericTemplateInfo?.components ?? [];
 
       if (!genericTemplateInfo) {
         const resolved = await resolveGenericTemplate(type);
         if (resolved) {
           varNames = resolved.varNames;
           lang = resolved.lang;
+          templateComponents = resolved.components;
         }
       }
 
-      const components = buildGenericComponents(varNames, payload, recipient.name);
+      const components = buildGenericComponents(varNames, payload, recipient.name, templateComponents);
 
       // Call direct WhatsApp send service
       const apiResult = await WhatsAppService.sendTemplateMessage(recipient.phone, type, lang, components);
@@ -189,7 +303,8 @@ export async function sendCampaignRecipient(recipient, campaignId, type, payload
       await prisma.whatsAppCampaign.update({
         where: { id: campaignId },
         data: {
-          statsSent: { increment: 1 }
+          statsSent: { increment: 1 },
+          total_sent: { increment: 1 }
         }
       });
 
@@ -250,7 +365,7 @@ export async function finalizeCampaignIfComplete(campaignId) {
       where: { id: campaignId }
     });
 
-    if (campaign && campaign.status !== 'completed') {
+    if (campaign && campaign.status === 'sending') {
       await prisma.whatsAppCampaign.update({
         where: { id: campaignId },
         data: {
@@ -264,7 +379,8 @@ export async function finalizeCampaignIfComplete(campaignId) {
 }
 
 /**
- * Background runner that executes the broadcast queue sequentially
+ * Background runner that executes the broadcast queue sequentially.
+ * Stops as soon as the campaign is paused or cancelled; a resume starts it again.
  */
 export async function runBroadcastInBackground(campaignId, type, payload) {
   try {
@@ -280,7 +396,7 @@ export async function runBroadcastInBackground(campaignId, type, payload) {
     if (isGeneric) {
       const resolved = await resolveGenericTemplate(type);
       if (resolved) {
-        genericTemplateInfo = { numVars: resolved.numVars, varNames: resolved.varNames, lang: resolved.lang };
+        genericTemplateInfo = { numVars: resolved.numVars, varNames: resolved.varNames, lang: resolved.lang, components: resolved.components };
       }
     }
 
@@ -292,18 +408,13 @@ export async function runBroadcastInBackground(campaignId, type, payload) {
         await new Promise(resolve => setTimeout(resolve, 80));
       }
 
+      const state = await prisma.whatsAppCampaign.findUnique({ where: { id: campaignId }, select: { status: true } });
+      if (!state || state.status !== 'sending') return;
+
       await sendCampaignRecipient(recipient, campaignId, type, payload, genericTemplateInfo);
     }
 
-    // Mark campaign as completed
-    await prisma.whatsAppCampaign.update({
-      where: { id: campaignId },
-      data: {
-        status: 'completed',
-        sentAt: new Date()
-      }
-    });
-
+    await finalizeCampaignIfComplete(campaignId);
   } catch (error) {
     console.error(`[WhatsApp Broadcast Background Worker] Error in campaign ${campaignId}:`, error);
     await prisma.whatsAppCampaign.update({
