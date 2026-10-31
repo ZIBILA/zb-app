@@ -22,13 +22,23 @@ const pendingRelays: Array<() => void> = [];
 const pendingDrops: Array<(() => void) | undefined> = [];
 const MAX_QUEUE = 50;
 let countryLookup: Promise<string | null> | null = null;
+/**
+ * The country lookup ran and failed (no /api/geo answer, provider outage, private
+ * IP). "Pending" would then never resolve: the Pixel stays revoked, the relay queue
+ * never flushes and nothing records why. Fail open for this page load instead —
+ * exactly what lib/ip-geo.ts does for its own callers — and leave no cookie, so the
+ * next page load tries again. A visitor who already chose keeps that choice.
+ */
+let geoLookupFailed = false;
 
 export function readMetaConsentState(): ConsentState {
-  return consentState({
+  const s = consentState({
     regions: META_CONSENT_REGIONS,
     choice: getClientCookie(CONSENT_COOKIE),
     countryCode: getClientCookie(GEO_COUNTRY_COOKIE),
   });
+  if (s.gated && s.status === 'pending' && geoLookupFailed) return { gated: false };
+  return s;
 }
 
 /** true when the visitor must see the consent prompt (in a consent region, no choice yet). */
@@ -98,8 +108,12 @@ export function resolveMetaConsentCountry(): Promise<string | null> {
         const res = await fetch('/api/geo', { cache: 'no-store' });
         const data = (res.ok ? await res.json() : null) as { ok?: boolean; countryCode?: unknown } | null;
         if (data?.ok && typeof data.countryCode === 'string' && /^[A-Za-z]{2}$/.test(data.countryCode)) cc = data.countryCode.toUpperCase();
-      } catch { /* unknown stays pending: tracking is held, never assumed */ }
+      } catch { /* handled below: a failed lookup fails open for this page load */ }
       if (cc) setClientCookie(GEO_COUNTRY_COOKIE, cc, 1);
+      else {
+        geoLookupFailed = true;
+        console.warn('[Meta consent] visitor country could not be resolved; tracking released for this page load (no consent region assumed)');
+      }
       settle(cc);
       return cc;
     })();

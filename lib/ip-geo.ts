@@ -1,13 +1,15 @@
 /**
  * Server-Side IP Geolocation Service
  * Features:
- * - Extracts client IP from x-forwarded-for, x-real-ip, cf-connecting-ip, x-client-ip, etc.
+ * - Extracts client IP via lib/client-ip.ts (cf-connecting-ip, do-connecting-ip, x-forwarded-for, …)
  * - Extracts native edge geolocation headers (Vercel & Cloudflare) for 0ms latency lookups
  * - In-memory LRU cache with 24-hour TTL (max 10,000 IPs)
  * - Multi-provider fallback chain (ipwho.is -> ip-api.com -> ipapi.co)
  * - Local development fallback for private/loopback IPs
  * - Fail-open design: returns null without throwing on timeout or API failure
  */
+
+import { clientIpFromHeaders } from '@/lib/client-ip';
 
 export interface IpGeoResult {
   countryCode: string; // ISO-2 uppercase e.g. "IN", "US"
@@ -33,24 +35,8 @@ const ipGeoCache = new Map<string, CacheEntry>();
  * Extract client IP address from HTTP request headers.
  */
 export function getClientIP(request: Request): string {
-  const headers = request.headers;
-
-  const doIp = headers.get('do-connecting-ip');
-  if (doIp && doIp.trim()) return doIp.trim();
-
-  const forwarded = headers.get('x-forwarded-for') || headers.get('x-vercel-forwarded-for');
-  if (forwarded) {
-    const firstIp = forwarded.split(',')[0].trim();
-    if (firstIp) return firstIp;
-  }
-
-  const real = headers.get('x-real-ip') || headers.get('x-client-ip') || headers.get('x-cluster-client-ip') || headers.get('fastly-client-ip');
-  if (real) return real.trim();
-
-  const cfIp = headers.get('cf-connecting-ip');
-  if (cfIp) return cfIp.trim();
-
-  return '127.0.0.1';
+  // Cloudflare → DigitalOcean → standard forwarding headers (lib/client-ip.ts).
+  return clientIpFromHeaders(request.headers) || '127.0.0.1';
 }
 
 /**

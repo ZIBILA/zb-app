@@ -314,7 +314,7 @@ function StackedCard({
         fill
         sizes="(max-width: 768px) 85vw, 400px"
         className="object-cover pointer-events-none"
-        priority={isActive}
+        loading={isActive ? "eager" : "lazy"}
         onError={() => setImgSrc(fallback)}
       />
 
@@ -424,7 +424,7 @@ function DesktopStackedCard({
         fill
         sizes="400px"
         className="object-cover pointer-events-none"
-        priority={isActive}
+        loading={isActive ? "eager" : "lazy"}
         onError={() => setImgSrc(fallback)}
       />
 

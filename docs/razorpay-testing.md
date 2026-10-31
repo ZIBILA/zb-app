@@ -53,9 +53,9 @@
 ### 2.7 "Webhook not received"
 - **Cause**: Webhook URL must be HTTPS. Check Razorpay Dashboard → Webhooks for active status
 - **Fix**:
-  1. URL must be `https://app.zicabella.com/api/razorpay/webhook`
+  1. URL must be `https://zicabella.com/api/webhooks/razorpay` (alias: `/api/razorpay/webhook`)
   2. Status must be "Active"
-  3. Events must be checked: `payment.captured`, `payment.failed`, `refund.created`
+  3. Events must be checked: `payment.captured`, `order.paid`, `payment.authorized`, `payment.failed`, `refund.created`, `refund.processed`, `refund.failed`
 
 ### 2.8 "Payment captured but order not marked paid"
 - **Cause**: Webhook handler DB write failing silently
@@ -204,7 +204,7 @@ RazorpayPaymentScreen
       └→ HMAC SHA256 verification
       └→ DB: Order → PAID
 
-                              POST /api/razorpay/webhook ←── Webhook events
+                              POST /api/webhooks/razorpay ←── Webhook events (alias /api/razorpay/webhook)
                                 └→ Idempotency check
                                 └→ DB update
                                 └→ 200 OK

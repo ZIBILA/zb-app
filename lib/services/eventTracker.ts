@@ -1,4 +1,5 @@
 import db from '../db';
+import { META_GRAPH_API_VERSION } from '@/lib/metaErrors';
 import axios from 'axios';
 import crypto from 'crypto';
 
@@ -184,10 +185,12 @@ export const eventTracker = {
           ]
         };
 
-        const metaUrl = `https://graph.facebook.com/v25.0/${datasetId}/events?access_token=${accessToken}`;
+        // Token in the POST body (as lib/metaCapi.ts does), never in the URL, so no
+        // proxy / access log / error trace carries it; one Graph version for the app.
+        const metaUrl = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${datasetId}/events`;
         const requestPayloadStr = JSON.stringify(payload, null, 2);
 
-        const response = await axios.post(metaUrl, payload);
+        const response = await axios.post(metaUrl, { ...payload, access_token: accessToken });
         const responsePayloadStr = JSON.stringify(response.data, null, 2);
 
         // Update local event status to forwarded

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Image from "next/image";
 import { VolumeX, Volume2 } from "lucide-react";
 
 
@@ -11,6 +12,9 @@ function guessVideoType(url: string): string | undefined {
   if (path.endsWith(".ogg") || path.endsWith(".ogv")) return "video/ogg";
   return undefined;
 }
+
+/** Upper bound on how long the video file waits for the page to settle before it starts loading. */
+const VIDEO_START_CAP_MS = 4000;
 
 interface HeroVideoProps {
   src: string;
@@ -30,6 +34,11 @@ export default function HeroVideo({
 }: HeroVideoProps) {
   const [isMuted, setIsMuted] = useState(true);
   const [isInView, setIsInView] = useState(false);
+  // The <source> tags are attached only after the page has loaded (or 4 s, whichever is first),
+  // so the 4 MB video no longer competes with the poster, CSS, fonts and product images on a
+  // phone connection. The poster below is a real responsive <img>, so it is the hero's LCP
+  // candidate and paints as soon as it arrives; the video draws over it once it can play.
+  const [sourcesReady, setSourcesReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const primarySrc = src;
 
@@ -45,13 +54,49 @@ export default function HeroVideo({
   }, []);
 
   useEffect(() => {
-    if (!videoRef.current) return;
+    if (showControlOnly) return;
+    let started = false;
+    let idleId: number | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const start = () => {
+      if (started) return;
+      started = true;
+      setSourcesReady(true);
+    };
+    const afterLoad = () => {
+      if (typeof window.requestIdleCallback === "function") {
+        idleId = window.requestIdleCallback(start, { timeout: 1500 });
+      } else {
+        idleTimer = setTimeout(start, 200);
+      }
+    };
+    if (document.readyState === "complete") afterLoad();
+    else window.addEventListener("load", afterLoad, { once: true });
+    const cap = setTimeout(start, VIDEO_START_CAP_MS);
+    return () => {
+      window.removeEventListener("load", afterLoad);
+      if (idleId !== undefined && typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(idleId);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(cap);
+    };
+  }, [showControlOnly]);
+
+  // Once the sources exist, (re)load so the element picks the media-matched one; the
+  // visibility effect below (which also depends on sourcesReady) then starts playback.
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !sourcesReady) return;
+    el.load();
+  }, [sourcesReady]);
+
+  useEffect(() => {
+    if (!videoRef.current || !sourcesReady) return;
     if (isInView) {
       videoRef.current.play().catch(() => {});
     } else {
       videoRef.current.pause();
     }
-  }, [isInView]);
+  }, [isInView, sourcesReady]);
 
   const toggle = () => {
     if (videoRef.current) {
@@ -75,6 +120,18 @@ export default function HeroVideo({
       className="absolute inset-0 w-full h-full cursor-pointer group/hero"
       onClick={toggle}
     >
+      {!showControlOnly && poster && (
+        // Responsive poster: the Shopify CDN serves the width the phone needs instead of the
+        // full-size original, and it is preloaded with high priority as the LCP image.
+        <Image
+          src={poster}
+          alt=""
+          fill
+          priority
+          sizes="100vw"
+          className="object-cover"
+        />
+      )}
       {!showControlOnly && (
         <video
           ref={videoRef}
@@ -82,11 +139,11 @@ export default function HeroVideo({
           muted
           loop
           playsInline
-          preload="metadata"
-          poster={poster || undefined}
-          className="w-full h-full object-cover transition-all duration-700"
+          preload="none"
+          className="absolute inset-0 w-full h-full object-cover transition-all duration-700"
         >
-          {mobileSrc &&
+          {sourcesReady &&
+            mobileSrc &&
             mobileSources.map((url) => {
               const type = guessVideoType(url);
               return type ? (
@@ -100,14 +157,15 @@ export default function HeroVideo({
                 <source key={`m-${url}`} src={url} media="(max-width: 768px)" />
               );
             })}
-          {desktopSources.map((url) => {
-            const type = guessVideoType(url);
-            return type ? (
-              <source key={`d-${url}`} src={url} type={type} />
-            ) : (
-              <source key={`d-${url}`} src={url} />
-            );
-          })}
+          {sourcesReady &&
+            desktopSources.map((url) => {
+              const type = guessVideoType(url);
+              return type ? (
+                <source key={`d-${url}`} src={url} type={type} />
+              ) : (
+                <source key={`d-${url}`} src={url} />
+              );
+            })}
         </video>
       )}
 

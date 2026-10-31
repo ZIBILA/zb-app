@@ -1,4 +1,4 @@
-import { fetchEnabledCollections, fetchPolicies, fetchCollectionByHandle, fetchStorefrontCatalog } from "@/lib/shopify-admin";
+import { fetchEnabledCollections, fetchCollectionByHandle, fetchStorefrontCatalog } from "@/lib/shopify-admin";
 import { isStorefrontEligible } from "@/lib/storefrontCatalog";
 import prisma, { getStoreSettings, getShopSettings, DEFAULT_SHOP_SETTINGS } from "@/lib/db";
 import NextImage from "next/image";
@@ -18,6 +18,7 @@ import LazyVideo from "@/components/LazyVideo";
 import AspectFitImage from "@/components/AspectFitImage";
 import { handleImageError } from "@/components/ImagePlaceholder";
 import { Metadata } from "next";
+import { toCardCollections, toCardProducts } from "@/lib/storefront-card-product";
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://zicabella.com';
 
@@ -78,10 +79,14 @@ export default async function Home() {
     getShopSettings(),
   ]);
 
+  // The hero poster is preloaded by the priority <Image> inside HeroVideo. A server-side
+  // react-dom preload() was dropped on purpose: Flight serialises it as a hint that the browser
+  // honours whenever this page's payload is *prefetched*, so every other page (cart, product,
+  // collection) was downloading the 140 KB home poster via the logo link's prefetch.
+
   // Concurrently fetch all independent assets to optimize TTFB and speed up the homepage loading
-  const [collections, policies, banners, fetchedProducts] = await Promise.all([
+  const [collections, banners, fetchedProducts] = await Promise.all([
     fetchEnabledCollections('page').catch(() => []),
-    fetchPolicies().catch(() => []),
     (async () => {
       try {
         return await prisma.webStoreBanner.findMany({
@@ -142,6 +147,8 @@ export default async function Home() {
     const have = new Set(products.map((p) => p.id));
     products = [...products, ...shopAll.products.filter((p) => !have.has(p.id))].slice(0, Math.max(16, products.length));
   }
+  // Only the fields the cards render travel to the client (see lib/storefront-card-product.ts).
+  const cardProducts = toCardProducts(products);
 
   const nullIfEmpty = (val: string | null | undefined): string | null => {
     if (val === undefined || val === null) return null;
@@ -317,8 +324,8 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 1 ─── */}
         <section className="mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {products.slice(0, 4).map((p: ShopifyProduct, idx: number) => (
-              <ProductCard key={p.id} product={p} priority={idx < 4} />
+            {cardProducts.slice(0, 4).map((p: ShopifyProduct) => (
+              <ProductCard key={p.id} product={p} />
             ))}
           </div>
         </section>
@@ -371,7 +378,7 @@ export default async function Home() {
               <span className="glass-label">— {archiveTitle} —</span>
             </div>
           )}
-          <CollectionCarousel collections={collections} />
+          <CollectionCarousel collections={toCardCollections(collections)} />
           {s?.showArchive && archiveSubtitle && (
             <div className="flex justify-center mt-3 mb-2">
               <span className="text-[8px] font-extralight uppercase tracking-[0.4em] text-foreground/15">{archiveSubtitle}</span>
@@ -410,7 +417,7 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 2 ─── */}
         <section className="render-deferred-section mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {products.slice(4, 8).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
+            {cardProducts.slice(4, 8).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
           </div>
         </section>
 
@@ -555,7 +562,7 @@ export default async function Home() {
         {/* ─── PRODUCT GRID 3 ─── */}
         <section className="render-deferred-section mt-4 mb-6 w-full px-[2px] md:px-1 min-h-[300px]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] md:gap-[4px]">
-            {products.slice(12, 16).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
+            {cardProducts.slice(12, 16).map((p: ShopifyProduct) => <ProductCard key={p.id} product={p} />)}
           </div>
         </section>
 

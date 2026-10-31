@@ -1,7 +1,68 @@
 import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
+import { clientIpFromHeaders } from "@/lib/client-ip";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
+
+// ── Unknown collection / product handles → a real 404 ───────────────────────
+// The app streams every page behind app/loading.tsx, so a notFound() thrown in a
+// page, its metadata or its layout only yields a "soft 404" (200 + not-found UI).
+// Rewriting an unknown handle to an unmatched path makes Next answer with the
+// branded not-found page and a 404 status. Handles come from
+// /api/collections/handles and /api/products/handles (ISR 120 s), fetched through
+// the app's own listener first (no Cloudflare in the way) and cached here per
+// instance for 5 min; any failure fails open (no rewrite).
+const HANDLES_TTL_MS = 5 * 60_000;
+const HANDLES_RETRY_MS = 60_000;
+type HandleKind = 'collections' | 'products';
+const handleCaches: Record<HandleKind, { set: Set<string> | null; validUntil: number; status: string; inflight: Promise<Set<string> | null> | null }> = {
+  collections: { set: null, validUntil: 0, status: 'init', inflight: null },
+  products: { set: null, validUntil: 0, status: 'init', inflight: null },
+};
+
+/** The app's own listener first (no Cloudflare / WAF in the way), then the public origin. */
+function handleSources(nextUrl: URL): string[] {
+  const port = (typeof process !== 'undefined' && process.env?.PORT) || nextUrl.port || '3000';
+  const sources = [`http://127.0.0.1:${port}`];
+  if (!/^(127\.0\.0\.1|localhost)$/.test(nextUrl.hostname)) sources.push(nextUrl.origin);
+  return sources;
+}
+
+async function knownHandles(kind: HandleKind, nextUrl: URL): Promise<Set<string> | null> {
+  const c = handleCaches[kind];
+  if (Date.now() < c.validUntil) return c.set;
+  if (!c.inflight) {
+    c.inflight = (async () => {
+      const failures: string[] = [];
+      for (const base of handleSources(nextUrl)) {
+        try {
+          const res = await fetch(`${base}/api/${kind}/handles`, { signal: AbortSignal.timeout(2500), cache: 'no-store', headers: { accept: 'application/json' } });
+          const data = res.ok ? await res.json().catch(() => null) : null;
+          const handles: unknown = data?.handles;
+          if (Array.isArray(handles) && handles.length) {
+            c.set = new Set(handles.map(h => String(h).toLowerCase())); c.validUntil = Date.now() + HANDLES_TTL_MS; c.status = 'ok';
+            c.inflight = null;
+            return c.set;
+          }
+          failures.push(`${res.status}`);
+        } catch (e: any) {
+          failures.push(String(e?.name || e?.message || 'error').slice(0, 24));
+        }
+      }
+      c.set = null; c.validUntil = Date.now() + HANDLES_RETRY_MS; c.status = `unavailable:${failures.join(',')}`;
+      c.inflight = null;
+      return null;
+    })();
+  }
+  return c.inflight;
+}
+
+/** Same normalisation as fetchProductByHandle: last path segment, ".json" stripped, lowercase. */
+function productKey(raw: string): string {
+  let v = raw;
+  try { v = decodeURIComponent(raw); } catch { /* keep raw */ }
+  return v.trim().replace(/\.json$/i, '').replace(/^\/+|\/+$/g, '').split('/').pop()?.toLowerCase() || '';
+}
 
 const ALL_KNOWN_MODULE_PAGES: Record<string, string[]> = {
   DASHBOARD_HOME: ["/dashboard"],
@@ -125,14 +186,14 @@ export default withAuth(
 
     // Allow webhook / payment-provider callbacks through without auth or CSRF.
     // These are authenticated by signature headers, not browser Origin.
-    // Razorpay: only public create/verify — refund & capture require admin auth.
+    // Razorpay: webhooks only — refund & capture require admin auth; the legacy
+    // public create-order / verify-payment routes were removed (no callers).
     if (
       pathname.startsWith('/api/webhooks') ||
       pathname.startsWith('/api/shopify/webhooks') ||
       pathname.startsWith('/api/whatsapp/webhook') ||
       pathname.startsWith('/api/payments/webhook') ||
-      pathname === '/api/razorpay/create-order' ||
-      pathname === '/api/razorpay/verify-payment'
+      pathname === '/api/razorpay/webhook'
     ) {
       return NextResponse.next();
     }
@@ -144,11 +205,23 @@ export default withAuth(
         try {
           const contentType = req.headers.get('content-type') || '';
           const url = req.nextUrl.clone();
+          // In redirect mode (in-app browsers) Razorpay also POSTs failures here as
+          // error[code] / error[description] / error[reason]; forward them so the
+          // success page can send the shopper back to checkout instead of waiting.
+          const errorKeys: Array<[string, string]> = [
+            ['error[code]', 'rzp_error_code'],
+            ['error[description]', 'rzp_error_description'],
+            ['error[reason]', 'rzp_error_reason'],
+          ];
           if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
             const formData = await req.formData();
             for (const key of ['razorpay_payment_id', 'razorpay_order_id', 'razorpay_signature']) {
               const val = formData.get(key);
               if (typeof val === 'string' && val) url.searchParams.set(key, val);
+            }
+            for (const [from, to] of errorKeys) {
+              const val = formData.get(from);
+              if (typeof val === 'string' && val) url.searchParams.set(to, val.slice(0, 200));
             }
           } else {
             // Some gateways POST JSON; also accept already-present query params
@@ -156,6 +229,12 @@ export default withAuth(
               const body = await req.json();
               for (const key of ['razorpay_payment_id', 'razorpay_order_id', 'razorpay_signature']) {
                 if (body?.[key]) url.searchParams.set(key, String(body[key]));
+              }
+              const err = body?.error && typeof body.error === 'object' ? body.error : null;
+              if (err) {
+                for (const [field, to] of [['code', 'rzp_error_code'], ['description', 'rzp_error_description'], ['reason', 'rzp_error_reason']]) {
+                  if (err[field]) url.searchParams.set(to, String(err[field]).slice(0, 200));
+                }
               }
             } catch {
               /* keep any existing query */
@@ -176,11 +255,24 @@ export default withAuth(
                          !pathname.startsWith('/api/admin') &&
                          !pathname.startsWith('/api/webhooks');
 
-    const clientIp = req.headers.get('do-connecting-ip') ||
-                     req.headers.get('cf-connecting-ip') ||
-                     req.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
-                     req.headers.get('x-real-ip') ||
-                     req.ip;
+    // /collections/<unknown> and /products/<unknown> → 404 (see knownHandles above).
+    // 'all' is a virtual collection. x-zb-handles on these pages says whether the
+    // handle list was available (post-deploy check).
+    let collectionCheckHeader = '';
+    const handleMatch = isStorefront && req.method === 'GET' ? pathname.match(/^\/(collections|products)\/([^/]+)\/?$/) : null;
+    if (handleMatch) {
+      const kind = handleMatch[1] as HandleKind;
+      const key = kind === 'products' ? productKey(handleMatch[2]) : productKey(handleMatch[2]);
+      if (key && !(kind === 'collections' && key === 'all')) {
+        const known = await knownHandles(kind, req.nextUrl);
+        if (known && !known.has(key)) {
+          return NextResponse.rewrite(new URL(`/__${kind}-not-found`, req.url));
+        }
+        collectionCheckHeader = known ? 'ok' : handleCaches[kind].status;
+      }
+    }
+
+    const clientIp = clientIpFromHeaders(req.headers) || req.ip;
 
     const shouldSetClientIp = isStorefront &&
                               clientIp &&
@@ -204,8 +296,9 @@ export default withAuth(
       ? (req.nextUrl.searchParams.get('ref') || req.nextUrl.searchParams.get('aff'))?.trim()
       : null;
 
-    // Meta identity cookies (_fbp, _fbc from ?fbclid, zb_external_id) are minted and
-    // refreshed here as HTTP cookies on storefront page loads: Safari caps
+    // Meta identity cookies (_fbp, _fbc from ?fbclid, zb_external_id) and Snap's
+    // ScCid (?ScCid) / _scid are minted and refreshed here as HTTP cookies on
+    // storefront page loads: Safari caps
     // script-written cookies at 7 days (24 h after an fbclid landing), HTTP cookies
     // it does not. Same names, domain and values the client code writes, so the
     // Pixel SDK and the client simply find them present. See lib/meta/identity-cookies.ts.
@@ -227,6 +320,9 @@ export default withAuth(
           fbc: req.cookies.get('_fbc')?.value,
           externalId: req.cookies.get('zb_external_id')?.value,
           fbclid: req.nextUrl.searchParams.get('fbclid'),
+          scCid: req.cookies.get('ScCid')?.value,
+          scClickParam: req.nextUrl.searchParams.get('ScCid') || req.nextUrl.searchParams.get('sccid'),
+          scid: req.cookies.get('_scid')?.value,
           nowMs: Date.now(),
           uuid: () => crypto.randomUUID(),
         });
@@ -249,6 +345,7 @@ export default withAuth(
     };
 
     const attachStorefrontCookies = async (res: NextResponse) => {
+      if (collectionCheckHeader) res.headers.set('x-zb-handles', collectionCheckHeader);
       attachClientIpCookie(res);
       attachMetaIdentityCookies(res);
       if (refParam) {

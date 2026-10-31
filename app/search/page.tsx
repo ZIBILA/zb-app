@@ -17,7 +17,8 @@ export async function generateMetadata({
     : "Search the Zica Bella streetwear catalog. Explore boxy drop-shoulder oversized graphic tees, heavyweight hoodies, and premium basics.";
   
   return {
-    title,
+    title: { absolute: title },
+    robots: { index: false, follow: true },
     description,
     keywords: query 
       ? [query, 'zica bella search', 'streetwear search', 'oversized graphic tees', 'vintage blanks']

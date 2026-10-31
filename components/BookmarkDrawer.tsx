@@ -132,6 +132,7 @@ export default function BookmarkDrawer({ isOpen, onClose }: BookmarkDrawerProps)
                             src={product.image?.src || product.images?.[0]?.src || "/zb-logo-220px.png"} 
                             alt={product.title} 
                             fill 
+                            sizes="80px"
                             className="object-cover group-hover:scale-105 transition-transform duration-500" 
                             onError={handleImageError}
                           />

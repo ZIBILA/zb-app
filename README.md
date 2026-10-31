@@ -39,8 +39,8 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 ## Razorpay — Production Deployment Checklist
 
 1. **Switch keys**: Replace `rzp_test_` with `rzp_live_` in both `RAZORPAY_KEY_ID` and `EXPO_PUBLIC_RAZORPAY_KEY_ID`
-2. **Set webhook URL**: Razorpay Dashboard → Webhooks → `https://app.zicabella.com/api/razorpay/webhook`
-3. **Enable events**: `payment.captured`, `payment.failed`, `refund.created`
+2. **Set webhook URL**: Razorpay Dashboard → Webhooks → `https://zicabella.com/api/webhooks/razorpay` (`/api/razorpay/webhook` is an alias of the same handler)
+3. **Enable events**: `payment.captured`, `order.paid`, `payment.authorized`, `payment.failed`, `refund.created`, `refund.processed`, `refund.failed`
 4. **Set `RAZORPAY_WEBHOOK_SECRET`**: Copy from Dashboard → Webhooks → Secret
 5. **Test ₹1 live transaction**: Create a real ₹1 order to validate the full flow before go-live
 6. **Verify DB connectivity**: Ensure `prisma db push` has been run on production

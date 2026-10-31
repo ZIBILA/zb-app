@@ -1,6 +1,7 @@
 "use client";
 
 import { useSession, signOut } from "next-auth/react";
+import { setClientCookie as setMetaClientCookie } from "@/lib/metaPixel";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -1090,7 +1091,13 @@ export default function ProfilePage() {
 
               {/* Sign Out */}
               <button
-                onClick={() => signOut({ callbackUrl: "/login" })}
+                onClick={() => {
+                  // Explicit sign-out: MetaPixelRouteTracker clears the identity cookies and
+                  // rotates the device id only when this marker is present (a silently
+                  // expired session keeps the customer's own identity).
+                  setMetaClientCookie("zb_logout", "1", 1);
+                  signOut({ callbackUrl: "/login" });
+                }}
                 className="w-full py-4 rounded-[1.5rem] text-[9px] font-bold uppercase tracking-[0.3em] text-foreground/40 hover:text-foreground/85 bg-foreground/[0.01] hover:bg-red-950/10 border border-foreground/5 hover:border-red-900/20 transition-all active:scale-[0.98]"
               >
                 Sign Out

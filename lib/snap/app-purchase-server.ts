@@ -6,6 +6,7 @@ import prisma from '@/lib/db';
 import { sendSnapAppEvent } from '@/lib/snap/app-capi';
 import { createSnapAppPurchaseDelivery, type AppRequestContext } from '@/lib/snap/app-purchase';
 import { isPrivateIP } from '@/lib/ip-geo';
+import { clientIpFromHeaders } from '@/lib/client-ip';
 import { verifyCapture } from '@/lib/snap/purchase-server';
 
 const delivery = createSnapAppPurchaseDelivery({ db: prisma, send: sendSnapAppEvent, verifyCapture });
@@ -16,10 +17,7 @@ export const retryPendingSnapAppPurchases = delivery.retryPendingSnapAppPurchase
 
 /** IP + user agent of the app's own request (never from the body). */
 export function appRequestContext(req: Request, externalId?: string | null): AppRequestContext {
-  const ip = req.headers.get('do-connecting-ip')
-    || req.headers.get('x-forwarded-for')?.split(',')[0].trim()
-    || req.headers.get('x-real-ip')
-    || undefined;
+  const ip = clientIpFromHeaders(req.headers);
   return {
     ipAddress: ip && !isPrivateIP(ip) ? ip : undefined,
     userAgent: req.headers.get('user-agent') || undefined,

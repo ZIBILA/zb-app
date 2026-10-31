@@ -9,10 +9,13 @@ import type { StorefrontFooterData } from "@/lib/storefront-footer-data";
 export default function LayoutWrapper({
   children,
   footerData,
+  headerCollections = [],
 }: {
   children: React.ReactNode;
   /** Plain serializable footer props — never pass a Server Component tree here */
   footerData: StorefrontFooterData;
+  /** Header nav collections resolved on the server (plain objects). */
+  headerCollections?: { id: number; handle: string; title: string }[];
 }) {
   const pathname = usePathname();
   const isAdmin =
@@ -38,7 +41,7 @@ export default function LayoutWrapper({
 
   return (
     <CountryProvider>
-      <StorefrontLayout footer={footer}>{children}</StorefrontLayout>
+      <StorefrontLayout footer={footer} initialCollections={headerCollections}>{children}</StorefrontLayout>
     </CountryProvider>
   );
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { syncPendingWebStoreOrders } from "@/lib/services/razorpaySyncService";
+import { syncPendingWebStoreOrders, reconcilePendingMainOrders } from "@/lib/services/razorpaySyncService";
 import prisma from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,10 @@ export async function GET(req: NextRequest) {
 
   try {
     const result = await syncPendingWebStoreOrders();
+    // Second pass on the Order table itself: captures whose mirror row is missing
+    // or already paid, paid orders stuck with a FAILED status, and long-abandoned
+    // checkouts that should stop counting as pending.
+    const mainResult = await reconcilePendingMainOrders();
 
     // Log ping to SyncLog for dead-man's-switch health tracking
     try {
@@ -23,7 +27,13 @@ export async function GET(req: NextRequest) {
           orderId: "system",
           action: "CRON_PING_ORDER_SYNC",
           status: "SUCCESS",
-          payload: JSON.stringify({ syncedCount: result.updatedCount }),
+          payload: JSON.stringify({
+            syncedCount: result.updatedCount,
+            mainChecked: mainResult.checked,
+            mainMarkedPaid: mainResult.markedPaid,
+            mainTimedOut: mainResult.timedOut.length,
+            statusRepaired: mainResult.statusRepaired,
+          }),
         }
       });
     } catch (logErr) {
@@ -34,6 +44,7 @@ export async function GET(req: NextRequest) {
       success: true,
       syncedCount: result.updatedCount,
       orders: result.syncedOrders,
+      mainOrders: mainResult,
     });
   } catch (error: any) {
     console.error("[Sync Pending Orders Cron] Error:", error);

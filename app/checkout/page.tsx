@@ -11,6 +11,8 @@ import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackBeginCheckout as zbTrackBeginCheckout, trackPaymentInitiated as zbTrackPaymentInitiated } from "@/lib/analytics-tracker";
 import { openRazorpayStandardCheckout, waitForRazorpaySdk, validateRazorpayOpenOptions } from "@/lib/razorpay-checkout-client";
 import { postCheckoutComplete, CAPTURE_PENDING_MESSAGE } from "@/lib/checkout-complete-client";
+import { isInAppBrowser } from "@/lib/in-app-browser";
+import { isPaidLikeStatus } from "@/lib/payment-status";
 import { saveUserDataToCookiesAndReinit, getClientCookie } from "@/lib/metaPixel";
 import { metaMoneyFrom } from "@/lib/meta/money";
 import { motion, AnimatePresence } from "framer-motion";
@@ -266,14 +268,26 @@ export default function CheckoutPage() {
   const [step, setStep] = useState(1); // 1: Address, 2: Payment
   const [loading, setLoading] = useState(false);
 
-  // Sync cart contact details (email, phone, name) in background as user fills checkout form
+  // Sync cart contact details (email, phone, name) in background as user fills checkout form.
+  // One POST per distinct (items, name, email, phone) payload: the session prefill and
+  // the saved-address selection used to fire two identical 2-second syncs back to back.
+  // The address location is sent too, so the server skips its IP-geolocation chain
+  // (up to three external lookups) for every sync.
+  const lastCartSyncKeyRef = useRef<string>("");
+  const addressForSyncRef = useRef(address);
+  addressForSyncRef.current = address;
   useEffect(() => {
     if ((address.email || address.phone) && items.length > 0) {
+      const key = JSON.stringify({ items, name: address.name || "", email: address.email || "", phone: address.phone || "" });
+      if (lastCartSyncKeyRef.current === key) return;
       const syncCheckoutDetails = async () => {
+        if (lastCartSyncKeyRef.current === key) return;
+        lastCartSyncKeyRef.current = key;
         try {
           const guestId = getClientCookie("zb_device_id");
           const { getTrafficSource } = await import("@/lib/traffic-source");
           const trafficSource = getTrafficSource();
+          const loc = addressForSyncRef.current;
 
           await fetch("/api/cart/sync", {
             method: "POST",
@@ -284,29 +298,29 @@ export default function CheckoutPage() {
               name: address.name || undefined,
               email: address.email || undefined,
               phone: address.phone || undefined,
+              city: loc.city || undefined,
+              state: loc.state || undefined,
+              zip: loc.zip || undefined,
+              country: loc.country || undefined,
               source: trafficSource
             }),
           });
         } catch (e) {
+          lastCartSyncKeyRef.current = "";
           console.error("Failed to sync checkout details to cart session:", e);
         }
       };
 
-      const timer = setTimeout(syncCheckoutDetails, 1000);
+      const timer = setTimeout(syncCheckoutDetails, 2500);
       return () => clearTimeout(timer);
     }
   }, [address.email, address.phone, address.name, items]);
   const [error, setError] = useState("");
 
-  // Clear error automatically after 4 seconds
-  useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => {
-        setError("");
-      }, 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
+  // Errors stay on screen until the shopper dismisses them or starts another
+  // attempt (handlePlaceOrder clears them). They used to auto-clear after 4 s,
+  // which hid critical instructions such as "do NOT pay again" (pending capture)
+  // and "payment successful but order registration failed".
   const [initiatedPixel, setInitiatedPixel] = useState(false);
   const [paymentInfoFired, setPaymentInfoFired] = useState(false);
   const [isOrderPlaced, setIsOrderPlaced] = useState(false);
@@ -326,6 +340,10 @@ export default function CheckoutPage() {
     localOrderId?: string | null;
     internalOrderNumber?: string | null;
   } | null>(null);
+  // Latest prefetched order for handlePlaceOrder, which may await an in-flight
+  // prefetch and must then read the fresh value, not its render-time closure.
+  const prefetchedOrderRef = useRef<typeof prefetchedOrder>(null);
+  prefetchedOrderRef.current = prefetchedOrder;
 
   const paymentLockRef = useRef<boolean>(false);
   // Meta AddPaymentInfo fires once per checkout, at the payment step.
@@ -362,7 +380,12 @@ export default function CheckoutPage() {
   // Nothing else on this page waits for it (GA4 / Snap / OpenAI / zb fire below as on main).
   const metaIcFiredRef = useRef(false);
   useEffect(() => {
-    const canFire = status === "unauthenticated" || (status === "authenticated" && addressesLoaded);
+    // Checkout is login-gated (an unauthenticated visitor is redirected to /login on
+    // this same render). Firing here for them sent Meta an InitiateCheckout with no
+    // identity and the guest device id, and the 30-minute cart marker then suppressed
+    // the real one after login — so the IC Meta kept was the weak copy. Fire only once
+    // the shopper is signed in and the saved address is known.
+    const canFire = status === "authenticated" && addressesLoaded;
     if (items.length === 0 || metaIcFiredRef.current || !canFire) return;
     const fire = () => {
       if (metaIcFiredRef.current) return;
@@ -407,7 +430,10 @@ export default function CheckoutPage() {
           category: item.category
         })));
       }
-      {
+      // Snap START_CHECKOUT: signed-in shoppers only, for the same reason as Meta's
+      // InitiateCheckout above (the unauthenticated render is redirected to /login and
+      // the page remounts after login, which would send a second, now-identified copy).
+      if (status === "authenticated") {
         const snap = snapCartPayload(items);
         // Unique categories, ≤ 256 chars: /api/snap/event rejects longer content_category
         // (a big cart repeating "Oversized T-Shirts" used to make the CAPI event fail).
@@ -462,9 +488,12 @@ export default function CheckoutPage() {
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load Google Maps API via the singleton loader (setOptions called once globally)
+  // Load Google Maps API via the singleton loader (setOptions called once globally).
+  // Only once the address form is on screen: returning shoppers who pick a saved
+  // address never need Places, and the ~330 KB / 9-request Maps load used to run
+  // on every checkout mount alongside the address step's own API calls.
   useEffect(() => {
-    if (googleMapsLoaded) return;
+    if (googleMapsLoaded || !showAddressForm) return;
 
     loadGoogleMaps(['places', 'geocoding'])
       .then((ok) => {
@@ -482,7 +511,7 @@ export default function CheckoutPage() {
         dismissGoogleMapsErrors();
         setGoogleMapsError(true);
       });
-  }, [googleMapsLoaded]);
+  }, [googleMapsLoaded, showAddressForm]);
 
   // Initialize Place Autocomplete
   useEffect(() => {
@@ -1140,15 +1169,26 @@ export default function CheckoutPage() {
     }
   }, [session, status]);
 
-  // Fetch saved addresses callback
+  // Fetch saved addresses callback.
+  // The session is read through a ref: next-auth replaces the session object on
+  // every refetch (focus, cross-tab broadcast from the "Get App" links), and a
+  // callback that depended on it re-ran with selectDefault=true, wiping the
+  // address the shopper had typed or selected. Only an auth-status change
+  // (loading → authenticated) should trigger the initial load now.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const fetchSavedAddresses = useCallback(async (selectDefault = false) => {
     if (status === "loading") return;
     if (status !== "authenticated") {
       setAddressesLoaded(true);
       return;
     }
+    const sess: any = sessionRef.current;
+    // Bounded wait: a hanging addresses API used to leave step 1 blank forever.
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 8000) : null;
     try {
-      const res = await fetch("/api/customer/addresses");
+      const res = await fetch("/api/customer/addresses", controller ? { signal: controller.signal } : undefined);
       const data = await res.json();
       if (data.addresses && data.addresses.length > 0) {
         setSavedAddresses(data.addresses);
@@ -1157,13 +1197,13 @@ export default function CheckoutPage() {
           setSelectedSavedId(def.id);
           // Parse saved address into new fields — fall back to signup profile for name/phone
           const parts = def.address1?.split(",").map((s: string) => s.trim()) || [];
-          const profileName = session?.user?.name || "";
+          const profileName = sess?.user?.name || "";
           const profilePhone =
-            (session as any)?.customer?.phone || (session?.user as any)?.phone || "";
+            sess?.customer?.phone || sess?.user?.phone || "";
           const isPhoneName = /^\+?[0-9\s\-]{8,15}$/.test(profileName.trim());
           setAddress({
             name: def.name || (!isPhoneName ? profileName : "") || "",
-            email: def.email || session?.user?.email || "",
+            email: def.email || sess?.user?.email || "",
             phone: def.phone || profilePhone || "",
             houseNo: parts[0] || def.address1 || "",
             street: parts.slice(1).join(", ") || def.address2 || "",
@@ -1185,9 +1225,11 @@ export default function CheckoutPage() {
       console.error("Error loading addresses:", err);
       setShowAddressForm(true);
     } finally {
+      if (timer) clearTimeout(timer);
       setAddressesLoaded(true);
     }
-  }, [status, session]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   useEffect(() => {
     fetchSavedAddresses(true);
@@ -1786,6 +1828,18 @@ export default function CheckoutPage() {
       let localOrderId = "";
       let internalOrderNumber = "";
 
+      // A prefetch may still be in flight (the shopper changed something and
+      // tapped Pay at once). Creating a second Razorpay order now would let the
+      // late prefetch re-point the pending local order away from the one the
+      // shopper pays — wait briefly for it to settle first.
+      if (prefetchInFlightKeyRef.current) {
+        const waitStart = Date.now();
+        while (prefetchInFlightKeyRef.current && Date.now() - waitStart < 4000) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      const prefetchedOrder = prefetchedOrderRef.current;
+
       const prefetchMatches =
         !!prefetchedOrder &&
         Math.round(Number(prefetchedOrder.amount)) === paymentAmountPaise &&
@@ -1853,6 +1907,30 @@ export default function CheckoutPage() {
       });
       if (optionError) throw new Error(optionError);
 
+      // Snap ADD_BILLING: a returning customer who picked a saved address reaches this
+      // point without handleProceed or a payment-method click, so nothing has fired it
+      // yet. Same moment as Meta's AddPaymentInfo below; the once-guard keeps it single.
+      if (!paymentInfoFired) {
+        const snapNameParts = (address.name || "").trim().split(/\s+/);
+        trackSnapAddBilling(
+          subtotal,
+          'INR', // subtotal is the INR base amount (cart prices are INR)
+          {
+            country: address.countryCode || address.country,
+            st: address.state,
+            ct: address.city,
+            zp: address.zip,
+            fn: snapNameParts[0] || undefined,
+            ln: snapNameParts.length > 1 ? snapNameParts.slice(1).join(" ") : undefined,
+            em: address.email || undefined,
+            ph: address.phone || undefined,
+          },
+          snapCartPayload(items).ids,
+          snapCartPayload(items).numItems,
+          snapCartPayload(items).contents
+        );
+        setPaymentInfoFired(true);
+      }
       // Meta AddPaymentInfo: the shopper is now actually paying (Razorpay opens next).
       fireMetaAddPaymentInfo();
 
@@ -2007,10 +2085,19 @@ export default function CheckoutPage() {
               );
               if (lookup.ok) {
                 const data = await lookup.json();
-                if (data?.orderId) {
+                // Only a PAID order may be shown as confirmed. A pending /
+                // failed row here means the registration failed after the
+                // gateway reported success — the webhook / cron finishes it.
+                if (data?.orderId && isPaidLikeStatus(data.paymentStatus)) {
                   sessionStorage.setItem("last_placed_order_id", data.orderId);
                   clear();
                   router.replace(`/orders/${data.orderId}/confirmation`);
+                  return;
+                }
+                if (data?.orderId) {
+                  setIsConfirmingPayment(false);
+                  setError(CAPTURE_PENDING_MESSAGE);
+                  setLoading(false);
                   return;
                 }
               }
@@ -2087,6 +2174,15 @@ export default function CheckoutPage() {
       // ═══════════════════════════════════════════════════════════
       // Razorpay Standard Checkout — used for ALL payment methods
       // ═══════════════════════════════════════════════════════════
+      // In-app browsers (Instagram / Facebook / Messenger / Snapchat …) and
+      // WebViews do not support Razorpay's iframe + `handler` flow; Razorpay's
+      // docs require `callback_url` with `redirect: true` there. The callback is
+      // POSTed to /checkout/success (middleware turns it into a GET), which
+      // finishes the order from the payload persisted above.
+      const useRedirectFlow = isInAppBrowser();
+      if (useRedirectFlow) {
+        console.log("[Razorpay] In-app browser detected — using callback_url redirect flow");
+      }
       await openRazorpayStandardCheckout(
         {
           key: keyId,
@@ -2096,12 +2192,13 @@ export default function CheckoutPage() {
           description: paymentMethod === "COD" ? "COD Upfront Fee" : "Order Payment",
           order_id: orderId,
           handler: handlePaymentSuccess,
-          // Fallback when Standard handler does not fire (common after UPI app switch)
+          // Fallback when Standard handler does not fire (common after UPI app switch);
+          // the primary path in in-app browsers (redirect: true).
           callback_url:
             typeof window !== "undefined"
               ? `${window.location.origin}/checkout/success`
               : undefined,
-          redirect: false,
+          redirect: useRedirectFlow,
           prefill: {
             name: address.name,
             email: address.email,
@@ -2624,9 +2721,20 @@ export default function CheckoutPage() {
                   exit={{ opacity: 0, height: 0, y: -10 }}
                   className="overflow-hidden mb-4"
                 >
-                  <div className="flex items-start gap-2.5 p-3 rounded-xl border border-red-500/20 bg-red-500/[0.04] backdrop-blur-md text-red-400 text-[10px] font-semibold">
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2.5 p-3 rounded-xl border border-red-500/20 bg-red-500/[0.04] backdrop-blur-md text-red-400 text-[10px] font-semibold"
+                  >
                     <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400 mt-0.5" />
-                    <p className="leading-relaxed">{error}</p>
+                    <p className="leading-relaxed flex-1">{error}</p>
+                    <button
+                      type="button"
+                      onClick={() => setError("")}
+                      aria-label="Dismiss message"
+                      className="shrink-0 -mt-0.5 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider text-red-400/80 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      Dismiss
+                    </button>
                   </div>
                 </motion.div>
               )}
@@ -2651,6 +2759,17 @@ export default function CheckoutPage() {
                       WHERE SHOULD WE DELIVER?
                     </p>
                   </div>
+
+                  {/* Saved addresses still loading: show a skeleton instead of a blank step */}
+                  {!addressesLoaded && (
+                    <div className="mb-4 space-y-2.5" aria-busy="true" aria-live="polite">
+                      <p className="text-[8px] font-black uppercase tracking-[0.2em] text-foreground/40 pl-0.5">
+                        Loading your addresses…
+                      </p>
+                      <div className="h-16 rounded-xl border border-foreground/10 bg-foreground/[0.03] animate-pulse" />
+                      <div className="h-16 rounded-xl border border-foreground/10 bg-foreground/[0.03] animate-pulse" />
+                    </div>
+                  )}
 
                   {/* Saved Addresses list */}
                   {savedAddresses.length > 0 && !showAddressForm && (

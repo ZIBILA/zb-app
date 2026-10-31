@@ -561,6 +561,9 @@ model WebhookEvent {
   createdAt   DateTime  @default(now())
   orderId     String?
   order       Order?    @relation(fields: [orderId], references: [id])
+  /// Provider event id (Razorpay x-razorpay-event-id) or `${event}:${entity id}`;
+  /// unique so a redelivered / concurrent duplicate cannot be processed twice.
+  eventKey    String?   @unique
 
   @@index([source, eventType])
   @@index([createdAt])

@@ -56,7 +56,11 @@ async function main() {
     const res = await POST(new Request('https://zicabella.com/api/webhooks/razorpay', {
       method: 'POST', body, headers: { 'x-razorpay-signature': sig, 'content-type': 'application/json' },
     }));
-    return { status: res.status, json: await res.json().catch(() => ({})) };
+    const json = await res.json().catch(() => ({}));
+    // The webhook returns before its detached Meta / Snap Purchase sends finish
+    // (they must never delay Razorpay's response); let them settle before asserting.
+    await new Promise(r => setTimeout(r, 80));
+    return { status: res.status, json };
   };
 
   const mkOrder = (id: string, rzp: string, over: any = {}) => ({

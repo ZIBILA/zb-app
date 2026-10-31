@@ -66,6 +66,8 @@ async function shopifyFetchPageOnce<T>(
         method: 'GET',
         headers: await headers(),
         ...shopifyGetFetchInit(cacheMode),
+        // Bounded: an unresponsive Shopify must not hold a checkout request open.
+        signal: AbortSignal.timeout(12_000),
       });
     } catch (networkErr) {
       // Network blip: serve the last good copy instead of failing the whole page.
@@ -317,6 +319,7 @@ async function shopifyPost<T>(endpoint: string, body: unknown, customHeaders?: R
       method: 'POST',
       headers: requestHeaders,
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
     });
 
     if (res.ok) {
@@ -352,6 +355,7 @@ async function shopifyPatch<T>(endpoint: string, body: unknown): Promise<T> {
       method: 'PUT',
       headers: await headers(),
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
     });
 
     if (res.ok) {
@@ -698,6 +702,19 @@ export async function fetchAllCustomers(limit = 250): Promise<ShopifyCustomer[]>
     order: 'created_at desc',
   }, 'customers');
   return customers;
+}
+
+/** One Shopify customer by numeric id (null when missing / deleted / unreadable). */
+export async function fetchCustomerById(customerId: string): Promise<ShopifyCustomer | null> {
+  const id = String(customerId || '').trim();
+  if (!/^\d+$/.test(id)) return null;
+  try {
+    const data = await shopifyFetch<{ customer: ShopifyCustomer }>(`customers/${id}.json`, undefined, { ttlMs: 0 });
+    return data?.customer || null;
+  } catch (e: any) {
+    console.warn(`[Shopify Admin] fetchCustomerById(${id}) failed:`, e?.message || e);
+    return null;
+  }
 }
 
 export async function createCustomer(customer: any): Promise<ShopifyCustomer> {

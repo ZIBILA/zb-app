@@ -1,4 +1,5 @@
-import { trackSnapClientEvent, getSnapIdentityCookies, getClientCookie } from '@/lib/snapPixel';
+import { trackSnapClientEvent, getSnapIdentityCookies } from '@/lib/snapPixel';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { snapPurchaseCurrency } from '@/lib/snap/currency';
@@ -47,7 +48,35 @@ function shouldFireEvent(key: string, windowMs = 1000): boolean {
   return true;
 }
 
-const CHECKOUT_EVENTS = ['START_CHECKOUT', 'ADD_BILLING'];
+/**
+ * The relay's schema (app/api/snap/event/route.ts) rejects the whole event when a
+ * field is out of range; an over-cap event would then keep its pixel half and lose
+ * its server half silently. Clamp / truncate here to the same limits first.
+ */
+const RELAY_MAX_IDS = 50, RELAY_MAX_QTY = 100, RELAY_MAX_NUM_ITEMS = 5000, RELAY_MAX_VALUE = 1_000_000, RELAY_MAX_STR = 256, RELAY_MAX_SEARCH = 200, RELAY_MAX_URL = 2048;
+function capForRelay(cd?: Record<string, any>): Record<string, any> | undefined {
+  if (!cd) return cd;
+  const out: Record<string, any> = { ...cd };
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : v);
+  if (Array.isArray(out.content_ids)) out.content_ids = out.content_ids.slice(0, RELAY_MAX_IDS);
+  if (Array.isArray(out.contents)) {
+    out.contents = out.contents.slice(0, RELAY_MAX_IDS).map((c: any) => ({
+      ...c,
+      ...(typeof c?.quantity === 'number' ? { quantity: Math.max(1, Math.min(RELAY_MAX_QTY, Math.round(c.quantity))) } : {}),
+      ...(typeof c?.item_price === 'number' && c.item_price > RELAY_MAX_VALUE ? { item_price: undefined } : {}),
+    }));
+  }
+  if (typeof out.num_items === 'number') out.num_items = Math.min(RELAY_MAX_NUM_ITEMS, Math.max(0, Math.round(out.num_items)));
+  if (typeof out.value === 'number' && (!Number.isFinite(out.value) || out.value < 0 || out.value > RELAY_MAX_VALUE)) delete out.value;
+  out.content_category = str(out.content_category, RELAY_MAX_STR);
+  out.content_name = str(out.content_name, RELAY_MAX_STR);
+  out.search_string = str(out.search_string, RELAY_MAX_SEARCH);
+  return out;
+}
+function capUrl(u: string): string {
+  if (u.length <= RELAY_MAX_URL) return u;
+  try { const x = new URL(u); return `${x.origin}${x.pathname}`.slice(0, RELAY_MAX_URL); } catch { return u.slice(0, RELAY_MAX_URL); }
+}
 
 function sendToSnapCapiRoute(payload: {
   eventName: string;
@@ -58,17 +87,20 @@ function sendToSnapCapiRoute(payload: {
   customData?: Record<string, any>;
   userData?: RawIdentity;
 }): void {
+  if (isExcludedBrowser()) return;
   try {
     const cookies = getSnapIdentityCookies();
-    const isLoggedIn = getClientCookie('zb_user_logged_in') === 'true';
-    const isCheckoutEvent = CHECKOUT_EVENTS.includes(payload.eventName);
 
-    // Hashed PII cookies are only attached for logged-in users or checkout events
-    // (privacy decision: avoids attributing a shared device to a previous guest).
-    const cookiePii: RawIdentity = (isLoggedIn || isCheckoutEvent)
-      ? { em: cookies.em, ph: cookies.ph, fn: cookies.fn, ln: cookies.ln,
-          ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country }
-      : { ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country };
+    // The hashed cookies getSnapIdentityCookies() returns are already bound to THIS
+    // visitor (zb_pii_owner === zb_external_id; a different shopper on a shared
+    // device gets none of them). The browser pixel sends the same hashes as
+    // user_hashed_email / user_hashed_phone_number on every event, so the server
+    // half carries them too — otherwise the two halves of one dedup pair disagree
+    // and the CAPI copy (the one Snap usually receives first) matches worse.
+    const cookiePii: RawIdentity = {
+      em: cookies.em, ph: cookies.ph, fn: cookies.fn, ln: cookies.ln,
+      ct: cookies.ct, st: cookies.st, zp: cookies.zp, country: cookies.country,
+    };
 
     // Explicit raw data (checkout form / order) wins over cookies field-by-field.
     const userData: Record<string, any> = { ...cookiePii };
@@ -78,6 +110,8 @@ function sendToSnapCapiRoute(payload: {
 
     const body = JSON.stringify({
       ...payload,
+      eventSourceUrl: capUrl(payload.eventSourceUrl),
+      customData: capForRelay(payload.customData),
       userData,
       scClickId: cookies.sc_click_id,
       scCookie1: cookies.sc_cookie1,
@@ -91,7 +125,8 @@ function sendToSnapCapiRoute(payload: {
       headers: { 'Content-Type': 'application/json' },
       body,
       keepalive: body.length < 60000,
-    }).catch(err => console.warn('[Snap CAPI send error]', err));
+    }).then(r => { if (!r.ok) console.warn('[Snap CAPI relay rejected]', payload.eventName, r.status); })
+      .catch(err => console.warn('[Snap CAPI send error]', err));
   } catch (err) {
     console.warn('[Snap CAPI send error]', err);
   }
@@ -277,10 +312,11 @@ export function snapTrackPurchase(
   }, orderId, userData);
 }
 
-export function snapTrackSignUp(userData?: RawIdentity) {
+export function snapTrackSignUp(userData?: RawIdentity, signUpMethod = 'phone_otp') {
   const b = base('SIGN_UP');
-  trackSnapClientEvent('SIGN_UP', {}, b.eventId, userData);
-  sendToSnapCapiRoute({ ...b, userData });
+  // sign_up_method is a required SIGN_UP parameter in Snap's event-mapping guide.
+  trackSnapClientEvent('SIGN_UP', { sign_up_method: signUpMethod }, b.eventId, userData);
+  sendToSnapCapiRoute({ ...b, userData, customData: { sign_up_method: signUpMethod } });
 }
 
 export function snapTrackLogin(userData?: RawIdentity) {

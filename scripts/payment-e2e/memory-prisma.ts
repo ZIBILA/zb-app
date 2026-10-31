@@ -31,6 +31,7 @@ const UNIQUE: Record<string, string[][]> = {
   webStoreOrder: [['orderNumber']],
   analyticsEvent: [['eventId']],
   newsletterSubscriber: [['email']],
+  webhookEvent: [['eventKey']],
 };
 const DEFAULTS: Record<string, Row> = {
   order: { currency: 'INR', paymentStatus: 'pending', status: 'pending', orderType: 'REGULAR', shopifySyncStatus: 'synced', refundStatus: 'not_applicable', discountAmount: 0, storeCreditAmount: 0, codUpfrontPaid: 0 },

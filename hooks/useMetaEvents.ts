@@ -1,4 +1,5 @@
-import { META_PIXEL_ID, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256 } from '@/lib/metaPixel';
+import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256, saveUserDataToCookies } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
@@ -75,7 +76,7 @@ function uuidv4() {
 
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
-  if (!META_PIXEL_ID) return null;
+  if (!metaPixelId()) return null;
   // Consent regions: hold the relay until the visitor's consent is known (queued,
   // flushed on grant, dropped on deny). No-op pass-through when no region is set.
   return new Promise<any>((resolve) => {
@@ -87,6 +88,7 @@ async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
 }
 
 async function relayToCapiRoute(payload: Record<string, any>): Promise<any> {
+  if (isExcludedBrowser()) return null;
   try {
     // Build identity data via the shared builder — ensures demo values are filtered,
     // empty fields are omitted, and all events get consistent identity enrichment.
@@ -615,6 +617,9 @@ export function useMetaEvents() {
    */
   const trackNewsletterLead = async (email?: string) => {
     const base = getBasePayload('Lead');
+    // Keep the typed email as this visitor's bound identity cookie: every later event
+    // (next page load, next visit) then carries it on both halves instead of only this one.
+    if (email) { try { await saveUserDataToCookies({ email }); } catch { /* cookie write is best-effort */ } }
     const hashedEmail = email ? await sha256(email) : undefined;
     const customData = cleanCustomData({ content_name: 'Newsletter Signup' });
     const userData = hashedEmail ? { em: hashedEmail } : undefined;

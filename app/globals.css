@@ -6,7 +6,7 @@
 
 @font-face {
   font-family: 'Rocaston';
-  src: url('https://cdn.shopify.com/s/files/1/0955/5394/5881/files/Rocaston.ttf?v=1758543424') format('truetype');
+  src: url('/fonts/Rocaston.ttf') format('truetype'); /* self-hosted copy of the CDN file (identical bytes) */
   font-weight: normal;
   font-style: normal;
   font-display: swap;
@@ -15,7 +15,7 @@
 
 @font-face {
   font-family: 'Rocaston';
-  src: local('Poppins'), url('https://fonts.gstatic.com/s/poppins/v20/pxiEyp8kv8JHgFVrJJfecg.woff2') format('woff2');
+  src: local('Poppins'), url('/fonts/poppins-latin-400.woff2') format('woff2');
   unicode-range: U+0030-0039; /* 0-9 only */
   font-weight: normal;
   font-display: swap;
@@ -23,7 +23,7 @@
 
 @font-face {
   font-family: 'HeadingPro';
-  src: url('https://cdn.shopify.com/s/files/1/0955/5394/5881/files/Heading_Pro_Wide_Trial_Bold.woff2?v=1758543423') format('woff2');
+  src: url('/fonts/Heading_Pro_Wide_Trial_Bold.woff2') format('woff2'); /* self-hosted copy of the CDN file (identical bytes) */
   font-weight: 700;
   font-style: normal;
   font-display: swap;
@@ -32,7 +32,7 @@
 
 @font-face {
   font-family: 'HeadingPro';
-  src: local('Poppins'), url('https://fonts.gstatic.com/s/poppins/v20/pxiByp8kv8JHgFVrLCz7Z1xlFQ.woff2') format('woff2');
+  src: local('Poppins'), url('/fonts/poppins-latin-700.woff2') format('woff2');
   unicode-range: U+0030-0039; /* 0-9 only */
   font-weight: 700;
   font-display: swap;

@@ -154,10 +154,16 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
       }
 
       const res = await args.send(args.build(context, eventTime.getTime()));
+      // Every final write below is conditioned on OUR lease (status 'sending' with
+      // the leaseUntil we set). If the lease expired mid-send and another process
+      // re-claimed the row, that process owns the outcome; writing 'failed' over its
+      // 'sent' would make the cron send the same PURCHASE again.
+      const ours = { id: row.id, status: 'sending', leaseUntil };
       if (res.success) {
-        await db.adConversionDelivery.update({
-          where: key, data: { status: 'sent', sentAt: new Date(), leaseUntil: null, lastError: null },
+        const done = await db.adConversionDelivery.updateMany({
+          where: ours, data: { status: 'sent', sentAt: new Date(), leaseUntil: null, lastError: null },
         });
+        if ((done?.count || 0) !== 1) console.warn(`${logTag} ${platform} ${orderId} sent, but the row was re-claimed by another process before it could be marked`);
         return { status: 'sent' };
       }
       const reason = typeof res.error === 'string' ? res.error : JSON.stringify(res.error ?? 'unknown').slice(0, 500);
@@ -173,8 +179,8 @@ export function createDeliveryLedger(db: any, logTag = '[Snap Ledger]') {
         });
         return { status: 'failed', reason, blocked: res.blocked };
       }
-      await db.adConversionDelivery.update({
-        where: key, data: { status: res.skipped ? 'skipped' : 'failed', leaseUntil: null, lastError: reason },
+      await db.adConversionDelivery.updateMany({
+        where: ours, data: { status: res.skipped ? 'skipped' : 'failed', leaseUntil: null, lastError: reason },
       });
       return res.skipped ? { status: 'skipped', reason } : { status: 'failed', reason };
     } catch (err: any) {

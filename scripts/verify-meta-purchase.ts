@@ -15,9 +15,14 @@ process.env.NEXT_PUBLIC_SITE_URL = 'https://zicabella.com';
 // ── capture Graph API calls ──
 const graphBodies: any[] = [];
 let failNextGraph = 0;
+/** When set, every Graph call answers with this error (HTTP status + Graph code) until cleared. */
+let graphError: { status: number; code: number } | null = null;
 (globalThis as any).fetch = async (url: string, init: any) => {
   if (String(url).includes('graph.facebook.com')) {
     const body = JSON.parse(init.body);
+    if (graphError) {
+      return new Response(JSON.stringify({ error: { message: 'forced', code: graphError.code, fbtrace_id: 'TX' } }), { status: graphError.status });
+    }
     if (failNextGraph > 0) {
       failNextGraph--;
       return new Response(JSON.stringify({ error: { message: 'temporary', code: 2 } }), { status: 500 });
@@ -160,7 +165,7 @@ async function main() {
   const { NextRequest } = await import('next/server');
   const post = (body: any, ip = '81.2.69.142') => POST(new NextRequest('https://zicabella.com/api/meta/event', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'user-agent': browserCtx.userAgent, 'x-forwarded-for': ip, cookie: `_fbp=${browserCtx.fbp}` },
+    headers: { 'content-type': 'application/json', 'user-agent': browserCtx.userAgent, 'x-forwarded-for': ip, origin: 'https://zicabella.com', cookie: `_fbp=${browserCtx.fbp}` },
     body: JSON.stringify(body),
   }) as any);
   const base = { eventId: 'evt-1', eventSourceUrl: 'https://zicabella.com/products/x', userAgent: browserCtx.userAgent, eventTime: Math.floor(Date.now() / 1000) };
@@ -285,12 +290,14 @@ async function main() {
   check('…and the production cron then delivers it once', graphBodies.filter(b => b.data[0].event_id === 'ord_SKIP').length === 1, skRetry);
 
   // 15. Retry limit: a delivery that keeps failing stops at MAX_ATTEMPTS and alerts.
+  //     (zero backoff injected so six consecutive runs reach the limit)
   graphBodies.length = 0;
+  const noBackoff = createMetaPurchaseDelivery({ db: fakeDb, send: sendCapiEvent, alert: () => {}, retryBackoffMs: [0] });
   mkOrder('ord_EXH');
   failNextGraph = 99;
-  await emitMetaPurchase('ord_EXH', undefined, { paymentConfirmed: true });
+  await noBackoff.emitMetaPurchase('ord_EXH', undefined, { paymentConfirmed: true });
   const exhRuns: any[] = [];
-  for (let i = 0; i < 6; i++) exhRuns.push(await retryFailedMetaPurchases(25));
+  for (let i = 0; i < 6; i++) exhRuns.push(await noBackoff.retryFailedMetaPurchases(25));
   failNextGraph = 0;
   const rowExh = store.ledger.get('meta|Purchase|ord_EXH');
   check('repeated failures stop at MAX_ATTEMPTS (5); cron alerts once and closes the row',
@@ -298,6 +305,62 @@ async function main() {
     { attempts: rowExh.attempts, status: rowExh.status, runs: exhRuns.map(r => r.alerts) });
   const afterExh = await retryFailedMetaPurchases(25);
   check('next cron run is healthy again (no alert storm)', afterExh.healthy, afterExh);
+
+  // 15c. Backoff: after two failed attempts a row waits 30 min; the cron skips it until then.
+  graphBodies.length = 0;
+  mkOrder('ord_BACK');
+  failNextGraph = 2;
+  await emitMetaPurchase('ord_BACK', undefined, { paymentConfirmed: true });   // attempt 1 fails
+  await retryFailedMetaPurchases(25);                                         // attempt 2 fails (backoff 0)
+  const rowBack = store.ledger.get('meta|Purchase|ord_BACK');
+  const backRun = await retryFailedMetaPurchases(25);                          // attempts=2 → wait 30 min
+  check('backoff: a row with 2 attempts is not retried in the next run', rowBack.attempts === 2 && rowBack.status === 'failed' && !backRun.tally.retry_sent && graphBodies.length === 0, { rowBack, backRun });
+  rowBack.updatedAt = new Date(Date.now() - 31 * 60_000);
+  const backRun2 = await retryFailedMetaPurchases(25);
+  check('backoff: retried once the wait has passed, same event_id', graphBodies.filter(b => b.data[0].event_id === 'ord_BACK').length === 1 && rowBack.status === 'sent', { backRun2, row: rowBack });
+
+  // 15d. Setup problems never burn attempts: token revoked (190) → blocked, attempt refunded,
+  //      alert, run stops; once the token works again the Purchase goes out unchanged.
+  graphBodies.length = 0;
+  const authAlerts: any[] = [];
+  const authDelivery = createMetaPurchaseDelivery({ db: fakeDb, send: sendCapiEvent, alert: (c, d) => authAlerts.push([c, d]), retryBackoffMs: [0] });
+  mkOrder('ord_AUTH1'); mkOrder('ord_AUTH2');
+  graphError = { status: 400, code: 190 };
+  const a1 = await authDelivery.emitMetaPurchase('ord_AUTH1', browserCtx, { paymentConfirmed: true });
+  const rowA1 = store.ledger.get('meta|Purchase|ord_AUTH1');
+  check('token revoked (190) → failed + blocked:auth, attempt refunded (0), event time pinned', a1.status === 'failed' && (a1 as any).blocked === 'auth' && rowA1.status === 'failed' && rowA1.attempts === 0 && !!rowA1.eventTime, { a1, rowA1 });
+  await authDelivery.emitMetaPurchase('ord_AUTH2', browserCtx, { paymentConfirmed: true });
+  const runA = await authDelivery.retryFailedMetaPurchases(25);
+  check('cron under a revoked token: alerts meta_auth_rejected, stops after the first blocked send, attempts stay 0',
+    !runA.healthy && runA.alerts.includes('meta_auth_rejected') && authAlerts.some(a => a[0] === 'meta_auth_rejected') && store.ledger.get('meta|Purchase|ord_AUTH1').attempts === 0 && store.ledger.get('meta|Purchase|ord_AUTH2').attempts === 0 && (runA.tally.blocked_auth || 0) === 1,
+    { runA, a1: store.ledger.get('meta|Purchase|ord_AUTH1'), a2: store.ledger.get('meta|Purchase|ord_AUTH2') });
+  graphError = null;
+  const runA2 = await authDelivery.retryFailedMetaPurchases(25);
+  const authSent = graphBodies.filter(b => ['ord_AUTH1', 'ord_AUTH2'].includes(b.data[0].event_id));
+  check('token restored → both Purchases sent once, cron healthy', authSent.length === 2 && runA2.healthy && store.ledger.get('meta|Purchase|ord_AUTH1').status === 'sent', { runA2, n: authSent.length });
+
+  // 15e. Throttled (code 4) → blocked:rate, attempt refunded, alert meta_rate_limited.
+  graphBodies.length = 0;
+  mkOrder('ord_RATE');
+  graphError = { status: 400, code: 4 };
+  const r1 = await authDelivery.emitMetaPurchase('ord_RATE', browserCtx, { paymentConfirmed: true });
+  const runR = await authDelivery.retryFailedMetaPurchases(25);
+  check('rate limited (4) → blocked:rate, 0 attempts, alert meta_rate_limited', (r1 as any).blocked === 'rate' && store.ledger.get('meta|Purchase|ord_RATE').attempts === 0 && runR.alerts.includes('meta_rate_limited'), { r1, runR });
+  graphError = null;
+  await authDelivery.retryFailedMetaPurchases(25);
+  check('…and delivered once the throttle lifts', graphBodies.filter(b => b.data[0].event_id === 'ord_RATE').length === 1);
+
+  // 15f. Invalid payload (code 100) → closed as skipped with the reason, alert names the order, no retries.
+  graphBodies.length = 0;
+  mkOrder('ord_BAD');
+  graphError = { status: 400, code: 100 };
+  const b1 = await authDelivery.emitMetaPurchase('ord_BAD', browserCtx, { paymentConfirmed: true });
+  graphError = null;
+  const rowBad = store.ledger.get('meta|Purchase|ord_BAD');
+  const runB = await authDelivery.retryFailedMetaPurchases(25);
+  check('invalid parameter (100) → row skipped ("rejected (code 100)…"), alert meta_permanent_rejection, never retried',
+    b1.status === 'skipped' && rowBad.status === 'skipped' && /^rejected \(code 100\)/.test(rowBad.lastError || '') && authAlerts.some(a => a[0] === 'meta_permanent_rejection' && a[1].orderId === 'ord_BAD') && graphBodies.filter(b => b.data[0].event_id === 'ord_BAD').length === 0,
+    { b1, rowBad, runB });
 
   // 15a. A crashed send (row stuck "sending", lease expired) for a refunded order is closed too.
   mkOrder('ord_CRASH');
