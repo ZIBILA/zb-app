@@ -419,14 +419,36 @@ function serializeShopField(value: unknown): unknown {
 let lastGoodShopSettings: Record<string, any> | null = null;
 const lastGoodStoreSettings = new Map<string, any>();
 
+/**
+ * The Shop row the storefront CMS reads and writes. Order of preference:
+ *  1. the row for LEGACY_SHOP_DOMAIN — what getShopSettings() has always read for the homepage, so deploying
+ *     this never moves the homepage to a different row;
+ *  2. the row of the configured store (SHOPIFY_STORE_DOMAIN, resolved like lib/shopify-client.ts);
+ *  3. the oldest row.
+ *
+ * A bare `shop.findFirst()` has no defined order, so with more than one Shop row it can return a different row
+ * after every UPDATE — the homepage list and the Products & Order CMS then read and write different rows and
+ * saved changes appear to revert. Everything that reads or writes storefront merchandising must go through this.
+ */
+const LEGACY_SHOP_DOMAIN = '8tiahf-bk.myshopify.com';
+
+export async function getPrimaryShop(select?: Record<string, boolean>): Promise<any> {
+  const args: any = select ? { select } : {};
+  const configured = process.env.SHOPIFY_STORE_DOMAIN || process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN;
+  return (
+    (await prisma.shop.findUnique({ where: { domain: LEGACY_SHOP_DOMAIN }, ...args })) ??
+    (configured ? await prisma.shop.findUnique({ where: { domain: configured }, ...args }) : null) ??
+    (await prisma.shop.findFirst({ ...args, orderBy: { installedAt: 'asc' } }))
+  );
+}
+
 export const getShopSettings = cache(async function getShopSettings() {
   try {
     const isMock = (prisma as any)._isMock;
     if (isMock) {
       return getPersistentSettings();
     }
-    const shop = await prisma.shop.findUnique({ where: { domain: '8tiahf-bk.myshopify.com' } })
-      ?? await prisma.shop.findFirst();
+    const shop = await getPrimaryShop();
     if (shop) {
       const persistent = getPersistentSettings();
       const cleanShop: Record<string, any> = {};
@@ -460,8 +482,7 @@ export async function updateShopSettings(updates: Record<string, any>) {
       return updatedPersistent;
     }
 
-    let shop = await prisma.shop.findUnique({ where: { domain: '8tiahf-bk.myshopify.com' } })
-      ?? await prisma.shop.findFirst();
+    let shop = await getPrimaryShop();
 
     if (!shop) {
       shop = await prisma.shop.create({

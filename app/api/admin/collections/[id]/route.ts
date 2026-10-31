@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/db";
+import prisma, { getPrimaryShop } from "@/lib/db";
 import { fetchCollections, fetchProductsByCollectionId } from "@/lib/shopify-admin";
 import { refreshStorefront } from "@/lib/storefrontRefresh";
 import { parseOrderConfig, serializeOrderConfig, readPlacement, writePlacement } from "@/lib/storefrontCatalog";
@@ -144,9 +144,7 @@ export async function GET(
 
     const revenue = mapped.reduce((sum: number, order: any) => sum + Number(order.totalPrice || 0), 0);
 
-    const shop = await prisma.shop.findFirst({
-      select: { collectionProductOrders: true },
-    });
+    const shop = await getPrimaryShop({ collectionProductOrders: true });
 
     const customOrder = readPlacement(parseOrderConfig(shop?.collectionProductOrders), {
       id: collectionId,
@@ -188,7 +186,7 @@ export async function POST(
       return NextResponse.json({ error: "Invalid productIds list" }, { status: 400 });
     }
 
-    const shop = await prisma.shop.findFirst();
+    const shop = await getPrimaryShop();
     if (!shop) {
       return NextResponse.json({ error: "Shop not found" }, { status: 404 });
     }

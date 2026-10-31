@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/db";
+import prisma, { getPrimaryShop } from "@/lib/db";
 import { fetchCollections } from "@/lib/shopify-admin";
 import { revalidatePath } from "next/cache";
 
@@ -13,8 +13,8 @@ export async function GET() {
   try {
     const allCollections = await fetchCollections();
     const allHandles = allCollections.map(c => c.handle);
-    const shop = await prisma.shop.findFirst();
-    
+    const shop = await getPrimaryShop();
+
     // Fallback to all handles if not set (initial state)
     const header = shop?.enabledCollectionsHeader ? JSON.parse(shop.enabledCollectionsHeader) : allHandles;
     const page = shop?.enabledCollectionsPage ? JSON.parse(shop.enabledCollectionsPage) : allHandles;
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid handles arrays" }, { status: 400 });
     }
 
-    const shop = await prisma.shop.findFirst();
+    const shop = await getPrimaryShop();
     if (!shop) {
       console.error("[Admin Collections] No shop found in DB during update");
       return NextResponse.json({ error: "Shop not found" }, { status: 404 });
