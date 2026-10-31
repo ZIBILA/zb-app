@@ -420,22 +420,24 @@ let lastGoodShopSettings: Record<string, any> | null = null;
 const lastGoodStoreSettings = new Map<string, any>();
 
 /**
- * The store this deployment talks to — resolved exactly like lib/shopify-client.ts does, so the shop row we
- * read/write is always the row of the store whose products we fetch. The literal is only a last-resort default.
+ * The Shop row the storefront CMS reads and writes. Order of preference:
+ *  1. the row for LEGACY_SHOP_DOMAIN — what getShopSettings() has always read for the homepage, so deploying
+ *     this never moves the homepage to a different row;
+ *  2. the row of the configured store (SHOPIFY_STORE_DOMAIN, resolved like lib/shopify-client.ts);
+ *  3. the oldest row.
+ *
+ * A bare `shop.findFirst()` has no defined order, so with more than one Shop row it can return a different row
+ * after every UPDATE — the homepage list and the Products & Order CMS then read and write different rows and
+ * saved changes appear to revert. Everything that reads or writes storefront merchandising must go through this.
  */
-const primaryShopDomain = () =>
-  process.env.SHOPIFY_STORE_DOMAIN || process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN || '8tiahf-bk.myshopify.com';
+const LEGACY_SHOP_DOMAIN = '8tiahf-bk.myshopify.com';
 
-/**
- * THE shop row: the row of this deployment's store, else the oldest one. A bare `shop.findFirst()` has no defined order,
- * so with more than one Shop row it can return a different row after every UPDATE — the homepage list and
- * the Products & Order CMS then read and write different rows and saved changes appear to revert.
- * Everything that reads or writes storefront merchandising must go through this.
- */
 export async function getPrimaryShop(select?: Record<string, boolean>): Promise<any> {
   const args: any = select ? { select } : {};
+  const configured = process.env.SHOPIFY_STORE_DOMAIN || process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN;
   return (
-    (await prisma.shop.findUnique({ where: { domain: primaryShopDomain() }, ...args })) ??
+    (await prisma.shop.findUnique({ where: { domain: LEGACY_SHOP_DOMAIN }, ...args })) ??
+    (configured ? await prisma.shop.findUnique({ where: { domain: configured }, ...args }) : null) ??
     (await prisma.shop.findFirst({ ...args, orderBy: { installedAt: 'asc' } }))
   );
 }
