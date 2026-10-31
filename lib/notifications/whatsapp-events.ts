@@ -46,6 +46,9 @@ const NON_CASH_REFUND = /credit|coin|wallet/i;
 type Sender = (args: any) => Promise<any>;
 
 export interface WhatsAppSenders {
+  shipped: Sender;
+  outForDelivery: Sender;
+  delivered: Sender;
   orderCancelled: Sender;
   refundInitiated: Sender;
   returnAccepted: Sender;
@@ -64,6 +67,9 @@ export interface WhatsAppScanDeps {
 }
 
 const defaultSenders = (): WhatsAppSenders => ({
+  shipped: templates.sendShippingUpdate,
+  outForDelivery: templates.sendOutForDelivery,
+  delivered: templates.sendDelivered,
   orderCancelled: templates.sendOrderCancelled,
   refundInitiated: templates.sendRefundInitiated,
   returnAccepted: templates.sendReturnConfirmed,
@@ -89,6 +95,12 @@ async function notificationFloor(): Promise<Date> {
   }
 }
 
+/** Template names that may already have been used for an event: the configured one plus known defaults. */
+const legacyTemplates = async (settingKey: string, defaults: string[]) => {
+  const configured = await getWhatsAppSetting(settingKey, '');
+  return Array.from(new Set([...(configured ? [configured] : []), ...defaults]));
+};
+
 const isCod = (order: { paymentMethod?: string | null }) => /cod|cash/i.test(String(order.paymentMethod || ''));
 
 const orderRef = (order: { internalOrderNumber?: string | null; id: string }) =>
@@ -107,6 +119,67 @@ function phoneOf(customer: { phone?: string | null } | null | undefined, shippin
     }
   }
   return '';
+}
+
+/**
+ * Send one order message at most once, however many paths (carrier webhook, Shopify webhook, scanner, retries)
+ * report the same event. Claims `order:<ref>:<EVENT>` for WhatsApp first; also skips orders that were already
+ * messaged by the older inline webhooks (matched on order id + template) so deploying never repeats them.
+ */
+export async function deliverOrderWhatsApp(opts: {
+  event: CustomerEventType;
+  orderRef: string | number | null | undefined;
+  rawPhone: string | null | undefined;
+  /** Order ids the legacy log may hold for this order (display number, Shopify number…). */
+  legacyOrderIds?: Array<string | null | undefined>;
+  /** Template names that may already have been used for this event. */
+  legacyTemplates?: string[];
+  run: (to: string) => Promise<any>;
+}): Promise<'sent' | 'duplicate' | 'failed' | 'skipped'> {
+  const to = formatPhone(opts.rawPhone || '');
+  const ref = normalizeOrderRef(opts.orderRef);
+  if (!to || !ref) return 'skipped';
+
+  const ids = Array.from(new Set([ref, ...(opts.legacyOrderIds || [])].filter(Boolean).map(String)));
+  if (opts.legacyTemplates?.length) {
+    const prior = await prisma.whatsAppMessage.findFirst({
+      where: { orderId: { in: ids }, templateName: { in: opts.legacyTemplates }, status: { not: 'failed' } },
+      select: { id: true },
+    });
+    if (prior) return 'duplicate';
+  }
+
+  return deliverOnce({
+    eventKey: `order:${ref}:${opts.event}`,
+    eventType: opts.event,
+    channel: 'whatsapp',
+    recipient: to,
+    send: async () => {
+      const r = await opts.run(to);
+      if (!r || r.success !== true) throw new Error(r?.error || 'WhatsApp send failed');
+    },
+  });
+}
+
+/** Once-only send for non-order events (exchange / return keyed by their own id). */
+export async function deliverKeyedWhatsApp(opts: {
+  event: CustomerEventType;
+  eventKey: string;
+  rawPhone: string | null | undefined;
+  run: (to: string) => Promise<any>;
+}): Promise<'sent' | 'duplicate' | 'failed' | 'skipped'> {
+  const to = formatPhone(opts.rawPhone || '');
+  if (!to) return 'skipped';
+  return deliverOnce({
+    eventKey: opts.eventKey,
+    eventType: opts.event,
+    channel: 'whatsapp',
+    recipient: to,
+    send: async () => {
+      const r = await opts.run(to);
+      if (!r || r.success !== true) throw new Error(r?.error || 'WhatsApp send failed');
+    },
+  });
 }
 
 export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDeps = {}): Promise<ScanSummary> {
@@ -171,6 +244,69 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
       })
     ).map((e: { returnRequestId: string | null }) => String(e.returnRequestId))
   );
+
+  // ── 0. Outbound order status from the carrier: picked up → out for delivery → delivered ──
+  // Carrier webhooks, the poller and admin edits all update Order.deliveryStatus centrally, so reading it
+  // here triggers the message however the status arrived. Shares its once-only keys with the Shopify webhook.
+  const wantShipped = await isOn('order_shipped');
+  const wantOfd = await isOn('out_for_delivery');
+  const wantDelivered = await isOn('order_delivered');
+  if (wantShipped || wantOfd || wantDelivered) {
+    const live: any[] = await prisma.order.findMany({
+      where: {
+        updatedAt: { gte: since },
+        createdAt: { gte: createdFrom },
+        orderType: { not: 'EXCHANGE' },
+        paymentStatus: { notIn: NEVER_PLACED_PAYMENT },
+        status: { notIn: CANCELLED_STATUS },
+        deliveryStatus: { in: ['picked_up', 'in_transit', 'shipped', 'dispatched', 'out_for_delivery', 'delivered'] },
+      },
+      include: {
+        customer: true,
+        items: true,
+        shipments: { where: { type: 'outbound' }, orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+      take: BATCH,
+      orderBy: { updatedAt: 'desc' },
+    });
+    for (const o of live) {
+      if (outOfTime()) break;
+      const delivery = String(o.deliveryStatus || '').toLowerCase();
+      const ref = orderRef(o);
+      const rawPhone = phoneOf(o.customer, o.shippingAddress);
+      const name = o.customer?.name || 'there';
+      const legacyOrderIds = [o.internalOrderNumber, o.shopifyOrderName, o.shopifyOrderId].map((v: any) => (v == null ? null : String(v)));
+
+      if (delivery === 'delivered' && wantDelivered) {
+        const first = (o.items || [])[0];
+        tally('ORDER_DELIVERED', await deliverOrderWhatsApp({
+          event: 'ORDER_DELIVERED', orderRef: ref, rawPhone, legacyOrderIds,
+          legacyTemplates: await legacyTemplates('template_order_delivered', ['zica_order_delivered_v1', 'zb_order_delivered']),
+          run: (to) => senders.delivered({
+            phone: to, customerName: name, orderId: ref,
+            productImageUrl: first?.image || '', totalAmount: o.totalPrice, itemCount: (o.items || []).length || 1,
+          }),
+        }));
+      } else if (delivery === 'out_for_delivery' && wantOfd) {
+        tally('ORDER_OUT_FOR_DELIVERY', await deliverOrderWhatsApp({
+          event: 'ORDER_OUT_FOR_DELIVERY', orderRef: ref, rawPhone, legacyOrderIds,
+          legacyTemplates: await legacyTemplates('template_out_for_delivery', ['zb_out_for_delivery']),
+          run: (to) => senders.outForDelivery({ phone: to, customerName: name, orderId: ref }),
+        }));
+      } else if (['picked_up', 'in_transit', 'shipped', 'dispatched'].includes(delivery) && wantShipped) {
+        const shipment = o.shipments?.[0];
+        const trackingNumber = shipment?.awb || shipment?.trackingNumber || o.delhivery_awb || '';
+        if (!trackingNumber) { tally('ORDER_SHIPPED', 'skipped'); continue; } // no tracking yet → never send "TBA"
+        tally('ORDER_SHIPPED', await deliverOrderWhatsApp({
+          event: 'ORDER_SHIPPED', orderRef: ref, rawPhone, legacyOrderIds,
+          legacyTemplates: await legacyTemplates('template_order_shipped', ['zica_order_shipped', 'zb_order_tracking']),
+          run: (to) => senders.shipped({
+            phone: to, customerName: name, orderId: ref, trackingNumber, trackingUrl: shipment?.trackingUrl || '',
+          }),
+        }));
+      }
+    }
+  }
 
   // ── 1. Order cancelled (separate from the refund message) ──
   if (await isOn('order_cancelled_enabled')) {

@@ -1186,6 +1186,24 @@ function QuickSendMessage() {
   );
 }
 
+const categoryOf = (name: string, text: string): 'Promotion' | 'New Collection' | 'Announcements' => {
+  const hay = `${name} ${text}`.toLowerCase();
+  if (/collection|launch|arrival|drop|new_product|new product/.test(hay)) return 'New Collection';
+  if (/sale|offer|discount|coupon|code|% ?off|festival|restock/.test(hay)) return 'Promotion';
+  return 'Announcements';
+};
+
+const AUDIENCE_OPTIONS = [
+  { id: "all_customers", label: "All Opted-in Customers", desc: "Everyone who can receive marketing messages" },
+  { id: "active_customers", label: "Active Customers", desc: "Ordered in the last 90 days" },
+  { id: "vip_customers", label: "VIP Customers", desc: "₹10,000+ spent or 3+ orders" },
+  { id: "new_customers", label: "New Customers", desc: "Joined in the last 30 days or no orders yet" },
+  { id: "cart_abandonment", label: "Cart Abandoners", desc: "Left items in their cart" },
+  { id: "wishlist_customers", label: "Wishlist Customers", desc: "Saved products to their wishlist" },
+  { id: "custom_segment", label: "Custom Segment", desc: "Set your own filters" },
+  { id: "custom_csv", label: "Upload List", desc: "CSV of phone, name — only opted-in numbers are sent" },
+];
+
 /** WhatsApp-style preview of an approved template with the campaign's values filled in. */
 function CampaignMessagePreview({ template, payload }: { template: any; payload: Record<string, string> }) {
   const fill = (text: string) =>
@@ -1258,6 +1276,12 @@ function BroadcastCampaigns() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [recipientFilter, setRecipientFilter] = useState<'all' | 'failed' | 'skipped'>('all');
 
+  // Wizard: 0 template · 1 audience · 2 review & send
+  const [step, setStep] = useState(0);
+  const [templateTab, setTemplateTab] = useState<'All' | 'Promotion' | 'New Collection' | 'Announcements'>('All');
+  const [segment, setSegment] = useState({ minOrders: "", minSpent: "", withinDays: "" });
+  const [loadingAudience, setLoadingAudience] = useState(false);
+
   // Dynamic WABA templates state
   const [dbTemplates, setDbTemplates] = useState<any[]>([]);
   const [loadingDbTemplates, setLoadingDbTemplates] = useState(true);
@@ -1293,7 +1317,7 @@ function BroadcastCampaigns() {
 
   // Merge built-in templates with the Meta-approved ones from the library
   const mergedTemplates = [
-    ...campaignTemplates.map(t => ({ ...t, isCustom: false, text: "", header: null as any, footer: "", buttons: [] as any[], extras: [] as any[] })),
+    ...campaignTemplates.map(t => ({ ...t, isCustom: false, text: "", header: null as any, footer: "", buttons: [] as any[], extras: [] as any[], category: categoryOf(t.id, t.label) })),
     ...dbTemplates.filter(t => t.status === "APPROVED").map(t => {
       const comps: any[] = t.components || [];
       const bodyComp = comps.find((c: any) => c.type === "BODY");
@@ -1310,7 +1334,7 @@ function BroadcastCampaigns() {
         if (b.type === "URL" && /\{\{\d+\}\}/.test(b.url || "")) extras.push({ key: `button_${i}`, label: `"${b.text}" link ending`, placeholder: `Added after ${String(b.url).replace(/\{\{\d+\}\}/, "")}` });
         if (b.type === "COPY_CODE") extras.push({ key: "couponCode", label: "Discount code", placeholder: "e.g. FESTIVE20" });
       });
-      return { id: t.name, label: `${t.name} (${t.category})`, fields, isCustom: true, text, header, footer, buttons, extras };
+      return { id: t.name, label: `${t.name} (${t.category})`, fields, isCustom: true, text, header, footer, buttons, extras, category: categoryOf(t.name, text) };
     })
   ];
 
@@ -1390,9 +1414,14 @@ function BroadcastCampaigns() {
 
   // Load audience from DB
   const loadSegment = async (selectedAudience: string) => {
-    const toastId = toast.loading(`Loading audience segment: ${selectedAudience}...`);
+    const toastId = toast.loading(`Loading audience…`);
+    setLoadingAudience(true);
     try {
-      const res = await fetch(`/api/whatsapp/recipients?audience=${selectedAudience}`);
+      const qs = new URLSearchParams({ audience: selectedAudience });
+      if (selectedAudience === "custom_segment") {
+        Object.entries(segment).forEach(([k, v]) => { if (v) qs.set(k, v); });
+      }
+      const res = await fetch(`/api/whatsapp/recipients?${qs.toString()}`);
       const data = await res.json();
       if (res.ok && data.recipients) {
         const text = data.recipients.map((r: any) => `${r.phone}, ${r.customerName}`).join("\n");
@@ -1403,6 +1432,8 @@ function BroadcastCampaigns() {
       }
     } catch (e) {
       toast.error("Network error loading recipients.", { id: toastId });
+    } finally {
+      setLoadingAudience(false);
     }
   };
 
@@ -1474,6 +1505,7 @@ function BroadcastCampaigns() {
         setRecipientsText("");
         setCampaignName("");
         setScheduledAt("");
+        setStep(0);
         fetchCampaigns();
       } else {
         toast.error(data.error || "Broadcast campaign execution failed.", { id: toastId });
@@ -1580,187 +1612,267 @@ function BroadcastCampaigns() {
     }
   };
 
+  const missingInputs: string[] = currentTemplate
+    ? [
+        ...currentTemplate.fields.filter((f: string, i: number) => !(i === 0 && currentTemplate.isCustom) && !payload[f]).map((f: string) => `{{${f}}}`),
+        ...currentTemplate.extras.filter((x: any) => !payload[x.key]).map((x: any) => x.label),
+      ]
+    : ["a template"];
+  const templateReady = !!currentTemplate && missingInputs.length === 0;
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-4">
-      {/* Configuration Form */}
-      <div className="glass-card p-6 space-y-4">
-        <h3 className="font-semibold text-lg">New Campaign Blast</h3>
-        <form onSubmit={handleBroadcast} className="space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-foreground/60 uppercase block mb-1.5">Campaign Name (Optional)</label>
-            <input
-              type="text"
-              placeholder="e.g. Summer Clearance Blast"
-              value={campaignName}
-              onChange={(e) => setCampaignName(e.target.value)}
-              className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm"
-            />
+      {/* Campaign wizard: 1 template → 2 audience → 3 review & send */}
+      <div className="glass-card p-6 space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-semibold text-lg">WhatsApp Campaign</h3>
+          <div className="flex items-center gap-1.5">
+            {["Select template", "Audience", "Review & send"].map((label, i) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => { if (i <= step || (i === 1 && templateReady) || (i === 2 && templateReady && recipients.length > 0)) setStep(i); }}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-all ${step === i ? "bg-emerald-500 text-foreground border-emerald-500" : i < step ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-foreground/5 text-muted-foreground border-foreground/10"}`}
+              >
+                <span className="w-4 h-4 rounded-full bg-background/30 flex items-center justify-center text-[9px]">{i + 1}</span>
+                <span className="hidden sm:inline">{label}</span>
+              </button>
+            ))}
           </div>
+        </div>
 
-          <div>
-            <label className="text-xs font-semibold text-foreground/60 uppercase block mb-1.5">Campaign Template</label>
-            <select
-              value={type}
-              onChange={(e) => { setType(e.target.value); setPayload({}); }}
-              className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-3 py-2.5 outline-none focus:border-emerald-500/50 text-sm"
-            >
-              {loadingDbTemplates ? (
-                <option disabled>Loading dynamic templates...</option>
-              ) : null}
-              {mergedTemplates.map(c => (
-                <option key={c.id} value={c.id}>{c.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {currentTemplate && (
-            <div className="space-y-3 pt-3 border-t border-foreground/5">
-              <div className="flex items-center justify-between mb-1">
-                <h4 className="text-xs font-bold text-foreground/50 uppercase tracking-wider">Template Settings</h4>
-                {currentTemplate.isCustom && (
-                  <span className="text-[10px] bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-semibold uppercase">Meta Approved</span>
-                )}
+        <form onSubmit={(e) => { e.preventDefault(); if (step === 2) handleBroadcast(e); }} className="space-y-4">
+          {/* ───── Step 1: template ───── */}
+          {step === 0 && (
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-foreground/60 uppercase block mb-1.5">Campaign name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. New Collection Launch – October"
+                  value={campaignName}
+                  onChange={(e) => setCampaignName(e.target.value)}
+                  className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm"
+                />
               </div>
 
-              {currentTemplate.fields.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {currentTemplate.fields.map((field: string, idx: number) => {
-                    const isFirst = idx === 0;
-                    return (
-                      <div key={field}>
-                        <label className="text-xs text-muted-foreground block mb-1 font-mono">
-                          {currentTemplate.isCustom ? `Variable {{${field}}}` : field}
-                        </label>
-                        <input
-                          type="text"
-                          required={!(isFirst && currentTemplate.isCustom)}
-                          placeholder={
-                            isFirst && currentTemplate.isCustom
-                              ? "Leave blank to use each customer's name"
-                              : `Value for placeholder ${field}`
-                          }
-                          value={payload[field] || ""}
-                          onChange={(e) => setPayload((p: any) => ({ ...p, [field]: e.target.value }))}
-                          className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-3.5 py-2 outline-none focus:border-emerald-500/50 text-sm"
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground italic py-1">
-                  This template does not require any variables or placeholders.
-                </div>
-              )}
-
-              {currentTemplate.extras.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {currentTemplate.extras.map((x: any) => (
-                    <div key={x.key}>
-                      <label className="text-xs text-muted-foreground block mb-1">{x.label}</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder={x.placeholder}
-                        value={payload[x.key] || ""}
-                        onChange={(e) => setPayload((p: any) => ({ ...p, [x.key]: e.target.value }))}
-                        className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-3.5 py-2 outline-none focus:border-emerald-500/50 text-sm"
-                      />
-                    </div>
+              <div className="space-y-2">
+                <div className="flex items-center gap-1 flex-wrap">
+                  {(["All", "Promotion", "New Collection", "Announcements"] as const).map(tab => (
+                    <button key={tab} type="button" onClick={() => setTemplateTab(tab)} className={`px-3 py-1 rounded-full text-[11px] font-semibold border ${templateTab === tab ? "bg-foreground text-background border-foreground" : "bg-foreground/5 text-muted-foreground border-foreground/10 hover:text-foreground"}`}>
+                      {tab}
+                    </button>
                   ))}
                 </div>
-              )}
+                {loadingDbTemplates && <div className="text-xs text-muted-foreground">Loading approved templates…</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[260px] overflow-y-auto pr-1">
+                  {mergedTemplates.filter(t => templateTab === "All" || t.category === templateTab).map(t => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => { setType(t.id); setPayload({}); }}
+                      className={`text-left rounded-xl border p-3 transition-all ${type === t.id ? "border-emerald-500 bg-emerald-500/10" : "border-foreground/10 bg-foreground/5 hover:bg-foreground/[0.08]"}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold truncate">{t.isCustom ? t.id : t.label}</span>
+                        {type === t.id && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground block mt-0.5">{t.category}{t.isCustom ? " · Meta approved" : " · Built-in"}</span>
+                      {t.text && <span className="text-[10px] text-foreground/50 block mt-1 line-clamp-2">{t.text}</span>}
+                    </button>
+                  ))}
+                  {mergedTemplates.filter(t => templateTab === "All" || t.category === templateTab).length === 0 && (
+                    <div className="col-span-full text-xs text-muted-foreground italic py-4 text-center">No approved templates in this category. Create one in the Templates tab.</div>
+                  )}
+                </div>
+              </div>
 
-              {currentTemplate.isCustom && <CampaignMessagePreview template={currentTemplate} payload={payload} />}
+              {currentTemplate && (
+                <div className="space-y-3 pt-3 border-t border-foreground/5">
+                  <h4 className="text-xs font-bold text-foreground/50 uppercase tracking-wider">Fill in the message</h4>
+                  {currentTemplate.fields.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {currentTemplate.fields.map((field: string, idx: number) => {
+                        const isFirst = idx === 0;
+                        return (
+                          <div key={field}>
+                            <label className="text-xs text-muted-foreground block mb-1 font-mono">
+                              {currentTemplate.isCustom ? `Variable {{${field}}}` : field}
+                            </label>
+                            <input
+                              type="text"
+                              placeholder={isFirst && currentTemplate.isCustom ? "Leave blank to use each customer's name" : `Value for ${field}`}
+                              value={payload[field] || ""}
+                              onChange={(e) => setPayload((p: any) => ({ ...p, [field]: e.target.value }))}
+                              className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-3.5 py-2 outline-none focus:border-emerald-500/50 text-sm"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground italic">This template has no variables to fill in.</div>
+                  )}
+                  {currentTemplate.extras.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {currentTemplate.extras.map((x: any) => (
+                        <div key={x.key}>
+                          <label className="text-xs text-muted-foreground block mb-1">{x.label}</label>
+                          <input
+                            type="text"
+                            placeholder={x.placeholder}
+                            value={payload[x.key] || ""}
+                            onChange={(e) => setPayload((p: any) => ({ ...p, [x.key]: e.target.value }))}
+                            className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-3.5 py-2 outline-none focus:border-emerald-500/50 text-sm"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {currentTemplate.isCustom ? (
+                    <CampaignMessagePreview template={currentTemplate} payload={payload} />
+                  ) : (
+                    <div className="text-xs text-muted-foreground bg-foreground/5 border border-foreground/10 rounded-xl p-3">
+                      Built-in template “{currentTemplate.label}”: the message text is set by the approved Meta template behind it. Use the Templates tab to preview it.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          <div className="border-t border-foreground/5 pt-3 space-y-3">
-            <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-2">
-              <label className="text-xs font-semibold text-foreground/60 uppercase flex items-center gap-1.5">
-                <span>Target Audience</span>
-                {recipients.length > 0 && (
-                  <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded-full font-mono text-[9px] font-bold">
-                    {recipients.length} resolved
-                  </span>
-                )}
-              </label>
-              
-              <div className="flex items-center gap-2">
-                <select
-                  value={audience}
-                  onChange={(e) => {
-                    setAudience(e.target.value);
-                    if (e.target.value !== "custom_csv") {
-                      loadSegment(e.target.value);
-                    }
-                  }}
-                  className="bg-foreground/5 border border-foreground/10 rounded-lg px-2.5 py-1 text-xs outline-none focus:border-foreground/30 text-foreground"
-                >
-                  <option value="all_customers">All Opted-In Customers</option>
-                  <option value="new_customers">New Customers (Signups)</option>
-                  <option value="returning_customers">Returning Customers</option>
-                  <option value="high_value_customers">High-Value Customers</option>
-                  <option value="wishlist_customers">Wishlist Customers</option>
-                  <option value="cart_abandonment">Cart Abandonment Customers</option>
-                  <option value="custom_csv">Upload Custom CSV File</option>
-                </select>
+          {/* ───── Step 2: audience ───── */}
+          {step === 1 && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {AUDIENCE_OPTIONS.map(o => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => { setAudience(o.id); if (o.id !== "custom_csv" && o.id !== "custom_segment") loadSegment(o.id); }}
+                    className={`text-left rounded-xl border p-3 transition-all ${audience === o.id ? "border-emerald-500 bg-emerald-500/10" : "border-foreground/10 bg-foreground/5 hover:bg-foreground/[0.08]"}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${audience === o.id ? "border-emerald-500" : "border-foreground/30"}`}>
+                        {audience === o.id && <span className="w-2 h-2 rounded-full bg-emerald-500" />}
+                      </span>
+                      <span className="text-xs font-semibold">{o.label}</span>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground block mt-1 ml-5">{o.desc}</span>
+                  </button>
+                ))}
+              </div>
 
-                {audience === "custom_csv" && (
-                  <label className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer border border-emerald-500/20">
-                    Upload CSV
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={handleCSVUpload}
-                      className="hidden"
-                    />
-                  </label>
-                )}
+              {audience === "custom_segment" && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end rounded-xl border border-foreground/10 p-3">
+                  {[
+                    { k: "minOrders", label: "Min. orders" },
+                    { k: "minSpent", label: "Min. spent (₹)" },
+                    { k: "withinDays", label: "Ordered within (days)" },
+                  ].map(f => (
+                    <div key={f.k}>
+                      <label className="text-[10px] text-muted-foreground block mb-1">{f.label}</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={(segment as any)[f.k]}
+                        onChange={(e) => setSegment(sg => ({ ...sg, [f.k]: e.target.value }))}
+                        className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-emerald-500/50"
+                      />
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => loadSegment("custom_segment")} className="sm:col-span-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/20 rounded-lg py-1.5 text-xs font-semibold">
+                    Apply filters
+                  </button>
+                </div>
+              )}
+
+              {audience === "custom_csv" && (
+                <label className="flex items-center justify-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer border border-emerald-500/20">
+                  Upload CSV (phone, name)
+                  <input type="file" accept=".csv" onChange={handleCSVUpload} className="hidden" />
+                </label>
+              )}
+
+              <div className="rounded-xl border border-foreground/10 bg-foreground/5 p-4 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground block">Estimated audience</span>
+                  <strong className="text-2xl">{loadingAudience ? "…" : recipients.length.toLocaleString("en-IN")}</strong>
+                  <span className="text-xs text-muted-foreground ml-2">opted-in customers</span>
+                </div>
+                <div className="text-right text-xs text-muted-foreground">
+                  Est. cost<br /><strong className="text-foreground text-sm">₹{estimatedCost}</strong>
+                </div>
+              </div>
+
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">View / edit recipient list</summary>
+                <textarea
+                  rows={5}
+                  placeholder={"e.g. +919876543210, Priya"}
+                  value={recipientsText}
+                  onChange={(e) => setRecipientsText(e.target.value)}
+                  className="mt-2 w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-xs font-mono resize-none"
+                />
+                <span className="text-[10px] text-muted-foreground block">Numbers that aren't opted in are removed automatically when the campaign is sent.</span>
+              </details>
+            </div>
+          )}
+
+          {/* ───── Step 3: review & send ───── */}
+          {step === 2 && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-foreground/10 bg-foreground/5 divide-y divide-foreground/10 text-xs">
+                {[
+                  { k: "Campaign", v: campaignName || `Broadcast – ${currentTemplate?.label || type}` },
+                  { k: "Template", v: currentTemplate?.isCustom ? currentTemplate.id : currentTemplate?.label },
+                  { k: "Audience", v: `${AUDIENCE_OPTIONS.find(o => o.id === audience)?.label || audience} · ${recipients.length} recipients` },
+                  { k: "Estimated cost", v: `₹${estimatedCost}` },
+                ].map(r => (
+                  <div key={r.k} className="flex justify-between gap-4 px-4 py-2.5">
+                    <span className="text-muted-foreground">{r.k}</span>
+                    <strong className="text-right">{r.v}</strong>
+                  </div>
+                ))}
+              </div>
+
+              {currentTemplate?.isCustom && <CampaignMessagePreview template={currentTemplate} payload={payload} />}
+
+              <div>
+                <label className="text-xs font-semibold text-foreground/60 uppercase block mb-1.5">Schedule (optional)</label>
+                <input
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                  className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm text-foreground"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">Leave blank to send now. Sent only to opted-in customers; opt-outs are checked again at send time.</p>
               </div>
             </div>
-            
-            <textarea
-              rows={5}
-              required
-              placeholder={"e.g. +919876543210, Priya\n+919988776655, Rahul"}
-              value={recipientsText}
-              onChange={(e) => setRecipientsText(e.target.value)}
-              className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm font-mono text-xs resize-none"
-            />
-            <span className="text-[10px] text-muted-foreground block">Format: [phone], [name] (one per line). Empty numbers are ignored. Only opted-in numbers are allowed.</span>
-          </div>
+          )}
 
-          <div>
-            <label className="text-xs font-semibold text-foreground/60 uppercase block mb-1.5">Schedule Campaign (Optional)</label>
-            <input
-              type="datetime-local"
-              value={scheduledAt}
-              onChange={(e) => setScheduledAt(e.target.value)}
-              className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm text-foreground"
-            />
-            <p className="text-[10px] text-muted-foreground mt-1">Leave blank to send immediately, or pick a future time to schedule.</p>
+          {/* ───── navigation ───── */}
+          <div className="flex items-center justify-between pt-2 border-t border-foreground/5">
+            <button type="button" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0} className="px-4 py-2 bg-foreground/5 text-foreground rounded-xl text-xs font-medium hover:bg-foreground/10 disabled:opacity-30">
+              Back
+            </button>
+            {step === 0 && (
+              <button type="button" disabled={!templateReady} onClick={() => { setStep(1); if (recipients.length === 0 && audience !== "custom_csv" && audience !== "custom_segment") loadSegment(audience); }} className="px-5 py-2 bg-emerald-500 text-foreground rounded-xl text-xs font-semibold hover:bg-emerald-600 disabled:opacity-40">
+                {templateReady ? "Next: Audience →" : `Fill in: ${missingInputs.join(", ")}`}
+              </button>
+            )}
+            {step === 1 && (
+              <button type="button" disabled={recipients.length === 0} onClick={() => setStep(2)} className="px-5 py-2 bg-emerald-500 text-foreground rounded-xl text-xs font-semibold hover:bg-emerald-600 disabled:opacity-40">
+                Next: Review →
+              </button>
+            )}
+            {step === 2 && (
+              <button type="submit" disabled={loading || recipients.length === 0 || !templateReady} className="px-5 py-2 bg-emerald-500 text-foreground rounded-xl text-xs font-semibold hover:bg-emerald-600 disabled:opacity-40 flex items-center gap-2">
+                {loading ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                {scheduledAt ? "Schedule Campaign" : "Send Campaign"}
+              </button>
+            )}
           </div>
-
-          {/* Pricing & Estimation banner */}
-          <div className="bg-foreground/5 p-3 rounded-xl border border-foreground/10 flex justify-between items-center text-xs">
-            <div className="text-muted-foreground">
-              <span className="font-semibold text-foreground block">{recipients.length} recipients loaded</span>
-              Est. Marketing cost: ₹0.58 / message
-            </div>
-            <div className="text-right text-sm font-bold text-foreground">
-              ₹{estimatedCost} INR
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading || recipients.length === 0}
-            className="w-full bg-emerald-500 text-foreground py-3 rounded-xl font-medium text-sm hover:bg-emerald-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {loading ? <RefreshCcw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            <span>Send Campaign Blast</span>
-          </button>
         </form>
       </div>
 
@@ -1855,6 +1967,14 @@ function BroadcastCampaigns() {
                         <strong className="text-rose-500 text-xs">{c.statsFailed}</strong>
                       </div>
                     </div>
+
+                    {c.statsSent > 0 && (
+                      <div className="flex gap-3 text-[10px] text-muted-foreground">
+                        <span>Delivery <strong className="text-foreground">{Math.min(100, Math.round((c.statsDelivered / c.statsSent) * 100))}%</strong></span>
+                        <span>Open <strong className="text-foreground">{Math.min(100, Math.round((c.statsRead / c.statsSent) * 100))}%</strong></span>
+                        <span>Click <strong className="text-foreground">{Math.min(100, Math.round(((c.click_count || 0) / c.statsSent) * 100))}%</strong></span>
+                      </div>
+                    )}
 
                     {/* Progress Bar for active campaign */}
                     {(c.status === "sending" || c.status === "queued") && (
@@ -2830,8 +2950,8 @@ function OrderNotifications() {
 
   const automations = [
     { key: "order_confirmed", templateKey: "template_order_confirmed", defaultTemplate: "zica_order_confirmed_v1", title: "Order Confirmation", desc: "Auto-send on Shopify order creation (orders/create webhook)." },
-    { key: "order_status", templateKey: "template_order_status", defaultTemplate: "zb_order_status", title: "Order Status Update", desc: "Auto-send on order state alterations (orders/updated webhook)." },
-    { key: "order_shipped", templateKey: "template_order_shipped", defaultTemplate: "zica_order_shipped", title: "Order Shipped", desc: "Auto-send on order fulfillment containing courier tracking (orders/fulfilled webhook)." },
+    { key: "order_status", templateKey: "template_order_status", defaultTemplate: "zb_order_status", title: "Order Status Update", desc: "Partial-shipment updates only. Cancellation and refund have their own automations below." },
+    { key: "order_shipped", templateKey: "template_order_shipped", defaultTemplate: "zica_order_shipped", title: "Order Shipped", desc: "Order picked up: sent with the tracking link once the carrier confirms pickup (or on fulfilment with tracking). Never sent without tracking details." },
     { key: "out_for_delivery", templateKey: "template_out_for_delivery", defaultTemplate: "zb_out_for_delivery", title: "Out for Delivery", desc: "Auto-send when carrier status marks package as out for delivery." },
     { key: "order_delivered", templateKey: "template_order_delivered", defaultTemplate: "zica_order_delivered_v1", title: "Delivered Confirmation", desc: "Auto-send notification validating package drop-off." },
     { key: "return_confirmed", templateKey: "template_return_confirmed", defaultTemplate: "zb_return_confirmed", title: "Return Accepted", desc: "Sent once when a return request is approved, with the refund amount. Checked every 15 minutes." },

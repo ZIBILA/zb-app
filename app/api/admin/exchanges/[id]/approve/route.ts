@@ -149,11 +149,12 @@ async function POST_impl(req: Request, { params }: { params: { id: string } }) {
         const customerName = cust?.name || 'Valued Customer';
         const newItemName = exchangeRequest.exchanges.map((ex: any) => ex.newProduct?.title || 'Replacement Item').join(', ');
 
-        await sendExchangeConfirmed({
-          phone,
-          customerName,
-          orderId: orderIdDisplay,
-          newItemName,
+        const { deliverKeyedWhatsApp } = await import('@/lib/notifications/whatsapp-events');
+        await deliverKeyedWhatsApp({
+          event: 'EXCHANGE_CONFIRMED',
+          eventKey: `exchange:${exchangeRequest.id}:confirmed`,
+          rawPhone: phone,
+          run: (to) => sendExchangeConfirmed({ phone: to, customerName, orderId: orderIdDisplay, newItemName }),
         });
       }
     } catch (waErr: any) {

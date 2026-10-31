@@ -536,12 +536,19 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       if (phone && forwardAwb) {
         const orderIdDisplay = replacementDisplayId;
         const customerName = customer?.name || 'Valued Customer';
-        await sendExchangeShipped({
-          phone,
-          customerName,
-          orderId: orderIdDisplay,
-          trackingNumber: forwardAwb || shopifyOrderId || 'N/A',
-          trackingUrl: forwardAwb ? `https://shiprocket.co/tracking/${forwardAwb}` : `https://app.zicabella.com/orders/${shopifyOrderId}`,
+        const { deliverKeyedWhatsApp } = await import('@/lib/notifications/whatsapp-events');
+        await deliverKeyedWhatsApp({
+          event: 'REPLACEMENT_SHIPPED',
+          eventKey: `exchange:${exchangeRequest.id}:replacement:shipped`,
+          rawPhone: phone,
+          run: (to) =>
+            sendExchangeShipped({
+              phone: to,
+              customerName,
+              orderId: orderIdDisplay,
+              trackingNumber: forwardAwb,
+              trackingUrl: `https://shiprocket.co/tracking/${forwardAwb}`,
+            }),
         });
       }
     } catch (waErr: any) {
