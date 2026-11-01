@@ -16,7 +16,7 @@ import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
 import { isBotUserAgent } from '@/lib/tracking/bot-agent';
 import { internalOrderLists } from '@/lib/meta/internal-orders';
 import { isMetaProductionSite } from '@/lib/meta/config';
-import { identityCookieDomain } from '@/lib/meta/identity-cookies';
+import { identityCookieDomain, fbcFromEventSourceUrl } from '@/lib/meta/identity-cookies';
 import crypto from 'crypto';
 
 /**
@@ -277,7 +277,11 @@ export async function POST(req: NextRequest) {
     }
 
     const fbp = req.cookies.get('_fbp')?.value;
-    const fbc = req.cookies.get('_fbc')?.value;
+    // Click id: the _fbc cookie (middleware / pixel), else rebuilt from the fbclid still in
+    // the page URL — the value the pixel derives itself when no cookie could be written, so
+    // the server copy carries it too (Events Manager: "fbc received through the pixel, but
+    // the server sends an empty fbc").
+    const fbc = req.cookies.get('_fbc')?.value || fbcFromEventSourceUrl(eventSourceUrl, Date.now());
     const externalId = req.cookies.get('zb_external_id')?.value;
     // Stable device id (lib/cart-context.tsx), sent alongside the customer id once the
     // shopper is signed in so Meta can join the pre-login funnel to the account.

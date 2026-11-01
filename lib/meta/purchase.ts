@@ -25,7 +25,7 @@ import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder 
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { isPrivateIP } from '@/lib/ip-geo';
 import { clientIpFromHeaders } from '@/lib/client-ip';
-import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
+import { isPlaceholderEmail, pickRealFullName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
 import { parseConsentRegions } from '@/lib/meta/consent';
@@ -123,7 +123,8 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
   const addr = parseAddress(order.shippingAddress);
   // The address typed at checkout is the freshest customer data; the Customer row is the fallback.
   // Placeholder names ('Customer', 'Valued Customer' …) are skipped for the next real one.
-  const name = String(pickRealName(addr.name, order.customer?.name) || '').trim().split(/\s+/).filter(Boolean);
+  // Of the two, the name that carries a surname (Meta: Purchase surname coverage 59 %).
+  const name = String(pickRealFullName(addr.name, order.customer?.name) || '').trim().split(/\s+/).filter(Boolean);
 
   const contents: Array<{ id: string; quantity: number; item_price?: number; delivery_category: string }> = [];
   let numItems = 0;

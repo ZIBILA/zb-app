@@ -184,6 +184,19 @@ export function pickRealName(...candidates: unknown[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Like pickRealName, but prefers the first real candidate that carries a surname
+ * (two or more words), so first and last name come from the same source: the
+ * customer row may hold "Priya" while the checkout address holds "Priya Sharma"
+ * (or the reverse). Falls back to the first real candidate.
+ */
+export function pickRealFullName(...candidates: unknown[]): string | undefined {
+  const real = candidates
+    .filter((c): c is string => typeof c === 'string' && !!c.trim() && !isPlaceholderName(c))
+    .map(c => c.trim());
+  return real.find(n => n.split(/\s+/).filter(Boolean).length > 1) || real[0];
+}
+
 /** First candidate that is a real (non-dummy) phone number. */
 export function pickRealPhone(...candidates: unknown[]): string | undefined {
   for (const c of candidates) {

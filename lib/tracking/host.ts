@@ -73,6 +73,21 @@ export function isEventPage(): boolean {
   return isEventHost(window.location.hostname);
 }
 
+// ── platform default hosts → zicabella.com (middleware) ─────────────────────
+
+/** Hostname suffixes the hosting platforms give this same build (never the shop's own name). */
+const PLATFORM_HOST_SUFFIXES: readonly string[] = ['.ondigitalocean.app', '.onrender.com'];
+
+/**
+ * true for a platform default hostname (DigitalOcean's *.ondigitalocean.app, the old
+ * Render *.onrender.com): storefront pages there are sent to zicabella.com by the
+ * middleware, so no copy of the shop stays reachable on a host that sends no events.
+ */
+export function isNonCanonicalStorefrontHost(hostname: unknown): boolean {
+  const h = normalizeHost(hostname);
+  return !!h && PLATFORM_HOST_SUFFIXES.some(suffix => h.endsWith(suffix));
+}
+
 // ── app.zicabella.com → zicabella.com (middleware) ───────────────────────────
 
 /**
