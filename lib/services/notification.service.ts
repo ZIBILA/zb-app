@@ -1,9 +1,9 @@
-import { Expo, ExpoPushMessage } from 'expo-server-sdk';
 import jwt from 'jsonwebtoken';
 import db from '../db';
+import { sendViaFcm } from './fcm';
 
-// ── Expo Push SDK ──────────────────────────────────────────────────────────
-const expo = new Expo();
+const isLegacyExpoToken = (t: string) => t.startsWith('ExponentPushToken');
+const isApnsToken = (t: string) => /^[a-f0-9]{64}$/i.test(t);
 
 // ── APNs Direct Delivery ───────────────────────────────────────────────────
 const APNS_KEY_ID = process.env.APNS_KEY_ID || '';
@@ -92,30 +92,20 @@ export const NotificationService = {
       let deviceSuccess = false;
 
       // 1. Direct APNs (Primary for iOS)
-      if (device.apnsToken) {
+      if (device.apnsToken && device.platform !== 'android') {
         deviceSuccess = await sendViaApns(device.apnsToken, title, body, data);
       }
 
-      // 2. Fallback or Android (Expo)
-      if (!deviceSuccess && device.fcmToken) {
-        if (Expo.isExpoPushToken(device.fcmToken)) {
-          // Only use Expo for non-iOS or as absolute last resort
-          const messages: ExpoPushMessage[] = [{
-            to: device.fcmToken,
-            sound: 'default',
-            title,
-            body,
-            data: data as any,
-            priority: 'high',
-            badge: 1,
-          }];
-          try {
-            const ticket = await expo.sendPushNotificationsAsync(messages);
-            if (ticket[0].status === 'ok') deviceSuccess = true;
-          } catch {}
-        } else if (device.platform === 'ios' || /^[a-f0-9]{64}$/i.test(device.fcmToken)) {
-          // If it's a native token stored in fcmToken field, use APNs
+      // 2. Android (FCM direct) or iOS native token stored in fcmToken
+      if (!deviceSuccess && device.fcmToken && !isLegacyExpoToken(device.fcmToken)) {
+        if (device.platform === 'ios' || isApnsToken(device.fcmToken)) {
           deviceSuccess = await sendViaApns(device.fcmToken, title, body, data);
+        } else {
+          const result = await sendViaFcm(device.fcmToken, title, body, data);
+          deviceSuccess = result.ok;
+          if (result.invalidToken) {
+            await db.deviceToken.update({ where: { id: device.id }, data: { isActive: false } }).catch(() => {});
+          }
         }
       }
 
@@ -128,14 +118,10 @@ export const NotificationService = {
   },
 
   async sendToTokens(tokens: string[], title: string, body: string, data?: Record<string, string>) {
-    // Basic multicast support
-    const results = await Promise.all(tokens.map(token => {
-      if (Expo.isExpoPushToken(token)) {
-        return expo.sendPushNotificationsAsync([{ to: token, title, body, data: data as any, sound: 'default', priority: 'high' }]);
-      } else if (/^[a-f0-9]{64}$/i.test(token)) {
-        return sendViaApns(token, title, body, data);
-      }
-      return Promise.resolve(false);
+    const results = await Promise.all(tokens.map(async token => {
+      if (isLegacyExpoToken(token)) return false;
+      if (isApnsToken(token)) return sendViaApns(token, title, body, data);
+      return (await sendViaFcm(token, title, body, data)).ok;
     }));
     return { success: true, successCount: results.filter(Boolean).length };
   }

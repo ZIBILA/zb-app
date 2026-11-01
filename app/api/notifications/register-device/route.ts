@@ -5,7 +5,7 @@ import db from '@/lib/db';
  * POST /api/notifications/register-device
  * 
  * Stores or updates a device's push tokens.
- * Handles both Expo tokens and Native APNs tokens for reliable iOS delivery.
+ * Stores APNs tokens (iOS) and FCM registration tokens (Android).
  */
 export async function POST(req: Request) {
   try {
@@ -18,10 +18,16 @@ export async function POST(req: Request) {
 
     const finalUserId = userId || `GUEST_${deviceId}`;
     
-    // Use the native deviceToken if provided, otherwise fallback to fcmToken
-    const apnsToken = deviceToken || (fcmToken && !fcmToken.startsWith('ExponentPushToken') ? fcmToken : null);
-    // Use the expoPushToken if provided, otherwise check if fcmToken is an expo token
-    const expoToken = expoPushToken || (fcmToken && fcmToken.startsWith('ExponentPushToken') ? fcmToken : null);
+    const isIos = (platform || 'ios') === 'ios';
+    const incoming: string | undefined = deviceToken || fcmToken || expoPushToken;
+    if (!incoming) {
+      return NextResponse.json({ error: 'Missing token' }, { status: 400 });
+    }
+    const isLegacyExpo = incoming.startsWith('ExponentPushToken');
+    // iOS native tokens go to APNs; Android native tokens are FCM registration tokens.
+    const expoToken = expoPushToken || (isLegacyExpo ? incoming : null);
+    const apnsToken = isIos && !isLegacyExpo ? (deviceToken || incoming) : null;
+    const primaryToken = isLegacyExpo && !isIos ? incoming : (apnsToken || incoming);
 
     const record = await db.deviceToken.upsert({
       where: {
@@ -31,7 +37,7 @@ export async function POST(req: Request) {
         },
       },
       update: {
-        fcmToken: expoToken || apnsToken || fcmToken, // Store the most reliable one in the primary field
+        fcmToken: primaryToken,
         expoPushToken: expoToken,
         apnsToken: apnsToken,
         platform: platform || 'ios',
@@ -42,7 +48,7 @@ export async function POST(req: Request) {
       create: {
         userId: finalUserId,
         deviceId,
-        fcmToken: expoToken || apnsToken || fcmToken,
+        fcmToken: primaryToken,
         expoPushToken: expoToken,
         apnsToken: apnsToken,
         platform: platform || 'ios',

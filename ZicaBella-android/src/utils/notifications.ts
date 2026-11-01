@@ -51,18 +51,13 @@ export async function registerForPushNotifications(): Promise<{
     let expoToken: string | undefined;
     let deviceToken: string | undefined;
 
-    // 2. Get Expo Push Token
-    const projectId = getExpoProjectId();
-    if (projectId && projectId !== 'your-eas-project-id') {
-      try {
-        const expoData = await Notifications.getExpoPushTokenAsync({ projectId });
-        expoToken = expoData?.data;
-      } catch (err) {
-        console.warn('[Notifications] Expo token fetch failed:', err);
-      }
+    // 2. Get the native FCM registration token (no Expo push service involved)
+    try {
+      const native = await Notifications.getDevicePushTokenAsync();
+      deviceToken = typeof native?.data === 'string' ? native.data : undefined;
+    } catch (err) {
+      console.warn('[Notifications] FCM token fetch failed:', err);
     }
-
-
 
     console.log('[Notifications] Registration successful:', { expoToken, deviceToken });
     return { expoToken, deviceToken };
@@ -81,7 +76,7 @@ export async function postPushTokenToBackend(
 ): Promise<boolean> {
   try {
     const primaryToken = tokens.deviceToken || tokens.expoToken;
-    const tokenType = tokens.deviceToken ? 'apns' : 'expo';
+    const tokenType = tokens.deviceToken ? 'fcm' : 'expo';
 
     if (!primaryToken) {
       return false;
