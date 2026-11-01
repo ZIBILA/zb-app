@@ -19,6 +19,11 @@ import { getClientIP, lookupIpGeo, extractEdgeGeo } from '@/lib/ip-geo';
 
 export const dynamic = 'force-dynamic';
 
+/** 6 for an IPv6 literal, 4 otherwise (an IPv4-mapped ::ffff:a.b.c.d counts as 4). */
+function ipVersion(ip: string): 4 | 6 {
+  return ip.includes(':') && !/^::ffff:\d+\.\d+\.\d+\.\d+$/i.test(ip) ? 6 : 4;
+}
+
 export async function GET(req: NextRequest) {
   try {
     // 1. Try edge headers first (0ms on Vercel / Cloudflare)
@@ -31,7 +36,7 @@ export async function GET(req: NextRequest) {
     if (!geo || geo.isDevFallback) {
       // Unknown (or a development placeholder): never hand the browser a made-up
       // location — it would be stored as the customer's address for a year.
-      return NextResponse.json({ ok: false }, { status: 200 });
+      return NextResponse.json({ ok: false, ip, ipVersion: ipVersion(ip) }, { status: 200 });
     }
 
     return NextResponse.json({
@@ -44,6 +49,11 @@ export async function GET(req: NextRequest) {
       lat: geo.lat,
       lng: geo.lng,
       source: 'ip',
+      // The caller's own address as the server resolved it (lib/client-ip.ts): lets anyone
+      // check with one request that an IPv6 visitor reaches the relays as IPv6 (Meta's
+      // Events Manager advice "server sends IPv4 while the pixel reports IPv6").
+      ip,
+      ipVersion: ipVersion(ip),
     });
   } catch {
     return NextResponse.json({ ok: false }, { status: 200 });
