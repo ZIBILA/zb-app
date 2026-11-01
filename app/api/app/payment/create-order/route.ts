@@ -114,6 +114,7 @@ export async function POST(req: Request) {
       (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
     let pricedSubtotal: number | null = null;
     let allPriced = false;
+    let unitPrices = new Map<string, number>();
     if (lineItems.length > 0) {
       try {
         const { fetchVariantPriceMap, sumLineItemsWithAuthoritativePrices } = await import(
@@ -123,6 +124,7 @@ export async function POST(req: Request) {
           lineItems.map((li: any) => String(li?.variantId || li?.variant_id || ''))
         );
         if (priceMap.size > 0) {
+          unitPrices = priceMap;
           const priced = sumLineItemsWithAuthoritativePrices(lineItems, priceMap);
           pricedSubtotal = priced.subtotal;
           allPriced = priced.allMapped;
@@ -163,6 +165,18 @@ export async function POST(req: Request) {
       verifiedDiscount = discountCheck.discountAmount;
     }
     const appliedCredits = Math.max(0, Number(orderData?.appliedStoreCredits || 0));
+    if (appliedCredits > 0) {
+      const creditCustomerId = userAuth?.customerId;
+      const creditCustomer = creditCustomerId
+        ? await prisma.customer.findUnique({ where: { id: creditCustomerId }, select: { storeCredits: true } })
+        : null;
+      if (!creditCustomer || appliedCredits > Number(creditCustomer.storeCredits || 0) + 0.01) {
+        return NextResponse.json(
+          { error: 'Store credits applied exceed your available balance. Please review your bag and try again.', code: 'CREDITS_INVALID' },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+    }
 
     // Prepaid: charge exactly what the items cost (after verified discount/credits).
     // If the app's amount disagrees (stale quantity/total in the bag), refuse instead of
@@ -215,9 +229,11 @@ export async function POST(req: Request) {
 
     // ─── Create a PENDING order in our DB ───
     // This allows webhooks to find the order even if the app crashes/user leaves.
+    let pendingOrderId: string | null = null;
     if (orderData) {
       try {
         const shop = await prisma.shop.findFirst();
+        if (!shop && !isCod) throw new Error('Shop record not found — cannot record the order before payment');
         if (shop) {
           const customer = await resolveMobileCustomer(shop.id, orderData, userAuth);
           
@@ -256,13 +272,13 @@ export async function POST(req: Request) {
               variantId,
               title: li.name || li.title || 'Product',
               quantity: Number(li.quantity || 1),
-              price: Number(li.price || 0),
+              // Unit price the charge was computed from (Shopify), not the app's copy.
+              price: unitPrices.get(String(li.variantId || li.variant_id || '').split('/').pop() || '') ?? Number(li.price || 0),
               sku: li.sku || null,
               image: li.image || null,
             };
           }));
 
-          let pendingOrderId: string | null = null;
           await prisma.$transaction(async (tx: any) => {
             // 1. Create pending Order
             const pendingOrder = await tx.order.create({
@@ -353,6 +369,29 @@ export async function POST(req: Request) {
             });
           });
 
+          // Read the order back from the DB and require it to equal what Razorpay was opened
+          // for (prepaid). Any difference aborts before the customer can pay.
+          if (!isCod) {
+            const saved: any = pendingOrderId
+              ? await prisma.order.findUnique({ where: { id: pendingOrderId }, include: { items: true } })
+              : null;
+            const { itemsPayableRupees } = await import('@/lib/razorpay-webhook-events');
+            const dbPayable = saved ? itemsPayableRupees(saved) : null;
+            const razorpayRupees = Number(order.amount) / 100;
+            if (
+              !saved ||
+              saved.razorpayOrderId !== order.id ||
+              dbPayable === null ||
+              Math.abs(dbPayable - razorpayRupees) > 0.01 ||
+              Math.abs(Number(saved.totalPrice) - razorpayRupees) > 0.01 ||
+              (saved.items || []).length !== lineItems.length
+            ) {
+              throw new Error(
+                `DB/Razorpay mismatch: db items ₹${dbPayable}, db total ₹${saved?.totalPrice}, razorpay ₹${razorpayRupees}`
+              );
+            }
+          }
+
           console.log(`[Razorpay] Pre-created pending order and mobile order ${order.id} in DB with internalOrderNumber: ${universalOrderNumber}`);
 
           // Tracking only: store the app's device context (platform, OS/app version,
@@ -363,8 +402,21 @@ export async function POST(req: Request) {
           }
         }
       } catch (dbErr: any) {
-        console.warn('[Razorpay] Failed to pre-create pending order:', dbErr.message);
-        // Non-blocking: we still want to return the Razorpay order_id
+        console.error('[Razorpay] Failed to pre-create / verify pending order:', dbErr.message);
+        if (!isCod) {
+          // Prepaid is never opened for an order we could not record and verify.
+          if (pendingOrderId) {
+            await prisma.order.update({
+              where: { id: pendingOrderId },
+              data: { status: 'payment_failed', paymentFailureReason: 'Order/amount verification failed before payment' },
+            }).catch(() => {});
+          }
+          return NextResponse.json(
+            { error: 'We could not prepare your order for payment. Please try again.', code: 'ORDER_NOT_RECORDED' },
+            { status: 500, headers: corsHeaders }
+          );
+        }
+        // COD upfront: keep the previous behaviour (webhook can still find the order).
       }
     }
 
