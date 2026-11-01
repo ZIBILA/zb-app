@@ -190,6 +190,23 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     // Re-runs once after the account restore, which may swap in DB lines carrying older prices.
   }, [isLoaded, restoreDone]);
 
+  // Logging out empties this browser's cart so it never lingers for the next person on a shared device.
+  // The account's DB cart is left alone and comes back on the next login.
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (!isLoaded || prev !== "authenticated" || status !== "unauthenticated") return;
+    // "[]" marks the empty cart as already synced, so the sync effect doesn't upload it as a guest cart.
+    lastSyncedJsonRef.current = "[]";
+    restoredRef.current = false;
+    setRestoreDone(false);
+    metaRef.current = { ...EMPTY_META, owner: "guest" };
+    writeMeta(metaRef.current);
+    setItems([]);
+    clearGuestPII();
+  }, [status, isLoaded]);
+
   // Remember that this browser's cart was built while logged out, so the next login merges it in.
   useEffect(() => {
     if (!isLoaded || status !== "unauthenticated") return;
