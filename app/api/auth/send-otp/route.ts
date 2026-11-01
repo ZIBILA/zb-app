@@ -137,7 +137,7 @@ export async function POST(req: Request) {
       }).catch(console.error);
 
     } catch (smsError: any) {
-      console.error("Failed to send SMS:", smsError);
+      console.error(`[send-otp] SMS failed code=${smsError?.twilioCode ?? 'n/a'}: ${smsError?.message}`);
       // Clean up the OTP since we couldn't send it
       await prisma.verificationCode.deleteMany({
         where: { phone: normalizedPhone, code: otp }
@@ -161,8 +161,15 @@ export async function POST(req: Request) {
         }
       }).catch(console.error);
 
+      // Twilio: 21211 invalid number, 21614 not a mobile number, 21635 landline/VoIP
+      if ([21211, 21614, 21635].includes(smsError?.twilioCode)) {
+        return NextResponse.json(
+          { error: "Enter a valid mobile number that can receive SMS." },
+          { status: 400 }
+        );
+      }
       return NextResponse.json(
-        { error: "Failed to send verification code. Please check your phone number and try again." }, 
+        { error: "Couldn't send the code. Please try again." },
         { status: 500 }
       );
     }

@@ -79,7 +79,9 @@ export const SmsService = {
       if (process.env.NODE_ENV === 'development') {
         return { sid: 'mock_sid' };
       }
-      throw new Error(`Failed to send SMS: ${error.message}`);
+      const smsError: any = new Error(`Failed to send SMS: ${error.message}`);
+      smsError.twilioCode = error?.code;
+      throw smsError;
     }
   },
 
