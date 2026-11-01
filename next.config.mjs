@@ -55,6 +55,7 @@ const nextConfig = {
   staticPageGenerationTimeout: 180,
   experimental: {
     cpus: 1,
+    instrumentationHook: true,
     optimizePackageImports: ['lucide-react', 'framer-motion'],
   },
   async headers() {
