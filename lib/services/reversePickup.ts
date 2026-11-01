@@ -363,6 +363,14 @@ async function notifyPickupScheduled(kind: ReverseKind, id: string, ctx: Reverse
     pickupDate: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
     awbNumber: awb,
   };
-  if (kind === 'return') await templates.sendReturnPickupScheduled(args);
-  else await templates.sendExchangePickupScheduled(args);
+  const { deliverKeyedWhatsApp } = await import('@/lib/notifications/whatsapp-events');
+  await deliverKeyedWhatsApp({
+    event: kind === 'return' ? 'RETURN_PICKUP_UPDATE' : 'EXCHANGE_PICKUP_UPDATE',
+    eventKey: `${kind}:${id}:pickup:${awb}`, // a re-booked pickup has a new AWB and messages again
+    rawPhone: phone,
+    run: (to) =>
+      kind === 'return'
+        ? templates.sendReturnPickupScheduled({ ...args, phone: to })
+        : templates.sendExchangePickupScheduled({ ...args, phone: to }),
+  });
 }

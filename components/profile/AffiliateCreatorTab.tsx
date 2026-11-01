@@ -126,6 +126,9 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
     }
   }, []);
 
+  // Settlement can be requested once a week (server-enforced); null = available now
+  const [nextSettlementAt, setNextSettlementAt] = useState<Date | null>(null);
+
   // Fetch creator data once approved
   const fetchCreatorData = useCallback(async () => {
     if (!affiliate || affiliate.status !== "APPROVED") return;
@@ -146,6 +149,13 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
         setReferrals(d.referrals || []);
       }
       setLoadingReferrals(false);
+
+      // 3. Weekly settlement window
+      const wRes = await fetch("/api/affiliate/withdrawals");
+      if (wRes.ok) {
+        const d = await wRes.json();
+        setNextSettlementAt(d.nextSettlementAt ? new Date(d.nextSettlementAt) : null);
+      }
     } catch (e) {
       console.error("[Affiliate UI] Data load error:", e);
       setLoadingReferrals(false);
@@ -551,7 +561,8 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
     ? affiliate.minFirstWithdrawal || 5000
     : affiliate.minWithdrawal || 1000;
 
-  const canWithdraw = (affiliate.availableBalance || 0) >= minRequiredForWithdrawal;
+  const weeklyLimitActive = nextSettlementAt !== null && nextSettlementAt > new Date();
+  const canWithdraw = (affiliate.availableBalance || 0) >= minRequiredForWithdrawal && !weeklyLimitActive;
   const progressPercent = Math.min(100, Math.round(((affiliate.availableBalance || 0) / minRequiredForWithdrawal) * 100));
 
   // Find primary storefront link
@@ -667,6 +678,12 @@ export default function AffiliateCreatorTab({ customer }: { customer?: any }) {
               <span>Withdraw Funds</span>
             </button>
           </div>
+          {weeklyLimitActive && (
+            <p className="text-[11px] text-zinc-400">
+              One settlement per week — next request available{" "}
+              {nextSettlementAt!.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}.
+            </p>
+          )}
         </div>
 
         {/* Withdrawal Threshold Progress */}

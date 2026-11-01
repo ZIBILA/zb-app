@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchProductsByCollectionId } from '@/lib/shopify-admin';
+import { fetchStorefrontCatalog } from '@/lib/shopify-admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +8,8 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const products = await fetchProductsByCollectionId(params.id, 6);
+    // Live products only — these go into customer emails, so drafts must never appear.
+    const products = (await fetchStorefrontCatalog({ collectionId: params.id })).slice(0, 6);
     
     const simplified = products.map(p => ({
       id: p.id,

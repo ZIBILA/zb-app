@@ -16,16 +16,10 @@ export default function LazyVideo({ src, className, poster, fallbackImage }: Laz
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
-    const mq = window.matchMedia("(max-width: 768px)");
-    setIsMobile(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
   }, []);
 
   // Observe visibility of the container (works on both mobile & desktop)
@@ -76,22 +70,8 @@ export default function LazyVideo({ src, className, poster, fallbackImage }: Laz
     return <div className="w-full h-full bg-foreground/[0.03]" />;
   }
 
-  // Mobile: show fallback image if available and video hasn't started loading yet
-  // But still render the container so IntersectionObserver can trigger
-  if (isMobile && fallbackImage && !hasLoaded) {
-    return (
-      <div ref={containerRef} className="relative w-full h-full">
-        <NextImage
-          src={fallbackImage}
-          alt="Section Media"
-          fill
-          className="object-cover"
-          onError={handleImageError}
-        />
-      </div>
-    );
-  }
-
+  // One stable tree for mobile and desktop: the fallback image stays mounted underneath and the
+  // video is added on top once in view. (Swapping trees here remounted the image and made it flash.)
   return (
     <div ref={containerRef} className="relative w-full h-full">
       {/* Show fallback image behind video while it loads */}

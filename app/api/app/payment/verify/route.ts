@@ -10,6 +10,7 @@ import { assignUniversalOrderNumber, isFailedPrefixNumber } from '@/lib/orderNum
 import { getCorsHeaders, handleCorsOptions } from '@/lib/cors';
 import { emitSnapAppPurchase, appRequestContext } from '@/lib/snap/app-purchase-server';
 import { confirmRazorpayCapture } from '@/lib/razorpay-payment';
+import { capturedAmountCheck, underpaidAlertHtml } from '@/lib/razorpay-webhook-events';
 
 export async function OPTIONS(req: Request) {
   return handleCorsOptions(req);
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = verifyBody;
     // Snap MOBILE_APP Purchase is sent only when Razorpay reports the money CAPTURED.
     let paymentCaptured = false;
+    let capturedPayment: any = null;
     
     if (!razorpay_order_id || !razorpay_payment_id) {
       console.error('[Verify] Missing fields:', { razorpay_order_id, razorpay_payment_id, has_signature: !!razorpay_signature });
@@ -105,6 +107,7 @@ export async function POST(req: Request) {
         key_secret: secret,
       }, { expectedOrderId: razorpay_order_id });
       paymentCaptured = capture.captured;
+      if (capture.captured) capturedPayment = capture.payment;
       if (!capture.captured) {
         console.warn(`[Verify] Payment ${razorpay_payment_id} not captured yet (${capture.reason}) — order left pending for the webhook`);
       }
@@ -178,6 +181,14 @@ export async function POST(req: Request) {
         localOrderNumber = promotedNumber;
 
         if (!alreadyPaid && paymentCaptured) {
+          // Money received must cover the goods on the order (items × qty − discount −
+          // credits). A short capture is never a clean "paid": it is held for review and
+          // NOT pushed to Shopify, so the order can't show 2 units against a 1-unit payment.
+          const amountCheck = capturedPayment
+            ? capturedAmountCheck(capturedPayment, order, { isCod, codUpfrontRupees: 0 })
+            : null;
+          const underpaid = Boolean(amountCheck?.underpaid) && !isCod;
+
           // ─── Sync with Shopify ───
           let shopifyOrderId = order.shopifyOrderId;
           let tags = order.tags || 'mobile-app';
@@ -185,7 +196,7 @@ export async function POST(req: Request) {
           await prisma.order.update({
             where: { id: order.id },
             data: {
-              paymentStatus: targetPaymentStatus,
+              paymentStatus: underpaid ? 'partially_paid' : targetPaymentStatus,
               razorpayPaymentId: razorpay_payment_id,
               paymentCapturedAt: now,
               status: isCod ? 'open' : 'approved',
@@ -194,10 +205,37 @@ export async function POST(req: Request) {
               paymentFailureReason: null,
               tags: `${tags}, ${isCod ? 'cod_upfront_paid' : 'Prepaid, Razorpay'}`,
               internalOrderNumber: promotedNumber || order.internalOrderNumber,
+              ...(underpaid
+                ? {
+                    tags: `${tags}, Prepaid, Razorpay, underpaid, needs_review`,
+                    note: `${order.note ? `${order.note} | ` : ''}UNDERPAID: captured ₹${amountCheck!.capturedRupees} vs expected ₹${amountCheck!.expectedRupees} (Payment ID: ${razorpay_payment_id}) — held for review`,
+                    shopifySyncStatus: 'needs_review',
+                    shopifySyncError: 'Under-captured payment; held for review',
+                  }
+                : {}),
             }
           });
 
-          if (!shopifyOrderId || !/^\d+$/.test(String(shopifyOrderId))) {
+          if (underpaid) {
+            console.error(`[Verify] Under-captured payment ${razorpay_payment_id}: ₹${amountCheck!.capturedRupees} of ₹${amountCheck!.expectedRupees} — order ${order.id} held for review`);
+            void import('@/lib/services/zohoMailService')
+              .then(({ notifyAdminTeam }) => notifyAdminTeam(
+                '⚠️ Under-captured Razorpay payment held for review',
+                underpaidAlertHtml({
+                  orderId: order.id,
+                  orderNumber: promotedNumber || order.internalOrderNumber,
+                  razorpayOrderId: razorpay_order_id,
+                  razorpayPaymentId: razorpay_payment_id,
+                  capturedRupees: amountCheck!.capturedRupees,
+                  expectedRupees: amountCheck!.expectedRupees,
+                  currency: order.currency,
+                  source: '/api/app/payment/verify',
+                })
+              ))
+              .catch((alertErr: any) => console.warn('[Verify] Underpaid alert failed:', alertErr?.message));
+          }
+
+          if (!underpaid && (!shopifyOrderId || !/^\d+$/.test(String(shopifyOrderId)))) {
             try {
               const { syncOrderToShopify } = await import('@/lib/services/shopifyOrderSyncService');
               const syncRes = await syncOrderToShopify(order.id, { preserveAppTags: true });
@@ -224,12 +262,14 @@ export async function POST(req: Request) {
                 },
                 data: {
                   orderNumber: promotedNumber || mobileOrderNumber,
-                  status: 'synced',
-                  paymentStatus: targetPaymentStatus === 'cod_upfront_paid' ? 'cod_upfront_paid' : 'paid',
+                  status: underpaid ? 'needs_review' : 'synced',
+                  paymentStatus: underpaid
+                    ? 'partially_paid'
+                    : targetPaymentStatus === 'cod_upfront_paid' ? 'cod_upfront_paid' : 'paid',
                   paymentId: razorpay_payment_id,
                   shopifyOrderId: shopifyOrderId,
-                  syncedAt: now,
-                  tags: `${tags}, synced`,
+                  ...(underpaid ? {} : { syncedAt: now }),
+                  tags: underpaid ? `${tags}, underpaid, needs_review` : `${tags}, synced`,
                 }
               });
               console.log(`[Verify] MobileOrder ${mobileOrderNumber} status updated`);

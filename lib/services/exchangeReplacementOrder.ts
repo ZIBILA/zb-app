@@ -216,6 +216,48 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       };
     }
 
+    // A prepaid exchange with a price difference must have a captured Razorpay payment of at least that
+    // amount before any replacement is created. The stored paymentStatus alone is not proof.
+    const diffToCollect = Number(exchangeRequest.priceDifference) || 0;
+    const needsPrepaidProof = diffToCollect > 0 && exchangeRequest.settlementPreference !== "COD_ON_DELIVERY";
+    let paidPaymentId: string | null = null;
+    if (needsPrepaidProof) {
+      const blockReason = async (): Promise<string | null> => {
+        if (exchangeRequest.paymentStatus !== "paid" || !exchangeRequest.paymentId) {
+          return "no recorded payment for the price difference";
+        }
+        try {
+          const { resolveRazorpayCredentials } = await import("@/lib/razorpay-credentials");
+          const { assertCapturedCharge } = await import("@/lib/razorpay-payment");
+          await assertCapturedCharge({
+            paymentId: exchangeRequest.paymentId,
+            credentials: await resolveRazorpayCredentials(),
+            expectedMinRupees: diffToCollect,
+          });
+          return null;
+        } catch (err: any) {
+          return err?.message || "Razorpay could not confirm the payment";
+        }
+      };
+      const blocked = await blockReason();
+      if (blocked) {
+        console.error(`[Exchange Replacement] ${id} blocked: ${blocked}`);
+        try {
+          const { notifyAdminTeam } = await import("@/lib/services/zohoMailService");
+          await notifyAdminTeam(
+            `⚠️ Exchange ${exchangeRequest.displayId || id}: replacement not created`,
+            `<p>The replacement order was not created because the price-difference payment could not be confirmed: <b>${blocked}</b>.</p><p>Expected ₹${diffToCollect}. Payment ID: ${exchangeRequest.paymentId || "none"}.</p>`
+          );
+        } catch {}
+        return {
+          success: false,
+          error: `Replacement not created: ${blocked}. The customer must pay the ₹${diffToCollect} difference first.`,
+          status: 402,
+        };
+      }
+      paidPaymentId = exchangeRequest.paymentId;
+    }
+
     // Atomic claim: prevent concurrent order creation attempts
     const claim = await prisma.exchangeRequest.updateMany({
       where: {
@@ -371,6 +413,18 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       source_identifier: `exchange-${exchangeRequest.id}`,
     };
 
+    // Record the money we actually collected so Shopify shows it as paid (not just labelled "paid" with $0).
+    if (paidPaymentId) {
+      shopifyOrderPayload.transactions = [{
+        kind: "sale",
+        status: "success",
+        amount: priceDiff.toFixed(2),
+        currency: exchangeRequest.order.currency || "INR",
+        gateway: "razorpay",
+        authorization: paidPaymentId,
+      }];
+    }
+
     if (customer?.shopifyId) {
       shopifyOrderPayload.customer = { id: parseInt(customer.shopifyId, 10) };
     } else if (customer?.email) {
@@ -432,9 +486,15 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
         };
       });
 
+      // The payment id is unique on Order; only attach it when no other order already carries it.
+      const paymentIdFree = paidPaymentId
+        ? !(await tx.order.findFirst({ where: { razorpayPaymentId: paidPaymentId }, select: { id: true } }))
+        : false;
+
       // 1. Local Order creation
       const localOrder = await tx.order.create({
         data: {
+          ...(paymentIdFree ? { razorpayPaymentId: paidPaymentId, paymentMethod: "razorpay", paymentCapturedAt: new Date() } : {}),
           shopId: exchangeRequest.order.shopId,
           shopifyOrderId: shopifyOrderId,
           internalOrderNumber: replacementDisplayId,
@@ -537,12 +597,19 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
       if (phone && forwardAwb) {
         const orderIdDisplay = replacementDisplayId;
         const customerName = customer?.name || 'Valued Customer';
-        await sendExchangeShipped({
-          phone,
-          customerName,
-          orderId: orderIdDisplay,
-          trackingNumber: forwardAwb || shopifyOrderId || 'N/A',
-          trackingUrl: forwardAwb ? `https://shiprocket.co/tracking/${forwardAwb}` : storefrontUrl(`/orders/${shopifyOrderId}`),
+        const { deliverKeyedWhatsApp } = await import('@/lib/notifications/whatsapp-events');
+        await deliverKeyedWhatsApp({
+          event: 'REPLACEMENT_SHIPPED',
+          eventKey: `exchange:${exchangeRequest.id}:replacement:shipped`,
+          rawPhone: phone,
+          run: (to) =>
+            sendExchangeShipped({
+              phone: to,
+              customerName,
+              orderId: orderIdDisplay,
+              trackingNumber: forwardAwb,
+              trackingUrl: forwardAwb ? `https://shiprocket.co/tracking/${forwardAwb}` : storefrontUrl(`/orders/${shopifyOrderId}`),
+            }),
         });
       }
     } catch (waErr: any) {

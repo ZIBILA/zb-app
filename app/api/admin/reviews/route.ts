@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const status = searchParams.get('status') || 'ALL'; // ALL | VISIBLE | HIDDEN
+    const status = searchParams.get('status') || 'ALL'; // ALL | PENDING | VISIBLE | HIDDEN
     const ratingStr = searchParams.get('rating') || 'ALL';
     const search = searchParams.get('search')?.trim() || '';
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
@@ -102,7 +102,7 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
 
     // Execute queries in parallel
-    const [reviews, totalCount, totalAll, visibleCount, hiddenCount, avgRatingResult, fiveStarCount] = await Promise.all([
+    const [reviews, totalCount, totalAll, visibleCount, hiddenCount, avgRatingResult, fiveStarCount, pendingCount] = await Promise.all([
       prisma.productReview.findMany({
         where,
         orderBy,
@@ -118,6 +118,7 @@ export async function GET(request: NextRequest) {
         where: { status: 'VISIBLE' },
       }),
       prisma.productReview.count({ where: { rating: 5 } }),
+      prisma.productReview.count({ where: { status: 'PENDING' } }),
     ]);
 
     // Gather product and user IDs for enrichment
@@ -199,6 +200,7 @@ export async function GET(request: NextRequest) {
         totalReviews: totalAll,
         visibleCount,
         hiddenCount,
+        pendingCount,
         avgRating,
         fiveStarRatio,
       },

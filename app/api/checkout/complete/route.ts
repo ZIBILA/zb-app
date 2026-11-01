@@ -1049,7 +1049,12 @@ export async function POST(req: Request) {
       console.warn('[Checkout Complete] OpenAI CAPI order_created fire failed:', oaiErr.message);
     }
 
-    // Record purchase event in analytics (deferred; non-fatal)
+    // Record purchase event in analytics (deferred; non-fatal).
+    // anonymousId must be the analytics tracker's browser id (zb_external_id cookie) so Omnichannel
+    // Analytics can link this order to the sessions/channels that led to it; the cart device id
+    // (guestId) is kept in metadata.
+    const analyticsAnonymousId =
+      /(?:^|;\s*)zb_external_id=([^;]+)/.exec(req.headers.get('cookie') || '')?.[1] || body.guestId || null;
     deferredTasks.push({
       name: 'analytics-purchase-event',
       run: async () => {
@@ -1059,7 +1064,7 @@ export async function POST(req: Request) {
               eventId: `purchase_${localOrder.id}`,
               eventName: 'purchase',
               customerId: localCustomer.id,
-              anonymousId: body.guestId || null,
+              anonymousId: analyticsAnonymousId ? decodeURIComponent(analyticsAnonymousId) : null,
               sessionId: null,
               platform: 'web',
               orderId: localOrder.id,
@@ -1073,6 +1078,7 @@ export async function POST(req: Request) {
                 couponCode: finalCouponCode || null,
                 discountAmount: Number(finalCouponDiscount) || 0,
                 storeCreditAmount: parsedStoreCredit,
+                guestId: body.guestId || null,
               },
             },
           });

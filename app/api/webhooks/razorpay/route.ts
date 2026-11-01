@@ -98,6 +98,7 @@ export async function POST(req: Request) {
       // Check if order exists in local DB
       const order = await prisma.order.findUnique({
         where: { razorpayOrderId },
+        include: { items: true },
       });
 
       if (order) {

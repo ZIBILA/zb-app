@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { isOptedIn } from '@/lib/whatsapp/templates';
+import { isCampaignEligible } from '../broadcast/helper';
 import { formatPhone } from '@/lib/whatsapp/client';
 import { shopifyFetch } from '@/lib/shopify-admin';
 
@@ -41,6 +41,43 @@ export async function GET(req) {
           ordersCount: { gte: 1 }
         }
       });
+    } else if (audience === 'active_customers' || audience === 'active') {
+      // Ordered in the last 90 days
+      const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      customers = await prisma.customer.findMany({
+        where: {
+          phone: { not: null },
+          orders: { some: { createdAt: { gte: since }, status: { notIn: ['cancelled', 'CANCELLED'] } } }
+        }
+      });
+    } else if (audience === 'vip_customers' || audience === 'vip') {
+      customers = await prisma.customer.findMany({
+        where: {
+          phone: { not: null },
+          OR: [{ totalSpent: { gte: 10000 } }, { ordersCount: { gte: 3 } }]
+        }
+      });
+    } else if (audience === 'custom_segment') {
+      // Admin-defined segment: any combination of minimum orders, minimum spend and "ordered within N days"
+      const num = (k) => {
+        const v = Number(searchParams.get(k));
+        return Number.isFinite(v) && v > 0 ? v : null;
+      };
+      const minOrders = num('minOrders');
+      const minSpent = num('minSpent');
+      const withinDays = num('withinDays');
+      const where = { phone: { not: null } };
+      if (minOrders) where.ordersCount = { gte: minOrders };
+      if (minSpent) where.totalSpent = { gte: minSpent };
+      if (withinDays) {
+        where.orders = {
+          some: {
+            createdAt: { gte: new Date(Date.now() - withinDays * 24 * 60 * 60 * 1000) },
+            status: { notIn: ['cancelled', 'CANCELLED'] }
+          }
+        };
+      }
+      customers = await prisma.customer.findMany({ where });
     } else if (audience === 'high_value_customers' || audience === 'high_value') {
       customers = await prisma.customer.findMany({
         where: {
@@ -103,15 +140,17 @@ export async function GET(req) {
 
     // Map and filter by marketing opt-in consent
     const recipients = [];
+    const seenPhones = new Set();
     for (const c of customers) {
       const rawPhone = c.phone;
       if (!rawPhone) continue;
 
       const formatted = formatPhone(rawPhone);
-      if (!formatted || formatted.length < 10) continue;
+      if (!formatted || formatted.length < 10 || seenPhones.has(formatted)) continue;
+      seenPhones.add(formatted);
 
       // Check consent
-      const consented = await isOptedIn(formatted);
+      const consented = await isCampaignEligible(formatted);
       if (consented) {
         recipients.push({
           phone: formatted,

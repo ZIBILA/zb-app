@@ -732,9 +732,9 @@ export default function ProductDetailsClient({
               <div>
                 <h1 className="text-[14px] font-bold tracking-[0.2em] uppercase text-foreground font-heading mb-1.5 leading-snug">{product.title}</h1>
                 <div className="flex items-center gap-2">
-                  <span className="text-[12px] font-medium text-foreground/60 tracking-tight">{fmtPrice(parseFloat(initialPrice)).formatted}</span>
+                  <span className="text-[17px] font-semibold leading-none text-foreground tracking-tight">{fmtPrice(parseFloat(initialPrice)).formatted}</span>
                   {comparePrice && parseFloat(comparePrice) > parseFloat(initialPrice) && (
-                    <span className="text-[10px] font-light text-foreground/20 line-through tracking-wider">{fmtPrice(parseFloat(comparePrice)).formatted}</span>
+                    <span className="text-[13px] font-normal leading-none text-foreground/70 line-through decoration-foreground/70 tracking-tight">{fmtPrice(parseFloat(comparePrice)).formatted}</span>
                   )}
                 </div>
               </div>
@@ -1077,9 +1077,9 @@ export default function ProductDetailsClient({
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-normal text-foreground/60 dark:text-foreground/40 tracking-tight">{fmtPrice(parseFloat(initialPrice)).formatted}</span>
+                    <span className="text-[17px] font-semibold leading-none text-foreground tracking-tight">{fmtPrice(parseFloat(initialPrice)).formatted}</span>
                     {comparePrice && parseFloat(comparePrice) > parseFloat(initialPrice) && (
-                      <span className="text-[10px] font-light text-foreground/15 line-through tracking-wider">{fmtPrice(parseFloat(comparePrice)).formatted}</span>
+                      <span className="text-[13px] font-normal leading-none text-foreground/70 line-through decoration-foreground/70 tracking-tight">{fmtPrice(parseFloat(comparePrice)).formatted}</span>
                     )}
                   </div>
                 </div>

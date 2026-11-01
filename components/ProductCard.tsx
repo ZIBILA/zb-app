@@ -76,11 +76,11 @@ export default function ProductCard({ product, priority = false, selectedSize }:
               {product.title}
             </p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <p className="text-[8px] sm:text-[9px] font-sans font-normal tracking-tight text-foreground/50 uppercase">
+              <p className="text-[10px] sm:text-[11px] font-sans font-semibold leading-none tracking-tight text-foreground uppercase">
                 {displayPrice.formatted}
               </p>
               {isOnSale && displayComparePrice && (
-                <p className="text-[7.5px] font-sans font-normal tracking-tight text-foreground/25 uppercase line-through">
+                <p className="text-[9px] sm:text-[10px] font-sans font-normal leading-none tracking-tight text-foreground/70 uppercase line-through">
                   {displayComparePrice.formatted}
                 </p>
               )}

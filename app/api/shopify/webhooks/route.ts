@@ -602,87 +602,67 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
         orderIdStr = order.internalOrderNumber;
       }
 
+      // Every send below goes through deliverOrderWhatsApp(): it claims `order:<ref>:<EVENT>` first, so repeated
+      // or concurrent webhooks (and the lifecycle scanner, which shares the keys) can never message twice.
+      const { deliverOrderWhatsApp } = await import('@/lib/notifications/whatsapp-events');
+      const { normalizeOrderRef } = await import('@/lib/notifications/customer-events');
+      const { toggleDefault } = await import('@/lib/whatsapp/automation-defaults');
+      const ref = order.internalOrderNumber || order.id;
+      const legacyOrderIds = [String(orderIdStr), order.shopifyOrderName, order.shopifyOrderId];
+      const customerName = orderData.customer?.first_name || orderData.billing_address?.first_name || 'there';
+      const enabled = async (key: string) => (await getWhatsAppSetting(key, toggleDefault(key))) === 'true';
+      const used = async (settingKey: string, ...defaults: string[]) =>
+        Array.from(new Set([await getWhatsAppSetting(settingKey, defaults[0]), ...defaults]));
+
       if (topic === 'orders/create' || (topic === 'orders/paid' && order.paymentStatus === 'paid')) {
         const gateway = (orderData.gateway || (orderData.payment_gateway_names && orderData.payment_gateway_names[0]) || '').toLowerCase();
         const isCOD = gateway.includes('cod') || gateway.includes('cash_on_delivery') || gateway.includes('delivery') || gateway.includes('manual');
 
         if (isCOD) {
-          const isCodEnabled = await getWhatsAppSetting('cod_confirmation_enabled', 'true') === 'true';
-          if (isCodEnabled) {
-            const templateName = await getWhatsAppSetting('template_cod_confirmation', 'zica_cod_confirmation_v1');
-            const alreadySent = await prisma.whatsAppMessage.findFirst({
-              where: { orderId: String(orderIdStr), templateName }
+          if (await enabled('cod_confirmation_enabled')) {
+            const { sendCODConfirmation } = await import('@/lib/whatsapp/templates');
+            await deliverOrderWhatsApp({
+              event: 'ORDER_CONFIRMED', orderRef: ref, rawPhone: phone, legacyOrderIds,
+              legacyTemplates: await used('template_cod_confirmation', 'zica_cod_confirmation_v1'),
+              run: (to) => sendCODConfirmation({ phone: to, customerName, orderId: String(orderIdStr) }),
             });
-            if (!alreadySent) {
-              const { sendCODConfirmation } = await import('@/lib/whatsapp/templates');
-              await sendCODConfirmation({ phone, customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there', orderId: String(orderIdStr) });
-            }
           }
-        } else {
-          const isConfirmedEnabled = await getWhatsAppSetting('order_confirmed', 'true') === 'true';
-          if (isConfirmedEnabled) {
-            const templateName = await getWhatsAppSetting('template_order_confirmed', 'zica_order_confirmed_v1');
-            const alreadySent = await prisma.whatsAppMessage.findFirst({
-              where: { orderId: String(orderIdStr), templateName }
-            });
-            if (!alreadySent) {
-              const firstLineItem = (orderData.line_items || [])[0];
-              const productImageUrl = firstLineItem?.image?.src || firstLineItem?.image || '';
-              const orderStatusUrl = orderData.order_status_url || '';
-              const totalAmount = orderData.total_price || orderData.current_total_price || '';
-              const itemCount = (orderData.line_items || []).length || 1;
-              const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
-              await sendOrderConfirmation({ phone, customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there', orderId: String(orderIdStr), productImageUrl, orderStatusUrl, totalAmount, itemCount });
-            }
-          }
+        } else if (await enabled('order_confirmed')) {
+          const firstLineItem = (orderData.line_items || [])[0];
+          const productImageUrl = firstLineItem?.image?.src || firstLineItem?.image || '';
+          const orderStatusUrl = orderData.order_status_url || '';
+          const totalAmount = orderData.total_price || orderData.current_total_price || '';
+          const itemCount = (orderData.line_items || []).length || 1;
+          const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
+          await deliverOrderWhatsApp({
+            event: 'ORDER_CONFIRMED', orderRef: ref, rawPhone: phone, legacyOrderIds,
+            legacyTemplates: await used('template_order_confirmed', 'zica_order_confirmed_v1'),
+            run: (to) => sendOrderConfirmation({ phone: to, customerName, orderId: String(orderIdStr), productImageUrl, orderStatusUrl, totalAmount, itemCount }),
+          });
         }
       } else if (topic === 'orders/fulfilled') {
-        const isShippedEnabled = await getWhatsAppSetting('order_shipped', 'true') === 'true';
-        if (isShippedEnabled) {
+        if (await enabled('order_shipped')) {
           const fulfillment = orderData.fulfillments?.[0] || {};
-          const courier = fulfillment.tracking_company || 'our shipping partner';
-          const trackingNumber = fulfillment.tracking_number || 'TBA';
-          
-          let estimatedDelivery = '3-5 business days';
-          if (fulfillment.estimated_delivery_at) {
-            try {
-              estimatedDelivery = new Date(fulfillment.estimated_delivery_at).toLocaleDateString('en-IN', {
-                day: 'numeric',
-                month: 'short',
-                year: 'numeric'
-              });
-            } catch (e: any) {
-              console.warn('[Shopify Webhook WhatsApp] Failed to parse estimated_delivery_at date:', e.message);
-            }
-          }
+          const trackingNumber = fulfillment.tracking_number || '';
           const trackingUrl = fulfillment.tracking_url || fulfillment.tracking_urls?.[0] || '';
-          const templateName = await getWhatsAppSetting('template_order_shipped', 'zica_order_shipped');
-          const alreadySent = await prisma.whatsAppMessage.findFirst({
-            where: { orderId: String(orderIdStr), templateName }
-          });
-          if (!alreadySent) {
+          // No tracking yet → send nothing now; the carrier status scan sends it once the AWB exists.
+          if (trackingNumber) {
             const { sendShippingUpdate } = await import('@/lib/whatsapp/templates');
-            await sendShippingUpdate({ phone, customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there', orderId: String(orderIdStr), trackingNumber, trackingUrl });
+            await deliverOrderWhatsApp({
+              event: 'ORDER_SHIPPED', orderRef: ref, rawPhone: phone, legacyOrderIds,
+              legacyTemplates: await used('template_order_shipped', 'zica_order_shipped', 'zb_order_tracking'),
+              run: (to) => sendShippingUpdate({ phone: to, customerName, orderId: String(orderIdStr), trackingNumber, trackingUrl }),
+            });
           }
         }
       } else if (topic === 'orders/cancelled' || orderData.cancelled_at) {
-        const isStatusEnabled = await getWhatsAppSetting('order_status', 'true') === 'true';
-        if (isStatusEnabled) {
-          const templateName = await getWhatsAppSetting('template_order_status', 'zb_order_status');
-          const alreadySent = await prisma.whatsAppMessage.findFirst({
-            where: { orderId: String(orderIdStr), templateName, body: { contains: 'Cancelled' } }
+        // Cancellation only. The refund message is a separate event, sent once the refund is actually initiated.
+        if (await enabled('order_cancelled_enabled')) {
+          const { sendOrderCancelled } = await import('@/lib/whatsapp/templates');
+          await deliverOrderWhatsApp({
+            event: 'ORDER_CANCELLED', orderRef: ref, rawPhone: phone, legacyOrderIds,
+            run: (to) => sendOrderCancelled({ phone: to, customerName, orderId: normalizeOrderRef(ref) }),
           });
-          if (!alreadySent) {
-            const { sendOrderStatus } = await import('@/lib/whatsapp/templates');
-            await sendOrderStatus({
-              phone,
-              customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there',
-              orderId: String(orderIdStr),
-              status: 'Cancelled',
-              extraInfo: 'Your order has been cancelled. Any refund due will be processed shortly.',
-              orderStatusUrl: orderData.order_status_url || ''
-            });
-          }
         }
       } else if (topic === 'orders/updated') {
         let shipmentStatus = '';
@@ -694,69 +674,43 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
             }
           }
         }
-        
+
         const isDelivered = deliveryStatus === 'delivered' || shipmentStatus === 'delivered' || shipmentStatus === 'success';
         const isOutForDelivery = deliveryStatus === 'out_for_delivery' || shipmentStatus === 'out_for_delivery';
-        
+
         if (isDelivered) {
-          const isDeliveredEnabled = await getWhatsAppSetting('order_delivered', 'true') === 'true';
-          if (isDeliveredEnabled) {
-            const templateName = await getWhatsAppSetting('template_order_delivered', 'zica_order_delivered_v1');
-            const alreadySent = await prisma.whatsAppMessage.findFirst({
-              where: { orderId: String(orderIdStr), templateName }
+          if (await enabled('order_delivered')) {
+            const firstLineItem = (orderData.line_items || [])[0];
+            const productImageUrl = firstLineItem?.image?.src || firstLineItem?.image || '';
+            const totalAmount = orderData.total_price || orderData.current_total_price || '';
+            const itemCount = (orderData.line_items || []).length || 1;
+            const { sendDelivered } = await import('@/lib/whatsapp/templates');
+            await deliverOrderWhatsApp({
+              event: 'ORDER_DELIVERED', orderRef: ref, rawPhone: phone, legacyOrderIds,
+              legacyTemplates: await used('template_order_delivered', 'zica_order_delivered_v1', 'zb_order_delivered'),
+              run: (to) => sendDelivered({ phone: to, customerName, orderId: String(orderIdStr), productImageUrl, totalAmount, itemCount }),
             });
-            if (!alreadySent) {
-              const firstLineItem = (orderData.line_items || [])[0];
-              const productImageUrl = firstLineItem?.image?.src || firstLineItem?.image || '';
-              const totalAmount = orderData.total_price || orderData.current_total_price || '';
-              const itemCount = (orderData.line_items || []).length || 1;
-              const { sendDelivered } = await import('@/lib/whatsapp/templates');
-              await sendDelivered({ phone, customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there', orderId: String(orderIdStr), productImageUrl, totalAmount, itemCount });
-            }
           }
         } else if (isOutForDelivery) {
-          const isOutForDeliveryEnabled = await getWhatsAppSetting('out_for_delivery', 'true') === 'true';
-          if (isOutForDeliveryEnabled) {
-            const templateName = await getWhatsAppSetting('template_out_for_delivery', 'zb_out_for_delivery');
-            const alreadySent = await prisma.whatsAppMessage.findFirst({
-              where: { orderId: String(orderIdStr), templateName }
+          if (await enabled('out_for_delivery')) {
+            const { sendOutForDelivery } = await import('@/lib/whatsapp/templates');
+            await deliverOrderWhatsApp({
+              event: 'ORDER_OUT_FOR_DELIVERY', orderRef: ref, rawPhone: phone, legacyOrderIds,
+              legacyTemplates: await used('template_out_for_delivery', 'zb_out_for_delivery'),
+              run: (to) => sendOutForDelivery({ phone: to, orderId: String(orderIdStr), customerName }),
             });
-            if (!alreadySent) {
-              const { sendOutForDelivery } = await import('@/lib/whatsapp/templates');
-              await sendOutForDelivery({ phone, orderId: String(orderIdStr), customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there' });
-            }
           }
-        } else {
-          const isStatusEnabled = await getWhatsAppSetting('order_status', 'true') === 'true';
-          if (isStatusEnabled) {
-            let status = '';
-            let extraInfo = '';
-            if (orderData.financial_status === 'refunded') {
-              status = 'Refunded';
-              extraInfo = 'Your refund has been processed. It should reflect in 5-7 business days.';
-            } else if (orderData.fulfillment_status === 'partial') {
-              status = 'Partially Shipped';
-              extraInfo = 'Part of your order is on its way. The rest will follow soon.';
-            }
-            
-            if (status) {
-              const templateName = await getWhatsAppSetting('template_order_status', 'zb_order_status');
-              const alreadySent = await prisma.whatsAppMessage.findFirst({
-                where: { orderId: String(orderIdStr), templateName, body: { contains: status } }
-              });
-              if (!alreadySent) {
-                const { sendOrderStatus } = await import('@/lib/whatsapp/templates');
-                await sendOrderStatus({
-                  phone,
-                  customerName: orderData.customer?.first_name || orderData.billing_address?.first_name || 'there',
-                  orderId: String(orderIdStr),
-                  status,
-                  extraInfo,
-                  orderStatusUrl: orderData.order_status_url || ''
-                });
-              }
-            }
-          }
+        } else if (orderData.fulfillment_status === 'partial' && (await enabled('order_status'))) {
+          // A refund is never announced from here — refunds notify only from the refund-initiated trigger.
+          const { sendOrderStatus } = await import('@/lib/whatsapp/templates');
+          await deliverOrderWhatsApp({
+            event: 'ORDER_SHIPPED', orderRef: `${ref}:partial`, rawPhone: phone, legacyOrderIds,
+            run: (to) => sendOrderStatus({
+              phone: to, customerName, orderId: String(orderIdStr), status: 'Partially Shipped',
+              extraInfo: 'Part of your order is on its way. The rest will follow soon.',
+              orderStatusUrl: orderData.order_status_url || '',
+            }),
+          });
         }
       }
     } catch (err: any) {

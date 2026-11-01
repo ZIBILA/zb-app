@@ -22,10 +22,10 @@ interface FeedBuild {
 
 interface FeedStatusResponse {
   success: boolean;
-  urls: { xml: string; csv: string };
+  urls: { xml: string; csv: string; openai: string };
   platforms: { name: string; format: string; preferredUrl: string }[];
   excludedCollections: string[];
-  builds: { xml: FeedBuild | null; csv: FeedBuild | null };
+  builds: { xml: FeedBuild | null; csv: FeedBuild | null; openai: FeedBuild | null };
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -189,9 +189,10 @@ export default function CatalogueFeedsPage() {
 
       {data && (
         <>
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid md:grid-cols-3 gap-4">
             <BuildCard title="XML feed (/feed.xml)" build={data.builds.xml} url={data.urls.xml} />
             <BuildCard title="CSV feed (/feed.csv)" build={data.builds.csv} url={data.urls.csv} />
+            <BuildCard title="ChatGPT feed (/feed/openai.csv)" build={data.builds.openai} url={data.urls.openai} />
           </div>
 
           <div className="rounded-xl border border-foreground/10 p-5 space-y-3">

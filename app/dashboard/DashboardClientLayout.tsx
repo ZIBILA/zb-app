@@ -51,7 +51,8 @@ import {
   ChevronRight,
   AlertTriangle,
   Rss,
-  ImageIcon
+  ImageIcon,
+  Percent,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -277,6 +278,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Wishlist Management", href: "/dashboard/wishlist", icon: Heart, module: 'MARKETING' },
     { name: "Push Notifications", href: "/dashboard/notifications", icon: Bell, module: 'MARKETING' },
     { name: "Discounts", href: "/dashboard/marketing/discounts", icon: Tag, module: 'MARKETING' },
+    { name: "Sale Management", href: "/dashboard/marketing/sales", icon: Percent, module: 'MARKETING' },
     { name: "WhatsApp Hub", href: "/dashboard/marketing/whatsapp", icon: MessageCircle, module: 'MARKETING' },
     { name: "Email Center", href: "/dashboard/marketing/email", icon: Mail, module: 'MARKETING' },
     { name: "SMS Campaigns", href: "/dashboard/marketing/sms", icon: MessageSquare, module: 'MARKETING' },

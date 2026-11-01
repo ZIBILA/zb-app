@@ -100,7 +100,7 @@ export async function GET(req: Request) {
             size: item.size || null,
           }));
 
-          return NextResponse.json({ items, cartId: recoverId });
+          return NextResponse.json({ items, cartId: recoverId, updatedAt: recoveryCart.lastActivityAt });
         }
       }
     }
@@ -113,7 +113,11 @@ export async function GET(req: Request) {
     });
 
     if (!activeCart || activeCart.items.length === 0) {
-      return NextResponse.json({ items: [], cartId: activeCart?.id || null });
+      return NextResponse.json({
+        items: [],
+        cartId: activeCart?.id || null,
+        updatedAt: activeCart?.lastActivityAt || null,
+      });
     }
 
     const items = activeCart.items.map((item: any) => ({
@@ -128,7 +132,7 @@ export async function GET(req: Request) {
       size: item.size || null,
     }));
 
-    return NextResponse.json({ items, cartId: activeCart.id });
+    return NextResponse.json({ items, cartId: activeCart.id, updatedAt: activeCart.lastActivityAt });
   } catch (error: any) {
     console.error("Cart /me fetch error:", error);
     return NextResponse.json(

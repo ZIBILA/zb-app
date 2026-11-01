@@ -17,7 +17,10 @@ const RELATIONS: Record<string, Record<string, { model: string; fk: string; one?
     items: { model: 'orderItem', fk: 'orderId' },
     customer: { model: 'customer', fk: 'id', one: true, local: 'customerId' },
     payments: { model: 'payment', fk: 'orderId' },
+    shipments: { model: 'shipment', fk: 'orderId' },
   },
+  returnRequest: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' } },
+  exchangeRequest: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' } },
   mobileOrder: { items: { model: 'mobileOrderItem', fk: 'mobileOrderId' }, customer: { model: 'customer', fk: 'id', one: true, local: 'customerId' } },
   customer: { addresses: { model: 'address', fk: 'customerId' }, orders: { model: 'order', fk: 'customerId' } },
   orderItem: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' }, product: { model: 'product', fk: 'id', one: true, local: 'productId' } },
@@ -32,6 +35,7 @@ const UNIQUE: Record<string, string[][]> = {
   analyticsEvent: [['eventId']],
   newsletterSubscriber: [['email']],
   webhookEvent: [['eventKey']],
+  customerEventDelivery: [['eventKey', 'channel']],
 };
 const DEFAULTS: Record<string, Row> = {
   order: { currency: 'INR', paymentStatus: 'pending', status: 'pending', orderType: 'REGULAR', shopifySyncStatus: 'synced', refundStatus: 'not_applicable', discountAmount: 0, storeCreditAmount: 0, codUpfrontPaid: 0 },

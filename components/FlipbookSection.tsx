@@ -5,6 +5,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import NextImage from "next/image";
 import Link from "next/link";
 import { handleImageError } from "./ImagePlaceholder";
+import AspectFitImage from "./AspectFitImage";
 
 interface FlipbookProps {
   imgUrl?: string;
@@ -111,12 +112,17 @@ export default function FlipbookSection({ imgUrl, videoUrl, imgUrlMobile, videoU
 
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onResize);
+    // Sections above (carousels, community) finish loading after mount and push this one down;
+    // re-measure when the page height changes so the scroll-linked scale doesn't use a stale offset.
+    const bodyObserver = new ResizeObserver(() => measureLayout());
+    bodyObserver.observe(document.body);
     // Fire once to set initial progress
     onScroll();
 
     return () => {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);
+      bodyObserver.disconnect();
     };
   }, [mounted, measureLayout, scrollYProgress]);
 
@@ -137,6 +143,59 @@ export default function FlipbookSection({ imgUrl, videoUrl, imgUrlMobile, videoU
   // Build semantic attributes for SEO
   const sectionAriaLabel = title ? `${title} - ${tag || 'Featured Collection'}` : 'Featured Collection';
 
+  const textOverlay = (variant: "desktop" | "mobile") =>
+    hasText && (
+      <>
+        <div className={`absolute inset-0 bg-gradient-to-t ${variant === "desktop" ? "from-black/60 via-black/15" : "from-black/65 via-black/20"} to-transparent pointer-events-none z-10`} />
+        <div className={`absolute inset-0 z-20 flex items-end ${variant === "desktop" ? "p-12 lg:p-16" : "p-6"}`}>
+          <div className={variant === "desktop" ? "max-w-xl space-y-3" : "max-w-md space-y-2"}>
+            {variant === "desktop" ? (
+              <>
+                {tag && <span className="inline-block text-[9px] font-bold text-white/50 uppercase tracking-[0.3em]">{tag}</span>}
+                {title && <h3 className="font-heading text-2xl md:text-3xl lg:text-4xl font-black uppercase tracking-[0.06em] text-white leading-none">{title}</h3>}
+                {desc && <p className="text-[11px] md:text-[12px] text-white/60 font-normal leading-relaxed tracking-wider max-w-md">{desc}</p>}
+              </>
+            ) : (
+              <>
+                {tag && <span className="inline-block text-[8px] font-bold text-white/50 uppercase tracking-[0.3em]">{tag}</span>}
+                {title && <h3 className="font-heading text-lg font-black uppercase tracking-[0.06em] text-white leading-none">{title}</h3>}
+                {desc && <p className="text-[10px] text-white/55 font-normal leading-relaxed tracking-wider">{desc}</p>}
+              </>
+            )}
+          </div>
+        </div>
+      </>
+    );
+
+  // Videos keep a fixed cinematic frame; images render at their own aspect ratio so banners are never cropped.
+  const desktopMedia = desktopVideo ? (
+    <motion.div className="absolute inset-0" style={{ scale: imageScale, opacity: 1 }}>
+      {mounted ? (
+        <video ref={videoDesktopRef} src={desktopVideo} loop muted playsInline preload="none" className="w-full h-full object-cover" />
+      ) : desktopImg ? (
+        <NextImage src={desktopImg} alt={title || "Feature Section"} fill className="object-cover" sizes="100vw" onError={handleImageError} />
+      ) : null}
+    </motion.div>
+  ) : desktopImg ? (
+    <AspectFitImage src={desktopImg} alt={title || "Feature Section"} defaultRatio={21 / 9} maxHeight="85vh" />
+  ) : null;
+
+  const mobileMedia = mobileVideo ? (
+    <div className="absolute inset-0">
+      {mounted ? (
+        <video ref={videoMobileRef} src={mobileVideo} loop muted playsInline preload="none" className="w-full h-full object-cover" />
+      ) : mobileImg ? (
+        <NextImage src={mobileImg} alt={title || "Feature Section"} fill className="object-cover" sizes="100vw" onError={handleImageError} />
+      ) : null}
+    </div>
+  ) : mobileImg ? (
+    <AspectFitImage src={mobileImg} alt={title || "Feature Section"} defaultRatio={4 / 5} />
+  ) : null;
+
+  const frameBase = "relative block w-full overflow-hidden shadow-2xl border-y border-foreground/[0.03] dark:border-white/[0.04] group";
+  const desktopFrame = `${frameBase} ${desktopVideo ? "aspect-[21/9]" : ""} ${hasLink ? "cursor-pointer" : ""}`;
+  const mobileFrame = `${frameBase} ${mobileVideo ? "aspect-[3/4.2]" : ""} ${hasLink ? "cursor-pointer" : ""}`;
+
   return (
     <div ref={containerRef} className="relative w-full overflow-hidden bg-transparent">
       <section aria-label={sectionAriaLabel} itemScope itemType="https://schema.org/CollectionPage">
@@ -148,72 +207,14 @@ export default function FlipbookSection({ imgUrl, videoUrl, imgUrlMobile, videoU
         {/* ── Desktop View ── */}
         <div className="hidden md:block">
           {hasLink ? (
-            <Link
-              href={linkHref!}
-              className="relative block w-full overflow-hidden shadow-2xl border-y border-foreground/[0.03] dark:border-white/[0.04] cursor-pointer group aspect-[21/9]"
-              aria-label={`View ${title || 'featured'} collection`}
-            >
-              {/* Desktop media */}
-              <motion.div className="absolute inset-0" style={{ scale: imageScale, opacity: 1 }}>
-                {mounted && desktopVideo ? (
-                  <video
-                    ref={videoDesktopRef}
-                    src={desktopVideo}
-                    loop muted playsInline
-                    preload="none"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="relative w-full h-full">
-                    <NextImage
-                      src={desktopImg || ""}
-                      alt={title || "Feature Section"}
-                      fill
-                      className="object-cover transition-opacity duration-700"
-                      sizes="100vw"
-                      onError={handleImageError}
-                    />
-                  </div>
-                )}
-              </motion.div>
-
-              {/* Gradient + Text */}
-              {hasText && (
-                <>
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/15 to-transparent pointer-events-none z-10" />
-                  <div className="absolute inset-0 z-20 flex items-end p-12 lg:p-16">
-                    <div className="max-w-xl space-y-3">
-                      {tag && <span className="inline-block text-[9px] font-bold text-white/50 uppercase tracking-[0.3em]">{tag}</span>}
-                      {title && <h3 className="font-heading text-2xl md:text-3xl lg:text-4xl font-black uppercase tracking-[0.06em] text-white leading-none">{title}</h3>}
-                      {desc && <p className="text-[11px] md:text-[12px] text-white/60 font-normal leading-relaxed tracking-wider max-w-md">{desc}</p>}
-                    </div>
-                  </div>
-                </>
-              )}
+            <Link href={linkHref!} className={desktopFrame} aria-label={`View ${title || 'featured'} collection`}>
+              {desktopMedia}
+              {textOverlay("desktop")}
             </Link>
           ) : (
-            <div className="relative block w-full overflow-hidden shadow-2xl border-y border-foreground/[0.03] dark:border-white/[0.04] group aspect-[21/9]">
-              <motion.div className="absolute inset-0" style={{ scale: imageScale, opacity: 1 }}>
-                {mounted && desktopVideo ? (
-                  <video ref={videoDesktopRef} src={desktopVideo} loop muted playsInline preload="none" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="relative w-full h-full">
-                    <NextImage src={desktopImg || ""} alt={title || "Feature Section"} fill className="object-cover" sizes="100vw" onError={handleImageError} />
-                  </div>
-                )}
-              </motion.div>
-              {hasText && (
-                <>
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/15 to-transparent pointer-events-none z-10" />
-                  <div className="absolute inset-0 z-20 flex items-end p-12 lg:p-16">
-                    <div className="max-w-xl space-y-3">
-                      {tag && <span className="inline-block text-[9px] font-bold text-white/50 uppercase tracking-[0.3em]">{tag}</span>}
-                      {title && <h3 className="font-heading text-2xl md:text-3xl lg:text-4xl font-black uppercase tracking-[0.06em] text-white leading-none">{title}</h3>}
-                      {desc && <p className="text-[11px] md:text-[12px] text-white/60 font-normal leading-relaxed tracking-wider max-w-md">{desc}</p>}
-                    </div>
-                  </div>
-                </>
-              )}
+            <div className={desktopFrame}>
+              {desktopMedia}
+              {textOverlay("desktop")}
             </div>
           )}
         </div>
@@ -221,70 +222,14 @@ export default function FlipbookSection({ imgUrl, videoUrl, imgUrlMobile, videoU
         {/* ── Mobile View ── */}
         <div className="md:hidden">
           {hasLink ? (
-            <Link
-              href={linkHref!}
-              className="relative block w-full overflow-hidden shadow-2xl border-y border-foreground/[0.03] dark:border-white/[0.04] cursor-pointer group aspect-[3/4.2]"
-              aria-label={`View ${title || 'featured'} collection`}
-            >
-              <div className="absolute inset-0">
-                {mounted && mobileVideo ? (
-                  <video
-                    ref={videoMobileRef}
-                    src={mobileVideo}
-                    loop muted playsInline
-                    preload="none"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="relative w-full h-full">
-                    <NextImage
-                      src={mobileImg || ""}
-                      alt={title || "Feature Section"}
-                      fill
-                      className="object-cover"
-                      sizes="100vw"
-                      onError={handleImageError}
-                    />
-                  </div>
-                )}
-              </div>
-
-              {hasText && (
-                <>
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent pointer-events-none z-10" />
-                  <div className="absolute inset-0 z-20 flex items-end p-6">
-                    <div className="max-w-md space-y-2">
-                      {tag && <span className="inline-block text-[8px] font-bold text-white/50 uppercase tracking-[0.3em]">{tag}</span>}
-                      {title && <h3 className="font-heading text-lg font-black uppercase tracking-[0.06em] text-white leading-none">{title}</h3>}
-                      {desc && <p className="text-[10px] text-white/55 font-normal leading-relaxed tracking-wider">{desc}</p>}
-                    </div>
-                  </div>
-                </>
-              )}
+            <Link href={linkHref!} className={mobileFrame} aria-label={`View ${title || 'featured'} collection`}>
+              {mobileMedia}
+              {textOverlay("mobile")}
             </Link>
           ) : (
-            <div className="relative block w-full overflow-hidden shadow-2xl border-y border-foreground/[0.03] dark:border-white/[0.04] group aspect-[3/4.2]">
-              <div className="absolute inset-0">
-                {mounted && mobileVideo ? (
-                  <video ref={videoMobileRef} src={mobileVideo} loop muted playsInline preload="none" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="relative w-full h-full">
-                    <NextImage src={mobileImg || ""} alt={title || "Feature Section"} fill className="object-cover" sizes="100vw" onError={handleImageError} />
-                  </div>
-                )}
-              </div>
-              {hasText && (
-                <>
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent pointer-events-none z-10" />
-                  <div className="absolute inset-0 z-20 flex items-end p-6">
-                    <div className="max-w-md space-y-2">
-                      {tag && <span className="inline-block text-[8px] font-bold text-white/50 uppercase tracking-[0.3em]">{tag}</span>}
-                      {title && <h3 className="font-heading text-lg font-black uppercase tracking-[0.06em] text-white leading-none">{title}</h3>}
-                      {desc && <p className="text-[10px] text-white/55 font-normal leading-relaxed tracking-wider">{desc}</p>}
-                    </div>
-                  </div>
-                </>
-              )}
+            <div className={mobileFrame}>
+              {mobileMedia}
+              {textOverlay("mobile")}
             </div>
           )}
         </div>

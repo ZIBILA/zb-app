@@ -383,6 +383,58 @@ async function main() {
     verifyShopify('A2', r.order, { financial: 'partially_paid', variants: [[+V.DENIM, 2], [+V.TEE, 1]] });
   }
 
+  // I — amount integrity (ZB72259: charged for 1 unit, order showed 2)
+  report.push('', '## Amount integrity — charge, DB and Shopify must agree');
+  console.log('\n— I1 stale amount (1 unit) with 2-unit lines is refused before Razorpay');
+  { const ordersBefore = (db.order || []).length;
+    const stale = await post(createOrder, 'https://zicabella.com/api/app/payment/create-order', {
+      amount: 2298, currency: 'INR',
+      orderData: { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, shippingAddress: appAddress, paymentMethod: 'PREPAID', total: 2298, subtotal: 2298 },
+    });
+    const sj: any = await stale.json();
+    eq('I1: qty-1 amount for qty-2 lines → 409 AMOUNT_MISMATCH, no order written', [stale.status, sj.code, (db.order || []).length - ordersBefore], [409, 'AMOUNT_MISMATCH', 0]);
+    const unknown = await post(createOrder, 'https://zicabella.com/api/app/payment/create-order', {
+      amount: 1000, currency: 'INR',
+      orderData: { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', lineItems: [{ variantId: '999000111', productId: 'x', quantity: 1, price: 1000, name: 'X' }], shippingAddress: appAddress, paymentMethod: 'PREPAID', total: 1000, subtotal: 1000 },
+    });
+    eq('I1b: variant Shopify cannot price → prepaid refused (503), no order', [unknown.status, (db.order || []).length - ordersBefore], [503, 0]);
+    const noItems = await post(createOrder, 'https://zicabella.com/api/app/payment/create-order', { amount: 3797, currency: 'INR', orderData: { customerId: 'cust_app_1', lineItems: [], shippingAddress: appAddress, paymentMethod: 'PREPAID' } });
+    eq('I1c: prepaid with no items → 400', noItems.status, 400);
+  }
+  console.log('\n— I2 items/amounts frozen after payment start');
+  { const orderData = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, shippingAddress: appAddress, paymentMethod: 'PREPAID', paymentStatus: 'pending', total: 3797, subtotal: 3797 };
+    const cr = await post(createOrder, 'https://zicabella.com/api/app/payment/create-order', { amount: 3797, currency: 'INR', orderData, snapDevice: iosDevice });
+    const cj: any = await cr.json(); const rzp = cj.order_id; const payId = `pay_I2${String(rzp).replace(/[^A-Za-z0-9]/g, '')}`;
+    const saved = ordersByRzp(rzp)[0];
+    eq('I2: DB items stored at the Shopify price, qty as charged', itemsOf(saved.id).map(i => [i.variantId, i.quantity, i.price]), [[V.DENIM, 2, 1499], [V.TEE, 1, 799]]);
+    eq('I2: Razorpay order amount equals DB total', [cj.amount, saved.totalPrice], [379700, 3797]);
+    pay(payId, rzp, 'captured', 3797);
+    await post(verify, 'https://zicabella.com/api/app/payment/verify', { razorpay_order_id: rzp, razorpay_payment_id: payId, razorpay_signature: sig(rzp, payId) });
+    await settle(80);
+    const tampered = appLines.map(l => ({ ...l, quantity: l.quantity + 1 }));
+    await post(ordersCreate, 'https://zicabella.com/api/app/orders/create', { ...orderData, lineItems: tampered, total: 5295, subtotal: 5295, paymentStatus: 'pending', paymentId: payId, razorpayOrderId: rzp });
+    await settle(120);
+    const after = ordersByRzp(rzp)[0];
+    eq('I2: app cannot raise quantities / total after payment', [itemsOf(after.id).map(i => i.quantity), after.totalPrice], [[2, 1], 3797]);
+    const so = shopifyFor(after.internalOrderNumber);
+    eq('I2: Shopify order carries the paid quantities only', so.length ? so[0].line_items.map((l: any) => [l.variant_id, l.quantity]) : 'none', [[+V.DENIM, 2], [+V.TEE, 1]]);
+  }
+  console.log('\n— I3 short capture is held, never sent to Shopify');
+  { const orderData = { customerId: 'cust_app_1', customerEmail: 'aarav@example.com', customerPhone: '+919811122244', lineItems: appLines, shippingAddress: appAddress, paymentMethod: 'PREPAID', paymentStatus: 'pending', total: 3797, subtotal: 3797 };
+    const cr = await post(createOrder, 'https://zicabella.com/api/app/payment/create-order', { amount: 3797, currency: 'INR', orderData, snapDevice: iosDevice });
+    const cj: any = await cr.json(); const rzp = cj.order_id; const payId = `pay_I3${String(rzp).replace(/[^A-Za-z0-9]/g, '')}`;
+    pay(payId, rzp, 'captured', 2298);
+    const shopifyBefore = shopifyOrders.length;
+    await post(verify, 'https://zicabella.com/api/app/payment/verify', { razorpay_order_id: rzp, razorpay_payment_id: payId, razorpay_signature: sig(rzp, payId) });
+    await settle(120);
+    const o = ordersByRzp(rzp)[0];
+    eq('I3: ₹2,298 captured for ₹3,797 of goods → partially_paid + needs_review', [o.paymentStatus, o.shopifySyncStatus], ['partially_paid', 'needs_review']);
+    eq('I3: nothing created in Shopify', shopifyOrders.length - shopifyBefore, 0);
+    const { syncOrderToShopify } = await import('../../lib/services/shopifyOrderSyncService');
+    const retry = await syncOrderToShopify(o.id);
+    eq('I3: a direct sync retry is also refused', [retry.success, shopifyOrders.length - shopifyBefore], [false, 0]);
+  }
+
   // A3 partial store credit: ₹4,500 order, ₹1,000 credit, Razorpay ₹3,500
   report.push('', '## iOS — partial store credit (₹4,500 − ₹1,000)');
   console.log('\n— A3 app partial store credit');

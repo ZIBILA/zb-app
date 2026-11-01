@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import ReviewPhotoPicker from './ReviewPhotoPicker';
 
 interface WriteReviewFormProps {
   productId: string;
@@ -24,6 +25,7 @@ export default function WriteReviewForm({
   const [hoveredRating, setHoveredRating] = useState(0);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [photos, setPhotos] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(!!existingReview);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +70,7 @@ export default function WriteReviewForm({
     return (
       <div className="p-3 rounded-lg border border-emerald-500/10 bg-emerald-500/[0.02] text-center">
         <p className="text-[9px] text-emerald-500/70 font-medium">
-          ✓ Review submitted. Thank you!
+          ✓ Thanks! Your review will appear once our team approves it.
         </p>
       </div>
     );
@@ -97,6 +99,7 @@ export default function WriteReviewForm({
           rating,
           title: title.trim() || undefined,
           body: body.trim(),
+          photos,
         }),
       });
 
@@ -159,6 +162,8 @@ export default function WriteReviewForm({
         rows={3}
         className="w-full bg-transparent border border-foreground/[0.06] rounded-md px-2.5 py-1.5 text-[9px] text-foreground/70 placeholder:text-foreground/20 focus:outline-none focus:border-foreground/15 transition-colors resize-none"
       />
+
+      <ReviewPhotoPicker photos={photos} onChange={setPhotos} />
 
       {error && (
         <p className="text-[8px] text-red-400">{error}</p>

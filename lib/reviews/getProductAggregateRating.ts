@@ -1,6 +1,27 @@
 import prisma from '@/lib/db';
 
 /**
+ * Reviews are stored under the product id of the order line they came from — our internal Product.id —
+ * while product pages know the Shopify product id. Resolve both so reviews show on the product page.
+ */
+async function reviewProductIds(productId: string): Promise<string[]> {
+  const ids = new Set<string>([productId]);
+  try {
+    const rows = await prisma.product.findMany({
+      where: { OR: [{ shopifyProductId: productId }, { id: productId }] },
+      select: { id: true, shopifyProductId: true },
+    });
+    for (const r of rows as Array<{ id: string; shopifyProductId: string }>) {
+      ids.add(r.id);
+      ids.add(r.shopifyProductId);
+    }
+  } catch (err) {
+    console.error('[Reviews] product id resolution failed:', err);
+  }
+  return Array.from(ids);
+}
+
+/**
  * Compute the aggregate rating for a single product from VISIBLE reviews.
  * Returns { value, count } or undefined if no reviews exist.
  */
@@ -10,7 +31,7 @@ export async function getProductAggregateRating(
   try {
     const result = await prisma.productReview.aggregate({
       where: {
-        productId,
+        productId: { in: await reviewProductIds(productId) },
         status: 'VISIBLE',
       },
       _avg: { rating: true },
@@ -43,6 +64,7 @@ export async function getProductReviews(
     rating: number;
     title: string | null;
     body: string;
+    photos: string[];
     userId: string;
     verifiedPurchase: boolean;
     createdAt: Date;
@@ -53,7 +75,7 @@ export async function getProductReviews(
   try {
     return await prisma.productReview.findMany({
       where: {
-        productId,
+        productId: { in: await reviewProductIds(productId) },
         status: 'VISIBLE',
       },
       orderBy: { createdAt: 'desc' },
@@ -64,6 +86,7 @@ export async function getProductReviews(
         rating: true,
         title: true,
         body: true,
+        photos: true,
         userId: true,
         verifiedPurchase: true,
         createdAt: true,

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { MessageSquare, Send, Sparkles, AlertCircle } from "lucide-react";
+import { MessageSquare, Send, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 
 export default function SMSHubPage() {
@@ -10,7 +10,6 @@ export default function SMSHubPage() {
   const [targetAudience, setTargetAudience] = useState("all");
   const [templateId, setTemplateId] = useState("");
   const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,32 +42,6 @@ export default function SMSHubPage() {
     }
   };
 
-  const handleGenerate = async () => {
-    setGenerating(true);
-    try {
-      const res = await fetch("/api/ai/generate-campaign-content", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: "sms",
-          campaignGoal: "Flash Sale Alert - Last 2 Hours",
-          tone: "urgent, concise"
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.content) {
-        setBody(data.content.messageBody || data.content.body || "");
-        toast.success("AI Content Generated!");
-      } else {
-        toast.error("Failed to generate content");
-      }
-    } catch (e) {
-      toast.error("AI Generation failed.");
-    } finally {
-      setGenerating(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -76,14 +49,6 @@ export default function SMSHubPage() {
           <h1 className="text-2xl font-semibold tracking-tight">SMS Campaigns</h1>
           <p className="text-sm text-muted-foreground mt-1">Manage transactional and marketing SMS</p>
         </div>
-        <button 
-          onClick={handleGenerate}
-          disabled={generating}
-          className="bg-purple-500/10 text-purple-500 border border-purple-500/20 px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 hover:bg-purple-500/20 transition-all disabled:opacity-50"
-        >
-          {generating ? <div className="w-4 h-4 rounded-full border-2 border-purple-500 border-t-transparent animate-spin" /> : <Sparkles className="w-4 h-4" />}
-          Auto-Generate with AI
-        </button>
       </div>
 
       <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex gap-3 mb-6 text-amber-600">

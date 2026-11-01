@@ -9,6 +9,7 @@ import { toMinorUnits } from "@/lib/global-pricing";
 import { assignFailedOrderNumber } from "@/lib/orderNumber";
 import { recordSnapPurchaseContext, snapContextFromRequest } from "@/lib/snap/purchase-server";
 import { normalizeVariantId } from "@/lib/snap/catalog-id";
+import { withComposedStreet } from "@/lib/address-lines";
 import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/purchase-server";
 import { resolveWebCoupon } from "@/lib/web-coupon";
 import { fetchVariantPrices, variantNumericId } from "@/lib/variant-prices";
@@ -152,6 +153,15 @@ export async function POST(req: Request) {
       }
     }
     const pricesVerified = serverSubtotal !== null;
+    // INR prepaid is never charged on unverified unit prices (international carts keep the
+    // existing fallback because they need a currency config to be re-priced at all).
+    if (!pricesVerified && pricedItems.length > 0 && currencyCodeForPricing === "INR" && !isCodOrder) {
+      console.error("[Razorpay Pre-Create] Refusing INR prepaid charge: Shopify prices could not be confirmed");
+      return NextResponse.json(
+        { error: "We could not confirm item prices right now. Please try again in a moment.", code: "PRICE_UNVERIFIED" },
+        { status: 503 }
+      );
+    }
     const clientSubtotal = Number(subtotal || amount || 0);
     if (pricesVerified && Math.abs((serverSubtotal as number) - clientSubtotal) > 1) {
       console.warn(`[Razorpay Pre-Create] Client subtotal ₹${clientSubtotal} ≠ server ₹${serverSubtotal}; charging the server amount`);
@@ -160,7 +170,23 @@ export async function POST(req: Request) {
       console.warn("[Razorpay Pre-Create] Could not verify prices with Shopify; using client prices and tagging prices_unverified");
     }
 
-    const rawSubtotal = pricesVerified ? (serverSubtotal as number) : clientSubtotal;
+    // Without Shopify prices the charge still comes from the line items (price × qty),
+    // never from the client's subtotal; a client subtotal that disagrees with its own
+    // lines (stale quantity) is refused rather than charged.
+    const clientLinesSubtotal = pricedItems.reduce(
+      (sum: number, it: any) => sum + (Number(it?.price) || 0) * Math.max(1, Number(it?.quantity) || 1), 0);
+    if (!pricesVerified && pricedItems.length > 0 && clientLinesSubtotal > 0 && Math.abs(clientLinesSubtotal - clientSubtotal) > 1) {
+      console.error(`[Razorpay Pre-Create] Client subtotal ₹${clientSubtotal} ≠ line items ₹${clientLinesSubtotal}; refusing`);
+      return NextResponse.json(
+        { error: "Your bag total changed. Please review your bag and try again.", code: "AMOUNT_MISMATCH" },
+        { status: 409 }
+      );
+    }
+    const rawSubtotal = pricesVerified
+      ? (serverSubtotal as number)
+      : pricedItems.length > 0 && clientLinesSubtotal > 0
+        ? Math.round(clientLinesSubtotal * 100) / 100
+        : clientSubtotal;
     const rawShipping = Number(shipping || 0);
     const rawStoreCredit = Number(storeCreditAmount || 0);
 
@@ -288,8 +314,9 @@ export async function POST(req: Request) {
             };
           }));
 
-          const fullStreet = [address.houseNo, address.street, address.landmark, address.apartment].filter(Boolean).join(", ");
-          const checkoutAddress = { ...address, street: fullStreet || address.street };
+          // The checkout page already sends the composed line in `street` alongside the parts;
+          // composeStreetLine recognises that and doesn't prepend/append the parts a second time.
+          const checkoutAddress = withComposedStreet(address);
 
           // Reuse pending order for this checkout session (advisory lock vs parallel prefetch)
           const sessionTag = checkoutSessionTag(checkoutSessionId);
@@ -523,6 +550,29 @@ export async function POST(req: Request) {
           });
           if (!linked) {
             throw new Error(`Pending order ${localOrderId} missing razorpayOrderId ${rzpOrder.id}`);
+          }
+
+          // Read the saved order back and require it to equal what Razorpay was opened for
+          // (prepaid): items × qty + shipping − discount must equal the Razorpay amount.
+          if (!isCodOrder) {
+            const saved = await prisma.order.findUnique({
+              where: { id: localOrderId },
+              include: { items: true },
+            });
+            const { itemsPayableRupees } = await import("@/lib/razorpay-webhook-events");
+            const dbPayable = saved ? itemsPayableRupees(saved as any) : null;
+            const razorpayMajor = Number(rzpOrder.amount) / (toMinorUnits(1, currencyCode) || 100);
+            if (
+              !saved ||
+              dbPayable === null ||
+              Math.abs(dbPayable + rawShipping - razorpayMajor) > 0.02 ||
+              Math.abs(Number(saved.totalPrice) - razorpayMajor) > 0.02 ||
+              (saved.items || []).length !== pricedItems.length
+            ) {
+              throw new Error(
+                `DB/Razorpay mismatch: db items ₹${dbPayable}, db total ₹${saved?.totalPrice}, razorpay ${razorpayMajor}`
+              );
+            }
           }
       } catch (dbErr: any) {
         console.error("[Razorpay Pre-Create] FAILED — refusing chargeable order:", dbErr.message);

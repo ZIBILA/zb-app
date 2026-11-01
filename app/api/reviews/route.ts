@@ -6,10 +6,13 @@ import { canReview } from '@/lib/reviews/eligibility';
 
 export const dynamic = 'force-dynamic';
 
+const MAX_REVIEW_PHOTOS = 5;
+
 /**
  * POST /api/reviews
- * Submit a verified-purchaser review for a delivered product.
- * Body: { productId, orderId, rating (1-5), title?, body }
+ * Submit a verified-purchaser review for a delivered product. It is saved as PENDING and goes live
+ * only after an admin approves it in Dashboard → Product Reviews.
+ * Body: { productId, orderId, rating (1-5), title?, body, photos?: string[] (uploaded image URLs, max 5) }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -28,6 +31,16 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     const { productId, orderId, rating, title, body: reviewBody } = body;
+
+    // Photos are URLs from /api/upload. Only hosted http(s) images — never inline data URIs.
+    const rawPhotos: unknown[] = Array.isArray(body.photos) ? body.photos : [];
+    if (rawPhotos.length > MAX_REVIEW_PHOTOS) {
+      return NextResponse.json({ error: `You can add up to ${MAX_REVIEW_PHOTOS} photos` }, { status: 400 });
+    }
+    const photos = rawPhotos.map((p) => String(p || '').trim()).filter(Boolean);
+    if (photos.some((p) => !/^https:\/\//i.test(p) || p.length > 2048)) {
+      return NextResponse.json({ error: 'Invalid photo. Please re-upload it.' }, { status: 400 });
+    }
 
     // Validate required fields
     if (!productId || !orderId || !rating || !reviewBody) {
@@ -76,11 +89,15 @@ export async function POST(request: NextRequest) {
           title: title?.trim() || null,
           body: reviewBody.trim(),
           verifiedPurchase: true,
-          status: 'VISIBLE',
+          status: 'PENDING',
+          photos,
         },
       });
 
-      return NextResponse.json({ success: true, review }, { status: 201 });
+      return NextResponse.json(
+        { success: true, review, message: 'Thanks! Your review will appear once our team approves it.' },
+        { status: 201 }
+      );
     } catch (err: any) {
       // Handle unique constraint violation gracefully
       if (

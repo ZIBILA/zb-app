@@ -16,4 +16,6 @@ export {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  LineChart,
+  Line,
 } from "recharts";

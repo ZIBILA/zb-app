@@ -105,8 +105,9 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       items: { select: { sku: true }, take: 5 },
     },
   });
+  const adminReleased = (reviewGate?.tags || '').includes('amount_verified');
   const isRecoveryPlaceholder =
-    reviewGate?.shopifySyncStatus === 'needs_review' ||
+    (reviewGate?.shopifySyncStatus === 'needs_review' && !adminReleased) ||
     (reviewGate?.tags || '').includes('RazorpayRecovery') ||
     (reviewGate?.items || []).some((i: { sku: string | null }) => i.sku === 'WEBHOOK-RECOVERED-PLACEHOLDER');
   if (isRecoveryPlaceholder) {
@@ -117,6 +118,74 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       success: false,
       error: 'Skipping Shopify sync: Razorpay recovery placeholder pending review',
     };
+  }
+
+  // Gate: the goods must be covered by the money Razorpay actually captured. The
+  // comparison uses the live Razorpay payment, never an order field the app can write.
+  // A prepaid order whose items (unit price × qty − discount − credits) are worth more
+  // than what was captured is held for review and NOT pushed to Shopify.
+  // An admin who has verified the order adds the `amount_verified` tag to release it.
+  {
+    const payGate = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        paymentMethod: true,
+        paymentStatus: true,
+        totalPrice: true,
+        currency: true,
+        discountAmount: true,
+        storeCreditAmount: true,
+        razorpayPaymentId: true,
+        tags: true,
+        items: { select: { price: true, quantity: true } },
+      },
+    });
+    const gateIsCod =
+      (payGate?.paymentMethod || '').toLowerCase().includes('cod') ||
+      (payGate?.tags || '').toLowerCase().includes('cod');
+    if (payGate && !gateIsCod && !(payGate.tags || '').includes('amount_verified')) {
+      const { itemsPayableRupees, capturedAmountCheck } = await import('@/lib/razorpay-webhook-events');
+      const itemsPayable = itemsPayableRupees(payGate);
+      let heldReason: string | null = null;
+
+      if (itemsPayable !== null && itemsPayable > 0) {
+        if (payGate.razorpayPaymentId) {
+          try {
+            const { resolveRazorpayCredentials } = await import('@/lib/razorpay-credentials');
+            const { fetchCapturedPayment } = await import('@/lib/razorpay-payment');
+            const creds = await resolveRazorpayCredentials();
+            const payment = await fetchCapturedPayment(payGate.razorpayPaymentId, {
+              key_id: creds.key_id.trim(),
+              key_secret: creds.key_secret.trim(),
+            });
+            const check = capturedAmountCheck(payment, payGate, { isCod: false, codUpfrontRupees: 0 });
+            if (check.underpaid) {
+              heldReason = `Items worth ₹${check.expectedRupees.toFixed(2)} but Razorpay captured only ₹${check.capturedRupees.toFixed(2)}`;
+            }
+          } catch (payErr: any) {
+            // Cannot prove the amount: do not create the order now; the retry cron tries again.
+            console.error(`[ShopifyOrderSync] ${orderId}: could not verify captured amount: ${payErr?.message}`);
+            return { success: false, error: 'Skipping Shopify sync: captured amount could not be verified (will retry)' };
+          }
+        } else if (itemsPayable > (Number(payGate.totalPrice) || 0) + 1) {
+          heldReason = `Items worth ₹${itemsPayable.toFixed(2)} but order total is ₹${(Number(payGate.totalPrice) || 0).toFixed(2)}`;
+        }
+      }
+
+      if (heldReason) {
+        const msg = `${heldReason} — held for review`;
+        console.error(`[ShopifyOrderSync] Payment/items mismatch for ${orderId}: ${msg}`);
+        await prisma.order.update({
+          where: { id: orderId },
+          data: {
+            shopifySyncStatus: 'needs_review',
+            shopifySyncError: msg,
+            tags: [payGate.tags, 'amount_mismatch', 'needs_review'].filter(Boolean).join(', '),
+          },
+        }).catch(() => {});
+        return { success: false, error: `Skipping Shopify sync: ${msg}` };
+      }
+    }
   }
 
   // Gate: never create Shopify orders for unpaid / abandoned checkouts

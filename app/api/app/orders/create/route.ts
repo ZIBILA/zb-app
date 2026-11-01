@@ -522,6 +522,19 @@ export async function POST(req: Request) {
 
         // Refresh line items from the verified payload so qty matches what was paid
         // (pre-create may still hold an earlier cart quantity).
+        // The order's items and amounts were written by the server at payment start,
+        // together with the charge. They are never rewritten from the app's payload: a
+        // changed bag after the Razorpay order was opened must not change what was paid for.
+        const lockCommercials = (existingOrder!.items || []).length > 0;
+        if (lockCommercials) {
+          const keyOf = (v: any, q: any) => `${extractNumericId(String(v || '')) || String(v || '')}x${Math.max(1, Number(q) || 1)}`;
+          const stored = (existingOrder!.items || []).map((i: any) => keyOf(i.variantId || i.sku, i.quantity)).sort().join('|');
+          const sent = lineItems.map((li: any) => keyOf(li.variantId || li.variant_id, li.quantity)).sort().join('|');
+          if (stored !== sent || Math.abs(Number(existingOrder!.totalPrice || 0) - total) > 1) {
+            console.error(`[App API] Client payload differs from the order stored at payment start for ${existingOrder!.id}: stored items [${stored}] total ₹${existingOrder!.totalPrice}, client items [${sent}] total ₹${total}. Keeping stored values.`);
+          }
+        }
+        if (!lockCommercials) {
         await tx.orderItem.deleteMany({ where: { orderId: existingOrder!.id } });
         const refreshedItems = await Promise.all(lineItems.map(async (li: any, idx: number) => {
           const rawPid = li.productId || li.product_id;
@@ -575,6 +588,8 @@ export async function POST(req: Request) {
           });
         }
 
+        }
+
         return tx.order.update({
           where: { id: existingOrder!.id },
           data: {
@@ -588,11 +603,15 @@ export async function POST(req: Request) {
               : (existingOrder as any).codUpfrontPaid || 0,
             codUpfrontPaymentId: paymentMethod === 'COD' ? (paymentId || null) : null,
             paymentCapturedAt: isPaidLike ? now : existingOrder!.paymentCapturedAt,
-            totalPrice: total,
-            subtotalPrice: subtotal,
-            discountAmount: rawDiscountAmount,
-            storeCreditAmount: appliedStoreCredits,
-            discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
+            ...(lockCommercials
+              ? {}
+              : {
+                  totalPrice: total,
+                  subtotalPrice: subtotal,
+                  discountAmount: rawDiscountAmount,
+                  storeCreditAmount: appliedStoreCredits,
+                  discountCode: rawDiscountCode || (appliedStoreCredits > 0 ? 'STORE_CREDIT' : null),
+                }),
             cancelledBy: null,
             cancelledAt: null,
             deliveryStatus: existingOrder!.deliveryStatus && !String(existingOrder!.deliveryStatus).toLowerCase().includes('cancel')

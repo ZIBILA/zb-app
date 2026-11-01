@@ -1,4 +1,5 @@
 import { sendEmail } from '@/lib/mailer';
+import { deliverOnce, isDeliverableEmail, normalizeOrderRef, type CustomerEventType } from '@/lib/notifications/customer-events';
 import { 
   orderPlacedEmail, 
   orderShippedEmail, 
@@ -125,14 +126,35 @@ async function sendDynamicEmail(
   };
 
   const { subject, html } = await renderDBTemplate(trigger, variables, () => fallbackHtml);
-  
-  await sendEmail({
-    to: order.customerEmail,
-    subject: subject || fallbackSubject,
-    html: html,
-    text: html === fallbackHtml ? fallbackText : 'Please view this email in a modern email client.',
+
+  const send = () =>
+    sendEmail({
+      to: order.customerEmail,
+      subject: subject || fallbackSubject,
+      html: html,
+      text: html === fallbackHtml ? fallbackText : 'Please view this email in a modern email client.',
+    });
+
+  // Lifecycle emails go out once per order (shared with the event scanner and manual status updates).
+  const eventType = LIFECYCLE_EVENT_BY_TRIGGER[trigger];
+  if (!eventType) return send();
+  if (!isDeliverableEmail(order.customerEmail)) return;
+  const result = await deliverOnce({
+    eventKey: `order:${normalizeOrderRef(order.orderId)}:${eventType}`,
+    eventType,
+    channel: 'email',
+    recipient: order.customerEmail,
+    send,
   });
+  if (result === 'failed') throw new Error(`${trigger} email failed for order ${order.orderId}`);
 }
+
+const LIFECYCLE_EVENT_BY_TRIGGER: Record<string, CustomerEventType | undefined> = {
+  ORDER_CONFIRMATION: 'ORDER_CONFIRMED',
+  ORDER_SHIPPED: 'ORDER_SHIPPED',
+  ORDER_DELIVERED: 'ORDER_DELIVERED',
+  ORDER_CANCELLED: 'ORDER_CANCELLED',
+};
 
 /**
  * Sends a premium order confirmation email to the customer

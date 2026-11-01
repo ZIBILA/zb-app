@@ -2698,7 +2698,8 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
       title: node.title,
       handle: node.handle,
       body_html: node.bodyHtml || null,
-      status: node.status,
+      status: String(node.status || '').toLowerCase(),
+      published_at: node.publishedAt ?? null,
       created_at: node.createdAt,
       updated_at: node.updatedAt,
       product_type: node.productType || '',
@@ -2740,6 +2741,7 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
             handle
             bodyHtml
             status
+            publishedAt
             createdAt
             updatedAt
             productType
@@ -2784,7 +2786,8 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
   `;
 
   try {
-    const scopedQuery = buildShopifySearchQuery(q);
+    // Live products only: drafts / archived / unpublished never show up in storefront search.
+    const scopedQuery = `(${buildShopifySearchQuery(q)}) AND status:active AND published_status:published`;
     const data = await shopifyGraphqlFetch<any>(graphqlQuery, { query: scopedQuery, limit });
 
     if (data?.products?.edges?.length > 0) {
@@ -2806,7 +2809,9 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
       );
 
       // Filter to only products that meet the minimum relevancy threshold
-      const matching = products.filter((p: ShopifyProduct) => productRelevancyScore(p, q) >= MIN_RELEVANCY_SCORE);
+      const matching = products.filter(
+        (p: ShopifyProduct) => isStorefrontEligible(p) && productRelevancyScore(p, q) >= MIN_RELEVANCY_SCORE
+      );
 
       // Sort by relevancy score (highest first)
       const sorted = matching
@@ -2824,12 +2829,7 @@ export async function searchProducts(query: string, limit = 48): Promise<Shopify
 
     try {
       // Fetch all products and filter/sort locally — REST title param is exact match only
-      const allData = await shopifyFetch<{ products: ShopifyProduct[] }>(
-        'products.json',
-        { limit: '250' },
-        CATALOG_FETCH_OPTS
-      );
-      const allProducts = allData.products || [];
+      const allProducts = await fetchStorefrontCatalog();
 
       // Score, filter by MIN_RELEVANCY_SCORE, and sort
       const scored = allProducts
