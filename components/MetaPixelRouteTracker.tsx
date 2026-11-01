@@ -114,9 +114,16 @@ export function MetaPixelRouteTracker() {
     const eventTime = Math.floor(Date.now() / 1000);
 
     if (shouldFirePageView) {
-      // Client-side pixel PageView — fires NOW, no awaits
+      // Client-side pixel PageView — fires NOW, no awaits.
+      // trackSingle, not track: on a client-side navigation the Meta SDK's own page-change
+      // detection sends a trackCustom('PageView') a few ms earlier — a CUSTOM event with no
+      // event id — and then drops a plain fbq('track','PageView') as a duplicate, so the
+      // standard PageView carrying our eventID never left the browser and Meta could not
+      // pair it with the server copy (seen in Events Manager as a custom PageView, a
+      // browser PageView without event_id and a "duplicate" server PageView). trackSingle
+      // is not subject to that once-per-pixel guard — verified on the live site 2026-11-01.
       withFbq((fbq) => {
-        fbq('track', 'PageView', {}, { eventID: eventId });
+        fbq('trackSingle', metaPixelId(), 'PageView', {}, { eventID: eventId });
       }, 'PageView');
     }
 

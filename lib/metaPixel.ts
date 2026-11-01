@@ -98,12 +98,6 @@ export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): v
   setTimeout(retry, 100);
 }
 
-export const pageview = () => {
-  withFbq((fbq) => {
-    fbq('track', 'PageView');
-  }, 'PageView');
-};
-
 export function setClientCookie(name: string, value: string, days: number) {
   if (typeof document === 'undefined') return;
   let expires = "";

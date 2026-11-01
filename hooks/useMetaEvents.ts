@@ -563,11 +563,15 @@ export function useMetaEvents() {
     trackGAEvent('sign_up');
   };
 
-  const trackSearch = (searchString: string) => {
+  const trackSearch = (searchString: string, contentIds?: string[]) => {
     const base = getBasePayload('Search');
-    const customData = {
+    // content_ids = the first results' catalogue ids (variant id = feed <g:id>), the ids
+    // Meta recommends on Search for Advantage+ catalog ads — the Snap SEARCH already sends them.
+    const idList = (contentIds || []).map(id => normalizeVariantId(id)).filter((id): id is string => !!id).slice(0, 10);
+    const customData: Record<string, any> = {
       search_string: searchString,
-      content_type: 'product'
+      content_type: 'product',
+      ...(idList.length ? { content_ids: idList } : {}),
     };
     trackEvent('Search', customData, base.eventId);
     sendToCapiRoute({ ...base, customData });

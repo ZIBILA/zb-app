@@ -11,10 +11,12 @@ import {
   setClientCookie,
   trackSnapClientEvent,
   initSnapPixel,
+  releaseSnapPixel,
 } from '@/lib/snapPixel';
 import { isDemoValue } from '@/lib/metaPixel';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
 import { isEventPage } from '@/lib/tracking/host';
+import { whenMetaConsentAllows, onMetaConsentChange, readMetaConsentState } from '@/lib/meta/consent-client';
 
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -34,6 +36,17 @@ export function SnapPixelRouteTracker() {
   useEffect(() => {
     if (snapPixelId()) captureSnapClickId();
   }, [pathname]);
+
+  // Consent regions (lib/meta/consent.ts): app/layout.tsx holds the Snap SDK while the
+  // visitor's consent is pending; release it once consent is granted or the visitor
+  // turns out to be outside the regions. No-op when no region is configured.
+  useEffect(() => {
+    const release = (state: { gated: boolean; status?: string }) => {
+      if (!state.gated || state.status === 'granted') releaseSnapPixel();
+    };
+    release(readMetaConsentState());
+    return onMetaConsentChange(release);
+  }, []);
 
   // Don't let a stuck session request block PAGE_VIEW forever.
   useEffect(() => {
@@ -97,45 +110,68 @@ export function SnapPixelRouteTracker() {
     const eventId = 'pv_snap_' + uuidv4();
     const eventTime = Date.now();
 
+    // 5 + 6. Browser PAGE_VIEW and its server copy, fired together so both halves carry
+    //    the same catalogue id. getSnapIdentityCookies() only returns hashes bound to this
+    //    visitor's external_id, and the pixel half sends the same hashes, so the server
+    //    half carries them too (same identity on both halves of the pair).
+    const sourceUrl = window.location.href;
+    const firePageView = (pageItemIds?: string[]) => {
+      // Consent regions: held while the visitor's consent is pending (the same gate as
+      // the Meta Pixel and both relays, lib/meta/consent-client.ts); pass-through elsewhere.
+      whenMetaConsentAllows(() => {
+        trackSnapClientEvent('PAGE_VIEW', pageItemIds ? { item_ids: pageItemIds } : {}, eventId);
+        const ids = getSnapIdentityCookies();
+        if (isExcludedBrowser()) return;
+        fetch('/api/snap/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          keepalive: true,
+          body: JSON.stringify({
+            eventName: 'PAGE_VIEW',
+            eventId,
+            eventTime,
+            eventSourceUrl: sourceUrl,
+            userAgent: navigator.userAgent,
+            ...(pageItemIds ? { customData: { content_ids: pageItemIds, content_type: 'product' } } : {}),
+            scClickId: ids.sc_click_id,
+            scCookie1: ids.sc_cookie1,
+            externalId: ids.external_id || extId,
+            // Bound cookie hashes, else the session's raw values (the relay hashes them): on
+            // the first page of a fresh login the hashed cookies are still being written, and
+            // without this the pixel half carried identity while the server half had none.
+            userData: {
+              em: ids.em || sessionIdentity?.em, ph: ids.ph || sessionIdentity?.ph,
+              fn: ids.fn || sessionIdentity?.fn, ln: ids.ln || sessionIdentity?.ln,
+              ct: ids.ct, st: ids.st, zp: ids.zp, country: ids.country,
+            },
+          }),
+        }).catch(err => console.warn('[Snap Tracker Client] PAGE_VIEW CAPI failed:', err));
+      });
+    };
+
     // Product pages: the catalogue item id (feed g:id = variant id) on PAGE_VIEW, which
     // Snap's Dynamic Ads requirements list alongside VIEW_CONTENT / ADD_CART / PURCHASE.
-    const pageItemId = pathname.startsWith('/products/')
-      ? (document.querySelector('[data-zb-variant-id]')?.getAttribute('data-zb-variant-id') || '').trim()
-      : '';
-    const pageItemIds = /^\d+$/.test(pageItemId) ? [pageItemId] : undefined;
-
-    // 5. Browser PAGE_VIEW
-    trackSnapClientEvent('PAGE_VIEW', pageItemIds ? { item_ids: pageItemIds } : {}, eventId);
-
-    // 6. Server PAGE_VIEW. getSnapIdentityCookies() only returns hashes bound to this
-    //    visitor's external_id, and the pixel half (step 5) sends the same hashes, so
-    //    the server half carries them too (same identity on both halves of the pair).
-    const ids = getSnapIdentityCookies();
-    if (isExcludedBrowser()) return;
-    fetch('/api/snap/event', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      keepalive: true,
-      body: JSON.stringify({
-        eventName: 'PAGE_VIEW',
-        eventId,
-        eventTime,
-        eventSourceUrl: window.location.href,
-        userAgent: navigator.userAgent,
-        ...(pageItemIds ? { customData: { content_ids: pageItemIds, content_type: 'product' } } : {}),
-        scClickId: ids.sc_click_id,
-        scCookie1: ids.sc_cookie1,
-        externalId: ids.external_id || extId,
-        // Bound cookie hashes, else the session's raw values (the relay hashes them): on
-        // the first page of a fresh login the hashed cookies are still being written, and
-        // without this the pixel half carried identity while the server half had none.
-        userData: {
-          em: ids.em || sessionIdentity?.em, ph: ids.ph || sessionIdentity?.ph,
-          fn: ids.fn || sessionIdentity?.fn, ln: ids.ln || sessionIdentity?.ln,
-          ct: ids.ct, st: ids.st, zp: ids.zp, country: ids.country,
-        },
-      }),
-    }).catch(err => console.warn('[Snap Tracker Client] PAGE_VIEW CAPI failed:', err));
+    // The product segment streams in after its loading UI, so on a client-side navigation
+    // the id is not in the DOM yet when the path changes: wait for it briefly (<= 2.5 s)
+    // and fire with whatever is there by then. Other pages fire at once.
+    const readPageItemId = () => (document.querySelector('[data-zb-variant-id]')?.getAttribute('data-zb-variant-id') || '').trim();
+    const toItemIds = (id: string) => (/^\d+$/.test(id) ? [id] : undefined);
+    if (!pathname.startsWith('/products/')) { firePageView(undefined); return; }
+    const firstId = readPageItemId();
+    if (/^\d+$/.test(firstId)) { firePageView([firstId]); return; }
+    const startedAt = Date.now();
+    const poll = () => {
+      const samePage = lastTrackedPath.current === pathname;
+      const id = samePage ? readPageItemId() : '';
+      // Fire as soon as the id is there, when the wait is up, or when the shopper has
+      // already moved on (the next path gets its own PAGE_VIEW; this one goes without ids).
+      if (!samePage || /^\d+$/.test(id) || Date.now() - startedAt > 2500) {
+        firePageView(toItemIds(id));
+        return;
+      }
+      setTimeout(poll, 100);
+    };
+    setTimeout(poll, 100);
 
   }, [pathname, status, sessionWaitExpired, session]);
 

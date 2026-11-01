@@ -76,6 +76,52 @@ const a = await run('A. app.zicabella.com product page → must 301 to zicabella
 const b = await run('B. app.zicabella.com/cart (kept on the app host) → no pixel, no relay', 'https://app.zicabella.com/cart');
 const c = await run('C. zicabella.com product page → pixels + relays as before', 'https://zicabella.com/products/alpha-tee');
 
+// D. client-side navigation on zicabella.com: the Meta SDK's automatic page-change PageView must be
+//    off (fbq.disablePushState) and our standard PageView must go out once, with its event id.
+async function runSpa() {
+  const page = await browser.newPage();
+  await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+  await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
+  await page.setBypassCSP(true);
+  await page.setRequestInterception(true);
+  const seen = { trGet: [], docs: 0 };
+  page.on('request', (req) => {
+    const url = req.url(); let u; try { u = new URL(url); } catch { return req.continue(); }
+    if (/^(app\.)?zicabella\.com$/.test(u.hostname) || u.hostname === 'www.zicabella.com') {
+      if (u.port === PROXY_PORT) return req.continue();
+      return req.continue({ url: 'https://' + u.hostname + ':' + PROXY_PORT + u.pathname + u.search });
+    }
+    if (/facebook\.com\/tr/.test(url)) { try { const q = new URL(url).searchParams; seen.trGet.push({ ev: q.get('ev'), eid: !!q.get('eid'), t: Date.now() }); } catch {} return req.respond({ status: 200, body: '' }); }
+    if (/tr\d*\.snapchat\.com\/p$/.test(url)) return req.respond({ status: 200, body: '' });
+    req.continue();
+  });
+  // Start on a collection page (it links every product) and click through to a product page.
+  await page.goto('https://zicabella.com/collections/new-arrivals', { waitUntil: 'networkidle2', timeout: 90000 });
+  await new Promise(r => setTimeout(r, 4000));
+  const before = seen.trGet.length;
+  const spa = await page.evaluate(() => new Promise((resolve) => {
+    const forms = [];
+    const os = HTMLFormElement.prototype.submit;
+    HTMLFormElement.prototype.submit = function () { try { const a = this.getAttribute('action') || ''; if (/facebook\.com\/tr/.test(a)) { const fd = new FormData(this); forms.push({ ev: fd.get('ev'), eid: !!fd.get('eid') }); } } catch {} return os.apply(this, arguments); };
+    const calls = [];
+    const orig = window.fbq; const w = function () { const single = arguments[0] === 'trackSingle'; calls.push({ m: arguments[0], name: single ? arguments[2] : arguments[1], hasId: !!(single ? (arguments[4] && arguments[4].eventID) : (arguments[3] && arguments[3].eventID)) }); return orig.apply(this, arguments); };
+    Object.assign(w, orig); w.callMethod = orig.callMethod; w.queue = orig.queue; w.getState = orig.getState; w.instance = orig.instance; window.fbq = w;
+    const disabled = orig.disablePushState === true;
+    const a = document.querySelector('a[href^="/products/"]');
+    const href = a ? a.getAttribute('href') : null;
+    if (a) a.click();
+    setTimeout(() => resolve({ disabled, href, forms, calls, path: location.pathname }), 6000);
+  }));
+  const after = seen.trGet.slice(before);
+  console.log('\n===== D. zicabella.com client-side navigation (SPA) PageView');
+  console.log('fbq.disablePushState:', spa.disabled, '| navigated to:', spa.path, '| fbq calls:', JSON.stringify(spa.calls));
+  console.log('PageView deliveries after navigation — form POSTs:', JSON.stringify(spa.forms), '| image GETs:', JSON.stringify(after));
+  await page.close();
+  const pv = [...spa.forms.filter(f => f.ev === 'PageView'), ...after.filter(f => f.ev === 'PageView')];
+  return { spa, pv };
+}
+const dRes = await runSpa();
+
 const checks = [
   ['A: landed on zicabella.com', /^https:\/\/zicabella\.com\/products\/alpha-tee/.test(a.state.href)],
   ['A: first document request was the app host, second the apex (301 followed)', a.seen.docs.length === 2 && /app\.zicabella\.com/.test(a.seen.docs[0]) && /https:\/\/zicabella\.com\//.test(a.seen.docs[1])],
@@ -90,6 +136,10 @@ const checks = [
   ['C: event-host flag true, both pixel scripts loaded', c.state.eventHostFlag === true && c.seen.fbevents >= 1 && c.seen.scevent >= 1],
   ['C: Meta PageView + ViewContent relayed, Snap PAGE_VIEW + VIEW_CONTENT relayed', c.seen.relayMeta.includes('PageView') && c.seen.relayMeta.includes('ViewContent') && c.seen.relaySnap.includes('PAGE_VIEW') && c.seen.relaySnap.includes('VIEW_CONTENT')],
   ['C: browser pixel counted events', (c.state.eventCount || 0) >= 2],
+  ['D: Meta SDK automatic page-change PageView is disabled (fbq.disablePushState)', dRes.spa.disabled === true],
+  ['D: a client-side navigation happened (collection → product)', dRes.spa.href !== null && /^\/products\//.test(dRes.spa.path)],
+  ['D: our PageView was fired once via trackSingle with an eventID', dRes.spa.calls.filter(c => c.name === 'PageView').length === 1 && dRes.spa.calls.filter(c => c.name === 'PageView')[0].m === 'trackSingle' && dRes.spa.calls.filter(c => c.name === 'PageView')[0].hasId],
+  ['D: exactly one PageView left the browser after the navigation, carrying its event id (no automatic custom PageView)', dRes.pv.length === 1 && dRes.pv[0].eid === true],
 ];
 let failed = 0;
 console.log('\n===== RESULT');
