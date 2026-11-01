@@ -261,7 +261,24 @@ export default async function RootLayout({
   if (!internal && /[?&]zb_internal=1(?:&|$)/.test(q)) { document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + sec; internal = true; }
   var app = /(?:^|; )zb_app=1(?:;|$)/.test(c);
   if (!app && /[?&]zb_app=1(?:&|$)/.test(q)) { document.cookie = 'zb_app=1; path=/; SameSite=Lax' + sec; app = true; }
-  window.__zbInternal = internal || app;
+  // Tester mode (lib/tracking/test-events.ts): ?zb_test_events=TEST12345 keeps the Meta test event
+  // code in a cookie for a day, ?zb_test_events=off clears it. A staff browser in tester mode must
+  // send (as test events), so the internal marker is dropped (host-only and domain-wide copies).
+  var tm = q.match(/[?&]zb_test_events=([^&]*)/);
+  if (tm) {
+    var tcode = ''; try { tcode = decodeURIComponent(tm[1] || '').trim().toUpperCase(); } catch (e) {}
+    if (tcode === 'OFF') { document.cookie = 'zb_test_events=; max-age=0; path=/; SameSite=Lax' + sec; }
+    else if (/^TEST[A-Z0-9]{3,20}$/.test(tcode)) {
+      document.cookie = 'zb_test_events=' + tcode + '; max-age=86400; path=/; SameSite=Lax' + sec;
+      document.cookie = 'zb_internal=; max-age=0; path=/; SameSite=Lax' + sec;
+      var hp = location.hostname.split('.');
+      if (hp.length >= 2) document.cookie = 'zb_internal=; max-age=0; path=/; domain=.' + hp.slice(-2).join('.') + '; SameSite=Lax' + sec;
+      internal = false;
+    }
+  }
+  var testing = /(?:^|; )zb_test_events=TEST[A-Z0-9]{3,20}(?:;|$)/.test(document.cookie);
+  window.__zbTestEvents = testing;
+  window.__zbInternal = (internal && !testing) || app;
   // Only zicabella.com sends Meta / Snap events (lib/tracking/host.ts); the stubs below and the
   // relays check this, so app.zicabella.com never initialises a pixel.
   window.__zbEventHost = ${JSON.stringify(Array.from(eventHosts()))}.indexOf(location.hostname.toLowerCase()) !== -1;

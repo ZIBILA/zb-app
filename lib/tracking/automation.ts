@@ -1,3 +1,4 @@
+import { browserTestEventCode } from '@/lib/tracking/test-events';
 /**
  * Browser-side guards shared by the Meta and Snap pixels and their relays.
  *
@@ -13,6 +14,9 @@
  */
 export function isInternalBrowser(): boolean {
   if (typeof document === 'undefined') return false;
+  // Tester mode (lib/tracking/test-events.ts): a staff browser testing the funnel must send —
+  // its server copies go out as Meta test events, so nothing it does counts as real traffic.
+  if (browserTestEventCode()) return false;
   return /(?:^|;\s*)zb_internal=1(?:;|$)/.test(document.cookie);
 }
 

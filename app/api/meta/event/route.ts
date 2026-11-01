@@ -7,6 +7,7 @@ import { DEMO_PHONES_RAW, DEMO_EMAILS_RAW } from '@/lib/metaPixel';
 import { buildServerUserData } from '@/lib/buildMetaUserData';
 import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/ip-geo';
 import { eventHosts } from '@/lib/tracking/host';
+import { TEST_EVENTS_COOKIE, parseTestEventCode } from '@/lib/tracking/test-events';
 import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
@@ -169,7 +170,10 @@ export async function POST(req: NextRequest) {
     if (FILTER_NON_HUMANS && isBotUserAgent(req.headers.get('user-agent'))) {
       return NextResponse.json({ success: true, skipped: true, reason: 'non_human' });
     }
-    if (req.cookies.get(INTERNAL_COOKIE)?.value === '1') {
+    // Tester mode (lib/tracking/test-events.ts): the owner's own browser sends everything as
+    // Meta test events (test_event_code below), even when the account is on the staff lists.
+    const testEventCode = parseTestEventCode(req.cookies.get(TEST_EVENTS_COOKIE)?.value);
+    if (!testEventCode && req.cookies.get(INTERNAL_COOKIE)?.value === '1') {
       return NextResponse.json({ success: true, skipped: true, reason: 'internal' });
     }
     // A native-app WebView page (zb_app cookie, see lib/tracking/automation.ts) is not a
@@ -425,6 +429,7 @@ export async function POST(req: NextRequest) {
         userData: mergedUserData,
         customData: adjustedCustomData,
         actionSource,
+        testEventCode,
       }).catch((err: any) => {
         console.error(`[Meta CAPI] ${eventName} send failed:`, err?.message || 'error');
       });
@@ -448,7 +453,7 @@ export async function POST(req: NextRequest) {
       const sid = String((session.user as any).id || '');
       const semail = String(session.user.email || '').trim().toLowerCase();
       const sphone = String((session.user as any).phone || (session as any).customer?.phone || '').replace(/\D/g, '').slice(-10);
-      if ((sid && lists.customerIds.has(sid)) || (semail && lists.emails.has(semail)) || (sphone.length >= 7 && lists.phones.has(sphone))) {
+      if (!testEventCode && ((sid && lists.customerIds.has(sid)) || (semail && lists.emails.has(semail)) || (sphone.length >= 7 && lists.phones.has(sphone)))) {
         const res = NextResponse.json({ success: true, skipped: true, reason: 'internal' });
         const host = req.headers.get('x-forwarded-host')?.split(',')[0].split(':')[0].trim() || req.headers.get('host')?.split(':')[0] || '';
         const domain = identityCookieDomain(host);
@@ -582,6 +587,7 @@ export async function POST(req: NextRequest) {
       userData: mergedUserData,
       customData: adjustedCustomData,
       actionSource,
+      testEventCode,
     });
 
     // Missing Meta token / config: skip quietly (200) so storefront polls stay clean
