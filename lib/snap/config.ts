@@ -16,6 +16,8 @@
  *   NEXT_PUBLIC_SITE_URL        canonical storefront URL (already used app-wide).
  */
 
+import { eventHosts } from '@/lib/tracking/host';
+
 /** Zica Bella's Snap Pixel. A pixel id is public (it is in every page's HTML) — not a secret. */
 export const SNAP_PRODUCTION_PIXEL_ID = '7d2481be-4ccf-42b2-b9ea-958c6c7bbdcd';
 
@@ -78,23 +80,27 @@ function usesBuiltInPixel(nodeEnv: string | undefined, siteUrl: string | undefin
 
 // ── Storefront hosts ────────────────────────────────────────────────────────
 
-/** Hosts that serve the live storefront. */
+/**
+ * Hosts that identify a PRODUCTION DEPLOYMENT (what NEXT_PUBLIC_SITE_URL may name).
+ * Which hosts may send events is a different rule — lib/tracking/host.ts — and
+ * excludes app.zicabella.com.
+ */
 export const SNAP_PRODUCTION_HOSTS: readonly string[] = ['zicabella.com', 'www.zicabella.com', 'app.zicabella.com'];
 
 function hostOf(url: string): string {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
 }
 
-/** Hosts whose pages may appear as an event_source_url. */
+/**
+ * Hosts whose pages may appear as an event_source_url: zicabella.com / www (+ the
+ * site URL host, localhost outside production), never app.zicabella.com — the ads
+ * run on zicabella.com only (lib/tracking/host.ts).
+ */
 export function snapStorefrontHosts(
   siteUrl: string | undefined = process.env.NEXT_PUBLIC_SITE_URL,
   nodeEnv: string | undefined = process.env.NODE_ENV,
 ): Set<string> {
-  const hosts = new Set<string>(SNAP_PRODUCTION_HOSTS);
-  const own = hostOf(cleanEnvValue(siteUrl));
-  if (own) hosts.add(own);
-  if (nodeEnv !== 'production') hosts.add('localhost');
-  return hosts;
+  return eventHosts(siteUrl, nodeEnv);
 }
 
 /**

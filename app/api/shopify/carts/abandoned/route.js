@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { formatPhone } from '@/lib/whatsapp/client';
+import { storefrontUrl } from '@/lib/storefront-url';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,7 +87,7 @@ export async function GET() {
         abandoned_at: c.lastActivityAt,
         status: isSent ? 'sent' : 'pending',
         recovery_step,
-        abandoned_checkout_url: `https://app.zicabella.com/cart?recover=${c.id}`
+        abandoned_checkout_url: storefrontUrl(`/cart?recover=${c.id}`)
       };
     });
 

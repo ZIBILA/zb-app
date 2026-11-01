@@ -12,6 +12,7 @@ import {
   AlertTriangle, Ban, Copy, CheckSquare, FileText, Film, Music, Download, Edit3, Save, UserPlus
 } from "lucide-react";
 import { toast } from "sonner";
+import { STOREFRONT_HOST, STOREFRONT_ORIGIN } from "@/lib/storefront-url";
 
 interface Conversation {
   phoneNumber: string;
@@ -573,7 +574,7 @@ export default function WhatsAppChatPage() {
       defaults[0] = activeConv?.customerName || "Customer";
     }
     if (defaults.length > 1) {
-      defaults[1] = "app.zicabella.com";
+      defaults[1] = STOREFRONT_HOST;
     }
     setTemplateVariables(defaults);
   };
@@ -668,7 +669,7 @@ export default function WhatsAppChatPage() {
     const toastId = toast.loading("Sending catalog product details...");
     
     const productPrice = product.variants?.[0]?.price || "N/A";
-    const productUrl = `https://app.zicabella.com/products/${product.handle || product.id}`;
+    const productUrl = `${STOREFRONT_ORIGIN}/products/${product.handle || product.id}`;
     
     const messageBody = `*Check out this product from Zica Bella!* \n\n*${product.title}*\nPrice: ${productPrice} INR\n\nShop online now:\n${productUrl}`;
     const firstImage = product.image?.src || (product.images?.[0]?.src) || null;
@@ -792,7 +793,7 @@ export default function WhatsAppChatPage() {
     
     let title = "Zica Bella Product";
     let price = "N/A";
-    let url = "https://app.zicabella.com";
+    let url = STOREFRONT_ORIGIN;
     
     const titleLine = lines.find(l => l.startsWith("*") && l.endsWith("*") && !l.includes("Check out"));
     if (titleLine) {
@@ -869,7 +870,7 @@ export default function WhatsAppChatPage() {
     
     resolvedText = resolvedText
       .replace(/\{\{1\}\}/g, customerName)
-      .replace(/\{\{2\}\}/g, "app.zicabella.com")
+      .replace(/\{\{2\}\}/g, STOREFRONT_HOST)
       .replace(/\{\{3\}\}/g, "Zica Bella")
       .replace(/\{\{4\}\}/g, "10%");
 

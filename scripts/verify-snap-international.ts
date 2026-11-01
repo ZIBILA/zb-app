@@ -407,13 +407,14 @@ async function main() {
     [pe?.user_data.sc_click_id, pe?.user_data.sc_cookie1, pe?.user_data.external_id, pe?.user_data.client_ip_address, pe?.user_data.client_user_agent],
     ['click-us-1', 'scid-us-1', h('zb.ext-us-1'), '8.8.8.8', 'Mozilla/5.0 (iPhone)']);
 
-  // 3c. UK shopper on app.zicabella.com who never returns: the webhook sends the Purchase
+  // 3c. UK shopper who checked out on app.zicabella.com (the admin host — never a storefront
+  //     origin, lib/tracking/host.ts) and never returns: the webhook sends the Purchase, on zicabella.com
   const ukAddress = { name: 'Jane Doe', email: 'jane.doe@example.co.uk', phone: '07700 900123', houseNo: '10', street: 'Downing Street', city: 'London', state: 'Greater London', zip: 'SW1A 1AA', country: 'United Kingdom', countryCode: 'GB' };
   const uk = await startPayment('https://app.zicabella.com', 'cs_intl_2', 'GB', ukAddress, { cookie: 'ScCid=click-uk-1; _scid=scid-uk-1; zb_external_id=zb.ext-uk-1' });
   const ukOrder = ordersBySession('cs_intl_2')[0];
   const ukTotal = conv(3797, 'GB');
-  eq('UK pre-create: GBP order, shopper\'s storefront origin stored with the click ids', [uk.status, ukOrder.currency, ukOrder.totalPrice, (rowFor(ukOrder.id)?.context as any)?.pageOrigin, (rowFor(ukOrder.id)?.context as any)?.scClickId],
-    [200, 'GBP', ukTotal, 'https://app.zicabella.com', 'click-uk-1']);
+  eq('UK pre-create: GBP order; app.zicabella.com is not a storefront origin, so none is stored (the click ids are)', [uk.status, ukOrder.currency, ukOrder.totalPrice, (rowFor(ukOrder.id)?.context as any)?.pageOrigin, (rowFor(ukOrder.id)?.context as any)?.scClickId],
+    [200, 'GBP', ukTotal, undefined, 'click-uk-1']);
   razorpayPayments.set('pay_INTL2', { id: 'pay_INTL2', order_id: uk.data.id, status: 'captured', captured: true, amount: Math.round(ukTotal * 100), currency: 'GBP', amount_refunded: 0 });
   snapWeb.length = 0;
   const hookBody = JSON.stringify({ event: 'payment.captured', payload: { payment: { entity: { id: 'pay_INTL2', order_id: uk.data.id, status: 'captured', captured: true, amount: Math.round(ukTotal * 100), currency: 'GBP', amount_refunded: 0, notes: {} } } } });
@@ -421,12 +422,12 @@ async function main() {
   await settle(150);
   const ukEvent = snapFor(ukOrder.id)[0]?.event;
   eq('webhook-only completion: ONE Purchase, in GBP', [hookRes.status, snapFor(ukOrder.id).length, ukEvent?.custom_data.value, ukEvent?.custom_data.currency], [200, 1, ukTotal, 'GBP']);
-  eq('…on the storefront host the shopper used, with the click id stored before payment', [ukEvent?.event_source_url, ukEvent?.user_data.sc_click_id], [`https://app.zicabella.com/orders/${ukOrder.id}/confirmation`, 'click-uk-1']);
+  eq('…reported on zicabella.com (never the app host), with the click id stored before payment', [ukEvent?.event_source_url, ukEvent?.user_data.sc_click_id], [`https://zicabella.com/orders/${ukOrder.id}/confirmation`, 'click-uk-1']);
   eq('UK customer matching data: phone (+44), postcode sector, country — hashed', [ukEvent?.user_data.ph, ukEvent?.user_data.zp, ukEvent?.user_data.country, ukEvent?.user_data.st], [[h('447700900123')], [h('sw1a1')], [h('gb')], [h('greaterlondon')]]);
 
   // 3d. event_source_url can only ever be one of the store's own hosts
   eq('storefront origin check', ['https://zicabella.com/checkout', 'https://www.zicabella.com', 'https://app.zicabella.com/x?y=1', 'http://zicabella.com', 'https://evil.example.com', 'https://zicabella.com.evil.io', 'javascript:alert(1)', '', null].map(v => config.snapStorefrontOrigin(v as any)),
-    ['https://zicabella.com', 'https://www.zicabella.com', 'https://app.zicabella.com', null, null, null, null, null, null]);
+    ['https://zicabella.com', 'https://www.zicabella.com', null, null, null, null, null, null, null]);
   const foreign = purchase.snapContextFromRequest(new Request('https://zicabella.com/api/checkout/razorpay', { method: 'POST', headers: { origin: 'https://evil.example.com', referer: 'https://evil.example.com/x' } }));
   eq('a foreign Origin header is ignored → the site URL is used', [foreign.pageOrigin, purchase.snapPurchaseSourceUrl('ord_x', foreign), purchase.snapPurchaseSourceUrl('ord_x', { pageOrigin: 'https://evil.example.com' })],
     [undefined, 'https://zicabella.com/orders/ord_x/confirmation', 'https://zicabella.com/orders/ord_x/confirmation']);

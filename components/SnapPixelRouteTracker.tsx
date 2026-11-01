@@ -14,6 +14,7 @@ import {
 } from '@/lib/snapPixel';
 import { isDemoValue } from '@/lib/metaPixel';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 
 function uuidv4() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -60,7 +61,9 @@ export function SnapPixelRouteTracker() {
     }
     lastTrackedPath.current = pathname;
 
-    if (!snapPixelId()) {
+    // Snap off on this deployment, or a host that never sends events (app.zicabella.com;
+    // lib/tracking/host.ts): no pixel, no relay.
+    if (!snapPixelId() || !isEventPage()) {
       return;
     }
 
