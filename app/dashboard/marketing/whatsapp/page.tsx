@@ -9,6 +9,7 @@ import {
   Trash2, ToggleLeft, ToggleRight, Database, ExternalLink
 } from "lucide-react";
 import { toast } from "sonner";
+import { STOREFRONT_ORIGIN } from "@/lib/storefront-url";
 
 export default function WhatsAppHubPage() {
   const [activeTab, setActiveTab] = useState<
@@ -188,27 +189,27 @@ export default function WhatsAppHubPage() {
 const TEMPLATE_PRESETS = [
   {
     id: 'cart_recovery', label: '🛒 Cart Recovery', desc: 'Recover abandoned carts with product image',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hello {{1}}, we noticed you left some items in your cart. Complete your purchase today to get them shipped soon.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Complete Purchase', url: 'https://app.zicabella.com/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hello {{1}}, we noticed you left some items in your cart. Complete your purchase today to get them shipped soon.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Complete Purchase', url: `${STOREFRONT_ORIGIN}/{{1}}` }] }
   },
   {
     id: 'new_collection', label: '✨ New Collection', desc: 'Announce a new collection with image',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our new {{2}} collection is live! {{3}}. Shop the latest styles before they sell out.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Now', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our new {{2}} collection is live! {{3}}. Shop the latest styles before they sell out.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Now', url: `${STOREFRONT_ORIGIN}/collections/{{1}}` }] }
   },
   {
     id: 'sale_alert', label: '🔥 Sale Alert', desc: 'Announce sales with discount % and CTA',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, enjoy up to {{2}}% OFF on your favorites! Sale ends {{3}}. Shop now!', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Sale', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, enjoy up to {{2}}% OFF on your favorites! Sale ends {{3}}. Shop now!', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Sale', url: `${STOREFRONT_ORIGIN}/collections/{{1}}` }] }
   },
   {
     id: 'order_confirmation', label: '📦 Order Confirm', desc: 'Confirm order with tracking link',
-    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Thank you for your order, {{1}}! Your order {{2}} has been confirmed successfully.', footerText: '', buttons: [{ type: 'URL', text: 'View Order', url: 'https://app.zicabella.com/orders/{{1}}' }] }
+    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Thank you for your order, {{1}}! Your order {{2}} has been confirmed successfully.', footerText: '', buttons: [{ type: 'URL', text: 'View Order', url: `${STOREFRONT_ORIGIN}/orders/{{1}}` }] }
   },
   {
     id: 'welcome', label: '👋 Welcome', desc: 'Welcome new subscribers',
-    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Welcome to Zica Bella, {{1}}! Thank you for joining us. Explore our latest collections and enjoy exclusive offers.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Start Shopping', url: 'https://app.zicabella.com/' }] }
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Welcome to Zica Bella, {{1}}! Thank you for joining us. Explore our latest collections and enjoy exclusive offers.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Start Shopping', url: `${STOREFRONT_ORIGIN}/` }] }
   },
   {
     id: 'review_request', label: '⭐ Review Request', desc: 'Ask for product review after delivery',
-    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, we hope you love your order {{2}}! Would you mind sharing a quick review? Your feedback helps us improve.', footerText: '', buttons: [{ type: 'URL', text: 'Leave Review', url: 'https://app.zicabella.com/orders/{{1}}' }] }
+    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, we hope you love your order {{2}}! Would you mind sharing a quick review? Your feedback helps us improve.', footerText: '', buttons: [{ type: 'URL', text: 'Leave Review', url: `${STOREFRONT_ORIGIN}/orders/{{1}}` }] }
   }
 ];
 
