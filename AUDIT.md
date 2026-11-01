@@ -225,5 +225,5 @@ Conversion (design/flow changes, your call, not touched by this audit):
 
 ## 10. Out of scope / not verifiable here
 - Live checkout walk to the Razorpay screen, pixel firing with real product data, and the pixel-level visual comparison of the homepage (DB mock) — need `SHOPIFY_ADMIN_ACCESS_TOKEN`, `NEXT_PUBLIC_SHOPIFY_STOREFRONT_TOKEN`, Razorpay test keys.
-- Whether the live GTM workspace has unpublished tags; what injects the `signals.birch.click` call.
+- Whether the live GTM workspace has unpublished tags; ~~what injects the `signals.birch.click` call~~ (answered 2026-11-01: the Meta Pixel's attached Signals Gateway, since disconnected by the owner).
 - DigitalOcean/Cloudflare settings (HTML is `cf-cache-status: BYPASS`; Brotli/HTTP3 are on via Cloudflare).

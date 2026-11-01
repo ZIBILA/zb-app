@@ -281,6 +281,12 @@ export default async function RootLayout({
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
                 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];}(window);
+                // The SDK hooks history.pushState / replaceState / popstate and, on every URL change,
+                // sends its own trackCustom('PageView') — a CUSTOM event with no event id that also
+                // makes it drop the standard PageView fired right after it. MetaPixelRouteTracker
+                // sends the real PageView (with the server-matching eventID) on every route, so the
+                // automatic one is switched off with the SDK's own flag, read when it sets SPA tracking up.
+                fbq.disablePushState = true;
                 fbq('set', 'autoConfig', false, '${pixelId}');
                 var zbAM = {};
                 try {
@@ -331,8 +337,26 @@ export default async function RootLayout({
                   var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
                   a.queue = [];
                 }
-                window.__zbLoadSnapPixel = true;
-                snaptr('init', '${snapPixelId}', {});
+                // Consent regions (lib/meta/consent.ts): the same hold as the Meta Pixel above —
+                // no SDK load and no init while the visitor's consent is pending; lib/snapPixel.ts
+                // releaseSnapPixel() (via SnapPixelRouteTracker) loads it on grant / outside the regions.
+                var zbSnapHold = false;
+                try {
+                  var zbSR = ${JSON.stringify(Array.from(metaConsentRegions))};
+                  if (zbSR.length) {
+                    var zbSC = {};
+                    document.cookie.split(';').forEach(function (p) { var i = p.indexOf('='); if (i > 0) zbSC[p.slice(0, i).trim()] = p.slice(i + 1); });
+                    var zbSChoice = String(zbSC['zb_consent'] || '').toLowerCase();
+                    var zbSCC = String(zbSC['zb_geo_cc'] || '').toUpperCase();
+                    zbSnapHold = zbSChoice === 'granted' ? false : (zbSChoice === 'denied' ? true : !(/^[A-Z]{2}$/.test(zbSCC) && zbSR.indexOf(zbSCC) === -1));
+                  }
+                } catch (e) {}
+                if (zbSnapHold) {
+                  window.__zbSnapHeld = true;
+                } else {
+                  window.__zbLoadSnapPixel = true;
+                  snaptr('init', '${snapPixelId}', {});
+                }
               }
             `,
             }}

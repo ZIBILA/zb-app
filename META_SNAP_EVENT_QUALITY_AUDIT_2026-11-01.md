@@ -5,6 +5,14 @@
 **Requirements source:** two fresh research passes over Meta's and Snap's official developer and Business Help documentation (Appendix A: 35 Meta pages, Appendix B: 41 Snap pages plus the official pixel script), reconciled with the 2026-10-28 audit (`META_SNAP_EVENT_QUALITY_AUDIT.md`, 92 Meta + 64 Snap sources).
 **Nothing was merged, deployed or changed in production for this audit.**
 
+> **Resolution log (2026-11-01, later the same day)**
+> - **N1 / N3 (Meta gateway):** the owner disconnected the Signals Gateway partner from the pixel in Events Manager. Verified: the live pixel config no longer contains any `openbridge` endpoint, no `birch` reference, and the CSP console errors are gone. The CSP was **not** changed (PR #46 closed unmerged). The pixel now delivers browser events to `https://www.facebook.com/tr/` by hidden-form POST (that is why they never appear in Resource Timing).
+> - **N2 (app.zicabella.com):** fixed and live in PR #45.
+> - **N7 (`external_id` unhashed): withdrawn.** Both server senders already SHA-256 it before sending (`lib/metaCapi.ts` hashes every external_id value; `lib/snap-capi.ts` `hashIfNeeded`). Only the browser→relay body carries the raw id, and that never leaves the site.
+> - **N9 (Snap `PAGE_VIEW` item_ids):** the code existed (`data-zb-variant-id` + the tracker) but on client-side navigations the product segment streams in after its loading UI, so the id was not in the DOM when PAGE_VIEW fired. Fixed in the event-quality PR (bounded wait).
+> - **N8, N10, N11:** fixed in the event-quality PR (Meta Search `content_ids`; Snap ADD_TO_WISHLIST `contents`/`num_items`; Snap consent hold mirroring the Meta one).
+> - **New finding (PageView, found while re-checking live):** on every client-side navigation the Meta SDK's own page-change hook (`history.pushState`) sends a `trackCustom('PageView')` — a **custom** event with **no event id** — a few ms before the site's standard PageView, and then drops the standard one as a duplicate. Net effect in Events Manager: "PageView" as a custom event, a browser PageView without `event_id`, and the server PageView (which has the id) looking duplicated. Fix in the event-quality PR: `fbq.disablePushState = true` before the SDK loads (the SDK's own switch for that hook) and the site's PageView sent with `trackSingle`, which is not subject to the SDK's once-per-page guard. Hard page loads were unaffected.
+
 ---
 
 ## 1. Direct answers

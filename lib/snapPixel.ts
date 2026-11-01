@@ -197,6 +197,32 @@ export const initSnapPixel = (raw?: RawIdentity) => {
 };
 
 /**
+ * Consent regions (lib/meta/consent.ts): app/layout.tsx holds the Snap SDK — no script,
+ * no init, window.__zbSnapHeld = true — while a visitor's consent is pending, exactly as
+ * the Meta Pixel is held with fbq('consent','revoke'). SnapPixelRouteTracker calls this
+ * once consent is granted or the visitor turns out to be outside the regions: init and
+ * load the SDK now; snaptr() calls queued on the stub meanwhile are flushed by the SDK.
+ * The server copies are held separately (whenMetaConsentAllows around each relay post).
+ */
+export function releaseSnapPixel(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as any;
+  if (!w.__zbSnapHeld || w.__zbLoadSnapPixel) return;
+  if (!snapPixelId() || !isEventPage() || isExcludedBrowser()) return;
+  if (!w.snaptr) {
+    const a: any = (w.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); });
+    a.queue = [];
+  }
+  w.__zbSnapHeld = false;
+  w.__zbLoadSnapPixel = true;
+  initWithIdentity(w.snaptr, buildPixelIdentity());
+  const s = document.createElement('script');
+  s.async = true;
+  s.src = 'https://sc-static.net/scevent.min.js';
+  (document.head || document.body).appendChild(s);
+}
+
+/**
  * Browser pixel event.
  *  - `params` use PIXEL names: price, currency, item_ids, item_category,
  *    number_items, transaction_id, search_string, description.

@@ -199,7 +199,7 @@ The cart's 487–789 ms long tasks from the first run did not recur (TBT 39–14
 3. RISK (new, accepted): collection pages can be up to 120 s staler than before when a webhook does not fire; catalogue webhooks make changes immediate (verified locally).
 4. Home-page Lighthouse LCP is the "SHOP ALL" text; the hero video still downloads during the lab run. If the score matters, the next lever is a phone-sized hero video in the CMS (`heroVideoMobile`) and starting it on first interaction instead of after `load`.
 5. Best Practices ≥ 90 needs a decision on the Snap/OpenAI pixel cookies (options in `PERFORMANCE_AUDIT_REPORT.md` §12).
-6. OpenAI pixel events to `signals.birch.click` are blocked by the CSP (console errors on every page); confirm the official endpoints before allow-listing.
+6. ~~OpenAI pixel events to `signals.birch.click` are blocked by the CSP (console errors on every page); confirm the official endpoints before allow-listing.~~ Correction (2026-11-01): the calls came from the Meta Pixel's attached Signals Gateway, not OpenAI; the owner disconnected the gateway in Events Manager on 2026-11-01 and the errors are gone.
 7. Add `scripts/catalog-cache-test/run.sh` to the pre-merge routine for any change to catalogue routes or caching (it would have caught today's outage).
 
 ## 17. Is it safe to proceed with further performance optimisation?
