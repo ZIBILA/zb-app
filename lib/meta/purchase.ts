@@ -29,6 +29,7 @@ import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
 import { parseConsentRegions } from '@/lib/meta/consent';
+import { TEST_EVENTS_COOKIE, parseTestEventCode } from '@/lib/tracking/test-events';
 
 const PLATFORM = 'meta';
 const EVENT = 'Purchase';
@@ -48,6 +49,8 @@ export interface MetaClickContext {
   userAgent?: string;
   /** The shopper's consent choice at checkout (zb_consent cookie), when consent regions are configured. */
   consent?: 'granted' | 'denied';
+  /** Tester mode (lib/tracking/test-events.ts): the Purchase goes out as a Meta test event. */
+  testEventCode?: string;
 }
 
 function readCookie(header: string, name: string): string | undefined {
@@ -75,6 +78,7 @@ export function metaContextFromRequest(
   const fbp = readCookie(cookie, '_fbp') || str(fallback.fbp);
   const fbc = readCookie(cookie, '_fbc') || str(fallback.fbc);
   const consentRaw = (readCookie(cookie, 'zb_consent') || '').toLowerCase();
+  const testEventCode = parseTestEventCode(readCookie(cookie, TEST_EVENTS_COOKIE));
   return {
     fbp: fbp && FBP_RE.test(fbp) ? fbp : undefined,
     fbc: fbc && FBC_RE.test(fbc) ? fbc : undefined,
@@ -83,6 +87,7 @@ export function metaContextFromRequest(
     ipAddress: ip && !isPrivateIP(ip) ? ip : undefined,
     userAgent: req.headers.get('user-agent') || undefined,
     ...(consentRaw === 'granted' || consentRaw === 'denied' ? { consent: consentRaw as 'granted' | 'denied' } : {}),
+    ...(testEventCode ? { testEventCode } : {}),
   };
 }
 
@@ -146,6 +151,7 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
     eventSourceUrl: `${site}/orders/${order.id}/confirmation`,
     userAgent: ctx.userAgent || '',
     actionSource: 'website',
+    ...(ctx.testEventCode ? { testEventCode: ctx.testEventCode } : {}),
     userData: {
       client_ip_address: ctx.ipAddress,
       client_user_agent: ctx.userAgent,

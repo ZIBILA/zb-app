@@ -122,6 +122,43 @@ async function runSpa() {
 }
 const dRes = await runSpa();
 
+// E. tester mode: a staff / QA browser (zb_internal=1) opening ?zb_test_events=TEST… must send again
+//    (pixel + relays), and a plain staff browser must still be silent.
+async function runTesterMode(withCode) {
+  const page = await browser.newPage();
+  await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+  await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
+  await page.setBypassCSP(true);
+  await page.setCookie({ name: 'zb_internal', value: '1', domain: 'zicabella.com', path: '/' });
+  await page.setRequestInterception(true);
+  const seen = { relays: [], relayAnswers: [], fbevents: 0, scevent: 0 };
+  page.on('request', (req) => {
+    const url = req.url(); let u; try { u = new URL(url); } catch { return req.continue(); }
+    if (/^(app\.)?zicabella\.com$/.test(u.hostname) || u.hostname === 'www.zicabella.com') {
+      if (/\/api\/(meta|snap)\/event$/.test(u.pathname) && req.method() === 'POST') { try { seen.relays.push(u.pathname.split('/')[2] + ':' + JSON.parse(req.postData()).eventName); } catch {} }
+      if (u.port === PROXY_PORT) return req.continue();
+      return req.continue({ url: 'https://' + u.hostname + ':' + PROXY_PORT + u.pathname + u.search });
+    }
+    if (/connect\.facebook\.net\/.*fbevents\.js/.test(url)) seen.fbevents++;
+    if (/sc-static\.net\/scevent\.min\.js/.test(url)) seen.scevent++;
+    if (/facebook\.com\/tr/.test(url)) return req.respond({ status: 200, body: '' });
+    if (/tr\d*\.snapchat\.com\/p$/.test(url)) return req.respond({ status: 200, body: '' });
+    req.continue();
+  });
+  page.on('response', async (r) => { if (/\/api\/(meta|snap)\/event$/.test(r.url())) { try { seen.relayAnswers.push(r.status() + ' ' + (await r.text()).slice(0, 60)); } catch {} } });
+  await page.goto('https://zicabella.com/products/alpha-tee' + (withCode ? '?zb_test_events=testabc12' : ''), { waitUntil: 'networkidle2', timeout: 90000 });
+  await new Promise(r => setTimeout(r, 6000));
+  const state = await page.evaluate(() => ({ internal: window.__zbInternal, testing: window.__zbTestEvents, fbq: typeof window.fbq, snaptr: typeof window.snaptr,
+    cookies: document.cookie.split('; ').map(c => c.split('=')[0]).filter(n => /zb_internal|zb_test_events/.test(n)) }));
+  console.log(`\n===== E. tester mode (${withCode ? 'with ?zb_test_events' : 'staff browser, no code'})`);
+  console.log('page:', JSON.stringify(state), '| pixel scripts:', seen.fbevents, seen.scevent, '| relays:', JSON.stringify(seen.relays), '| answers:', JSON.stringify(seen.relayAnswers));
+  await page.close();
+  return { state, seen };
+}
+// The control run goes first: the tester run leaves the zb_test_events cookie in the shared browser profile.
+const eOff = await runTesterMode(false);
+const eOn = await runTesterMode(true);
+
 const checks = [
   ['A: landed on zicabella.com', /^https:\/\/zicabella\.com\/products\/alpha-tee/.test(a.state.href)],
   ['A: first document request was the app host, second the apex (301 followed)', a.seen.docs.length === 2 && /app\.zicabella\.com/.test(a.seen.docs[0]) && /https:\/\/zicabella\.com\//.test(a.seen.docs[1])],
@@ -140,6 +177,10 @@ const checks = [
   ['D: a client-side navigation happened (collection → product)', dRes.spa.href !== null && /^\/products\//.test(dRes.spa.path)],
   ['D: our PageView was fired once via trackSingle with an eventID', dRes.spa.calls.filter(c => c.name === 'PageView').length === 1 && dRes.spa.calls.filter(c => c.name === 'PageView')[0].m === 'trackSingle' && dRes.spa.calls.filter(c => c.name === 'PageView')[0].hasId],
   ['D: exactly one PageView left the browser after the navigation, carrying its event id (no automatic custom PageView)', dRes.pv.length === 1 && dRes.pv[0].eid === true],
+  ['E: staff browser without a code stays silent (no pixel init, no relay)', eOff.state.internal === true && eOff.state.fbq === 'undefined' && eOff.seen.relays.length === 0],
+  ['E: with ?zb_test_events the code is kept (uppercased) and the internal marker is dropped', eOn.state.testing === true && eOn.state.internal === false && eOn.state.cookies.includes('zb_test_events') && !eOn.state.cookies.includes('zb_internal')],
+  ['E: …and the pixels initialise and both relays post PageView + ViewContent', eOn.state.fbq === 'function' && eOn.seen.relays.includes('meta:PageView') && eOn.seen.relays.includes('meta:ViewContent') && eOn.seen.relays.includes('snap:PAGE_VIEW') && eOn.seen.relays.includes('snap:VIEW_CONTENT')],
+  ['E: …and the relays do not answer "internal"', eOn.seen.relayAnswers.length > 0 && eOn.seen.relayAnswers.every(a => !/internal/.test(a))],
 ];
 let failed = 0;
 console.log('\n===== RESULT');
