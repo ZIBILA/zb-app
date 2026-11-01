@@ -1,4 +1,5 @@
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256, saveUserDataToCookies } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
@@ -77,6 +78,8 @@ function uuidv4() {
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
   if (!metaPixelId()) return null;
+  // Only zicabella.com sends events (lib/tracking/host.ts): nothing is relayed from any other host.
+  if (!isEventPage()) return null;
   // Consent regions: hold the relay until the visitor's consent is known (queued,
   // flushed on grant, dropped on deny). No-op pass-through when no region is set.
   return new Promise<any>((resolve) => {

@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 import {
   metaPixelId,
   initPixel,
@@ -58,7 +59,9 @@ export function MetaPixelRouteTracker() {
     // Meta tracking off on this deployment (lib/meta/config.ts): the Pixel call is a
     // no-op inside withFbq and the CAPI relay below is skipped; GA4 / first-party
     // PageViews and the identity-cookie housekeeping keep running regardless.
-    const metaOn = !!metaPixelId();
+    // …and only on zicabella.com (lib/tracking/host.ts): on any other host the app
+    // serves (app.zicabella.com) neither the Pixel nor the relay fires.
+    const metaOn = !!metaPixelId() && isEventPage();
 
     // ─── STEP 1: Synchronous setup (cookies, fbclid capture) ───
 

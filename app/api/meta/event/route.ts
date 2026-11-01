@@ -6,6 +6,7 @@ import prisma from '@/lib/db';
 import { DEMO_PHONES_RAW, DEMO_EMAILS_RAW } from '@/lib/metaPixel';
 import { buildServerUserData } from '@/lib/buildMetaUserData';
 import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/ip-geo';
+import { eventHosts } from '@/lib/tracking/host';
 import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
@@ -49,15 +50,10 @@ const LOW_UNIT_CURRENCIES = new Set(['IDR', 'VND', 'KRW', 'JPY', 'HUF', 'CLP', '
 const maxValueFor = (currency: unknown): number => (typeof currency === 'string' && LOW_UNIT_CURRENCIES.has(currency.toUpperCase()) ? MAX_VALUE * 1000 : MAX_VALUE);
 const MAX_LIST = 100;
 
-function allowedHosts(): Set<string> {
-  const hosts = new Set(['zicabella.com', 'www.zicabella.com', 'app.zicabella.com']);
-  try {
-    if (process.env.NEXT_PUBLIC_SITE_URL) hosts.add(new URL(process.env.NEXT_PUBLIC_SITE_URL).hostname);
-  } catch {}
-  if (process.env.NODE_ENV !== 'production') hosts.add('localhost');
-  return hosts;
-}
-const ALLOWED_HOSTS = allowedHosts();
+// event_source_url may only name a host that sends events (lib/tracking/host.ts):
+// zicabella.com / www (+ the site URL host, localhost outside production), never
+// app.zicabella.com — the ads run on zicabella.com only.
+const ALLOWED_HOSTS = eventHosts();
 // Crawler / automation filtering only on the live site (local checks run headless Chrome).
 const FILTER_NON_HUMANS = process.env.NODE_ENV === 'production' && isMetaProductionSite();
 const INTERNAL_COOKIE = 'zb_internal';

@@ -612,7 +612,7 @@ function renderSectionContent(id: string) {
           />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <ListItem num="01" title="Shopify Bridge" text="Update a price here, and it updates on app.zicabella.com instantly. One source of truth." />
+            <ListItem num="01" title="Shopify Bridge" text="Update a price here, and it updates on zicabella.com instantly. One source of truth." />
             <ListItem num="02" title="SEO Framework" text="Product descriptions are indexed by Google. Ensure high-traffic keywords are used in titles." />
             <ListItem num="03" title="Collections" text="Group products into 'Summer 2026' or 'Bridal Couture' for the mobile app featured carousels." />
             <ListItem num="04" title="Archiving" text="Never delete old styles. Archive them to preserve historical sales data for better year-on-year forecasting." />

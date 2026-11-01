@@ -2,6 +2,7 @@ import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
 import { clientIpFromHeaders } from "@/lib/client-ip";
+import { isAppHostPathToRedirect } from "@/lib/tracking/host";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
 // ── Unknown collection / product handles → a real 404 ───────────────────────
@@ -171,6 +172,19 @@ export default withAuth(
       url.hostname = "zicabella.com";
       url.protocol = "https";
       return NextResponse.redirect(url, 308);
+    }
+
+    // Shoppers belong on zicabella.com: the Meta / Snap ads, pixels and relays are tied
+    // to that host (lib/tracking/host.ts). app.zicabella.com stays the admin / API host
+    // and keeps serving pages a shopper may already be in the middle of there (cart,
+    // checkout, orders, login, profile); every other storefront page on it is sent to
+    // zicabella.com with a 301. Those pages send no events either way.
+    if (host === "app.zicabella.com" && (req.method === "GET" || req.method === "HEAD") && isAppHostPathToRedirect(pathname)) {
+      const url = req.nextUrl.clone();
+      url.hostname = "zicabella.com";
+      url.protocol = "https";
+      url.port = "";
+      return NextResponse.redirect(url, 301);
     }
 
     // Allow login page to load without checks to avoid redirect loop

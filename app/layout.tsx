@@ -4,6 +4,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
 import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
+import { eventHosts } from "@/lib/tracking/host";
 import { fetchEnabledCollections } from "@/lib/shopify-admin";
 import { Toaster } from "sonner";
 import MetaPixelRouteTracker from "@/components/MetaPixelRouteTracker";
@@ -261,6 +262,9 @@ export default async function RootLayout({
   var app = /(?:^|; )zb_app=1(?:;|$)/.test(c);
   if (!app && /[?&]zb_app=1(?:&|$)/.test(q)) { document.cookie = 'zb_app=1; path=/; SameSite=Lax' + sec; app = true; }
   window.__zbInternal = internal || app;
+  // Only zicabella.com sends Meta / Snap events (lib/tracking/host.ts); the stubs below and the
+  // relays check this, so app.zicabella.com never initialises a pixel.
+  window.__zbEventHost = ${JSON.stringify(Array.from(eventHosts()))}.indexOf(location.hostname.toLowerCase()) !== -1;
 })();`,
           }}
         />
@@ -273,7 +277,7 @@ export default async function RootLayout({
               // staff / QA / demo browser (zb_internal) or a native-app WebView page (zb_app): the
               // flags are set by the zb-pixel-ids script above and honoured by the relays too.
               var zbInternal = !!window.__zbInternal;
-              if (!zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!zbInternal && window.__zbEventHost && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
                 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];}(window);
@@ -322,7 +326,7 @@ export default async function RootLayout({
             id="snap-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-              if (!window.__zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!window.__zbInternal && window.__zbEventHost && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 if (!window.snaptr) {
                   var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
                   a.queue = [];

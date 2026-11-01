@@ -1,5 +1,6 @@
 import { trackSnapClientEvent, getSnapIdentityCookies } from '@/lib/snapPixel';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { snapPurchaseCurrency } from '@/lib/snap/currency';
@@ -88,6 +89,7 @@ function sendToSnapCapiRoute(payload: {
   userData?: RawIdentity;
 }): void {
   if (isExcludedBrowser()) return;
+  if (!isEventPage()) return; // only zicabella.com sends events (lib/tracking/host.ts)
   try {
     const cookies = getSnapIdentityCookies();
 

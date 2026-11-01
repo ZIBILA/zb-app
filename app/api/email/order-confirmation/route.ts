@@ -3,6 +3,7 @@ import { sendMail } from '@/lib/mailer';
 import { orderConfirmationTemplate, newOrderAdminTemplate } from '@/lib/email-templates';
 import { logEmail } from '@/lib/log-email';
 import { verifyShopifyWebhook } from '@/lib/shopify-webhooks';
+import { storefrontUrl } from '@/lib/storefront-url';
 
 export async function POST(req: NextRequest) {
   try {
@@ -108,7 +109,7 @@ export async function POST(req: NextRequest) {
         name: item.title,
         qty: item.quantity,
       })),
-      orderUrl: `https://app.zicabella.com/orders/${order.id}`,
+      orderUrl: storefrontUrl(`/orders/${order.id}`),
     });
 
     const adminMail = await sendMail({

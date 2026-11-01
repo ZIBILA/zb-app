@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server';
 import { createTemplate, deleteTemplate, listTemplates, getConfig } from '@/lib/whatsapp/client';
 import prisma from '@/lib/db';
+import { STOREFRONT_ORIGIN } from '@/lib/storefront-url';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,7 +47,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'View Order',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -73,7 +74,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Track Order',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -100,7 +101,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Rate Your Experience',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -163,7 +164,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Complete Purchase',
-            url: 'https://app.zicabella.com/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/{{1}}`,
             example: ['checkout']
           }
         ]
@@ -194,7 +195,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Claim Discount',
-            url: 'https://app.zicabella.com/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/{{1}}`,
             example: ['checkout']
           }
         ]
@@ -225,7 +226,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Buy Now',
-            url: 'https://app.zicabella.com/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/{{1}}`,
             example: ['checkout']
           }
         ]
@@ -252,7 +253,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Track Order',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]

@@ -28,12 +28,16 @@ const FEED_SYNC_ORDER_ID: Record<FeedFormat, string> = {
   csv: '__catalogue_feed_csv__',
 };
 
-/** Host that serves /feed.xml and /feed.csv (Next app — not the Shopify apex). */
+/**
+ * Host that serves /feed.xml and /feed.csv: the public storefront (zicabella.com),
+ * which is this same Next app. The ad platforms' catalogues should fetch the feed
+ * from there, not from the admin host.
+ */
 export function getFeedBaseUrl(): string {
   return (
-    process.env.NEXT_PUBLIC_APP_URL ||
     process.env.NEXT_PUBLIC_SITE_URL ||
-    'https://app.zicabella.com'
+    process.env.NEXT_PUBLIC_APP_URL ||
+    'https://zicabella.com'
   ).replace(/\/+$/, '');
 }
 

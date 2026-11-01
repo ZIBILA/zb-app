@@ -3,6 +3,7 @@ import { DEMO_PHONE_HASHES } from '@/lib/buildMetaUserData';
 import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
 import { resolveSnapPixelId } from '@/lib/snap/config';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 
 /** The pixel id in use ('' = Snap tracking is off on this deployment). See lib/snap/config.ts. */
 const BUILD_SNAP_PIXEL_ID = resolveSnapPixelId();
@@ -24,6 +25,7 @@ export function snapPixelId(): string {
 export function withSnaptr(callback: (snaptr: any) => void, eventLabel = 'unknown'): void {
   if (typeof window === 'undefined') return;
   if (isExcludedBrowser()) return; // staff / QA / demo browser or WebDriver automation on the live site
+  if (!isEventPage()) return; // only zicabella.com sends events (lib/tracking/host.ts)
 
   if ((window as any).snaptr) {
     callback((window as any).snaptr);
