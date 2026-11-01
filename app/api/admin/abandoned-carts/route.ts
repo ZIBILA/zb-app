@@ -423,8 +423,10 @@ export async function GET(req: Request) {
         _sum: { subtotal: true }
       }),
       prisma.cart.count({ where }),
+      // One row per distinct identity triple (the database collapses repeats), instead of one per cart.
       prisma.cart.findMany({
         where: statsWhereBase,
+        distinct: ["customerId", "email", "phone"],
         select: { customerId: true, email: true, phone: true }
       })
     ]);

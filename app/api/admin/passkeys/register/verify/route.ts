@@ -4,7 +4,7 @@ import { verifyRegistrationResponse } from '@simplewebauthn/server';
 import prisma from '@/lib/db';
 import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 import { logAudit } from '@/lib/audit';
-import { PASSKEY_CHALLENGE_COOKIE, readChallenge, relyingParty, toBase64Url } from '@/lib/auth/passkeys';
+import { PASSKEY_CHALLENGE_COOKIE, consumeChallenge, readChallenge, relyingParty, toBase64Url } from '@/lib/auth/passkeys';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +15,9 @@ export async function POST(req: Request) {
     const userId = (session.user as any)?.id as string;
     const challenge = readChallenge(cookies().get(PASSKEY_CHALLENGE_COOKIE)?.value, 'register');
     if (!challenge || challenge.userId !== userId) {
+      return NextResponse.json({ error: 'Passkey setup expired. Please try again.' }, { status: 400 });
+    }
+    if (!(await consumeChallenge(challenge))) {
       return NextResponse.json({ error: 'Passkey setup expired. Please try again.' }, { status: 400 });
     }
 
@@ -52,7 +55,9 @@ export async function POST(req: Request) {
     return res;
   } catch (error: any) {
     if (error?.message && !['401', '403'].includes(error.message)) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      // Library / database messages stay in the server log, not in the response.
+      console.error('[Passkey register] verification failed:', error?.message || error);
+      return NextResponse.json({ error: 'Passkey could not be registered. Please try again.' }, { status: 400 });
     }
     return handleAuthError(error);
   }

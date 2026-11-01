@@ -1052,7 +1052,7 @@ export const authOptions: AuthOptions = {
       async authorize(credentials, req) {
         try {
           const { verifyAuthenticationResponse } = await import("@simplewebauthn/server");
-          const { PASSKEY_CHALLENGE_COOKIE, readChallenge, cookieFromHeader, relyingParty, fromBase64Url } =
+          const { PASSKEY_CHALLENGE_COOKIE, readChallenge, cookieFromHeader, relyingParty, fromBase64Url, consumeChallenge } =
             await import("@/lib/auth/passkeys");
 
           const headers = (req?.headers || {}) as Record<string, any>;
@@ -1065,6 +1065,11 @@ export const authOptions: AuthOptions = {
               hasCookieHeader: Boolean(headers.cookie),
               hasChallenge: Boolean(challenge),
             });
+            return null;
+          }
+          // Single use: a captured sign-in can't be replayed with the same challenge.
+          if (!(await consumeChallenge(challenge))) {
+            console.warn("[AUTH] Admin passkey: challenge already used");
             return null;
           }
 

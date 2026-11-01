@@ -35,6 +35,28 @@ export type CustomerEventType =
 export type DeliveryChannel = 'email' | 'whatsapp';
 
 const MAX_ATTEMPTS = 3;
+/** The cron has a 60s limit, so a claim still "sending" after this long was interrupted mid-send. */
+const STALE_SENDING_MS = 5 * 60 * 1000;
+
+/**
+ * Read every row a query matches, a page at a time. A single `take: N` silently ignores row N+1 onwards —
+ * e.g. a bulk carrier sync that delivers 300 orders in one go would only ever message the newest 200.
+ * `fetchPage` must use a stable orderBy.
+ */
+export async function pageAll(
+  fetchPage: (page: { take: number; skip: number }) => Promise<any[]>,
+  opts: { pageSize?: number; maxPages?: number } = {}
+): Promise<any[]> {
+  const take = opts.pageSize ?? 200;
+  const maxPages = opts.maxPages ?? 25;
+  const out: any[] = [];
+  for (let i = 0; i < maxPages; i++) {
+    const rows = await fetchPage({ take, skip: i * take });
+    out.push(...rows);
+    if (rows.length < take) break;
+  }
+  return out;
+}
 
 /** Display order number used in keys, so "#ZB72210" and "zb72210" are the same order. */
 export const normalizeOrderRef = (ref: string | number | null | undefined) =>
@@ -73,16 +95,23 @@ export async function deliverOnce(opts: {
     rowId = row.id;
   } catch (err: any) {
     if (err?.code !== 'P2002') throw err;
-    // Already claimed. Retry only a previous failure, and only a few times.
+    // Already claimed. Retry a previous failure, or a claim that was interrupted before it finished.
     const existing = await prisma.customerEventDelivery.findUnique({
       where: { eventKey_channel: { eventKey: opts.eventKey, channel: opts.channel } },
     });
     const attempts = Number(String(existing?.error || '').match(/^\[attempt (\d+)\]/)?.[1] || 1);
-    if (!existing || existing.status !== 'failed' || attempts >= MAX_ATTEMPTS) return 'duplicate';
-    // Atomic re-claim: only one retrier can flip failed → sending.
+    const staleCutoff = new Date(Date.now() - STALE_SENDING_MS);
+    const interrupted =
+      existing?.status === 'sending' && new Date(existing.updatedAt).getTime() < staleCutoff.getTime();
+    if (!existing || (existing.status !== 'failed' && !interrupted) || attempts >= MAX_ATTEMPTS) return 'duplicate';
+    // Atomic re-claim: only one retrier can win it.
     const { count } = await prisma.customerEventDelivery.updateMany({
-      where: { id: existing.id, status: 'failed' },
-      data: { status: 'sending' },
+      where: interrupted
+        ? { id: existing.id, status: 'sending', updatedAt: { lt: staleCutoff } }
+        : { id: existing.id, status: 'failed' },
+      data: interrupted
+        ? { status: 'sending', error: `[attempt ${attempts + 1}] reclaimed after an interrupted send` }
+        : { status: 'sending' },
     });
     if (count === 0) return 'duplicate';
     rowId = existing.id;
@@ -90,8 +119,6 @@ export async function deliverOnce(opts: {
 
   try {
     await opts.send();
-    await prisma.customerEventDelivery.update({ where: { id: rowId }, data: { status: 'sent', error: null } });
-    return 'sent';
   } catch (err: any) {
     const prev = await prisma.customerEventDelivery.findUnique({ where: { id: rowId }, select: { error: true } });
     const attempt = Number(String(prev?.error || '').match(/^\[attempt (\d+)\]/)?.[1] || 0) + 1;
@@ -102,4 +129,20 @@ export async function deliverOnce(opts: {
     console.error(`[CustomerEvents] ${opts.eventType} via ${opts.channel} failed for ${opts.eventKey}:`, err?.message || err);
     return 'failed';
   }
+
+  // The message is out. A bookkeeping hiccup must never turn into "failed" (which would resend it):
+  // retry the status write, and report "sent" regardless.
+  for (let i = 0; i < 3; i++) {
+    try {
+      await prisma.customerEventDelivery.update({ where: { id: rowId }, data: { status: 'sent', error: null } });
+      break;
+    } catch (updateErr: any) {
+      if (i === 2) {
+        console.error(`[CustomerEvents] ${opts.eventKey} was sent but could not be marked sent:`, updateErr?.message || updateErr);
+      } else {
+        await new Promise((r) => setTimeout(r, 150 * (i + 1)));
+      }
+    }
+  }
+  return 'sent';
 }

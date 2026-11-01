@@ -9,6 +9,7 @@
  * needed and a challenge can't be replayed after it expires or be reused for the other purpose.
  */
 
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
 export const PASSKEY_CHALLENGE_COOKIE = 'zb_pk_challenge';
@@ -21,6 +22,8 @@ interface ChallengePayload {
   challenge: string;
   purpose: ChallengePurpose;
   userId?: string;
+  /** Unique per issued challenge; lets the server accept each one only once. */
+  jti?: string;
 }
 
 function secret(): string {
@@ -30,7 +33,33 @@ function secret(): string {
 }
 
 export function signChallenge(payload: ChallengePayload): string {
-  return jwt.sign(payload, secret(), { expiresIn: CHALLENGE_TTL_SECONDS });
+  return jwt.sign({ ...payload, jti: crypto.randomUUID() }, secret(), { expiresIn: CHALLENGE_TTL_SECONDS });
+}
+
+/**
+ * Claim a challenge so it can be used exactly once. The cookie alone stays valid for its whole TTL, so
+ * without this a captured sign-in could be replayed inside that window. Returns false when the challenge
+ * was already used (or has no id). Claims live in WebhookEvent, whose eventKey is unique.
+ */
+export async function consumeChallenge(challenge: ChallengePayload): Promise<boolean> {
+  if (!challenge.jti) return false;
+  const { default: prisma } = await import('@/lib/db');
+  try {
+    await prisma.webhookEvent.create({
+      data: {
+        source: 'passkey',
+        eventType: 'challenge_consumed',
+        eventKey: `passkey-challenge:${challenge.jti}`,
+        payload: '{}',
+        processed: true,
+        processedAt: new Date(),
+      },
+    });
+    return true;
+  } catch (err: any) {
+    if (err?.code === 'P2002') return false;
+    throw err;
+  }
 }
 
 export function readChallenge(token: string | undefined | null, purpose: ChallengePurpose): ChallengePayload | null {

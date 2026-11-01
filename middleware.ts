@@ -662,12 +662,20 @@ export default withAuth(
           return hasAccess;
         };
 
+        // Modules this user's token already lists are the likely match: check them first, one at a time, so an
+        // allowed request still costs a single lookup. Whatever is left is checked together, so a denied
+        // request on a multi-module route costs two round trips instead of one per module.
+        const inToken = routeModules.filter((m) => permissions.some((p) => p.module === m));
+        const others = routeModules.filter((m) => !inToken.includes(m));
         let hasAccess = false;
-        for (const moduleName of routeModules) {
+        for (const moduleName of inToken) {
           if (await checkModuleAccess(moduleName)) {
             hasAccess = true;
             break;
           }
+        }
+        if (!hasAccess && others.length > 0) {
+          hasAccess = (await Promise.all(others.map((m) => checkModuleAccess(m)))).some(Boolean);
         }
 
         if (!hasAccess) {

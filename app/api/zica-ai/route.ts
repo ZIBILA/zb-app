@@ -210,9 +210,10 @@ export async function POST(req: NextRequest) {
       try {
         text = await callOpenAiChat({
           systemPrompt,
-          messages: rawMessages.map((m) => ({
+          // Same cleaned turns Claude got (no empty content, alternating roles, ends on a user turn).
+          messages: claudeMessages.map((m) => ({
             role: m.role === "assistant" ? "assistant" : "user",
-            content: m.content,
+            content: typeof m.content === "string" ? m.content : "",
           })),
           maxTokens,
         });

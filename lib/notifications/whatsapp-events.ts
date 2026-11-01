@@ -20,7 +20,7 @@
  */
 
 import prisma from '@/lib/db';
-import { deliverOnce, normalizeOrderRef, type CustomerEventType } from '@/lib/notifications/customer-events';
+import { deliverOnce, normalizeOrderRef, pageAll, type CustomerEventType } from '@/lib/notifications/customer-events';
 import type { ScanSummary } from '@/lib/notifications/event-scanner';
 import { toggleDefault } from '@/lib/whatsapp/automation-defaults';
 import { getWhatsAppSetting } from '@/lib/whatsapp/logger';
@@ -252,7 +252,7 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
   const wantOfd = await isOn('out_for_delivery');
   const wantDelivered = await isOn('order_delivered');
   if (wantShipped || wantOfd || wantDelivered) {
-    const live: any[] = await prisma.order.findMany({
+    const live: any[] = await pageAll((page) => prisma.order.findMany({
       where: {
         updatedAt: { gte: since },
         createdAt: { gte: createdFrom },
@@ -266,9 +266,9 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
         items: true,
         shipments: { where: { type: 'outbound' }, orderBy: { createdAt: 'desc' }, take: 1 },
       },
-      take: BATCH,
-      orderBy: { updatedAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const o of live) {
       if (outOfTime()) break;
       const delivery = String(o.deliveryStatus || '').toLowerCase();
@@ -310,7 +310,7 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
 
   // ── 1. Order cancelled (separate from the refund message) ──
   if (await isOn('order_cancelled_enabled')) {
-    const orders: any[] = await prisma.order.findMany({
+    const orders: any[] = await pageAll((page) => prisma.order.findMany({
       where: {
         updatedAt: { gte: since },
         createdAt: { gte: createdFrom },
@@ -319,9 +319,9 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
         OR: [{ status: { in: CANCELLED_STATUS } }, { cancelledAt: { not: null } }],
       },
       include: { customer: true },
-      take: BATCH,
-      orderBy: { updatedAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const o of orders) {
       // Cancelled before this scanner existed (and merely edited since) → not news.
       const cancelledAt: Date = o.cancelledAt || o.updatedAt;
@@ -335,7 +335,7 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
 
   // ── 2. Refund initiated — only once the refund has actually been started, never on cancellation alone ──
   if (await isOn('refund_initiated_enabled')) {
-    const refunded: any[] = await prisma.order.findMany({
+    const refunded: any[] = await pageAll((page) => prisma.order.findMany({
       where: {
         updatedAt: { gte: since },
         createdAt: { gte: createdFrom },
@@ -343,9 +343,9 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
         refundId: { not: null },
       },
       include: { customer: true },
-      take: BATCH,
-      orderBy: { updatedAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const o of refunded) {
       const payment: any = await prisma.payment.findFirst({
         where: { orderId: o.id, type: 'refund', status: 'completed' },
@@ -366,12 +366,12 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
       );
     }
 
-    const releasedReturns: any[] = await prisma.returnRequest.findMany({
+    const releasedReturns: any[] = await pageAll((page) => prisma.returnRequest.findMany({
       where: { refundReleasedAt: { gte: since } },
       include: { order: { include: { customer: true } } },
-      take: BATCH,
-      orderBy: { updatedAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const r of releasedReturns) {
       if (exchangeMirrors.has(r.id)) continue;
       const amount = Number(r.actualRefund ?? r.estimatedRefund ?? 0);
@@ -398,12 +398,12 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
   const wantAccepted = await isOn('return_confirmed');
   const wantReceived = await isOn('return_received_enabled');
   if (wantAccepted || wantReceived) {
-    const returns: any[] = await prisma.returnRequest.findMany({
+    const returns: any[] = await pageAll((page) => prisma.returnRequest.findMany({
       where: { updatedAt: { gte: since }, refundReleasedAt: null },
       include: { order: { include: { customer: true } } },
-      take: BATCH,
-      orderBy: { updatedAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const r of returns) {
       if (exchangeMirrors.has(r.id) || !r.order) continue;
       const status = String(r.status || '').toLowerCase();
@@ -437,11 +437,12 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
 
   // ── 5. Exchange delivered (the replacement parcel reached the customer) ──
   if (await isOn('exchange_delivered_enabled')) {
-    const replacements: any[] = await prisma.order.findMany({
+    const replacements: any[] = await pageAll((page) => prisma.order.findMany({
       where: { orderType: 'EXCHANGE', deliveryStatus: 'delivered', updatedAt: { gte: since } },
       select: { id: true, internalOrderNumber: true },
-      take: BATCH,
-    });
+      orderBy: { id: 'asc' },
+      ...page,
+    }), { pageSize: BATCH });
     for (const rep of replacements) {
       const x: any = await prisma.exchangeRequest.findFirst({
         where: { replacementOrderId: rep.id },
@@ -465,16 +466,16 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
   // ── 6. Prepaid: Store Credit earned, sent when the order is paid (amount = the rebate already computed
   //       at checkout: 10% of the final amount paid after discounts) ──
   if (await isOn('store_credit_earned_enabled')) {
-    const credits: any[] = await prisma.storeCredit.findMany({
+    const credits: any[] = await pageAll((page) => prisma.storeCredit.findMany({
       where: {
         type: { in: ['PENDING_COUPON_REBATE', 'COUPON_REBATE'] },
         amount: { gt: 0 },
         orderId: { not: null },
         createdAt: { gte: since },
       },
-      take: BATCH,
-      orderBy: { createdAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const c of credits) {
       const order: any = await prisma.order.findUnique({ where: { id: c.orderId }, include: { customer: true } });
       if (!order || isCod(order) || !PAID_PAYMENT.includes(order.paymentStatus)) {
@@ -495,7 +496,7 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
 
   // ── 7. COD: Store Coins earned — only after the order is delivered AND the rebate was actually released ──
   if (await isOn('store_coins_earned_enabled')) {
-    const delivered: any[] = await prisma.order.findMany({
+    const delivered: any[] = await pageAll((page) => prisma.order.findMany({
       where: {
         deliveredAt: { gte: since },
         createdAt: { gte: createdFrom },
@@ -503,9 +504,9 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
         status: { notIn: CANCELLED_STATUS },
       },
       include: { customer: true },
-      take: BATCH,
-      orderBy: { deliveredAt: 'desc' },
-    });
+      ...page,
+      orderBy: [{ deliveredAt: 'desc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
     for (const o of delivered) {
       if (!isCod(o)) continue;
       const released: any = await prisma.storeCredit.findFirst({

@@ -179,6 +179,51 @@ async function main() {
   await Promise.all([scan(), scan(), scan()]);
   check('I1 three overlapping scans → still exactly one message', sent('outForDelivery', a => a.orderId === race.internalOrderNumber) === 1, `${sent('outForDelivery', a => a.orderId === race.internalOrderNumber)}`);
 
+
+  // ── More events than one page (a bulk carrier sync) ──
+  const bulkBefore = sent('delivered');
+  const bulk: any[] = [];
+  for (let i = 0; i < 450; i++) bulk.push(order({ deliveryStatus: 'delivered', deliveredAt: new Date(), customerId: customer() }));
+  await scan();
+  const bulkSent = sent('delivered') - bulkBefore;
+  check('J1 450 orders delivered at once → every one is messaged, not just the newest 200', bulkSent === 450, `${bulkSent} of 450`);
+  await scan();
+  check('J2 a second scan sends none of them again', sent('delivered') - bulkBefore === 450);
+
+  // ── A send that was interrupted (cron killed between claim and send) ──
+  const interrupted = order({ deliveryStatus: 'out_for_delivery' });
+  const inFlight = order({ deliveryStatus: 'out_for_delivery' });
+  const claimRow = (o: any, ageMs: number) => {
+    const r = add('customerEventDelivery', { eventKey: `order:${o.internalOrderNumber}:ORDER_OUT_FOR_DELIVERY`, eventType: 'ORDER_OUT_FOR_DELIVERY', channel: 'whatsapp', recipient: '919876543210', status: 'sending' });
+    r.updatedAt = ago(ageMs);
+  };
+  claimRow(interrupted, 10 * 60_000);
+  claimRow(inFlight, 30_000);
+  await scan();
+  check('K1 a claim stuck in "sending" for 10 minutes is reclaimed and the message goes out once', sent('outForDelivery', a => a.orderId === interrupted.internalOrderNumber) === 1);
+  check('K2 a claim only 30 seconds old is left alone (another run may still be sending it)', sent('outForDelivery', a => a.orderId === inFlight.internalOrderNumber) === 0);
+  await scan(); await scan();
+  check('K3 reclaimed message is not sent again on later scans', sent('outForDelivery', a => a.orderId === interrupted.internalOrderNumber) === 1);
+
+  // ── Sent, but the status write fails ──
+  const { default: prismaMem } = await import('@/lib/db');
+  const realUpdate = (prismaMem as any).customerEventDelivery.update;
+  const flakyOrder = order({ deliveryStatus: 'out_for_delivery' });
+  (prismaMem as any).customerEventDelivery.update = async (a: any) => {
+    if (a?.data?.status === 'sent') throw new Error('simulated DB hiccup');
+    return realUpdate(a);
+  };
+  try {
+    const sum = await scan();
+    check('L1 message delivered but the "sent" write failed → still counted as sent, not failed', sent('outForDelivery', a => a.orderId === flakyOrder.internalOrderNumber) === 1 && sum.failed === 0, JSON.stringify(sum));
+    await scan(); await scan();
+    check('L2 …and it is not sent a second time', sent('outForDelivery', a => a.orderId === flakyOrder.internalOrderNumber) === 1);
+    const row = (db.customerEventDelivery || []).find((r: any) => r.eventKey === `order:${flakyOrder.internalOrderNumber}:ORDER_OUT_FOR_DELIVERY`);
+    check('L3 the row is never recorded as failed', !!row && row.status !== 'failed', row?.status);
+  } finally {
+    (prismaMem as any).customerEventDelivery.update = realUpdate;
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

@@ -17,6 +17,7 @@ import { sendEmail } from '@/lib/mailer';
 import { lifecycleEmail, type LifecycleEmailData } from '@/lib/email-templates/lifecycle';
 import {
   deliverOnce,
+  pageAll,
   isDeliverableEmail,
   normalizeOrderRef,
   type CustomerEventType,
@@ -124,7 +125,7 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
   };
 
   // ── 1. Regular orders: shipped → out for delivery → delivered, and cancellations ──
-  const orders = await prisma.order.findMany({
+  const orders = await pageAll((page) => prisma.order.findMany({
     where: {
       updatedAt: { gte: since },
       createdAt: { gte: new Date(floor.getTime() - 60 * DAY_MS) },
@@ -132,9 +133,9 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
       paymentStatus: { in: COMMITTED_PAYMENT },
     },
     include: { customer: true, items: true, shipments: { where: { type: 'outbound' }, orderBy: { createdAt: 'desc' }, take: 1 } },
-    take: BATCH,
-    orderBy: { updatedAt: 'desc' },
-  });
+    ...page,
+    orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+  }), { pageSize: BATCH });
 
   for (const order of orders as any[]) {
     const to = order.customer?.email;
@@ -191,12 +192,12 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
       })
     ).map((e: { returnRequestId: string | null }) => e.returnRequestId)
   );
-  const returns = await prisma.returnRequest.findMany({
+  const returns = await pageAll((page) => prisma.returnRequest.findMany({
     where: { updatedAt: { gte: since } },
     include: { order: { include: { customer: true } } },
-    take: BATCH,
-    orderBy: { updatedAt: 'desc' },
-  });
+    ...page,
+    orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+  }), { pageSize: BATCH });
   for (const r of returns as any[]) {
     if (exchangeMirrors.has(r.id)) continue;
     const to = r.order?.customer?.email;
@@ -224,18 +225,19 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
   }
 
   // ── 3. Exchanges and their replacement orders ──
-  const exchanges = await prisma.exchangeRequest.findMany({
+  const exchanges = await pageAll((page) => prisma.exchangeRequest.findMany({
     where: { updatedAt: { gte: since } },
     include: { order: { include: { customer: true } } },
-    take: BATCH,
-    orderBy: { updatedAt: 'desc' },
-  });
+    ...page,
+    orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+  }), { pageSize: BATCH });
   // Replacement orders move (ship / deliver) without their exchange request changing.
-  const movingReplacements = await prisma.order.findMany({
+  const movingReplacements = await pageAll((page) => prisma.order.findMany({
     where: { orderType: 'EXCHANGE', updatedAt: { gte: since } },
     select: { id: true },
-    take: BATCH,
-  });
+    orderBy: { id: 'asc' },
+    ...page,
+  }), { pageSize: BATCH });
   const extra = await prisma.exchangeRequest.findMany({
     where: {
       replacementOrderId: { in: movingReplacements.map((o: { id: string }) => o.id) },
@@ -287,15 +289,16 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
 
   // ── 4. Feedback request a few days after delivery (once per order, skipped if already reviewed) ──
   const feedbackFrom = new Date(Math.max(floor.getTime(), now.getTime() - FEEDBACK_UNTIL_DAYS * DAY_MS));
-  const delivered = await prisma.order.findMany({
+  const delivered = await pageAll((page) => prisma.order.findMany({
     where: {
       deliveredAt: { gte: feedbackFrom, lte: new Date(now.getTime() - FEEDBACK_AFTER_DAYS * DAY_MS) },
       orderType: { not: 'EXCHANGE' },
       status: { not: 'cancelled' },
     },
     include: { customer: true },
-    take: BATCH,
-  });
+    orderBy: { id: 'asc' },
+    ...page,
+  }), { pageSize: BATCH });
   const reviewed = new Set(
     (
       await prisma.productReview.findMany({
@@ -316,11 +319,12 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
   }
 
   // ── 5. Store coins earned ──
-  const credits = await prisma.storeCredit.findMany({
+  const credits = await pageAll((page) => prisma.storeCredit.findMany({
     where: { createdAt: { gte: since }, amount: { gt: 0 }, type: { in: EARNED_CREDIT_TYPES } },
     include: { customer: true },
-    take: BATCH,
-  });
+    orderBy: { id: 'asc' },
+    ...page,
+  }), { pageSize: BATCH });
   for (const c of credits as any[]) {
     await emitLifecycle('STORE_CREDIT_EARNED', `credit:${c.id}:earned`, c.customer?.email, {
       customerName: c.customer?.name,
