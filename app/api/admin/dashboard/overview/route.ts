@@ -99,7 +99,10 @@ export async function GET(req: Request) {
     // ─── Return & Exchange WHERE Clauses (Live Channel Backlog) ───
     // Operational queues (pending returns, pending exchanges, pending refunds) reflect
     // the current unfinished backlog for that channel. They are not cut off by historical date ranges.
+    // Exchange approvals auto-create an internal return (reason "EXCHANGE_RETURN …"). That belongs to the
+    // exchange queue; the Returns screen hides it, so the dashboard must not count it as a customer return.
     const channelReturnWhere: any = {
+      AND: [{ OR: [{ reason: null }, { NOT: { reason: { contains: 'EXCHANGE_RETURN' } } }] }],
       ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
     };
 
