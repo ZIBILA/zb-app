@@ -12,6 +12,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import Link from "next/link";
+import AdminSelect from "@/components/admin/AdminSelect";
 
 interface CartItem {
   id: string;
@@ -502,50 +503,56 @@ export default function AbandonedCartsPage() {
           {/* Date Range Filter */}
           <div className="flex items-center gap-3">
             <Calendar className="w-4 h-4 text-foreground/40 shrink-0" />
-            <select 
+            <AdminSelect
+              ariaLabel="Date range"
+              className="flex-1 min-w-0"
               value={dateRange}
-              onChange={(e: any) => { setDateRange(e.target.value); setPage(1); }}
-              className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-4 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
-            >
-              <option value="all">All Dates</option>
-              <option value="today">Today</option>
-              <option value="yesterday">Yesterday</option>
-              <option value="last7days">Last 7 Days</option>
-              <option value="thisweek">This Week</option>
-              <option value="lastweek">Last Week</option>
-              <option value="last30days">Last 30 Days</option>
-              <option value="custom">Custom Range</option>
-            </select>
+              onChange={(v) => { setDateRange(v); setPage(1); }}
+              options={[
+                { value: "all", label: "All Dates" },
+                { value: "today", label: "Today" },
+                { value: "yesterday", label: "Yesterday" },
+                { value: "last7days", label: "Last 7 Days" },
+                { value: "thisweek", label: "This Week" },
+                { value: "lastweek", label: "Last Week" },
+                { value: "last30days", label: "Last 30 Days" },
+                { value: "custom", label: "Custom Range" },
+              ]}
+            />
           </div>
 
           {/* Status Filter */}
           <div className="flex items-center gap-3">
             <span className="text-[9px] font-black uppercase tracking-widest text-foreground/30">Status</span>
-            <select 
+            <AdminSelect
+              ariaLabel="Cart status"
+              className="flex-1 min-w-0"
               value={statusFilter}
-              onChange={(e: any) => { setStatusFilter(e.target.value); setPage(1); }}
-              className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-4 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
-            >
-              <option value="all">All Carts</option>
-              <option value="live">Live Only</option>
-              <option value="abandoned">Abandoned Only</option>
-              <option value="converted">Converted Only</option>
-              <option value="expired">Expired Only</option>
-            </select>
+              onChange={(v) => { setStatusFilter(v); setPage(1); }}
+              options={[
+                { value: "all", label: "All Carts" },
+                { value: "live", label: "Live Only" },
+                { value: "abandoned", label: "Abandoned Only" },
+                { value: "converted", label: "Converted Only" },
+                { value: "expired", label: "Expired Only" },
+              ]}
+            />
           </div>
 
           {/* Source Filter */}
           <div className="flex items-center gap-3">
             <span className="text-[9px] font-black uppercase tracking-widest text-foreground/30">Source</span>
-            <select 
+            <AdminSelect
+              ariaLabel="Cart source"
+              className="flex-1 min-w-0"
               value={sourceFilter}
-              onChange={(e: any) => { setSourceFilter(e.target.value); setPage(1); }}
-              className="flex-1 bg-foreground/[0.03] border border-foreground/[0.08] rounded-[1.5rem] px-4 py-4 text-[11px] font-black uppercase tracking-widest text-foreground/75 focus:outline-none focus:border-foreground/20 transition-all"
-            >
-              <option value="all">All Channels</option>
-              <option value="webstore">Web Store</option>
-              <option value="app">Mobile App</option>
-            </select>
+              onChange={(v) => { setSourceFilter(v); setPage(1); }}
+              options={[
+                { value: "all", label: "All Channels" },
+                { value: "webstore", label: "Web Store" },
+                { value: "app", label: "Mobile App" },
+              ]}
+            />
           </div>
         </div>
 
