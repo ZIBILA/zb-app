@@ -119,6 +119,47 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
     };
   }
 
+  // Gate: the goods must be covered by the money received. A prepaid order whose items
+  // (unit price × qty − discount − credits) are worth more than what was charged is never
+  // pushed to Shopify (e.g. 2 units shown against a 1-unit payment); it is held for review.
+  // An admin who has verified the order adds the `amount_verified` tag to release it.
+  {
+    const payGate = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        paymentMethod: true,
+        paymentStatus: true,
+        totalPrice: true,
+        discountAmount: true,
+        storeCreditAmount: true,
+        tags: true,
+        note: true,
+        items: { select: { price: true, quantity: true } },
+      },
+    });
+    const gateIsCod =
+      (payGate?.paymentMethod || '').toLowerCase().includes('cod') ||
+      (payGate?.tags || '').toLowerCase().includes('cod');
+    if (payGate && !gateIsCod && !(payGate.tags || '').includes('amount_verified')) {
+      const { itemsPayableRupees } = await import('@/lib/razorpay-webhook-events');
+      const itemsPayable = itemsPayableRupees(payGate);
+      const charged = Number(payGate.totalPrice) || 0;
+      if (itemsPayable !== null && charged > 0 && itemsPayable > charged + 1) {
+        const msg = `Items worth ₹${itemsPayable.toFixed(2)} but only ₹${charged.toFixed(2)} charged — held for review`;
+        console.error(`[ShopifyOrderSync] Payment/items mismatch for ${orderId}: ${msg}`);
+        await prisma.order.update({
+          where: { id: orderId },
+          data: {
+            shopifySyncStatus: 'needs_review',
+            shopifySyncError: msg,
+            tags: [payGate.tags, 'amount_mismatch', 'needs_review'].filter(Boolean).join(', '),
+          },
+        }).catch(() => {});
+        return { success: false, error: `Skipping Shopify sync: ${msg}` };
+      }
+    }
+  }
+
   // Gate: never create Shopify orders for unpaid / abandoned checkouts
   if (!isShopifySyncEligiblePaymentStatus(existing.paymentStatus)) {
     console.log(

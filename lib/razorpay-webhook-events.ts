@@ -110,13 +110,43 @@ export type CapturedAmountCheck = {
   currencyMismatch: boolean;
 };
 
+type OrderForPayableCheck = {
+  totalPrice?: unknown;
+  currency?: string | null;
+  discountAmount?: unknown;
+  storeCreditAmount?: unknown;
+  items?: Array<{ price?: unknown; quantity?: unknown }> | null;
+};
+
+/**
+ * What the customer must pay for the goods on the order: Σ(unit price × qty)
+ * minus the stored discount and store credit. Null when the order has no items.
+ *
+ * `order.totalPrice` alone is not enough: the app stores the amount it charged
+ * there, so a charge for 1 unit on a 2-unit order still "matched" its own total.
+ */
+export function itemsPayableRupees(order: OrderForPayableCheck): number | null {
+  const items = order.items || [];
+  if (items.length === 0) return null;
+  const lines = items.reduce(
+    (sum, i) => sum + (Number(i.price) || 0) * Math.max(1, Number(i.quantity) || 1),
+    0
+  );
+  if (!(lines > 0)) return null;
+  const payable = lines - (Number(order.discountAmount) || 0) - (Number(order.storeCreditAmount) || 0);
+  return Math.max(0, Math.round(payable * 100) / 100);
+}
+
 export function capturedAmountCheck(
   payment: { amount?: number | null; currency?: string | null },
-  order: { totalPrice?: unknown; currency?: string | null },
+  order: OrderForPayableCheck,
   opts: { isCod: boolean; codUpfrontRupees: number; toleranceRupees?: number }
 ): CapturedAmountCheck {
   const capturedRupees = paymentAmountRupees(payment);
-  const expectedRupees = opts.isCod ? Number(opts.codUpfrontRupees) || 0 : Number(order.totalPrice) || 0;
+  const fromItems = opts.isCod ? null : itemsPayableRupees(order);
+  const expectedRupees = opts.isCod
+    ? Number(opts.codUpfrontRupees) || 0
+    : Math.max(Number(order.totalPrice) || 0, fromItems ?? 0);
   const payCur = String(payment.currency || '').trim().toUpperCase();
   const orderCur = String(order.currency || 'INR').trim().toUpperCase();
   const currencyMismatch = Boolean(payCur) && payCur !== orderCur;

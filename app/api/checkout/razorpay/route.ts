@@ -161,7 +161,23 @@ export async function POST(req: Request) {
       console.warn("[Razorpay Pre-Create] Could not verify prices with Shopify; using client prices and tagging prices_unverified");
     }
 
-    const rawSubtotal = pricesVerified ? (serverSubtotal as number) : clientSubtotal;
+    // Without Shopify prices the charge still comes from the line items (price × qty),
+    // never from the client's subtotal; a client subtotal that disagrees with its own
+    // lines (stale quantity) is refused rather than charged.
+    const clientLinesSubtotal = pricedItems.reduce(
+      (sum: number, it: any) => sum + (Number(it?.price) || 0) * Math.max(1, Number(it?.quantity) || 1), 0);
+    if (!pricesVerified && pricedItems.length > 0 && clientLinesSubtotal > 0 && Math.abs(clientLinesSubtotal - clientSubtotal) > 1) {
+      console.error(`[Razorpay Pre-Create] Client subtotal ₹${clientSubtotal} ≠ line items ₹${clientLinesSubtotal}; refusing`);
+      return NextResponse.json(
+        { error: "Your bag total changed. Please review your bag and try again.", code: "AMOUNT_MISMATCH" },
+        { status: 409 }
+      );
+    }
+    const rawSubtotal = pricesVerified
+      ? (serverSubtotal as number)
+      : pricedItems.length > 0 && clientLinesSubtotal > 0
+        ? Math.round(clientLinesSubtotal * 100) / 100
+        : clientSubtotal;
     const rawShipping = Number(shipping || 0);
     const rawStoreCredit = Number(storeCreditAmount || 0);
 
