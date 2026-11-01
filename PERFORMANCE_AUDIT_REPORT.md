@@ -47,6 +47,8 @@ Everything else in the category passes (HTTPS, HSTS, no deprecated APIs, image a
 
 Also found (not scored, but real): the OpenAI SDK tries to post events to `signals.birch.click` and an `*.on.aws` host that the site's Content-Security-Policy does not allow, producing 4 console errors per page view. I did not add those hosts to the CSP because I could not verify they belong to OpenAI; the primary `bzr.openai.com` endpoint is allowed and does receive events.
 
+> **Correction (2026-11-01):** those calls were not the OpenAI SDK. They came from the Meta Pixel, which had a third-party Signals / Conversions API Gateway attached in Events Manager; the owner disconnected it on 2026-11-01 and the errors are gone (see `META_SNAP_EVENT_QUALITY_AUDIT_2026-11-01.md`).
+
 ## 4. Chrome browser testing results
 
 Two browsers were used: your signed-in Chrome (Claude in Chrome extension, desktop 1440×900, logged in as the store owner) and the desktop app's built-in browser (375×812 mobile emulation with a Pixel user agent, guest session). The built-in pane can be hidden while a command runs, so timing numbers from it are not reported; only functional results are.

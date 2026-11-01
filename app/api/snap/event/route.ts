@@ -6,6 +6,7 @@ import { getClientIP, lookupIpGeo, isPrivateIP } from '@/lib/ip-geo';
 import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
 import { isBotUserAgent } from '@/lib/tracking/bot-agent';
 import { isSnapProductionSite } from '@/lib/snap/config';
+import { TEST_EVENTS_COOKIE, parseTestEventCode } from '@/lib/tracking/test-events';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
 
 /**
@@ -84,7 +85,8 @@ export async function POST(req: NextRequest) {
     // Crawlers / headless browsers and staff / QA / demo browsers (zb_internal cookie,
     // set by /api/meta/event for internal accounts) never feed Snap's funnel.
     if (FILTER_NON_HUMANS && isBotUserAgent(req.headers.get('user-agent'))) return NextResponse.json({ success: true, skipped: true });
-    if (req.cookies.get('zb_internal')?.value === '1') return NextResponse.json({ success: true, skipped: true });
+    // Tester mode (lib/tracking/test-events.ts): a staff browser testing the funnel still sends.
+    if (!parseTestEventCode(req.cookies.get(TEST_EVENTS_COOKIE)?.value) && req.cookies.get('zb_internal')?.value === '1') return NextResponse.json({ success: true, skipped: true });
     if (req.cookies.get('zb_app')?.value === '1') return NextResponse.json({ success: true, skipped: true }); // native-app WebView page
     // Abuse throttle (in-memory, no DB): per visitor (trusted request IP + the device id
     // the middleware mints — never a client-rotatable value alone), with a loose per-IP

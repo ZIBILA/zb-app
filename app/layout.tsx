@@ -4,6 +4,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 import LayoutWrapper from "@/components/LayoutWrapper";
 import { getStorefrontFooterData } from "@/lib/storefront-footer-data";
+import { eventHosts } from "@/lib/tracking/host";
 import { fetchEnabledCollections } from "@/lib/shopify-admin";
 import { Toaster } from "sonner";
 import MetaPixelRouteTracker from "@/components/MetaPixelRouteTracker";
@@ -260,7 +261,27 @@ export default async function RootLayout({
   if (!internal && /[?&]zb_internal=1(?:&|$)/.test(q)) { document.cookie = 'zb_internal=1; max-age=31536000; path=/; SameSite=Lax' + sec; internal = true; }
   var app = /(?:^|; )zb_app=1(?:;|$)/.test(c);
   if (!app && /[?&]zb_app=1(?:&|$)/.test(q)) { document.cookie = 'zb_app=1; path=/; SameSite=Lax' + sec; app = true; }
-  window.__zbInternal = internal || app;
+  // Tester mode (lib/tracking/test-events.ts): ?zb_test_events=TEST12345 keeps the Meta test event
+  // code in a cookie for a day, ?zb_test_events=off clears it. A staff browser in tester mode must
+  // send (as test events), so the internal marker is dropped (host-only and domain-wide copies).
+  var tm = q.match(/[?&]zb_test_events=([^&]*)/);
+  if (tm) {
+    var tcode = ''; try { tcode = decodeURIComponent(tm[1] || '').trim().toUpperCase(); } catch (e) {}
+    if (tcode === 'OFF') { document.cookie = 'zb_test_events=; max-age=0; path=/; SameSite=Lax' + sec; }
+    else if (/^TEST[A-Z0-9]{3,20}$/.test(tcode)) {
+      document.cookie = 'zb_test_events=' + tcode + '; max-age=86400; path=/; SameSite=Lax' + sec;
+      document.cookie = 'zb_internal=; max-age=0; path=/; SameSite=Lax' + sec;
+      var hp = location.hostname.split('.');
+      if (hp.length >= 2) document.cookie = 'zb_internal=; max-age=0; path=/; domain=.' + hp.slice(-2).join('.') + '; SameSite=Lax' + sec;
+      internal = false;
+    }
+  }
+  var testing = /(?:^|; )zb_test_events=TEST[A-Z0-9]{3,20}(?:;|$)/.test(document.cookie);
+  window.__zbTestEvents = testing;
+  window.__zbInternal = (internal && !testing) || app;
+  // Only zicabella.com sends Meta / Snap events (lib/tracking/host.ts); the stubs below and the
+  // relays check this, so app.zicabella.com never initialises a pixel.
+  window.__zbEventHost = ${JSON.stringify(Array.from(eventHosts()))}.indexOf(location.hostname.toLowerCase()) !== -1;
 })();`,
           }}
         />
@@ -273,10 +294,16 @@ export default async function RootLayout({
               // staff / QA / demo browser (zb_internal) or a native-app WebView page (zb_app): the
               // flags are set by the zb-pixel-ids script above and honoured by the relays too.
               var zbInternal = !!window.__zbInternal;
-              if (!zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!zbInternal && window.__zbEventHost && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 !function(f,n){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
                 n.callMethod.apply(n,arguments):n.queue.push(arguments)};
                 if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];}(window);
+                // The SDK hooks history.pushState / replaceState / popstate and, on every URL change,
+                // sends its own trackCustom('PageView') — a CUSTOM event with no event id that also
+                // makes it drop the standard PageView fired right after it. MetaPixelRouteTracker
+                // sends the real PageView (with the server-matching eventID) on every route, so the
+                // automatic one is switched off with the SDK's own flag, read when it sets SPA tracking up.
+                fbq.disablePushState = true;
                 fbq('set', 'autoConfig', false, '${pixelId}');
                 var zbAM = {};
                 try {
@@ -322,13 +349,31 @@ export default async function RootLayout({
             id="snap-pixel-stub"
             dangerouslySetInnerHTML={{
               __html: `
-              if (!window.__zbInternal && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
+              if (!window.__zbInternal && window.__zbEventHost && !location.pathname.startsWith('/dashboard') && !location.pathname.startsWith('/admin') && !location.pathname.startsWith('/web-store')) {
                 if (!window.snaptr) {
                   var a = window.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); };
                   a.queue = [];
                 }
-                window.__zbLoadSnapPixel = true;
-                snaptr('init', '${snapPixelId}', {});
+                // Consent regions (lib/meta/consent.ts): the same hold as the Meta Pixel above —
+                // no SDK load and no init while the visitor's consent is pending; lib/snapPixel.ts
+                // releaseSnapPixel() (via SnapPixelRouteTracker) loads it on grant / outside the regions.
+                var zbSnapHold = false;
+                try {
+                  var zbSR = ${JSON.stringify(Array.from(metaConsentRegions))};
+                  if (zbSR.length) {
+                    var zbSC = {};
+                    document.cookie.split(';').forEach(function (p) { var i = p.indexOf('='); if (i > 0) zbSC[p.slice(0, i).trim()] = p.slice(i + 1); });
+                    var zbSChoice = String(zbSC['zb_consent'] || '').toLowerCase();
+                    var zbSCC = String(zbSC['zb_geo_cc'] || '').toUpperCase();
+                    zbSnapHold = zbSChoice === 'granted' ? false : (zbSChoice === 'denied' ? true : !(/^[A-Z]{2}$/.test(zbSCC) && zbSR.indexOf(zbSCC) === -1));
+                  }
+                } catch (e) {}
+                if (zbSnapHold) {
+                  window.__zbSnapHeld = true;
+                } else {
+                  window.__zbLoadSnapPixel = true;
+                  snaptr('init', '${snapPixelId}', {});
+                }
               }
             `,
             }}

@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server';
 import { createTemplate, deleteTemplate, listTemplates, getConfig } from '@/lib/whatsapp/client';
 import prisma from '@/lib/db';
+import { STOREFRONT_ORIGIN } from '@/lib/storefront-url';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,7 +47,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'View Order',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -73,7 +74,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Track Order',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -100,7 +101,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Rate Your Experience',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -163,7 +164,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Complete Purchase',
-            url: 'https://app.zicabella.com/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/{{1}}`,
             example: ['checkout']
           }
         ]
@@ -194,7 +195,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Claim Discount',
-            url: 'https://app.zicabella.com/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/{{1}}`,
             example: ['checkout']
           }
         ]
@@ -225,7 +226,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Buy Now',
-            url: 'https://app.zicabella.com/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/{{1}}`,
             example: ['checkout']
           }
         ]
@@ -252,7 +253,7 @@ const PRODUCTION_TEMPLATES = [
           {
             type: 'URL',
             text: 'Track Order',
-            url: 'https://app.zicabella.com/orders/{{1}}',
+            url: `${STOREFRONT_ORIGIN}/orders/{{1}}`,
             example: ['1024']
           }
         ]
@@ -376,6 +377,15 @@ const PRODUCTION_TEMPLATES = [
 export async function POST(req) {
   const { searchParams } = new URL(req.url);
   const force = searchParams.get('force') === 'true';
+  // ?suffix=_v2 creates every template under a NEW name (e.g. zb_order_tracking_v2) and leaves
+  // the currently approved ones untouched, so automations keep sending while Meta reviews the
+  // new versions; switch the template names in the dashboard settings once they are approved.
+  // Lower-case letters, digits and underscores only, at most 20 characters.
+  const rawSuffix = (searchParams.get('suffix') || '').trim().toLowerCase();
+  if (rawSuffix && !/^[a-z0-9_]{1,20}$/.test(rawSuffix)) {
+    return NextResponse.json({ error: 'suffix must be 1-20 characters: a-z, 0-9, _' }, { status: 400 });
+  }
+  const suffix = rawSuffix;
 
   const config = await getConfig();
   if (!config.configured) {
@@ -401,7 +411,8 @@ export async function POST(req) {
       (metaTemplates || []).map(t => [t.name, t.status])
     );
 
-    for (const template of PRODUCTION_TEMPLATES) {
+    for (const baseTemplate of PRODUCTION_TEMPLATES) {
+      const template = suffix ? { ...baseTemplate, name: `${baseTemplate.name}${suffix}` } : baseTemplate;
       const existingStatus = existingTemplates.get(template.name);
 
       if (!force && (existingStatus === 'APPROVED' || existingStatus === 'PENDING')) {
@@ -493,6 +504,7 @@ export async function POST(req) {
   return NextResponse.json({
     seeded: successCount,
     total: PRODUCTION_TEMPLATES.length,
+    suffix: suffix || null,
     results
   });
 }

@@ -1,4 +1,5 @@
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 import { metaPixelId, trackEvent, initPixel, getMetaIdentityCookies, getClientCookie, sha256, saveUserDataToCookies } from '@/lib/metaPixel';
 import { event as trackGAEvent } from '@/lib/gtag';
 import { buildClientUserData } from '@/lib/buildMetaUserData';
@@ -77,6 +78,8 @@ function uuidv4() {
 async function sendToCapiRoute(payload: Record<string, any>): Promise<any> {
   // Meta tracking is off on this deployment (lib/meta/config.ts): nothing to relay.
   if (!metaPixelId()) return null;
+  // Only zicabella.com sends events (lib/tracking/host.ts): nothing is relayed from any other host.
+  if (!isEventPage()) return null;
   // Consent regions: hold the relay until the visitor's consent is known (queued,
   // flushed on grant, dropped on deny). No-op pass-through when no region is set.
   return new Promise<any>((resolve) => {
@@ -560,11 +563,15 @@ export function useMetaEvents() {
     trackGAEvent('sign_up');
   };
 
-  const trackSearch = (searchString: string) => {
+  const trackSearch = (searchString: string, contentIds?: string[]) => {
     const base = getBasePayload('Search');
-    const customData = {
+    // content_ids = the first results' catalogue ids (variant id = feed <g:id>), the ids
+    // Meta recommends on Search for Advantage+ catalog ads — the Snap SEARCH already sends them.
+    const idList = (contentIds || []).map(id => normalizeVariantId(id)).filter((id): id is string => !!id).slice(0, 10);
+    const customData: Record<string, any> = {
       search_string: searchString,
-      content_type: 'product'
+      content_type: 'product',
+      ...(idList.length ? { content_ids: idList } : {}),
     };
     trackEvent('Search', customData, base.eventId);
     sendToCapiRoute({ ...base, customData });

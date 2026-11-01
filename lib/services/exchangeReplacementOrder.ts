@@ -1,6 +1,7 @@
 import prisma from "@/lib/db";
 import { createOrder, shopifyFetch } from "@/lib/shopify-admin";
 import { allocateLinkedId, replacementIdForExchange } from "@/lib/linkedIds";
+import { storefrontUrl } from "@/lib/storefront-url";
 
 /**
  * Resolves the Shopify variant_id for a given exchange item.
@@ -607,7 +608,7 @@ export async function createExchangeReplacementOrder(id: string): Promise<Create
               customerName,
               orderId: orderIdDisplay,
               trackingNumber: forwardAwb,
-              trackingUrl: `https://shiprocket.co/tracking/${forwardAwb}`,
+              trackingUrl: forwardAwb ? `https://shiprocket.co/tracking/${forwardAwb}` : storefrontUrl(`/orders/${shopifyOrderId}`),
             }),
         });
       }

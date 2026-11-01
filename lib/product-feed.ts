@@ -85,12 +85,16 @@ export function variantInStock(variant: ShopifyProduct['variants'][0]): boolean 
   return variant.inventory_management ? (variant.inventory_quantity ?? 0) > 0 : true;
 }
 
-/** Host that serves /feed.xml and /feed.csv (Next app — not the Shopify apex). */
+/**
+ * Host that serves /feed.xml and /feed.csv: the public storefront (zicabella.com),
+ * which is this same Next app. The ad platforms' catalogues should fetch the feed
+ * from there, not from the admin host.
+ */
 export function getFeedBaseUrl(): string {
   return (
-    process.env.NEXT_PUBLIC_APP_URL ||
     process.env.NEXT_PUBLIC_SITE_URL ||
-    'https://app.zicabella.com'
+    process.env.NEXT_PUBLIC_APP_URL ||
+    'https://zicabella.com'
   ).replace(/\/+$/, '');
 }
 

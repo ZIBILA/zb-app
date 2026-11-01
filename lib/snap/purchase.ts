@@ -24,7 +24,7 @@
  *  - app/api/checkout/razorpay/route.ts  (records click context before payment)
  *  - app/api/cron/snap-conversions       (retry + recovery job below)
  */
-import { pickRealEmail, pickRealName } from '@/lib/tracking/placeholder-identity';
+import { pickRealEmail, pickRealFullName } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
 import { snapPurchasePhone } from '@/lib/snap/identity';
@@ -126,13 +126,20 @@ export function snapPurchaseSourceUrl(orderId: string, ctx: SnapClickContext | u
 /** Build the CAPI PURCHASE from the stored order. Exported for tests. */
 export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventTimeMs: number) {
   const addr = parseAddress(order.shippingAddress);
-  const name = String(pickRealName(order.customer?.name, addr.name) || '').trim().split(/\s+/).filter(Boolean);
+  // Of the two, the name that carries a surname (Snap: PURCHASE surname coverage 54 %).
+  const name = String(pickRealFullName(order.customer?.name, addr.name) || '').trim().split(/\s+/).filter(Boolean);
 
   const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
   let numItems = 0;
+  // Snap's "description" of the purchase (Events Manager showed 0 % coverage): the
+  // distinct item titles, in order, as custom_data.content_name. Order rows store no
+  // product type, so content_category stays with the browser copy.
+  const titles: string[] = [];
   for (const it of order.items || []) {
     const qty = Math.max(1, Number(it.quantity) || 1);
     numItems += qty;
+    const title = String(it.title || '').trim();
+    if (title && !titles.includes(title)) titles.push(title);
     const id = snapCatalogIdFromOrderItem(it);
     if (!id) continue; // unknown catalog id → leave it out rather than send a wrong one
     const price = Number(it.price);
@@ -172,6 +179,7 @@ export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventT
       contents,
       num_items: numItems || undefined,
       order_id: order.id,
+      content_name: titles.join(' | ').slice(0, 200) || undefined,
     },
   };
 }
@@ -389,11 +397,34 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
       console.warn(`[Snap Purchase] order ${orderId} was charged in ${currency}, which Snapchat does not list as a supported currency — sent exactly as charged`);
     }
 
+    // Snap derives OS version and device model from client_user_agent (Events Manager:
+    // CAPI OS-version coverage 55 %). The context normally comes from the row recorded at
+    // Razorpay pre-create (or this request); a webhook-only completion has neither, so
+    // borrow the user agent (and IP) the Meta Purchase row recorded from the same browser
+    // request — the mirror of what lib/meta/purchase.ts does with the Snap row.
+    let effectiveCtx = clean(ctx);
+    if (!effectiveCtx.userAgent) {
+      try {
+        const own = await prisma.adConversionDelivery.findUnique({
+          where: { platform_eventName_orderId: { platform: PLATFORM, eventName: EVENT, orderId } }, select: { context: true },
+        });
+        if (!(own?.context as any)?.userAgent) {
+          const metaRow = await prisma.adConversionDelivery.findUnique({
+            where: { platform_eventName_orderId: { platform: 'meta', eventName: 'Purchase', orderId } }, select: { context: true },
+          });
+          const mc = (metaRow?.context as any) || {};
+          if (typeof mc.userAgent === 'string' && mc.userAgent) {
+            effectiveCtx = { ...effectiveCtx, userAgent: mc.userAgent, ipAddress: effectiveCtx.ipAddress || (typeof mc.ipAddress === 'string' ? mc.ipAddress : undefined) };
+          }
+        }
+      } catch { /* lookup is best-effort */ }
+    }
+
     return ledger.deliver({
       platform: PLATFORM,
       eventName: EVENT,
       orderId,
-      ctx: clean(ctx),
+      ctx: effectiveCtx,
       defaultEventTime: order.paymentCapturedAt || order.createdAt || new Date(),
       build: (context, eventTimeMs) => buildPurchaseFromOrder(order, context as SnapClickContext, eventTimeMs),
       send: sendSnapEvent,

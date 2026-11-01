@@ -87,6 +87,17 @@ export function isValidFbclid(v: string | null | undefined): boolean {
   return !!v && FBCLID_RE.test(v);
 }
 
+/**
+ * fbc rebuilt from the fbclid still in a page URL (what the pixel itself does when it
+ * cannot read a _fbc cookie), or undefined when the URL has none / it is malformed.
+ */
+export function fbcFromEventSourceUrl(url: unknown, nowMs: number): string | undefined {
+  try {
+    const fbclid = new URL(String(url ?? '')).searchParams.get('fbclid');
+    return fbclid && isValidFbclid(fbclid) ? fbcFromClickId(fbclid, nowMs) : undefined;
+  } catch { return undefined; }
+}
+
 /** `fb.1.<now>.<fbclid>` — the click id is used exactly as received (Meta: case-sensitive). */
 export function fbcFromClickId(fbclid: string, nowMs: number): string {
   return `fb.1.${nowMs}.${fbclid}`;

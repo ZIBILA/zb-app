@@ -9,6 +9,7 @@ import {
   Trash2, ToggleLeft, ToggleRight, Database, ExternalLink
 } from "lucide-react";
 import { toast } from "sonner";
+import { STOREFRONT_ORIGIN } from "@/lib/storefront-url";
 
 export default function WhatsAppHubPage() {
   const [activeTab, setActiveTab] = useState<
@@ -188,15 +189,15 @@ export default function WhatsAppHubPage() {
 const TEMPLATE_PRESETS = [
   {
     id: 'cart_recovery', label: '🛒 Cart Recovery', desc: 'Recover abandoned carts with product image',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hello {{1}}, we noticed you left some items in your cart. Complete your purchase today to get them shipped soon.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Complete Purchase', url: 'https://app.zicabella.com/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hello {{1}}, we noticed you left some items in your cart. Complete your purchase today to get them shipped soon.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Complete Purchase', url: `${STOREFRONT_ORIGIN}/{{1}}` }] }
   },
   {
     id: 'new_collection', label: '✨ New Collection', desc: 'Announce a new collection with image',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our new {{2}} collection is live! {{3}}. Shop the latest styles before they sell out.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Now', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our new {{2}} collection is live! {{3}}. Shop the latest styles before they sell out.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Now', url: `${STOREFRONT_ORIGIN}/collections/{{1}}` }] }
   },
   {
     id: 'sale_alert', label: '🔥 Sale Alert', desc: 'Announce sales with discount % and CTA',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, enjoy up to {{2}}% OFF on your favorites! Sale ends {{3}}. Shop now!', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Sale', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, enjoy up to {{2}}% OFF on your favorites! Sale ends {{3}}. Shop now!', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop Sale', url: `${STOREFRONT_ORIGIN}/collections/{{1}}` }] }
   },
   {
     id: 'new_product', label: '🆕 New Product Launch', desc: 'Introduce a new product with image and link',
@@ -216,15 +217,15 @@ const TEMPLATE_PRESETS = [
   },
   {
     id: 'order_confirmation', label: '📦 Order Confirm', desc: 'Confirm order with tracking link',
-    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Thank you for your order, {{1}}! Your order {{2}} has been confirmed successfully.', footerText: '', buttons: [{ type: 'URL', text: 'View Order', url: 'https://app.zicabella.com/orders/{{1}}' }] }
+    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Thank you for your order, {{1}}! Your order {{2}} has been confirmed successfully.', footerText: '', buttons: [{ type: 'URL', text: 'View Order', url: `${STOREFRONT_ORIGIN}/orders/{{1}}` }] }
   },
   {
     id: 'welcome', label: '👋 Welcome', desc: 'Welcome new subscribers',
-    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Welcome to Zica Bella, {{1}}! Thank you for joining us. Explore our latest collections and enjoy exclusive offers.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Start Shopping', url: 'https://app.zicabella.com/' }] }
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Welcome to Zica Bella, {{1}}! Thank you for joining us. Explore our latest collections and enjoy exclusive offers.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Start Shopping', url: `${STOREFRONT_ORIGIN}/` }] }
   },
   {
     id: 'review_request', label: '⭐ Review Request', desc: 'Ask for product review after delivery',
-    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, we hope you love your order {{2}}! Would you mind sharing a quick review? Your feedback helps us improve.', footerText: '', buttons: [{ type: 'URL', text: 'Leave Review', url: 'https://app.zicabella.com/orders/{{1}}' }] }
+    preset: { category: 'UTILITY', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, we hope you love your order {{2}}! Would you mind sharing a quick review? Your feedback helps us improve.', footerText: '', buttons: [{ type: 'URL', text: 'Leave Review', url: `${STOREFRONT_ORIGIN}/orders/{{1}}` }] }
   }
 ];
 
@@ -699,7 +700,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                           {headerType === "IMAGE" && (
                             <div className="space-y-3">
                               <label className="text-xs font-semibold text-foreground/60 uppercase block">Preview Image URL (Optional)</label>
-                              <input type="text" placeholder="https://app.zicabella.com/images/collection.jpg" value={headerImage} onChange={(e) => setHeaderImage(e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm" />
+                              <input type="text" placeholder="https://zicabella.com/images/collection.jpg" value={headerImage} onChange={(e) => setHeaderImage(e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-xl px-4 py-2.5 outline-none focus:border-emerald-500/50 text-sm" />
                               <p className="text-[10px] text-muted-foreground">The actual image is uploaded when sending. This is for preview.</p>
                               {headerImage && <div className="w-full h-32 rounded-xl border border-foreground/10 overflow-hidden bg-foreground/5"><img src={headerImage} alt="Preview" className="w-full h-full object-cover" onError={(e: any) => { e.target.style.display = 'none'; }} /></div>}
                             </div>
@@ -749,7 +750,7 @@ function TemplatesManager({ onRefresh }: { onRefresh: () => void }) {
                                   <button onClick={() => removeButton(idx)} className="text-rose-500/50 hover:text-rose-500 text-xs">Remove</button>
                                 </div>
                                 {btn.type !== 'CATALOG' && btn.type !== 'COPY_CODE' && <input type="text" placeholder="Button Label" value={btn.text || ''} onChange={(e) => updateButton(idx, 'text', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs" />}
-                                {btn.type === 'URL' && <input type="text" placeholder="https://app.zicabella.com/{{1}}" value={btn.url || ''} onChange={(e) => updateButton(idx, 'url', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
+                                {btn.type === 'URL' && <input type="text" placeholder="https://zicabella.com/{{1}}" value={btn.url || ''} onChange={(e) => updateButton(idx, 'url', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
                                 {btn.type === 'COPY_CODE' && <input type="text" placeholder="Example code, e.g. ZICA20 (the real code is entered per campaign)" value={btn.example || ''} onChange={(e) => updateButton(idx, 'example', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
                                 {btn.type === 'PHONE_NUMBER' && <input type="text" placeholder="+919876543210" value={btn.phone_number || ''} onChange={(e) => updateButton(idx, 'phone_number', e.target.value)} className="w-full bg-foreground/5 border border-foreground/10 rounded-lg px-3 py-2 outline-none focus:border-emerald-500/50 text-xs font-mono" />}
                               </div>

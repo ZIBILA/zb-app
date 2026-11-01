@@ -17,6 +17,7 @@ import {
 
 import { resolveMetaServerPixelId, metaPixelIdProblem, isMetaProductionSite } from './meta/config';
 import { ldUFields } from './meta/consent';
+import { parseTestEventCode } from './tracking/test-events';
 
 // '' when Meta tracking is off on this deployment (see lib/meta/config.ts): every
 // send is then skipped with a logged alert instead of feeding the live dataset.
@@ -76,6 +77,8 @@ function validateEventPayload(eventName: string, customData: Record<string, any>
 
 export interface CapiEventPayload {
   eventName: string;
+  /** Tester mode (lib/tracking/test-events.ts): this visitor's Meta test event code, sent as test_event_code. */
+  testEventCode?: string;
   eventTime?: number;
   eventSourceUrl: string;
   eventId: string;
@@ -333,7 +336,12 @@ export async function sendCapiEvent(payload: CapiEventPayload): Promise<CapiSend
     ],
   };
 
-  if (TEST_EVENT_CODE) {
+  // A per-visitor test code (tester mode) applies to that visitor's events only; the
+  // deployment-wide META_TEST_EVENT_CODE stays ignored on the live site (see above).
+  const visitorTestCode = parseTestEventCode(payload.testEventCode);
+  if (visitorTestCode) {
+    body.test_event_code = visitorTestCode;
+  } else if (TEST_EVENT_CODE) {
     body.test_event_code = TEST_EVENT_CODE;
   }
 

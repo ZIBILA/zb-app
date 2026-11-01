@@ -3,6 +3,7 @@ import { DEMO_PHONE_HASHES } from '@/lib/buildMetaUserData';
 import { normalizeIdentity, isSha256Hash, type RawIdentity } from '@/lib/tracking/identity-normalize';
 import { resolveSnapPixelId } from '@/lib/snap/config';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 
 /** The pixel id in use ('' = Snap tracking is off on this deployment). See lib/snap/config.ts. */
 const BUILD_SNAP_PIXEL_ID = resolveSnapPixelId();
@@ -24,6 +25,7 @@ export function snapPixelId(): string {
 export function withSnaptr(callback: (snaptr: any) => void, eventLabel = 'unknown'): void {
   if (typeof window === 'undefined') return;
   if (isExcludedBrowser()) return; // staff / QA / demo browser or WebDriver automation on the live site
+  if (!isEventPage()) return; // only zicabella.com sends events (lib/tracking/host.ts)
 
   if ((window as any).snaptr) {
     callback((window as any).snaptr);
@@ -193,6 +195,32 @@ export const initSnapPixel = (raw?: RawIdentity) => {
   if (!snapPixelId()) return;
   withSnaptr((snaptr) => initWithIdentity(snaptr, buildPixelIdentity(raw)), 'init');
 };
+
+/**
+ * Consent regions (lib/meta/consent.ts): app/layout.tsx holds the Snap SDK — no script,
+ * no init, window.__zbSnapHeld = true — while a visitor's consent is pending, exactly as
+ * the Meta Pixel is held with fbq('consent','revoke'). SnapPixelRouteTracker calls this
+ * once consent is granted or the visitor turns out to be outside the regions: init and
+ * load the SDK now; snaptr() calls queued on the stub meanwhile are flushed by the SDK.
+ * The server copies are held separately (whenMetaConsentAllows around each relay post).
+ */
+export function releaseSnapPixel(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as any;
+  if (!w.__zbSnapHeld || w.__zbLoadSnapPixel) return;
+  if (!snapPixelId() || !isEventPage() || isExcludedBrowser()) return;
+  if (!w.snaptr) {
+    const a: any = (w.snaptr = function () { a.handleRequest ? a.handleRequest.apply(a, arguments) : a.queue.push(arguments); });
+    a.queue = [];
+  }
+  w.__zbSnapHeld = false;
+  w.__zbLoadSnapPixel = true;
+  initWithIdentity(w.snaptr, buildPixelIdentity());
+  const s = document.createElement('script');
+  s.async = true;
+  s.src = 'https://sc-static.net/scevent.min.js';
+  (document.head || document.body).appendChild(s);
+}
 
 /**
  * Browser pixel event.

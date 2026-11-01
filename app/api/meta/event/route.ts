@@ -6,6 +6,8 @@ import prisma from '@/lib/db';
 import { DEMO_PHONES_RAW, DEMO_EMAILS_RAW } from '@/lib/metaPixel';
 import { buildServerUserData } from '@/lib/buildMetaUserData';
 import { getClientIP, lookupIpGeo, isPrivateIP, type IpGeoResult } from '@/lib/ip-geo';
+import { eventHosts } from '@/lib/tracking/host';
+import { TEST_EVENTS_COOKIE, parseTestEventCode } from '@/lib/tracking/test-events';
 import { normalizePhone as normalizePhoneWorldwide } from '@/lib/tracking/identity-normalize';
 import { isPlaceholderEmail, isPlaceholderEmailHash } from '@/lib/tracking/placeholder-identity';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
@@ -14,7 +16,7 @@ import { isStorefrontPageRequest } from '@/lib/tracking/same-site-request';
 import { isBotUserAgent } from '@/lib/tracking/bot-agent';
 import { internalOrderLists } from '@/lib/meta/internal-orders';
 import { isMetaProductionSite } from '@/lib/meta/config';
-import { identityCookieDomain } from '@/lib/meta/identity-cookies';
+import { identityCookieDomain, fbcFromEventSourceUrl } from '@/lib/meta/identity-cookies';
 import crypto from 'crypto';
 
 /**
@@ -49,15 +51,10 @@ const LOW_UNIT_CURRENCIES = new Set(['IDR', 'VND', 'KRW', 'JPY', 'HUF', 'CLP', '
 const maxValueFor = (currency: unknown): number => (typeof currency === 'string' && LOW_UNIT_CURRENCIES.has(currency.toUpperCase()) ? MAX_VALUE * 1000 : MAX_VALUE);
 const MAX_LIST = 100;
 
-function allowedHosts(): Set<string> {
-  const hosts = new Set(['zicabella.com', 'www.zicabella.com', 'app.zicabella.com']);
-  try {
-    if (process.env.NEXT_PUBLIC_SITE_URL) hosts.add(new URL(process.env.NEXT_PUBLIC_SITE_URL).hostname);
-  } catch {}
-  if (process.env.NODE_ENV !== 'production') hosts.add('localhost');
-  return hosts;
-}
-const ALLOWED_HOSTS = allowedHosts();
+// event_source_url may only name a host that sends events (lib/tracking/host.ts):
+// zicabella.com / www (+ the site URL host, localhost outside production), never
+// app.zicabella.com — the ads run on zicabella.com only.
+const ALLOWED_HOSTS = eventHosts();
 // Crawler / automation filtering only on the live site (local checks run headless Chrome).
 const FILTER_NON_HUMANS = process.env.NODE_ENV === 'production' && isMetaProductionSite();
 const INTERNAL_COOKIE = 'zb_internal';
@@ -173,7 +170,10 @@ export async function POST(req: NextRequest) {
     if (FILTER_NON_HUMANS && isBotUserAgent(req.headers.get('user-agent'))) {
       return NextResponse.json({ success: true, skipped: true, reason: 'non_human' });
     }
-    if (req.cookies.get(INTERNAL_COOKIE)?.value === '1') {
+    // Tester mode (lib/tracking/test-events.ts): the owner's own browser sends everything as
+    // Meta test events (test_event_code below), even when the account is on the staff lists.
+    const testEventCode = parseTestEventCode(req.cookies.get(TEST_EVENTS_COOKIE)?.value);
+    if (!testEventCode && req.cookies.get(INTERNAL_COOKIE)?.value === '1') {
       return NextResponse.json({ success: true, skipped: true, reason: 'internal' });
     }
     // A native-app WebView page (zb_app cookie, see lib/tracking/automation.ts) is not a
@@ -277,7 +277,11 @@ export async function POST(req: NextRequest) {
     }
 
     const fbp = req.cookies.get('_fbp')?.value;
-    const fbc = req.cookies.get('_fbc')?.value;
+    // Click id: the _fbc cookie (middleware / pixel), else rebuilt from the fbclid still in
+    // the page URL — the value the pixel derives itself when no cookie could be written, so
+    // the server copy carries it too (Events Manager: "fbc received through the pixel, but
+    // the server sends an empty fbc").
+    const fbc = req.cookies.get('_fbc')?.value || fbcFromEventSourceUrl(eventSourceUrl, Date.now());
     const externalId = req.cookies.get('zb_external_id')?.value;
     // Stable device id (lib/cart-context.tsx), sent alongside the customer id once the
     // shopper is signed in so Meta can join the pre-login funnel to the account.
@@ -429,6 +433,7 @@ export async function POST(req: NextRequest) {
         userData: mergedUserData,
         customData: adjustedCustomData,
         actionSource,
+        testEventCode,
       }).catch((err: any) => {
         console.error(`[Meta CAPI] ${eventName} send failed:`, err?.message || 'error');
       });
@@ -452,7 +457,7 @@ export async function POST(req: NextRequest) {
       const sid = String((session.user as any).id || '');
       const semail = String(session.user.email || '').trim().toLowerCase();
       const sphone = String((session.user as any).phone || (session as any).customer?.phone || '').replace(/\D/g, '').slice(-10);
-      if ((sid && lists.customerIds.has(sid)) || (semail && lists.emails.has(semail)) || (sphone.length >= 7 && lists.phones.has(sphone))) {
+      if (!testEventCode && ((sid && lists.customerIds.has(sid)) || (semail && lists.emails.has(semail)) || (sphone.length >= 7 && lists.phones.has(sphone)))) {
         const res = NextResponse.json({ success: true, skipped: true, reason: 'internal' });
         const host = req.headers.get('x-forwarded-host')?.split(',')[0].split(':')[0].trim() || req.headers.get('host')?.split(':')[0] || '';
         const domain = identityCookieDomain(host);
@@ -586,6 +591,7 @@ export async function POST(req: NextRequest) {
       userData: mergedUserData,
       customData: adjustedCustomData,
       actionSource,
+      testEventCode,
     });
 
     // Missing Meta token / config: skip quietly (200) so storefront polls stay clean

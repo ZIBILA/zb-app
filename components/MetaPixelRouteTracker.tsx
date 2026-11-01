@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 import {
   metaPixelId,
   initPixel,
@@ -58,7 +59,9 @@ export function MetaPixelRouteTracker() {
     // Meta tracking off on this deployment (lib/meta/config.ts): the Pixel call is a
     // no-op inside withFbq and the CAPI relay below is skipped; GA4 / first-party
     // PageViews and the identity-cookie housekeeping keep running regardless.
-    const metaOn = !!metaPixelId();
+    // …and only on zicabella.com (lib/tracking/host.ts): on any other host the app
+    // serves (app.zicabella.com) neither the Pixel nor the relay fires.
+    const metaOn = !!metaPixelId() && isEventPage();
 
     // ─── STEP 1: Synchronous setup (cookies, fbclid capture) ───
 
@@ -111,9 +114,16 @@ export function MetaPixelRouteTracker() {
     const eventTime = Math.floor(Date.now() / 1000);
 
     if (shouldFirePageView) {
-      // Client-side pixel PageView — fires NOW, no awaits
+      // Client-side pixel PageView — fires NOW, no awaits.
+      // trackSingle, not track: on a client-side navigation the Meta SDK's own page-change
+      // detection sends a trackCustom('PageView') a few ms earlier — a CUSTOM event with no
+      // event id — and then drops a plain fbq('track','PageView') as a duplicate, so the
+      // standard PageView carrying our eventID never left the browser and Meta could not
+      // pair it with the server copy (seen in Events Manager as a custom PageView, a
+      // browser PageView without event_id and a "duplicate" server PageView). trackSingle
+      // is not subject to that once-per-pixel guard — verified on the live site 2026-11-01.
       withFbq((fbq) => {
-        fbq('track', 'PageView', {}, { eventID: eventId });
+        fbq('trackSingle', metaPixelId(), 'PageView', {}, { eventID: eventId });
       }, 'PageView');
     }
 

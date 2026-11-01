@@ -1,5 +1,7 @@
 import { trackSnapClientEvent, getSnapIdentityCookies } from '@/lib/snapPixel';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
+import { whenMetaConsentAllows } from '@/lib/meta/consent-client';
 import type { RawIdentity } from '@/lib/tracking/identity-normalize';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
 import { snapPurchaseCurrency } from '@/lib/snap/currency';
@@ -88,6 +90,7 @@ function sendToSnapCapiRoute(payload: {
   userData?: RawIdentity;
 }): void {
   if (isExcludedBrowser()) return;
+  if (!isEventPage()) return; // only zicabella.com sends events (lib/tracking/host.ts)
   try {
     const cookies = getSnapIdentityCookies();
 
@@ -118,15 +121,19 @@ function sendToSnapCapiRoute(payload: {
       externalId: cookies.external_id,
     });
 
-    // keepalive lets PURCHASE / ADD_BILLING survive an immediate navigation
-    // (e.g. redirect to Razorpay or to the confirmation page).
-    fetch('/api/snap/event', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      keepalive: body.length < 60000,
-    }).then(r => { if (!r.ok) console.warn('[Snap CAPI relay rejected]', payload.eventName, r.status); })
-      .catch(err => console.warn('[Snap CAPI send error]', err));
+    // Consent regions: held while the visitor's consent is pending (queued, flushed on
+    // grant, dropped on deny) — the same gate as the Meta relay. Pass-through elsewhere.
+    whenMetaConsentAllows(() => {
+      // keepalive lets PURCHASE / ADD_BILLING survive an immediate navigation
+      // (e.g. redirect to Razorpay or to the confirmation page).
+      fetch('/api/snap/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: body.length < 60000,
+      }).then(r => { if (!r.ok) console.warn('[Snap CAPI relay rejected]', payload.eventName, r.status); })
+        .catch(err => console.warn('[Snap CAPI send error]', err));
+    });
   } catch (err) {
     console.warn('[Snap CAPI send error]', err);
   }
@@ -212,11 +219,14 @@ export function snapTrackAddToWishlist(
   const price = num(value);
   trackSnapClientEvent('ADD_TO_WISHLIST', {
     price, currency: price !== undefined ? currency : undefined,
-    item_ids: cidList, item_category: contentCategory, description: contentName,
+    item_ids: cidList, number_items: cidList ? 1 : undefined, item_category: contentCategory, description: contentName,
   }, b.eventId);
+  // The server copy mirrors ADD_CART: contents + num_items alongside content_ids.
   sendToSnapCapiRoute({ ...b, customData: {
     value: price, currency: price !== undefined ? currency : undefined,
     content_ids: cidList, content_category: contentCategory, content_name: contentName,
+    num_items: cidList ? 1 : undefined,
+    contents: cid ? [{ id: cid, quantity: 1, ...(price !== undefined ? { item_price: price } : {}) }] : undefined,
   } });
 }
 

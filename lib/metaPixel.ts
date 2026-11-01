@@ -69,6 +69,7 @@ export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): v
   if (typeof window === 'undefined') return;
   // Staff / QA / demo browser or WebDriver automation on the live site: never a shopper.
   if (isExcludedBrowser()) return;
+  if (!isEventPage()) return; // only zicabella.com sends events (lib/tracking/host.ts)
   // Meta tracking is off on this deployment (no pixel id resolved): the base
   // snippet is not rendered, so fbq never appears — drop silently, no 3 s wait.
   if (!metaPixelId()) return;
@@ -96,12 +97,6 @@ export function withFbq(callback: (fbq: any) => void, eventLabel = 'unknown'): v
 
   setTimeout(retry, 100);
 }
-
-export const pageview = () => {
-  withFbq((fbq) => {
-    fbq('track', 'PageView');
-  }, 'PageView');
-};
 
 export function setClientCookie(name: string, value: string, days: number) {
   if (typeof document === 'undefined') return;
@@ -242,6 +237,7 @@ export function getMetaIdentityCookies(): Record<string, string | undefined> {
 
 import { buildClientUserData } from '@/lib/buildMetaUserData';
 import { isExcludedBrowser } from '@/lib/tracking/automation';
+import { isEventPage } from '@/lib/tracking/host';
 
 
 /** Keys that fbq('init') accepts as Advanced Matching (plus external_id / fb_login_id passthrough). */
