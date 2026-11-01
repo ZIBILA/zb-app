@@ -89,18 +89,13 @@ export class NotificationService {
         let expoToken: string | undefined;
         let deviceToken: string | undefined;
 
-        // Fetch Expo token if we have a project ID
-        const projectId = getExpoProjectId();
-        if (projectId && projectId !== 'your-eas-project-id') {
-          try {
-            const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-            expoToken = tokenData?.data;
-          } catch (_expoErr) {
-            // Non-fatal
-          }
+        // Native FCM registration token (delivered directly via Firebase)
+        try {
+          const native = await Notifications.getDevicePushTokenAsync();
+          deviceToken = typeof native?.data === 'string' ? native.data : undefined;
+        } catch (_fcmErr) {
+          // Non-fatal
         }
-
-
 
         const primaryToken = expoToken || deviceToken;
         if (primaryToken) {
@@ -192,7 +187,7 @@ export class NotificationService {
     try {
       // Use userId if available, otherwise fallback to device-only registration
       const deviceId = userId ? `dev_android_${userId}` : `guest_android_${Constants.sessionId || Date.now()}`;
-      const tokenType = finalExpoToken ? 'expo' : 'apns';
+      const tokenType = finalExpoToken ? 'expo' : 'fcm';
 
       // Register with the existing detailed endpoint
       const response = await fetch(`${config.appUrl}/api/notifications/register-device`, {
