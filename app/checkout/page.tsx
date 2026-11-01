@@ -38,7 +38,6 @@ import {
   Home,
   Navigation,
   Building2,
-  Banknote,
   Smartphone,
   Sparkles,
   Lock,
@@ -2327,7 +2326,7 @@ export default function CheckoutPage() {
         <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-300 mb-4 w-full">
           {/* One layout for every method: same box, same icon slot, same text block — only the content changes */}
           {(paymentMethod === "COD" || paymentMethod === "PAYNOW") && (() => {
-            const Icon = paymentMethod === "COD" ? Banknote : CreditCard;
+            const Icon = CreditCard;
             const text =
               paymentMethod === "COD"
                 ? isInternational
