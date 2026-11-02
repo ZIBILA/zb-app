@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zica Bella",
     "slug": "zica-bella",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "scheme": "zicabella",
     "icon": "./assets/zb-logo-icon.png",
@@ -21,7 +21,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.zicabella.ios",
       "appleTeamId": "94765P9PT9",
-      "buildNumber": "8",
+      "buildNumber": "9",
       "deploymentTarget": "16.0",
       "infoPlist": {
         "NSFaceIDUsageDescription": "Verify your identity to access your profile",
