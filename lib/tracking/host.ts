@@ -92,12 +92,12 @@ export function isNonCanonicalStorefrontHost(hostname: unknown): boolean {
 
 /**
  * Storefront pages on app.zicabella.com are 301'd to zicabella.com by the middleware.
- * These stay on the app host: the admin dashboard and APIs, Next internals, pages a
- * shopper may already be in the middle of on that host (cart, checkout, orders,
- * login, profile, portal, returns), machine-read files (feeds, sitemap, robots,
- * manifest, BIMI, .well-known) and anything that looks like a static file.
+ * These stay on the app host: the admin dashboard and APIs, Next internals,
+ * machine-read files (feeds, sitemap, robots, manifest, BIMI, .well-known) and
+ * anything that looks like a static file. Every shopper page (cart, checkout, orders,
+ * login, profile, portal, returns, affiliate links) goes to zicabella.com.
  */
-const APP_HOST_KEEP = /^\/(?:dashboard|admin|web-store|api|_next|cart|checkout|orders|login|profile|portal|returns|unauthorized|uploads|r|bimi|\.well-known)(?:\/|$)|^\/(?:feed\.(?:xml|csv)|sitemap[^/]*\.xml|robots\.txt|manifest\.(?:json|webmanifest)|favicon\.ico)$/;
+const APP_HOST_KEEP = /^\/(?:dashboard|admin|web-store|api|_next|unauthorized|uploads|bimi|\.well-known)(?:\/|$)|^\/(?:feed\.(?:xml|csv)|sitemap[^/]*\.xml|robots\.txt|manifest\.(?:json|webmanifest)|favicon\.ico)$/;
 const LOOKS_LIKE_FILE = /\.[a-z0-9]{2,5}$/i;
 
 /** true when a GET for `pathname` on app.zicabella.com should be sent to zicabella.com. */
