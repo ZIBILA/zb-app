@@ -9,6 +9,7 @@ import bcrypt from "bcryptjs";
 import { SmsService } from "@/lib/services/sms.service";
 import { resolveEventGeoFromIp, ClientGeoInput } from "@/lib/resolve-event-geo";
 import { DEMO_OTP, isDemoPhone } from "@/lib/demo-auth";
+import { loadProductTypeCarry } from "@/lib/services/orderItemProductType";
 
 // Shopify Storefront API customer access token
 async function shopifyCustomerLogin(email: string, password: string) {
@@ -522,6 +523,8 @@ export const authOptions: AuthOptions = {
                     // Sync Order Items
                     if (o.line_items && Array.isArray(o.line_items)) {
                       const shopifyItemIds = o.line_items.map((item: any) => String(item.id));
+                      // Shopify's line items carry no product type: keep the stored one (read BEFORE the delete).
+                      const productTypeCarry = await loadProductTypeCarry(prisma, dbOrder.id);
                       await prisma.orderItem.deleteMany({
                         where: {
                           orderId: dbOrder.id,
@@ -545,6 +548,7 @@ export const authOptions: AuthOptions = {
                             price: parseFloat(item.price || '0'),
                             sku: item.sku || null,
                             image: itemImage || null,
+                            productType: productTypeCarry({ productId: dbProductId }),
                           },
                           update: {
                             quantity: item.quantity,
@@ -710,6 +714,8 @@ export const authOptions: AuthOptions = {
                     // Sync Order Items
                     if (o.line_items && Array.isArray(o.line_items)) {
                       const shopifyItemIds = o.line_items.map((item: any) => String(item.id));
+                      // Shopify's line items carry no product type: keep the stored one (read BEFORE the delete).
+                      const productTypeCarry = await loadProductTypeCarry(prisma, dbOrder.id);
                       await prisma.orderItem.deleteMany({
                         where: {
                           orderId: dbOrder.id,
@@ -733,6 +739,7 @@ export const authOptions: AuthOptions = {
                             price: parseFloat(item.price || '0'),
                             sku: item.sku || null,
                             image: itemImage || null,
+                            productType: productTypeCarry({ productId: dbProductId }),
                           },
                           update: {
                             quantity: item.quantity,

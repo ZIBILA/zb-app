@@ -14,6 +14,7 @@ import { assignUniversalOrderNumber, assignFailedOrderNumber, isFailedPrefixNumb
 import { emitMetaPurchase, metaContextFromRequest } from "@/lib/meta/purchase-server";
 import { emitSnapPurchase, snapContextFromRequest } from '@/lib/snap/purchase-server';
 import { normalizeVariantId } from '@/lib/snap/catalog-id';
+import { resolveCartProductTypes } from '@/lib/services/orderItemProductType';
 import { sendOpenAiEvent, toMinorUnits } from '@/lib/openai-capi';
 import { getConfiguredCodUpfrontAmount } from '@/lib/cod-upfront';
 import { resolveWebCoupon } from '@/lib/web-coupon';
@@ -605,6 +606,10 @@ export async function POST(req: Request) {
       }
     }
 
+    // Product type of each line (content_category of the server Meta / Snap Purchase):
+    // the cart item's own category, else Shopify's product_type (short timeout, never throws).
+    const cartProductTypes = await resolveCartProductTypes(items);
+
     // Resolve products from DB
     const resolvedItems: any[] = [];
     for (let index = 0; index < items.length; index++) {
@@ -637,6 +642,7 @@ export async function POST(req: Request) {
         price: parseFloat(item.price || '0'),
         sku: item.variantId || item.productId || null,
         variantId: normalizeVariantId(item.variantId),
+        productType: cartProductTypes[index] ?? null,
         image: image
       });
     }
@@ -790,6 +796,7 @@ export async function POST(req: Request) {
               price: item.price,
               sku: item.sku,
               variantId: item.variantId ?? null,
+              productType: item.productType ?? null,
               image: item.image,
             })),
           });
@@ -810,6 +817,7 @@ export async function POST(req: Request) {
             price: item.price,
             sku: item.sku,
             variantId: item.variantId ?? null,
+            productType: item.productType ?? null,
             image: item.image,
           })),
         });
@@ -890,6 +898,7 @@ export async function POST(req: Request) {
               price: item.price,
               sku: item.sku,
               variantId: item.variantId ?? null,
+              productType: item.productType ?? null,
               image: item.image
             }))
           }
