@@ -195,3 +195,13 @@ export function isContactConflictError(err: unknown): boolean {
   const message = String((err as any)?.message || err || '');
   return /has already been taken/i.test(message) && /(email_address|email|phone)/i.test(message);
 }
+
+/**
+ * True for the Shopify 422 raised when a line item cannot reserve stock
+ * ({"errors":{"line_items":["Unable to reserve inventory"]}}). Shopify raises it when the order
+ * is created with inventory_behaviour "decrement_obeying_policy" and a variant is out of stock.
+ */
+export function isInventoryReservationError(err: unknown): boolean {
+  const message = String((err as any)?.message || err || '');
+  return /unable to reserve inventory|not enough (inventory|stock)|insufficient (inventory|stock)/i.test(message);
+}
