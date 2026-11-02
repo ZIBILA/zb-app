@@ -464,6 +464,11 @@ const HomeScreen = React.memo(() => {
                 </View>
               ) : null}
 
+              {/* ═══ PRODUCT GRID 3 ═══ */}
+              {displayHomepageProducts.length > 12 && (
+                <ProductGrid items={homeGrid3} onQuickAdd={handleQuickAdd} />
+              )}
+
               {/* ═══ SPOTLIGHT SECTION ═══ */}
               <SpotlightSection 
                 collectionHandle={settings?.spotlight?.collection ?? undefined} 
@@ -474,11 +479,6 @@ const HomeScreen = React.memo(() => {
                 products={displayHomepageProducts}
                 mediaActive={isVideoActive('spotlight')}
               />
-
-              {/* ═══ PRODUCT GRID 3 ═══ */}
-              {displayHomepageProducts.length > 12 && (
-                <ProductGrid items={homeGrid3} onQuickAdd={handleQuickAdd} />
-              )}
 
               {/* ═══ COMMUNITY SECTION ═══ */}
               <CommunitySection community={settings?.community} />
