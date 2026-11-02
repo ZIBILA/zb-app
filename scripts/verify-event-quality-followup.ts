@@ -111,7 +111,7 @@ function eq(name: string, got: unknown, want: unknown) {
   console.log('\n— 5. Platform default hosts');
   eq('DigitalOcean / Render default hosts (any case, with port)', ['zb-app-main-3m3lx.ondigitalocean.app', 'zb-app.onrender.com', 'ZB-APP.ONRENDER.COM:443', 'x.ondigitalocean.app.'].map(host.isNonCanonicalStorefrontHost), [true, true, true, true]);
   eq('the shop\'s own hosts and anything else are not', ['zicabella.com', 'www.zicabella.com', 'app.zicabella.com', 'localhost', '', undefined, 'evil-ondigitalocean.app', 'onrender.com'].map(host.isNonCanonicalStorefrontHost), [false, false, false, false, false, false, false, false]);
-  eq('…and only storefront paths move (the keep-list is the app host\'s)', ['/', '/products/x', '/collections/new', '/api/cron/x', '/_next/static/a.js', '/feed.xml', '/dashboard/login', '/checkout'].map(host.isAppHostPathToRedirect), [true, true, true, false, false, false, false, false]);
+  eq('…and only storefront paths move (the keep-list is the app host\'s)', ['/', '/products/x', '/collections/new', '/checkout', '/api/cron/x', '/_next/static/a.js', '/feed.xml', '/dashboard/login'].map(host.isAppHostPathToRedirect), [true, true, true, true, false, false, false, false]);
 
   console.log(failed ? `\n${failed} FAILED` : '\nALL PASSED');
   process.exit(failed ? 1 : 0);
