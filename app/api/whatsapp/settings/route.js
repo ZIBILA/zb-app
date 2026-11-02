@@ -73,7 +73,11 @@ const TEMPLATE_MAPPING_KEYS = [
   'template_store_credit_earned',
   'template_store_coins_earned',
   'template_store_credit_expiring',
-  'template_order_confirmed_prepaid'
+  'template_order_confirmed_prepaid',
+  // Header image link for templates that have an image header and no product image to show
+  'header_image_store_credit_earned',
+  'header_image_store_coins_earned',
+  'header_image_store_credit_expiring'
 ];
 
 // Timing keys for delays (in minutes)
@@ -138,8 +142,12 @@ export async function POST(req) {
         // Delay settings
         await setWhatsAppSetting(key, String(val || TIMING_DEFAULTS[key]));
       } else {
-        // String template name
-        await setWhatsAppSetting(key, String(val || ''));
+        // String template name (or header image link)
+        const text = String(val || '').trim();
+        if (key.startsWith('header_image_') && text && !/^https:\/\/[^\s]+$/i.test(text)) {
+          return NextResponse.json({ error: 'The image link must start with https://' }, { status: 400 });
+        }
+        await setWhatsAppSetting(key, text);
       }
     }
 

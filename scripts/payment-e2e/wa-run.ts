@@ -140,6 +140,25 @@ async function main() {
   const noAmount: any = await expiring({ amount: 0 });
   check('zero amount: nothing is sent', noAmount.success === false && sent.length === n, noAmount);
 
+  console.log('\n— 7. header image link set from the dashboard');
+  const settingsApi = await import('../../app/api/whatsapp/settings/route.js');
+  const postSettings = (body: any) => settingsApi.POST(new Request('https://zicabella.com/api/whatsapp/settings', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }));
+  const EXPIRE_BANNER = 'https://cdn.shopify.com/s/files/1/0955/5394/5881/files/STORECREDIT-EXPIRES.png';
+  await setTemplate(EXP, [{ type: 'HEADER', format: 'IMAGE' }, { type: 'BODY', text: 'Hi {{customer_name}}, you still have ₹{{amount}}' }]);
+  await expiring(); check('no link saved yet: the generic Zica logo goes out', /zica-bella-logo/.test(lastHeader() || ''), lastHeader());
+  const bad: any = await postSettings({ header_image_store_credit_expiring: 'http://insecure.example/x.png' });
+  check('a link that is not https is refused', bad.status === 400, bad.status);
+  const worse: any = await postSettings({ header_image_store_credit_expiring: 'javascript:alert(1)' });
+  check('a script link is refused', worse.status === 400, worse.status);
+  const good: any = await postSettings({ header_image_store_credit_expiring: EXPIRE_BANNER });
+  check('an https link is saved', good.status === 200, good.status);
+  await expiring(); eq('the reminder now carries the saved banner', lastHeader(), EXPIRE_BANNER);
+  await postSettings({ header_image_store_credit_earned: EXPIRE_BANNER });
+  await setTemplate(NAME, [{ type: 'HEADER', format: 'IMAGE' }, { type: 'BODY', text: 'Credit ₹ {{1}}' }]);
+  await credit(250); eq('a saved link overrides the built-in banner', lastHeader(), EXPIRE_BANNER);
+  await postSettings({ header_image_store_credit_earned: '' });
+  await credit(250); eq('clearing it goes back to the built-in banner', lastHeader(), BANNER);
+
   console.log(`\n${failed === 0 ? 'ALL PASSED' : 'FAILURES'} — ${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
