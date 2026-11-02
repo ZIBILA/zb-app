@@ -88,6 +88,9 @@ async function main() {
   eq('setting empty: the standard confirmation is sent even when credit was earned', [lastTemplate(), lastBody()], ['zica_order_confirmed_v1', ['Aarav', 'ZB7', '₹1499']]);
   await setSetting('template_order_confirmed_prepaid', PREPAID);
   await confirm({ storeCreditAmount: 150 });
+  eq('template set but the automation switched OFF (default): the standard confirmation', lastTemplate(), 'zica_order_confirmed_v1');
+  await setSetting('order_confirmed_prepaid_enabled', 'true');
+  await confirm({ storeCreditAmount: 150 });
   eq('prepaid + credit: the new template with the ORDER number and the CREDIT (not the order total)', [lastTemplate(), lastBody()], [PREPAID, ['ZB7', '150']]);
   await confirm({ storeCreditAmount: 1250.5 });
   eq('credit uses Indian grouping', lastBody(), ['ZB7', '1,250.5']);
@@ -113,6 +116,23 @@ async function main() {
   await prisma.storeCredit.create({ data: { customerId: 'c1', amount: 50, type: 'DEBIT', description: 'spent', orderId: 'ord_A', remainingAmount: 0 } });
   await prisma.storeCredit.create({ data: { customerId: 'c2', amount: 70, type: 'COUPON_REBATE', description: 'y', orderId: 'ord_B', remainingAmount: 70 } });
   eq('credit earned by an order counts only its own rebate rows', [await getStoreCreditEarnedForOrder('ord_A'), await getStoreCreditEarnedForOrder('ord_B'), await getStoreCreditEarnedForOrder('ord_C'), await getStoreCreditEarnedForOrder('')], [100, 70, 0, 0]);
+
+  console.log('\n— 6. store credit expiring reminder');
+  const EXP = 'zb_store_credit_expiring';
+  const expiring = (extra: any = {}) => t.sendStoreCreditExpiring({ phone: '919811122244', customerName: 'Aarav', amount: 250, expiryDate: '20 January 2027', daysLeft: 15, ...extra });
+  await setTemplate(EXP, [{ type: 'BODY', text: 'You have ₹{{amount}} store credit expiring on {{expiry_date}}. Use it before it is gone.' }]);
+  await expiring(); eq('named {{amount}} + {{expiry_date}}', [lastTemplate(), lastBody()], [EXP, ['250', '20 January 2027']]);
+  await setTemplate(EXP, [{ type: 'BODY', text: 'Hi {{customer_name}}, ₹{{amount}} expires on {{expiry_date}} ({{days_left}} days left)' }]);
+  await expiring(); eq('name, amount, expiry date and days left by name', lastBody(), ['Aarav', '250', '20 January 2027', '15']);
+  await setTemplate(EXP, [{ type: 'BODY', text: 'Your store credit: {{1}} expires {{2}}' }]);
+  await expiring(); eq('positional 2 variables: amount (with ₹), expiry date', lastBody(), ['₹250', '20 January 2027']);
+  await setTemplate(EXP, [{ type: 'BODY', text: 'Hi {{1}}, {{2}} expires {{3}}' }]);
+  await expiring(); eq('positional 3 variables: name, amount, expiry date', lastBody(), ['Aarav', '₹250', '20 January 2027']);
+  n = sent.length;
+  const noDate: any = await expiring({ expiryDate: '' });
+  check('missing expiry date: nothing is sent', noDate.success === false && sent.length === n, noDate);
+  const noAmount: any = await expiring({ amount: 0 });
+  check('zero amount: nothing is sent', noAmount.success === false && sent.length === n, noAmount);
 
   console.log(`\n${failed === 0 ? 'ALL PASSED' : 'FAILURES'} — ${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
