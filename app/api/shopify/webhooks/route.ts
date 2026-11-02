@@ -1,3 +1,4 @@
+import { totalAfterStoreCredit } from '@/lib/order-totals';
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import prisma from '@/lib/db';
@@ -324,6 +325,13 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
   if (discountAmount > 0 && Math.abs(finalTotalPrice - finalSubtotalPrice) < 0.01) {
     finalTotalPrice = finalSubtotalPrice - discountAmount;
   }
+  // Store credit paid from the wallet: keep it off the total even when Shopify was never told about it.
+  finalTotalPrice = totalAfterStoreCredit({
+    shopifyTotal: finalTotalPrice,
+    subtotal: finalSubtotalPrice,
+    discountAmount: Number(discountAmount) || 0,
+    storeCredit: Number((existingLocalOrder as any)?.storeCreditAmount || 0),
+  });
 
   const shopifyPaymentStatus = orderData.financial_status || 'pending';
   const localPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'partially-paid'].includes(
