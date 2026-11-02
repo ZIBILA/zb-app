@@ -130,6 +130,10 @@ async function main() {
   await expiring(); eq('positional 2 variables: amount (with ₹), expiry date', lastBody(), ['₹250', '20 January 2027']);
   await setTemplate(EXP, [{ type: 'BODY', text: 'Hi {{1}}, {{2}} expires {{3}}' }]);
   await expiring(); eq('positional 3 variables: name, amount, expiry date', lastBody(), ['Aarav', '₹250', '20 January 2027']);
+  await setTemplate(EXP, [{ type: 'BODY', text: 'YOUR STORE CREDIT IS EXPIRING SOON!\n\nHi {{1}},\n\nYou still have ₹{{2}} in available store credit.' }]);
+  await expiring(); eq('the client\'s template, positional "Hi {{1}} ... ₹{{2}}": name then amount (no date)', lastBody(), ['Aarav', '250']);
+  await setTemplate(EXP, [{ type: 'BODY', text: 'Hi {{customer_name}}, you still have ₹{{amount}} in store credit.' }]);
+  await expiring(); eq('the client\'s template, named: {{customer_name}} and {{amount}}', lastBody(), ['Aarav', '250']);
   n = sent.length;
   const noDate: any = await expiring({ expiryDate: '' });
   check('missing expiry date: nothing is sent', noDate.success === false && sent.length === n, noDate);
