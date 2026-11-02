@@ -446,12 +446,76 @@ export default function CommunityAdminPage() {
          </div>
       </div>
 
+      {/* Photo Submissions waiting for review (customers' "Publish your look" uploads from the app and website) */}
+      <div className="mb-16 animate-in fade-in slide-in-from-bottom-4 duration-700">
+         <div className="flex items-center gap-3 mb-6 px-1">
+            <div className="px-2 py-0.5 bg-amber-500/10 text-amber-500 rounded-md text-[8px] font-black uppercase tracking-widest border border-amber-500/20">
+               {featuredUsers.filter((u: any) => u.status === 'PENDING').length} Pending Photos
+            </div>
+            <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-foreground/50 dark:text-foreground/30">Look Submissions</h2>
+         </div>
+
+         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <AnimatePresence mode="popLayout">
+               {featuredUsers.filter((u: any) => u.status === 'PENDING').map((user: any) => (
+                  <motion.div
+                     key={`pending-${user.id}`}
+                     layout
+                     initial={{ opacity: 0, y: 20 }}
+                     animate={{ opacity: 1, y: 0 }}
+                     exit={{ opacity: 0, scale: 0.95 }}
+                     className="bg-foreground/[0.02] border border-foreground/[0.06] rounded-[1.5rem] overflow-hidden shadow-lg shadow-black/5"
+                  >
+                     <a href={user.imageUrl} target="_blank" rel="noopener noreferrer" className="block aspect-[4/5] overflow-hidden bg-foreground/5">
+                        <img src={user.imageUrl} alt={user.name} className="w-full h-full object-cover" />
+                     </a>
+                     <div className="p-4 space-y-3">
+                        <div>
+                           <h4 className="text-[13px] font-semibold text-foreground leading-none">{user.name}</h4>
+                           <p className="text-[11px] text-foreground/60 mt-1 break-all">{user.email}</p>
+                           <p className="text-[10px] text-foreground/40 mt-1">{new Date(user.createdAt).toLocaleString()}</p>
+                        </div>
+                        {user.styleDescription && (
+                           <p className="text-[11px] text-foreground/70 leading-snug">&ldquo;{user.styleDescription}&rdquo;</p>
+                        )}
+                        {user.instagramUrl && (
+                           <a href={user.instagramUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest break-all">{user.instagramUrl}</a>
+                        )}
+                        <div className="flex items-center gap-2 pt-1">
+                           <button
+                              onClick={() => handleUpdateStatus(user.id, 'APPROVED')}
+                              disabled={processing === user.id}
+                              className="flex-1 h-10 rounded-full bg-emerald-500/10 text-emerald-500 flex items-center justify-center gap-2 text-[12px] font-medium hover:bg-emerald-500/20 transition-all disabled:opacity-40 active:scale-95 border border-emerald-500/20"
+                           >
+                              <Check className="w-4 h-4" /> Approve
+                           </button>
+                           <button
+                              onClick={() => handleUpdateStatus(user.id, 'REJECTED')}
+                              disabled={processing === user.id}
+                              className="flex-1 h-10 rounded-full bg-rose-500/10 text-rose-500 flex items-center justify-center gap-2 text-[12px] font-medium hover:bg-rose-500/20 transition-all disabled:opacity-40 active:scale-95 border border-rose-500/20"
+                           >
+                              <X className="w-4 h-4" /> Reject
+                           </button>
+                        </div>
+                     </div>
+                  </motion.div>
+               ))}
+               {featuredUsers.filter((u: any) => u.status === 'PENDING').length === 0 && (
+                  <div className="col-span-full py-12 border border-dashed border-foreground/5 rounded-[2rem] flex flex-col items-center justify-center text-foreground/30">
+                     <ShieldCheck className="w-8 h-8 mb-3 opacity-20" />
+                     <p className="text-[10px] font-black uppercase tracking-[0.3em] text-center">No photos waiting<br/><span className="opacity-50 font-medium">New submissions from customers appear here</span></p>
+                  </div>
+               )}
+            </AnimatePresence>
+         </div>
+      </div>
+
       <div className="w-full h-[1px] bg-foreground/5 dark:bg-foreground/5 mb-16" />
 
       {/* Main Submission Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-20">
          <AnimatePresence>
-            {featuredUsers.map((user) => (
+            {featuredUsers.filter((u: any) => u.status !== 'PENDING').map((user) => (
               <motion.div
                  key={user.id}
                 layout
