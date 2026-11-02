@@ -1,4 +1,5 @@
 import { baseTemplate } from './base';
+import { DASHBOARD_ORIGIN } from '@/lib/storefront-url';
 import prisma from '@/lib/db';
 import { EmailTemplate } from '@prisma/client';
 import fs from 'fs';
@@ -210,7 +211,7 @@ export function lowStockAlertTemplate(data: {
     </table>
 
     <div style="text-align: center;">
-      <a href="https://app.zicabella.com/inventory" class="cta-btn">Update Stock</a>
+      <a href="${DASHBOARD_ORIGIN}/dashboard/inventory" class="cta-btn">Update Stock</a>
     </div>
   `;
 

@@ -9,6 +9,8 @@ import bcrypt from "bcryptjs";
 import { SmsService } from "@/lib/services/sms.service";
 import { resolveEventGeoFromIp, ClientGeoInput } from "@/lib/resolve-event-geo";
 import { DEMO_OTP, isDemoPhone } from "@/lib/demo-auth";
+import { DASHBOARD_HOST, isDashboardHost, requestHost } from "@/lib/tracking/host";
+import { authCookies } from "@/lib/auth/session-cookies";
 
 // Shopify Storefront API customer access token
 async function shopifyCustomerLogin(email: string, password: string) {
@@ -172,6 +174,20 @@ async function autoOptInCustomer(phone: string, customerId: string) {
   } catch (err: any) {
     console.error('[AUTH] Auto opt-in failed:', err.message);
   }
+}
+
+/**
+ * Admin / staff sign-in (the admin-login and admin-passkey providers: ADMIN, SUPER_ADMIN and
+ * staff accounts) is accepted on the dashboard host only — app.zicabella.com, a local dev
+ * host or ADMIN_LOGIN_HOSTS (lib/tracking/host.ts). On the storefront host it is refused, so
+ * an admin session is never set on zicabella.com and never replaces a shopper's session
+ * there. The customer providers (otp, shopify-customer, google, apple) are not host-checked.
+ */
+function adminSignInRefusedOnHost(provider: string, req: { headers?: unknown } | undefined): boolean {
+  const host = requestHost(req?.headers as any);
+  if (isDashboardHost(host)) return false;
+  console.warn(`[AUTH] ${provider}: sign-in refused on host "${host || '(none)'}" — admins sign in on ${DASHBOARD_HOST} only`);
+  return true;
 }
 
 export const authOptions: AuthOptions = {
@@ -899,7 +915,8 @@ export const authOptions: AuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, req) {
+        if (adminSignInRefusedOnHost("admin-login", req)) return null;
         try {
           if (!credentials?.email || !credentials?.password) return null;
 
@@ -1050,6 +1067,7 @@ export const authOptions: AuthOptions = {
         response: { label: "WebAuthn response", type: "text" },
       },
       async authorize(credentials, req) {
+        if (adminSignInRefusedOnHost("admin-passkey", req)) return null;
         try {
           const { verifyAuthenticationResponse } = await import("@simplewebauthn/server");
           const { PASSKEY_CHALLENGE_COOKIE, readChallenge, cookieFromHeader, relyingParty, fromBase64Url, consumeChallenge } =
@@ -1292,17 +1310,9 @@ export const authOptions: AuthOptions = {
     maxAge: 10 * 24 * 60 * 60, // 10 days — webstore customers stay logged in
     // Admin sessions are enforced via JWT callback (1h inactivity + 8h absolute)
   },
-  cookies: {
-    sessionToken: {
-      name: process.env.NODE_ENV === "production" ? "__Secure-next-auth.session-token" : "next-auth.session-token",
-      options: {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        secure: process.env.NODE_ENV === "production",
-      },
-    },
-  },
+  // Host-only cookies (no `domain`): the admin session stays on app.zicabella.com and a
+  // shopper's on zicabella.com, independently — lib/auth/session-cookies.ts.
+  cookies: authCookies(),
   secret: process.env.NEXTAUTH_SECRET,
   // Keep off by default — NextAuth prints a startup warning whenever debug is true.
   // Opt in with NEXTAUTH_DEBUG=true when you actually need auth tracing.
