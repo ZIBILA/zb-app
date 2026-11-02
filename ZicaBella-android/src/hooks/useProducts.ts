@@ -236,7 +236,9 @@ export function useProducts(count = 24) {
   }, []);
 
   const fetchProducts = useCallback(async (isRefresh = false) => {
-    const cacheKey = count <= 50 ? 'products_list_catalog_50' : `products_list_${count}`;
+    // The server returns the whole catalogue for limit >= 50, so every count up to 100 shares one cache entry
+    // (and one download); `count` only decides how much of it a caller gets back.
+    const cacheKey = count <= 100 ? 'products_list_catalog_50' : `products_list_${count}`;
     
     try {
       if (isMounted.current) {
