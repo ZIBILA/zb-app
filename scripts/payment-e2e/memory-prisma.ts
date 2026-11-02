@@ -199,10 +199,15 @@ function sort(rows: Row[], orderBy: any) {
   });
 }
 const apis: Record<string, any> = {};
+/** Fault injection: while `transaction` > 0, each `$transaction` call throws once (simulated DB outage). */
+export const faults = { transaction: 0 };
 const prisma: any = new Proxy({}, {
   get(_, prop: string) {
     if (prop === '_isMock') return true; // rate-limit uses its in-memory fallback
-    if (prop === '$transaction') return async (fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn));
+    if (prop === '$transaction') return async (fn: any) => {
+      if (faults.transaction > 0) { faults.transaction--; throw new Error('simulated DB outage: connection terminated unexpectedly'); }
+      return typeof fn === 'function' ? fn(prisma) : Promise.all(fn);
+    };
     if (prop === '$queryRawUnsafe' || prop === '$queryRaw') return async (q: any) => {
       const m = String(Array.isArray(q) ? q.join('') : q).match(/nextval\('(\w+)'\)/);
       if (m) return [{ seq_val: ++seqs[m[1]] }];

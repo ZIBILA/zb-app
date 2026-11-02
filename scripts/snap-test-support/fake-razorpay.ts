@@ -1,5 +1,6 @@
-/** Test-only stand-in for the `razorpay` SDK (wired via tsconfig paths). Payments are
- *  read through the same mocked https://api.razorpay.com endpoint the app uses. */
+/** Test-only stand-in for the `razorpay` SDK (wired via tsconfig paths, or passed
+ *  in as the `razorpay` option of the reconciliation services). Payments are read
+ *  through the same mocked https://api.razorpay.com endpoint the app uses. */
 export default class FakeRazorpay {
   static validateWebhookSignature(body: string, signature: string, secret: string): boolean {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -14,6 +15,12 @@ export default class FakeRazorpay {
   };
   payments = {
     fetch: async (id: string) => (await fetch(`https://api.razorpay.com/v1/payments/${id}`)).json(),
+    // List payments (reconcile job): same query shape as the SDK, served by the mock.
+    all: async (params: { from?: number; to?: number; count?: number; skip?: number } = {}) => {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) if (v !== undefined) qs.set(k, String(v));
+      return (await fetch(`https://api.razorpay.com/v1/payments?${qs.toString()}`)).json();
+    },
   };
   constructor(_: any) {}
 }

@@ -1,0 +1,26 @@
+# GitHub Actions workflow for /api/cron/reconcile-razorpay (every 15 min).
+# The deploy token used to open PR could not write under .github/workflows (no `workflow` scope),
+# so the file lives here: move it to .github/workflows/razorpay-reconcile.yml unchanged.
+name: Razorpay Reconcile Scheduler
+
+# Payment-driven Razorpay reconciliation: every captured payment of the last 3 h
+# is matched to a local order and any unconfirmed one is marked paid (see
+# app/api/cron/reconcile-razorpay/route.ts). Same pattern as order-sync.yml,
+# offset so the two schedulers do not hit the app at the same minute.
+
+on:
+  schedule:
+    - cron: '3,18,33,48 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping-razorpay-reconcile:
+    name: Ping Razorpay Reconcile Cron
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Ping Reconcile Webhook
+        run: |
+          curl --retry 3 --retry-delay 10 --retry-all-errors --fail-with-body -sS -m 60 -X GET "https://app.zicabella.com/api/cron/reconcile-razorpay" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

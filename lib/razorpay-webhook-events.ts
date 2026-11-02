@@ -13,6 +13,11 @@
  *   the customer's order list.
  * - capturedAmountCheck: compares the captured amount with what the order
  *   expects (prepaid total, or the configured COD upfront fee).
+ * - recordCheckoutCompleteRetry / listPendingCheckoutCompleteRetries: a
+ *   /api/checkout/complete request whose payment was verified captured but whose
+ *   order write failed is kept in the same WebhookEvent table (eventType
+ *   `checkout.complete.retry`, source `checkout`) so the reconciliation job can
+ *   finish it even if the shopper's browser never comes back.
  */
 import prisma from '@/lib/db';
 import { isPreConfirmationOrderStatus } from '@/lib/payment-status';
@@ -95,6 +100,104 @@ async function legacyClaim(source: string, eventType: string, payload: string, e
   return { duplicate: false, record };
 }
 
+// ─── Checkout-completion retry rows ─────────────────────────────────────────
+//
+// /api/checkout/complete verifies the signature and confirms the capture BEFORE
+// it writes the order. If that write then throws (DB outage, pool exhausted),
+// the money has been taken but nothing durable says so: the browser's retry is
+// the only hope, and the 2 Nov incident showed a pending order can sit for hours
+// when the webhook is disabled. These rows are that durable record. They reuse
+// WebhookEvent (no new table): a distinct source keeps them out of the
+// "newest Razorpay delivery" check, and the payment id in the key de-duplicates
+// the browser's own retries.
+
+export const CHECKOUT_COMPLETE_RETRY_EVENT = 'checkout.complete.retry';
+export const CHECKOUT_COMPLETE_RETRY_SOURCE = 'checkout';
+
+export function checkoutCompleteRetryKey(razorpayPaymentId: string): string {
+  return `checkout_complete:${razorpayPaymentId}`.slice(0, 180);
+}
+
+/**
+ * Record a verified-but-unwritten completion. Never throws: the caller is
+ * already in an error path and answers 503 either way (the client retries).
+ */
+export async function recordCheckoutCompleteRetry(opts: {
+  razorpayPaymentId: string;
+  payload: string;
+}): Promise<{ recorded: boolean; id?: string; reason?: string }> {
+  try {
+    const claim = await claimRazorpayWebhookEvent({
+      eventType: CHECKOUT_COMPLETE_RETRY_EVENT,
+      eventKey: checkoutCompleteRetryKey(opts.razorpayPaymentId),
+      payload: opts.payload,
+      source: CHECKOUT_COMPLETE_RETRY_SOURCE,
+    });
+    if (claim.duplicate) return { recorded: true, reason: claim.reason };
+    return { recorded: true, id: claim.record.id };
+  } catch (err: any) {
+    console.error('[Checkout Complete] Could not record retry row:', err?.message || err);
+    return { recorded: false, reason: err?.message || String(err) };
+  }
+}
+
+export type PendingCheckoutCompleteRetry = {
+  id: string;
+  createdAt: Date;
+  razorpayOrderId: string | null;
+  razorpayPaymentId: string | null;
+};
+
+/**
+ * Unprocessed retry rows older than `olderThanMs` (the browser gets the first
+ * minute to finish the request itself), oldest first.
+ */
+export async function listPendingCheckoutCompleteRetries(
+  olderThanMs: number,
+  now: number = Date.now(),
+  take = 100
+): Promise<PendingCheckoutCompleteRetry[]> {
+  const rows = await prisma.webhookEvent.findMany({
+    where: {
+      source: CHECKOUT_COMPLETE_RETRY_SOURCE,
+      eventType: CHECKOUT_COMPLETE_RETRY_EVENT,
+      processed: false,
+      createdAt: { lt: new Date(now - olderThanMs) },
+    },
+    orderBy: { createdAt: 'asc' },
+    take,
+    select: { id: true, createdAt: true, payload: true },
+  });
+  return rows.map((row: { id: string; createdAt: Date; payload: string }) => {
+    let body: any = null;
+    try { body = JSON.parse(row.payload); } catch { body = null; }
+    const rzp = body?.razorpay || {};
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      razorpayOrderId: typeof rzp.razorpay_order_id === 'string' ? rzp.razorpay_order_id : null,
+      razorpayPaymentId: typeof rzp.razorpay_payment_id === 'string' ? rzp.razorpay_payment_id : null,
+    };
+  });
+}
+
+export async function markWebhookEventProcessed(id: string, orderId?: string | null): Promise<void> {
+  await prisma.webhookEvent.update({
+    where: { id },
+    data: { processed: true, processedAt: new Date(), ...(orderId ? { orderId } : {}) },
+  });
+}
+
+/** Newest processed Razorpay delivery, or null when none was ever recorded. */
+export async function newestProcessedRazorpayWebhookAt(): Promise<Date | null> {
+  const row = await prisma.webhookEvent.findFirst({
+    where: { source: 'razorpay', processed: true },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  });
+  return row?.createdAt ? new Date(row.createdAt) : null;
+}
+
 export function nextOrderStatusOnCapture(currentStatus: string | null | undefined, isCod: boolean): string {
   const confirmed = isCod ? 'open' : 'approved';
   if (!currentStatus) return confirmed;
@@ -153,6 +256,33 @@ export function capturedAmountCheck(
   const tol = opts.toleranceRupees ?? 1;
   const underpaid = !currencyMismatch && expectedRupees > 0 && capturedRupees + tol < expectedRupees;
   return { capturedRupees, expectedRupees, underpaid, currencyMismatch };
+}
+
+/**
+ * Admin alert body when a captured payment had no local order AND the automatic
+ * placeholder recovery failed (shared by both webhook routes).
+ */
+export function orphanRecoveryFailedAlertHtml(args: {
+  razorpayOrderId: string;
+  razorpayPaymentId?: string | null;
+  amountRupees: number;
+  contact?: string | null;
+  error?: string | null;
+  source: string;
+}): string {
+  return `<div style="font-family: sans-serif; color: #fff; background: #111; padding: 20px; border-radius: 8px;">
+    <h2 style="color: #ef4444; margin-top: 0;">CRITICAL: Razorpay Payment Captured but Order Recovery Failed</h2>
+    <p>A payment was captured on Razorpay, but no matching order existed in the local database and the automatic recovery service failed.</p>
+    <table style="width: 100%; border-collapse: collapse; margin-top: 15px; color: #ccc;">
+      <tr><td style="padding: 6px; font-weight: bold;">Razorpay Order ID:</td><td>${args.razorpayOrderId}</td></tr>
+      <tr><td style="padding: 6px; font-weight: bold;">Razorpay Payment ID:</td><td>${args.razorpayPaymentId || 'n/a'}</td></tr>
+      <tr><td style="padding: 6px; font-weight: bold;">Amount:</td><td>₹${Number(args.amountRupees || 0).toLocaleString('en-IN')}</td></tr>
+      <tr><td style="padding: 6px; font-weight: bold;">Customer Email/Contact:</td><td>${args.contact || 'N/A'}</td></tr>
+      <tr><td style="padding: 6px; font-weight: bold;">Error Detail:</td><td style="color: #fca5a5;">${args.error || 'Unknown error'}</td></tr>
+      <tr><td style="padding: 6px; font-weight: bold;">Detected by:</td><td>${args.source}</td></tr>
+    </table>
+    <p style="margin-top: 20px; color: #888; font-size: 12px;">Please open Admin → Transactions to manually resolve this payment.</p>
+  </div>`;
 }
 
 /** Admin alert body for an under-captured payment (plain HTML, no secrets). */

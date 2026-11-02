@@ -1,13 +1,14 @@
 import prisma from '@/lib/db';
 import { assignUniversalOrderNumber } from '@/lib/orderNumber';
-import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
-import Razorpay from 'razorpay';
+import { createRazorpayClient, type RazorpayClientLike } from '@/lib/razorpay-client';
 import { paymentLog } from '@/lib/payment-logger';
 
 export interface RecoveryOptions {
   razorpayOrderId: string;
   razorpayPaymentId?: string;
   webhookEventId?: string;
+  /** Reuse the caller's SDK handle (reconcile job / regression scripts). */
+  razorpay?: RazorpayClientLike;
   // Custom items/details provided manually by admin (optional)
   adminCustomItems?: Array<{
     title: string;
@@ -19,7 +20,7 @@ export interface RecoveryOptions {
     variantId?: string;
   }>;
   customerNote?: string;
-  triggerSource?: 'webhook' | 'admin_manual';
+  triggerSource?: 'webhook' | 'admin_manual' | 'reconciliation';
 }
 
 export interface RecoveryResult {
@@ -87,8 +88,10 @@ export async function recoverOrphanedRazorpayOrder(options: RecoveryOptions): Pr
     }
 
     // 2. Fetch Razorpay Order details via SDK
-    const { key_id, key_secret } = await resolveRazorpayCredentials();
-    const razorpay = new Razorpay({ key_id, key_secret });
+    const razorpay = options.razorpay || (await createRazorpayClient());
+    if (!razorpay) {
+      throw new Error('Razorpay keys not configured correctly.');
+    }
 
     const rzpOrder: any = await razorpay.orders.fetch(razorpayOrderId);
     if (!rzpOrder) {
