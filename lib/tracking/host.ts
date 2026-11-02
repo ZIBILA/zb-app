@@ -108,3 +108,19 @@ export function isAppHostPathToRedirect(pathname: string): boolean {
   if (LOOKS_LIKE_FILE.test(path)) return false;
   return true;
 }
+
+// ── zicabella.com → app.zicabella.com/dashboard (middleware) ─────────────────
+
+/** The one host the admin dashboard lives on. */
+export const ADMIN_HOST = 'app.zicabella.com';
+
+const ADMIN_PAGE_PREFIX = /^\/(?:dashboard|admin|web-store)(?:\/|$)/;
+
+/**
+ * true for admin dashboard pages. zicabella.com (and www) 301 these to
+ * app.zicabella.com, so the shop host never serves the dashboard. APIs are not pages
+ * and are not moved (the storefront and the payment webhooks call them on zicabella.com).
+ */
+export function isAdminPagePath(pathname: string): boolean {
+  return ADMIN_PAGE_PREFIX.test(String(pathname ?? '').replace(/[?#][\s\S]*$/, ''));
+}

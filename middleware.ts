@@ -2,7 +2,7 @@ import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
 import { clientIpFromHeaders } from "@/lib/client-ip";
-import { isAppHostPathToRedirect, isNonCanonicalStorefrontHost } from "@/lib/tracking/host";
+import { ADMIN_HOST, isAdminPagePath, isAppHostPathToRedirect, isNonCanonicalStorefrontHost } from "@/lib/tracking/host";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
 // ── Unknown collection / product handles → a real 404 ───────────────────────
@@ -173,6 +173,23 @@ export default withAuth(
       url.hostname = "zicabella.com";
       url.protocol = "https";
       return NextResponse.redirect(url, 308);
+    }
+
+    // One host per job: the dashboard lives only on app.zicabella.com. Admin pages asked
+    // for on the shop host move there (the session cookie is per host, so an admin signs in
+    // once on app.zicabella.com); the app host's bare root opens the dashboard.
+    if ((host === "zicabella.com" || req.nextUrl.hostname === "zicabella.com") && (req.method === "GET" || req.method === "HEAD") && isAdminPagePath(pathname)) {
+      const url = req.nextUrl.clone();
+      url.hostname = ADMIN_HOST;
+      url.protocol = "https";
+      url.port = "";
+      return NextResponse.redirect(url, 301);
+    }
+    if (host === ADMIN_HOST && (req.method === "GET" || req.method === "HEAD") && pathname === "/") {
+      const url = req.nextUrl.clone();
+      url.pathname = "/dashboard";
+      url.search = "";
+      return NextResponse.redirect(url, 302);
     }
 
     // Shoppers belong on zicabella.com: the Meta / Snap ads, pixels and relays are tied

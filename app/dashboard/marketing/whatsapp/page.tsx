@@ -201,19 +201,19 @@ const TEMPLATE_PRESETS = [
   },
   {
     id: 'new_product', label: '🆕 New Product Launch', desc: 'Introduce a new product with image and link',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, meet our newest piece: {{2}}. {{3}} Be the first to get yours.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'View Product', url: 'https://app.zicabella.com/products/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, meet our newest piece: {{2}}. {{3}} Be the first to get yours.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'View Product', url: 'https://zicabella.com/products/{{1}}' }] }
   },
   {
     id: 'festival_sale', label: '🪔 Festival Sale', desc: 'Festival offer with end date and shop link',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our {{2}} sale is on! Enjoy {{3}} on selected styles until {{4}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop the Sale', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our {{2}} sale is on! Enjoy {{3}} on selected styles until {{4}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop the Sale', url: 'https://zicabella.com/collections/{{1}}' }] }
   },
   {
     id: 'discount_offer', label: '🏷️ Discount Offer', desc: 'Discount with a copy-code button',
-    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, here is {{2}} off your next order. Use the code below at checkout before {{3}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'COPY_CODE', example: 'ZICA20' }, { type: 'URL', text: 'Shop Now', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, here is {{2}} off your next order. Use the code below at checkout before {{3}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'COPY_CODE', example: 'ZICA20' }, { type: 'URL', text: 'Shop Now', url: 'https://zicabella.com/collections/{{1}}' }] }
   },
   {
     id: 'announcement', label: '📣 Announcement', desc: 'Special announcement, text only',
-    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, {{2}}', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Learn More', url: 'https://app.zicabella.com/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, {{2}}', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Learn More', url: 'https://zicabella.com/{{1}}' }] }
   },
   {
     id: 'order_confirmation', label: '📦 Order Confirm', desc: 'Confirm order with tracking link',
