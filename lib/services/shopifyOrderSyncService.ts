@@ -725,9 +725,11 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         shopifyOrderName,
         shopifySyncStatus: 'synced',
         shopifySyncError: null,
-        tags: [withInventoryTag(order.tags, INV_DEDUCTED_TAG), ...(inventoryOverridden ? ['oversold'] : [])]
-          .filter(Boolean)
-          .join(', '),
+        tags: Array.from(new Set(
+          [...String(withInventoryTag(order.tags, INV_DEDUCTED_TAG) || '').split(','), ...(inventoryOverridden ? ['oversold'] : [])]
+            .map((t) => t.trim())
+            .filter(Boolean)
+        )).join(', '),
       },
     });
 

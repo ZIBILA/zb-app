@@ -39,6 +39,27 @@ import { paymentLog } from '@/lib/payment-logger';
 export const RECONCILE_WINDOW_MS = 3 * 60 * 60 * 1000;
 /** No processed Razorpay delivery for this long while captures keep arriving = webhook is dead. */
 export const WEBHOOK_SILENCE_ALERT_MS = 2 * 60 * 60 * 1000;
+/** A capture is only "undelivered" once a healthy webhook would long since have been processed. */
+const WEBHOOK_DELIVERY_GRACE_MS = 5 * 60_000;
+/** A mismatch / unresolved line that persists is emailed once per this long, not on every run. */
+const REPORT_REPEAT_MS = 6 * 60 * 60 * 1000;
+const reportedLineAt = new Map<string, number>();
+
+/**
+ * Recoveries are news once. Mismatch / unresolved lines describe a condition that stays true for the
+ * whole 3 h capture window (a duplicate capture, an order Razorpay disagrees with), so without this a
+ * single payment produced an email on every run.
+ */
+function linesToReport(lines: ReconcileLine[], now: number): ReconcileLine[] {
+  if (reportedLineAt.size > 2000) reportedLineAt.clear();
+  return lines.filter((l) => {
+    if (l.kind === 'recovered' || l.kind === 'orphan_recovered') return true;
+    const key = `${l.kind}:${l.paymentId}:${l.action}`;
+    if (now - (reportedLineAt.get(key) || 0) < REPORT_REPEAT_MS) return false;
+    reportedLineAt.set(key, now);
+    return true;
+  });
+}
 /** The dead-webhook warning alone (nothing else to report) is emailed at most this often. */
 const WEBHOOK_SILENCE_REMINDER_MS = 6 * 60 * 60 * 1000;
 /** The shopper's browser gets this long to finish its own /complete retries first. */
@@ -357,7 +378,15 @@ export async function reconcileRazorpayPayments(
   try {
     const newest = await newestProcessedRazorpayWebhookAt();
     result.webhookLastDeliveryAt = newest ? newest.toISOString() : null;
-    if (result.capturedSeen >= 1 && (!newest || now - newest.getTime() > WEBHOOK_SILENCE_ALERT_MS)) result.webhookDead = true;
+    const newestMs = newest ? newest.getTime() : 0;
+    // Dead = a capture arrived AFTER the last processed delivery (and long enough ago that a healthy
+    // webhook would have delivered it) while no delivery has been processed for 2 h. A quiet period
+    // after a delivered capture is not a dead webhook.
+    const undelivered = captured.some((p) => {
+      const t = Number(p?.created_at) * 1000;
+      return !Number.isFinite(t) || (t > newestMs && now - t > WEBHOOK_DELIVERY_GRACE_MS);
+    });
+    if (undelivered && (!newest || now - newestMs > WEBHOOK_SILENCE_ALERT_MS)) result.webhookDead = true;
   } catch (err: any) {
     result.errors.push(`Webhook freshness check failed: ${err?.message || err}`);
   }
@@ -365,15 +394,18 @@ export async function reconcileRazorpayPayments(
   // 6. One admin email per run, only when there is something to say. The webhook
   //    line rides along with other findings; on its own it is repeated no more
   //    than every WEBHOOK_SILENCE_REMINDER_MS so 96 runs a day do not become 96 mails.
-  const hasFindings = result.lines.length > 0;
+  const reportLines = linesToReport(result.lines, now);
+  const hasFindings = reportLines.length > 0;
   let webhookDeadEmailed = false;
   if (hasFindings || (result.webhookDead && (await webhookSilenceReminderDue(now)))) {
-    const html = reconcileReportHtml(result, now);
+    const n = (k: ReconcileLineKind) => reportLines.filter((l) => l.kind === k).length;
+    const report = { ...result, lines: reportLines, recovered: n('recovered'), orphanRecovered: n('orphan_recovered'), mismatched: n('mismatch'), unresolved: n('unresolved') };
+    const html = reconcileReportHtml(report, now);
     const parts = [
-      result.recovered ? `${result.recovered} recovered` : '',
-      result.orphanRecovered ? `${result.orphanRecovered} orphan` : '',
-      result.mismatched ? `${result.mismatched} mismatched` : '',
-      result.unresolved ? `${result.unresolved} unresolved` : '',
+      report.recovered ? `${report.recovered} recovered` : '',
+      report.orphanRecovered ? `${report.orphanRecovered} orphan` : '',
+      report.mismatched ? `${report.mismatched} mismatched` : '',
+      report.unresolved ? `${report.unresolved} unresolved` : '',
       result.webhookDead ? 'webhook silent' : '',
     ].filter(Boolean);
     const subject = `Razorpay reconciliation: ${parts.join(', ') || 'report'}`;

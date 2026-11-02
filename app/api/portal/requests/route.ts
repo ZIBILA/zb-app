@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 
 export async function POST(req: Request) {
   try {
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
 
     if (type === 'return') {
       const existingReturn = await prisma.return.findFirst({
-        where: { orderId, productId: orderItem.productId as string }
+        where: withoutShopifyRefundMirrors({ orderId, productId: orderItem.productId as string })
       });
       if (existingReturn) {
         return NextResponse.json({ error: 'Return request already exists for this item' }, { status: 400 });

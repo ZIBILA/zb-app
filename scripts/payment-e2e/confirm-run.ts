@@ -23,7 +23,7 @@ Object.assign(process.env, {
 const V = { DENIM: '51813148262681', TEE: '51813148328217' };
 const PRICE: Record<string, number> = { [V.DENIM]: 1499, [V.TEE]: 799 };
 
-type RzpPayment = { id: string; order_id: string; status: string; captured: boolean; amount: number; amount_refunded: number; currency: string };
+type RzpPayment = { id: string; order_id: string; status: string; captured: boolean; amount: number; amount_refunded: number; currency: string; created_at?: number };
 const razorpayPayments = new Map<string, RzpPayment>();
 const shopifyOrders: any[] = [];
 const adminMails: string[] = [];
@@ -38,7 +38,7 @@ const calls = { rzpOrderFetch: 0, rzpPaymentsList: 0, shopifyCreateAttempts: 0 }
   if (m) { const p = razorpayPayments.get(m[1]); return p ? json(200, { ...p }) : json(404, { error: { description: 'not found' } }); }
   if (u.startsWith('https://api.razorpay.com/v1/payments?')) {
     const nowSec = Math.floor(Date.now() / 1000);
-    return json(200, { entity: 'collection', items: [...razorpayPayments.values()].map(p => ({ ...p, created_at: nowSec })) });
+    return json(200, { entity: 'collection', items: [...razorpayPayments.values()].map(p => ({ ...p, created_at: p.created_at ?? nowSec })) });
   }
   const op = u.match(/^https:\/\/api\.razorpay\.com\/v1\/orders\/([^/?]+)\/payments$/);
   if (op) { calls.rzpPaymentsList++; return json(200, { items: [...razorpayPayments.values()].filter(p => p.order_id === op[1]) }); }
@@ -97,7 +97,7 @@ async function main() {
   const { retryFailedPaidShopifySyncs } = await import('../../lib/services/orderLifecycleService');
   const { confirmPaymentForRazorpayOrder } = await import('../../lib/services/paymentConfirmation');
   const { withoutShopifyRefundMirrors } = await import('../../lib/returns-filter');
-  const { startBackgroundJobs } = await import('../../lib/background-jobs');
+  const { startBackgroundJobs, withTimeout } = await import('../../lib/background-jobs');
   const { reconcileRazorpayPayments } = await import('../../lib/services/razorpayReconcileService');
   for (const level of ['log', 'warn', 'error'] as const) {
     const orig = console[level].bind(console);
@@ -285,10 +285,67 @@ async function main() {
   eq('9f: a capture with no local order becomes a held placeholder (never lost)', [scan4.orphanRecovered, orphan?.shopifySyncStatus], [1, 'needs_review']);
   eq('9g: and the customer is not told "confirmed" for a placeholder', emails(orphan?.id).length, 0);
 
-  // ── 10. background jobs are production-only ───────────────────────────────────
-  console.log('\n— 10. background jobs');
+  // ── 10. review fixes ─────────────────────────────────────────────────────────
+  console.log('\n— 10. code-review fixes');
+  // 10a. On-demand My Orders check keeps the NEWEST pending orders when it caps (it used to drop the one just paid).
+  const custId = order(j.localOrderId).customerId;
+  for (let n = 0; n < 6; n++) { const old = await precreate(); age(old.localOrderId, (1 + n * 0.3) * 3600_000); }
+  const newest = await precreate();
+  pay('pay_NEW', newest.razorpay_order_id, 'captured', 3797);
+  await reconcilePendingMainOrders({ customerIds: [custId], limit: 5 });
+  eq('10a: with 6+ abandoned pending orders, the order just paid is still the one confirmed', order(newest.localOrderId).paymentStatus, 'paid');
+  // 10b. ...and the on-demand check only looks at recent checkouts (older ones are the background scan's job).
+  const stale6h = await precreate();
+  pay('pay_STALE', stale6h.razorpay_order_id, 'captured', 3797);
+  age(stale6h.localOrderId, 10 * 3600_000);
+  await reconcilePendingMainOrders({ customerIds: [custId], limit: 5 });
+  eq('10b: a 10-hour-old pending order is left for the background scan…', order(stale6h.localOrderId).paymentStatus, 'pending');
+  await reconcilePendingMainOrders({ minAgeMs: 90_000, throttleOlderOrders: true });
+  eq('10c: …which does confirm it', order(stale6h.localOrderId).paymentStatus, 'paid');
+  // 10d. Older checkouts are re-checked progressively less often.
+  const slow = await precreate();
+  age(slow.localOrderId, 20 * 60_000);
+  const t1 = await reconcilePendingMainOrders({ razorpayOrderId: slow.razorpay_order_id, throttleOlderOrders: true });
+  const t2 = await reconcilePendingMainOrders({ razorpayOrderId: slow.razorpay_order_id, throttleOlderOrders: true });
+  eq('10d: a 20-min-old pending order is checked, then skipped on the next tick (5-min cadence)', [t1.checked, t2.checked], [1, 0]);
+
+  // 10e. Dead-webhook verdict: a quiet spell after a DELIVERED capture is not "dead"; an undelivered one is.
+  const nowMs = Date.now(), HOUR = 3600_000;
+  const evt = async (agoMs: number, key: string) => { const e = await prisma.webhookEvent.create({ data: { source: 'razorpay', eventType: 'payment.captured', eventKey: key, payload: '{}', processed: true } }); (db.webhookEvent.find((x: any) => x.id === e.id) as any).createdAt = new Date(nowMs - agoMs); };
+  const sec = (agoMs: number) => Math.floor((nowMs - agoMs) / 1000);
+  await evt(2.5 * HOUR, 'evt:quiet');
+  const quietPay = razorpayPayments.get('pay_J')!; quietPay.created_at = sec(2.5 * HOUR); // captured and delivered at the same moment
+  const quiet = await reconcileRazorpayPayments({ now: nowMs });
+  eq('10e: webhook delivered the only capture 2.5 h ago, nothing since → NOT reported as dead', quiet.webhookDead, false);
+  razorpayPayments.set('pay_UNDELIVERED', { id: 'pay_UNDELIVERED', order_id: 'order_LATE', status: 'captured', captured: true, amount: 100, amount_refunded: 0, currency: 'INR', created_at: sec(1 * HOUR) });
+  const dead = await reconcileRazorpayPayments({ now: nowMs });
+  eq('10f: a capture newer than the last delivery, with no delivery for 2 h+ → reported as dead', dead.webhookDead, true);
+  razorpayPayments.delete('pay_UNDELIVERED');
+
+  // 10g. A persistent finding (second capture on an already-paid order) is emailed once, not on every run.
+  const dup = await precreate();
+  pay('pay_DUP1', dup.razorpay_order_id, 'captured', 3797);
+  age(dup.localOrderId, 5 * 60_000);
+  await reconcilePendingMainOrders({ razorpayOrderId: dup.razorpay_order_id });
+  pay('pay_DUP2', dup.razorpay_order_id, 'captured', 3797); // the shopper paid twice
+  adminMails.length = 0;
+  const d1 = await reconcileRazorpayPayments({ now: nowMs });
+  const mailsAfterFirst = adminMails.filter(m => /Razorpay reconciliation/.test(m)).length;
+  const d2 = await reconcileRazorpayPayments({ now: nowMs + 5 * 60_000 });
+  const d3 = await reconcileRazorpayPayments({ now: nowMs + 10 * 60_000 });
+  const mailsAfterThird = adminMails.filter(m => /Razorpay reconciliation/.test(m)).length;
+  check('10g: the duplicate capture is listed on every run…', [d1, d2, d3].every(r => r.lines.some(l => l.paymentId === 'pay_DUP2' && l.kind === 'mismatch')), d2.lines);
+  eq('10h: …but the team is emailed about it once, not every 5 minutes', [mailsAfterFirst >= 1, mailsAfterThird], [true, mailsAfterFirst]);
+
+  // 10i. A hung job cannot freeze its timer.
+  let hung = '';
+  await withTimeout(new Promise(() => {}), 40).catch((e: Error) => { hung = e.message; });
+  check('10i: a never-settling job run times out instead of blocking forever', /timed out/.test(hung), hung);
+
+  // ── 11. background jobs are production-only ───────────────────────────────────
+  console.log('\n— 11. background jobs');
   startBackgroundJobs();
-  eq('10a: not started outside production', (globalThis as any).__zbJobsStarted, undefined);
+  eq('11a: not started outside production', (globalThis as any).__zbJobsStarted, undefined);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

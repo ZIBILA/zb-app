@@ -92,6 +92,15 @@ async function shopifySyncRetry() {
   );
 }
 
+/** Rejects if `work` has not settled in `ms`. The abandoned promise is left to finish on its own. */
+export function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 const JOBS: Job[] = [
   { name: 'payment-reconcile', everyMs: 2 * 60_000, firstRunMs: 45_000, run: paymentReconcile },
   { name: 'razorpay-payment-scan', everyMs: 5 * 60_000, firstRunMs: 75_000, run: razorpayPaymentScan },
@@ -115,7 +124,8 @@ export function startBackgroundJobs() {
       running = true;
       const t0 = Date.now();
       try {
-        await job.run();
+        // A hung HTTP call must not leave `running` true forever (the job would silently stop).
+        await withTimeout(job.run(), Math.max(job.everyMs * 2, 5 * 60_000));
       } catch (err: unknown) {
         console.error(`[jobs] ${job.name} failed: ${err instanceof Error ? err.message : String(err)}`);
       } finally {

@@ -563,7 +563,7 @@ export type MainOrderReconcileOptions = SyncScanOptions & {
   minAgeMs?: number;
   /** Max orders examined per run (targeted lookups). */
   limit?: number;
-  /** Re-check orders older than 30 min at most every 10 min (background runs). */
+  /** Re-check older orders less often: every run up to 10 min old, then every 5 min, then every 15 min. */
   throttleOlderOrders?: boolean;
   /** The caller emails the customer itself (payment-driven reconcile), so don't send it here too. */
   skipConfirmationEmail?: boolean;
@@ -596,8 +596,16 @@ export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions
   const until = opts.minAgeMs ? new Date(Date.now() - opts.minAgeMs) : undefined;
   let pending = byIds
     ? await prisma.order.findMany({ where: { ...baseWhere, id: { in: opts.orderIds } } })
-    : await listRowsOldestFirst(prisma.order, baseWhere, new Date(Date.now() - RECOVERY_WINDOW_MS), until);
-  if (opts.limit) pending = pending.slice(0, opts.limit);
+    // A shopper opening My Orders only needs their recent checkouts; abandoned ones from days ago are the
+    // background scan's job.
+    : await listRowsOldestFirst(
+        prisma.order,
+        baseWhere,
+        new Date(Date.now() - (opts.customerIds?.length ? PENDING_ORDER_TIMEOUT_MS : RECOVERY_WINDOW_MS)),
+        until
+      );
+  // The list is oldest-first: a cap must keep the NEWEST rows (the order the shopper just paid for).
+  if (opts.limit) pending = pending.slice(-opts.limit);
   const deadline = Date.now() + (opts.budgetMs ?? DEFAULT_SCAN_BUDGET_MS);
 
   const { isCapturedPaymentEntity, paymentAmountRupees } = await import("@/lib/razorpay-payment");
@@ -613,10 +621,12 @@ export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions
       break;
     }
     if (opts.throttleOlderOrders) {
-      // New checkouts are looked at on every run; older abandoned ones only every 10 min.
+      // Fresh checkouts (the shopper may be mid-payment) are looked at on every run; older ones less
+      // and less often, so a pile of abandoned carts does not cost thousands of Razorpay calls an hour.
       const ageMs = Date.now() - new Date(order.createdAt).getTime();
+      const every = ageMs <= 10 * 60_000 ? 0 : ageMs <= 60 * 60_000 ? 5 * 60_000 : 15 * 60_000;
       const last = lastCheckedAt.get(order.id) || 0;
-      if (ageMs > 30 * 60 * 1000 && Date.now() - last < 10 * 60 * 1000) continue;
+      if (every && Date.now() - last < every) continue;
       lastCheckedAt.set(order.id, Date.now());
     }
     result.checked++;
