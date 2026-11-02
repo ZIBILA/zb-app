@@ -1,11 +1,57 @@
 import prisma from "@/lib/db";
-import { resolveRazorpayCredentials } from "@/lib/razorpay-credentials";
-import Razorpay from "razorpay";
+import { createRazorpayClient, type RazorpayClientLike } from "@/lib/razorpay-client";
 import { nextOrderStatusOnCapture } from "@/lib/razorpay-webhook-events";
 import { PAID_LIKE_STATUSES } from "@/lib/payment-status";
 
 /** Pending web orders older than this with no capture / authorization at Razorpay are closed as timed out. */
 export const PENDING_ORDER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+
+/** Rows older than this are left alone by the scans (a 7-day-old checkout is not coming back). */
+const RECOVERY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SCAN_BATCH_SIZE = 50;
+/**
+ * A scan used to look at the newest 50 pending rows only, so on a busy day an
+ * order outside that window was never reconciled (2 Nov: ZBPP82722 sat pending
+ * for 4.5 h). Scans now walk every PENDING row younger than RECOVERY_WINDOW_MS,
+ * oldest first, in batches of SCAN_BATCH_SIZE — a set the timeouts keep small
+ * (rows leave it as paid or failed) — and stop at this soft budget so a backlog
+ * cannot run past the scheduler's curl timeout; the next run continues where the
+ * set shrank. Two scans run back to back in /api/cron/sync-pending-orders, so the
+ * pair stays within the ~60 s the old 2 × 50-row scans could take.
+ */
+const DEFAULT_SCAN_BUDGET_MS = 25_000;
+
+export type SyncScanOptions = {
+  /** Reuse a client (the reconcile job's, or a fake in the regression scripts). */
+  razorpay?: RazorpayClientLike;
+  budgetMs?: number;
+};
+
+/**
+ * Every row matching `where` and younger than the recovery window, oldest first,
+ * fetched in batches of SCAN_BATCH_SIZE (ids first, then rows by id, so rows that
+ * change status while the scan runs are neither skipped nor double-counted).
+ */
+async function listRowsOldestFirst(
+  model: { findMany: (args: any) => Promise<any[]> },
+  where: Record<string, unknown>,
+  since: Date,
+  until?: Date
+): Promise<any[]> {
+  const ids = await model.findMany({
+    where: { ...where, createdAt: { gte: since, ...(until ? { lte: until } : {}) } },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const rows: any[] = [];
+  for (let i = 0; i < ids.length; i += SCAN_BATCH_SIZE) {
+    const chunk = ids.slice(i, i + SCAN_BATCH_SIZE).map((r: { id: string }) => r.id);
+    const batch = await model.findMany({ where: { id: { in: chunk } } });
+    batch.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    rows.push(...batch);
+  }
+  return rows;
+}
 
 export interface SyncedOrderInfo {
   id: string;
@@ -20,20 +66,15 @@ export interface SyncResult {
   syncedOrders: SyncedOrderInfo[];
 }
 
-export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<SyncResult> {
+export async function syncPendingWebStoreOrders(orderIds?: string[], opts: SyncScanOptions = {}): Promise<SyncResult> {
   const syncedOrders: SyncedOrderInfo[] = [];
 
   try {
-    const creds = await resolveRazorpayCredentials().catch(() => null);
-    if (!creds) {
+    const razorpay = opts.razorpay || (await createRazorpayClient());
+    if (!razorpay) {
       console.warn("[RazorpaySync] Razorpay credentials not configured, skipping sync.");
       return { updatedCount: 0, syncedOrders: [] };
     }
-
-    const razorpay = new Razorpay({
-      key_id: creds.key_id,
-      key_secret: creds.key_secret,
-    });
 
     // Build filter for pending + recently-failed orders (late Razorpay captures
     // after payment_timed_out must still be recoverable).
@@ -41,29 +82,35 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
       razorpayOrderId: { not: null },
     };
 
+    let pendingOrders: any[];
     if (orderIds && orderIds.length > 0) {
       where.id = { in: orderIds };
+      pendingOrders = await prisma.webStoreOrder.findMany({ where });
     } else {
-      const recoverySince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      where.OR = [
-        { paymentStatus: { in: ["pending", "payment_pending", "awaiting_confirmation"] } },
-        {
-          AND: [
-            { paymentStatus: { in: ["failed", "payment_failed"] } },
-            { createdAt: { gte: recoverySince } },
-          ],
-        },
-      ];
+      const since = new Date(Date.now() - RECOVERY_WINDOW_MS);
+      const pendingRows = await listRowsOldestFirst(
+        prisma.webStoreOrder,
+        { ...where, paymentStatus: { in: ["pending", "payment_pending", "awaiting_confirmation"] } },
+        since
+      );
+      // Late captures after payment_timed_out: re-check the newest failed rows only,
+      // as before. Failed rows stay failed for ever, so walking all of them oldest
+      // first would spend every run on the same old ones and starve the new.
+      const failedRows = await prisma.webStoreOrder.findMany({
+        where: { ...where, paymentStatus: { in: ["failed", "payment_failed"] }, createdAt: { gte: since } },
+        orderBy: { createdAt: "desc" },
+        take: SCAN_BATCH_SIZE,
+      });
+      pendingOrders = [...pendingRows, ...failedRows];
     }
-
-    const pendingOrders = await prisma.webStoreOrder.findMany({
-      where,
-      take: 50,
-      orderBy: { createdAt: "desc" },
-    });
+    const deadline = Date.now() + (opts.budgetMs ?? DEFAULT_SCAN_BUDGET_MS);
 
     for (const order of pendingOrders) {
       if (!order.razorpayOrderId) continue;
+      if (Date.now() > deadline) {
+        console.warn(`[RazorpaySync] Scan budget reached after ${syncedOrders.length} update(s); remaining rows wait for the next run`);
+        break;
+      }
 
       try {
         // First check if main Order table already has confirmed/paid status for this razorpayOrderId
@@ -458,21 +505,6 @@ export interface MainOrderReconcileResult {
   lateConfirmed: string[];
 }
 
-export interface MainOrderReconcileOptions {
-  /** Reconcile just this Razorpay order (used when the shopper comes back to the site). */
-  razorpayOrderId?: string;
-  /** Reconcile just these customers' pending orders (used when they open My Orders). */
-  customerIds?: string[];
-  /** Skip orders younger than this, so the browser / webhook usually confirm first. */
-  minAgeMs?: number;
-  /** Max orders examined per run. */
-  limit?: number;
-  /** Re-check orders older than 30 min at most every 10 min (background runs). */
-  throttleOlderOrders?: boolean;
-  /** Stop starting new lookups after this long. */
-  budgetMs?: number;
-}
-
 export const LATE_CONFIRMATION_MS = 10 * 60 * 1000;
 const lastCheckedAt = new Map<string, number>();
 
@@ -511,10 +543,36 @@ export async function repairPaidOrderStatuses(): Promise<number> {
   return repaired;
 }
 
+/**
+ * Statuses a targeted reconcile (explicit `orderIds`: Razorpay reported a capture
+ * for exactly these orders) may flip to paid. A late capture after a failed or
+ * cancelled attempt on the same Razorpay order is a real payment — the webhook
+ * routes already treat FAILED / cancelled rows that way (nextOrderStatusOnCapture).
+ * The scheduled scan keeps to the pending statuses, as before.
+ */
+const RECOVERABLE_MAIN_STATUSES = [...PENDING_MAIN_STATUSES, "failed", "payment_failed", "cancelled", "canceled"];
+
+export type MainOrderReconcileOptions = SyncScanOptions & {
+  /** Reconcile only these Order ids (payment-driven), instead of scanning. */
+  orderIds?: string[];
+  /** Reconcile just this Razorpay order (used when the shopper comes back to the site). */
+  razorpayOrderId?: string;
+  /** Reconcile just these customers' pending orders (used when they open My Orders). */
+  customerIds?: string[];
+  /** Skip orders younger than this, so the browser / webhook usually confirm first. */
+  minAgeMs?: number;
+  /** Max orders examined per run (targeted lookups). */
+  limit?: number;
+  /** Re-check orders older than 30 min at most every 10 min (background runs). */
+  throttleOlderOrders?: boolean;
+  /** The caller emails the customer itself (payment-driven reconcile), so don't send it here too. */
+  skipConfirmationEmail?: boolean;
+};
+
 export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions = {}): Promise<MainOrderReconcileResult> {
   const result: MainOrderReconcileResult = { checked: 0, markedPaid: [], timedOut: [], statusRepaired: 0, lateConfirmed: [] };
-  const startedAt = Date.now();
-  const targeted = Boolean(opts.razorpayOrderId || opts.customerIds?.length);
+  const byIds = Boolean(opts.orderIds && opts.orderIds.length > 0);
+  const targeted = byIds || Boolean(opts.razorpayOrderId || opts.customerIds?.length);
   if (!targeted) {
     try {
       result.statusRepaired = await repairPaidOrderStatuses();
@@ -523,24 +581,24 @@ export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions
     }
   }
 
-  const creds = await resolveRazorpayCredentials().catch(() => null);
-  if (!creds) return result;
-  const razorpay = new Razorpay({ key_id: creds.key_id, key_secret: creds.key_secret });
+  const razorpay = opts.razorpay || (await createRazorpayClient());
+  if (!razorpay) return result;
 
-  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const pending = await prisma.order.findMany({
-    where: {
-      // Web checkout and the mobile app both pre-create a pending order before payment;
-      // either can be left unconfirmed when the shopper leaves the payment screen.
-      orderType: { in: ["WEB_STORE", "MOBILE_APP"] },
-      razorpayOrderId: opts.razorpayOrderId ? opts.razorpayOrderId : { not: null },
-      paymentStatus: { in: PENDING_MAIN_STATUSES },
-      createdAt: opts.minAgeMs ? { gte: since, lte: new Date(Date.now() - opts.minAgeMs) } : { gte: since },
-      ...(opts.customerIds?.length ? { customerId: { in: opts.customerIds } } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: opts.limit ?? 50,
-  });
+  const flippableStatuses = byIds ? RECOVERABLE_MAIN_STATUSES : PENDING_MAIN_STATUSES;
+  const baseWhere: Record<string, unknown> = {
+    // Web checkout and the mobile app both pre-create a pending order before payment;
+    // either can be left unconfirmed when the shopper leaves the payment screen.
+    orderType: { in: ["WEB_STORE", "MOBILE_APP"] },
+    razorpayOrderId: opts.razorpayOrderId ? opts.razorpayOrderId : { not: null },
+    paymentStatus: { in: flippableStatuses },
+    ...(opts.customerIds?.length ? { customerId: { in: opts.customerIds } } : {}),
+  };
+  const until = opts.minAgeMs ? new Date(Date.now() - opts.minAgeMs) : undefined;
+  let pending = byIds
+    ? await prisma.order.findMany({ where: { ...baseWhere, id: { in: opts.orderIds } } })
+    : await listRowsOldestFirst(prisma.order, baseWhere, new Date(Date.now() - RECOVERY_WINDOW_MS), until);
+  if (opts.limit) pending = pending.slice(0, opts.limit);
+  const deadline = Date.now() + (opts.budgetMs ?? DEFAULT_SCAN_BUDGET_MS);
 
   const { isCapturedPaymentEntity, paymentAmountRupees } = await import("@/lib/razorpay-payment");
   const { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } = await import("@/lib/cod-upfront");
@@ -550,7 +608,10 @@ export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions
   if (lastCheckedAt.size > 5000) lastCheckedAt.clear();
 
   for (const order of pending) {
-    if (opts.budgetMs && Date.now() - startedAt > opts.budgetMs) break;
+    if (Date.now() > deadline) {
+      console.warn(`[RazorpaySync] Main-order scan budget reached after ${result.checked} row(s); remaining rows wait for the next run`);
+      break;
+    }
     if (opts.throttleOlderOrders) {
       // New checkouts are looked at on every run; older abandoned ones only every 10 min.
       const ageMs = Date.now() - new Date(order.createdAt).getTime();
@@ -598,9 +659,9 @@ export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions
           .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i)
           .join(", ");
 
-        // Guard against a concurrent webhook: only flip rows still pending.
+        // Guard against a concurrent webhook: only flip rows still unconfirmed.
         const updated = await prisma.order.updateMany({
-          where: { id: order.id, paymentStatus: { in: PENDING_MAIN_STATUSES } },
+          where: { id: order.id, paymentStatus: { in: flippableStatuses } },
           data: {
             paymentStatus: targetPaymentStatus,
             status: nextOrderStatusOnCapture(order.status, isCOD),
@@ -675,6 +736,14 @@ export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions
         void import("@/lib/snap/purchase-server")
           .then(({ emitSnapPurchase }) => emitSnapPurchase(order.id, undefined, { paymentConfirmed: true }))
           .catch(() => {});
+
+        // An order confirmed here was not confirmed by the browser, so /complete never emailed the
+        // customer. Once per order (confirmation_emailed tag + EmailLog); web checkouts only.
+        if (!opts.skipConfirmationEmail) {
+          void import("@/lib/services/orderConfirmationNotice")
+            .then(({ sendConfirmationForReconciledOrder }) => sendConfirmationForReconciledOrder(order.id, "reconcile"))
+            .catch(() => {});
+        }
 
         result.markedPaid.push(order.internalOrderNumber || order.id);
         if (Date.now() - new Date(order.createdAt).getTime() > LATE_CONFIRMATION_MS) {

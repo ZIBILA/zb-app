@@ -20,8 +20,7 @@ type Job = {
   run: () => Promise<void>;
 };
 
-const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-let lastLateAlertAt = 0;
+const SHOPIFY_ALERT_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const shopifyAlertedAt = new Map<string, number>();
 
 async function alertAdmins(subject: string, html: string) {
@@ -33,28 +32,29 @@ async function alertAdmins(subject: string, html: string) {
   }
 }
 
+/** Orders still unconfirmed after a minute and a half: confirm them against Razorpay. */
 async function paymentReconcile() {
   const { reconcilePendingMainOrders } = await import('@/lib/services/razorpaySyncService');
   const r = await reconcilePendingMainOrders({
     minAgeMs: 90_000,
-    limit: 150,
     throttleOlderOrders: true,
     budgetMs: 90_000,
   });
   if (r.markedPaid.length > 0) {
     console.warn(`[jobs] payment-reconcile confirmed ${r.markedPaid.length} paid order(s) the browser/webhook had not: ${r.markedPaid.join(', ')}`);
   }
-  // Orders that waited >10 min mean neither the browser nor the Razorpay webhook confirmed them.
-  // Razorpay silently disables a webhook after repeated failures, so say so instead of letting it rot.
-  if (r.lateConfirmed.length > 0 && Date.now() - lastLateAlertAt > ALERT_COOLDOWN_MS) {
-    lastLateAlertAt = Date.now();
-    await alertAdmins(
-      '⚠️ Paid orders are being confirmed late — check the Razorpay webhook',
-      `<div style="font-family:sans-serif;padding:20px;">
-        <p>These paid orders had waited more than 10 minutes and were only confirmed by the background reconcile job: <b>${r.lateConfirmed.join(', ')}</b>.</p>
-        <p>Normally the shopper's browser or the Razorpay webhook confirms an order within seconds. Open Razorpay Dashboard → Account &amp; Settings → Webhooks and check that the webhook is <b>Active</b> (Razorpay disables it after repeated failed deliveries), that its secret matches <code>RAZORPAY_WEBHOOK_SECRET</code>, and that <code>payment.captured</code> and <code>order.paid</code> are subscribed.</p>
-      </div>`
-    );
+}
+
+/**
+ * Starts from Razorpay's captured payments (not from our pending rows): finds captures with no
+ * local order, finishes verified /complete requests that failed to save, and emails the team when
+ * the webhook looks dead (lib/services/razorpayReconcileService.ts; it throttles its own emails).
+ */
+async function razorpayPaymentScan() {
+  const { reconcileRazorpayPayments } = await import('@/lib/services/razorpayReconcileService');
+  const r = await reconcileRazorpayPayments();
+  if (r.recovered + r.orphanRecovered + r.mismatched + r.unresolved > 0 || r.webhookDead) {
+    console.warn(`[jobs] razorpay-payment-scan recovered=${r.recovered} orphan=${r.orphanRecovered} mismatch=${r.mismatched} unresolved=${r.unresolved}${r.webhookDead ? ' WEBHOOK-SILENT' : ''}`);
   }
 }
 
@@ -80,7 +80,7 @@ async function shopifySyncRetry() {
     select: { id: true, internalOrderNumber: true, shopifySyncError: true },
   });
   const now = Date.now();
-  const toAlert = stuck.filter((o: { id: string }) => now - (shopifyAlertedAt.get(o.id) || 0) > 12 * 60 * 60 * 1000);
+  const toAlert = stuck.filter((o: { id: string }) => now - (shopifyAlertedAt.get(o.id) || 0) > SHOPIFY_ALERT_COOLDOWN_MS);
   if (toAlert.length === 0) return;
   if (shopifyAlertedAt.size > 500) shopifyAlertedAt.clear();
   toAlert.forEach((o: { id: string }) => shopifyAlertedAt.set(o.id, now));
@@ -94,6 +94,7 @@ async function shopifySyncRetry() {
 
 const JOBS: Job[] = [
   { name: 'payment-reconcile', everyMs: 2 * 60_000, firstRunMs: 45_000, run: paymentReconcile },
+  { name: 'razorpay-payment-scan', everyMs: 5 * 60_000, firstRunMs: 75_000, run: razorpayPaymentScan },
   { name: 'webstore-payment-sync', everyMs: 10 * 60_000, firstRunMs: 120_000, run: webStorePaymentSync },
   { name: 'shopify-sync-retry', everyMs: 5 * 60_000, firstRunMs: 90_000, run: shopifySyncRetry },
 ];

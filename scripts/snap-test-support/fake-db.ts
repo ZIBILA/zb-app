@@ -1,23 +1,103 @@
 /**
- * In-memory stand-in for the Prisma client, used ONLY by
- * scripts/verify-snap-webhook.ts (wired via this folder's tsconfig paths).
- * Implements just the calls the Razorpay webhook + Snap ledger make; any other
- * model/method resolves to a harmless no-op so unrelated side paths don't crash.
+ * In-memory stand-in for the Prisma client, used by scripts/verify-snap-webhook.ts,
+ * scripts/verify-razorpay-reconcile.ts and the meta-regression scripts (wired via
+ * their tsconfig paths). Implements the calls the Razorpay webhook, the Razorpay
+ * sync / reconcile services, the Snap ledger and the order-confirmation email
+ * make; any other model/method resolves to a harmless no-op so unrelated side
+ * paths don't crash.
+ *
+ * `where` filters are matched generically (equality, in / notIn / not / contains /
+ * startsWith / gt / gte / lt / lte, OR / AND / NOT), so guarded updates such as
+ * `updateMany({ where: { id, paymentStatus: { in: [...] } } })` behave as in
+ * Postgres instead of matching on id alone.
  */
 export const store = {
   orders: new Map<string, any>(),
+  webStoreOrders: new Map<string, any>(),
   ledger: new Map<string, any>(),
   webhookEvents: [] as any[],
+  syncLogs: [] as any[],
+  payments: [] as any[],
+  emailLogs: [] as any[],
+  customerEventDeliveries: [] as any[],
   calls: [] as string[],
 };
 
 const tick = () => new Promise(r => setImmediate(r));
 
-function findOrder(where: any) {
-  for (const o of store.orders.values()) {
-    if (where.id && o.id === where.id) return o;
-    if (where.razorpayOrderId && o.razorpayOrderId === where.razorpayOrderId) return o;
+// ─── generic where matching ────────────────────────────────────────────────
+const num = (x: any) => (x instanceof Date ? x.getTime() : typeof x === 'string' && Number.isNaN(Number(x)) ? new Date(x).getTime() : Number(x));
+function cmpVal(v: any, cond: any): boolean {
+  if (cond === undefined) return true;
+  if (cond === null) return v === null || v === undefined;
+  if (cond instanceof Date) return v !== null && v !== undefined && new Date(v).getTime() === cond.getTime();
+  if (typeof cond !== 'object' || Array.isArray(cond)) return v === cond;
+  for (const [op, arg] of Object.entries<any>(cond)) {
+    if (op === 'mode') continue;
+    if (op === 'equals' && v !== arg) return false;
+    if (op === 'in' && !arg.includes(v)) return false;
+    if (op === 'notIn' && (v === null || v === undefined || arg.includes(v))) return false;
+    if (op === 'not' && (arg === null ? v === null || v === undefined : v === arg)) return false;
+    if (op === 'contains' && !String(v ?? '').includes(arg)) return false;
+    if (op === 'startsWith' && !String(v ?? '').startsWith(arg)) return false;
+    if (op === 'gt' && !(num(v) > num(arg))) return false;
+    if (op === 'gte' && !(num(v) >= num(arg))) return false;
+    if (op === 'lt' && !(num(v) < num(arg))) return false;
+    if (op === 'lte' && !(num(v) <= num(arg))) return false;
   }
+  return true;
+}
+export function matchRow(row: any, w: any = {}): boolean {
+  for (const [k, cond] of Object.entries<any>(w || {})) {
+    if (k === 'OR') { if (!cond.some((o: any) => matchRow(row, o))) return false; continue; }
+    if (k === 'AND') { if (!(Array.isArray(cond) ? cond : [cond]).every((o: any) => matchRow(row, o))) return false; continue; }
+    if (k === 'NOT') { if ((Array.isArray(cond) ? cond : [cond]).some((o: any) => matchRow(row, o))) return false; continue; }
+    if (k === 'eventKey_channel') { if (row.eventKey !== cond.eventKey || row.channel !== cond.channel) return false; continue; }
+    if (!cmpVal(row[k], cond)) return false;
+  }
+  return true;
+}
+const sortBy = (rows: any[], orderBy: any) => {
+  if (!orderBy) return rows;
+  const [k, dir] = Object.entries<any>(Array.isArray(orderBy) ? orderBy[0] : orderBy)[0] || [];
+  if (!k) return rows;
+  return rows.sort((a, b) => (dir === 'desc' ? -1 : 1) * (num(a[k]) - num(b[k])));
+};
+const project = (row: any, args: any) => {
+  if (!row) return null;
+  if (!args?.select) return { ...row };
+  const out: any = {};
+  for (const [k, on] of Object.entries<any>(args.select)) if (on) out[k] = row[k];
+  return out;
+};
+/** findMany / findFirst / updateMany / count over a Map or array of rows. */
+function collection(rows: () => any[], name: string) {
+  return {
+    findMany: async ({ where, take, skip, orderBy, select }: any = {}) => {
+      await tick();
+      const out = sortBy(rows().filter(r => matchRow(r, where)), orderBy).slice(skip || 0);
+      return (take === undefined ? out : out.slice(0, take)).map(r => project(r, { select }));
+    },
+    findFirst: async ({ where, orderBy, select }: any = {}) => {
+      const out = sortBy(rows().filter(r => matchRow(r, where)), orderBy);
+      return out[0] ? project(out[0], { select }) : null;
+    },
+    count: async ({ where }: any = {}) => rows().filter(r => matchRow(r, where)).length,
+    updateMany: async ({ where, data }: any) => {
+      let count = 0;
+      for (const r of rows()) {
+        if (!matchRow(r, where)) continue;
+        for (const [k, v] of Object.entries<any>(data)) r[k] = v && typeof v === 'object' && 'increment' in v ? (r[k] || 0) + v.increment : v;
+        count++;
+      }
+      store.calls.push(`${name}.updateMany:${count}`);
+      return { count };
+    },
+  };
+}
+
+function findOrder(where: any) {
+  for (const o of store.orders.values()) if (matchRow(o, where)) return o;
   return null;
 }
 
@@ -50,6 +130,9 @@ let seq = 0;
 
 export const created: { orders: any[]; mobileOrders: any[]; customers: any[] } = { orders: [], mobileOrders: [], customers: [] };
 
+const webhookEventRows = () => store.webhookEvents;
+const webStoreRows = () => [...store.webStoreOrders.values()];
+
 const models: Record<string, any> = {
   shop: { findFirst: async () => ({ id: 'shop_1' }) },
   customer: {
@@ -62,32 +145,67 @@ const models: Record<string, any> = {
     updateMany: async () => ({ count: 0 }),
   },
   webhookEvent: {
-    findFirst: async () => null,
-    create: async ({ data }: any) => { const r = { id: `wh${++seq}`, ...data }; store.webhookEvents.push(r); return r; },
+    ...collection(webhookEventRows, 'webhookEvent'),
+    create: async ({ data, select }: any) => {
+      // eventKey is @unique in prisma/schema.prisma: a second claim on the same key is P2002.
+      if (data.eventKey && store.webhookEvents.some(e => e.eventKey === data.eventKey)) { const e: any = new Error('Unique constraint failed on eventKey'); e.code = 'P2002'; throw e; }
+      const r = { id: `wh${++seq}`, processed: false, processedAt: null, orderId: null, createdAt: new Date(), ...data };
+      store.webhookEvents.push(r);
+      return project(r, { select });
+    },
     update: async ({ where, data }: any) => { const r = store.webhookEvents.find(e => e.id === where.id); Object.assign(r || {}, data); return r; },
   },
   order: {
     create: async ({ data }: any) => {
-      const o = { id: `ord${++seq}`, ...data, items: (data.items?.create || []).map((it: any) => ({ ...it })) };
+      const o = { id: `ord${++seq}`, createdAt: new Date(), ...data, items: (data.items?.create || []).map((it: any) => ({ ...it })) };
       created.orders.push(o); store.orders.set(o.id, o); return { ...o };
     },
-    findUnique: async ({ where }: any) => { await tick(); const o = findOrder(where); return o ? { ...o } : null; },
-    findFirst: async ({ where }: any) => findOrder(where || {}),
+    findUnique: async ({ where, select }: any) => { await tick(); const o = findOrder(where); return o ? project(o, { select }) : null; },
+    findFirst: async ({ where, select }: any = {}) => { const o = findOrder(where || {}); return o ? project(o, { select }) : null; },
     update: async ({ where, data }: any) => { const o = findOrder(where); store.calls.push(`order.update:${o?.id}:${data.paymentStatus ?? ''}`); Object.assign(o, data); return { ...o }; },
-    updateMany: async ({ where, data }: any) => { const o = findOrder(where); if (o) Object.assign(o, data); store.calls.push(`order.updateMany:${o?.id}:${data.paymentStatus ?? ''}`); return { count: o ? 1 : 0 }; },
-    // Missed-purchase recovery scan (lib/meta/purchase.ts): orderType / paymentStatus.in / createdAt range.
-    findMany: async ({ where = {}, take, orderBy }: any) => {
-      await tick();
-      const t = (d: any) => new Date(d).getTime();
-      const dir = orderBy?.createdAt === 'asc' ? 1 : -1;
-      return [...store.orders.values()].filter(o =>
-        (!where.id?.in || where.id.in.includes(o.id)) &&
-        (where.orderType === undefined || o.orderType === where.orderType) &&
-        (!where.paymentStatus?.in || where.paymentStatus.in.includes(o.paymentStatus)) &&
-        (!where.createdAt?.gt || t(o.createdAt) > t(where.createdAt.gt)) &&
-        (!where.createdAt?.lt || t(o.createdAt) < t(where.createdAt.lt)),
-      ).sort((a, b) => dir * (t(a.createdAt) - t(b.createdAt))).slice(0, take ?? Infinity).map(o => ({ ...o }));
+    updateMany: async ({ where, data }: any) => {
+      let count = 0; let last: any = null;
+      for (const o of store.orders.values()) { if (!matchRow(o, where)) continue; Object.assign(o, data); count++; last = o; }
+      store.calls.push(`order.updateMany:${last?.id}:${data.paymentStatus ?? ''}`);
+      return { count };
     },
+    // Missed-purchase recovery scan (lib/meta/purchase.ts), reconcile lookups
+    // (razorpayOrderId / razorpayPaymentId in …, OR), oldest-first batches (select id).
+    findMany: async ({ where = {}, take, orderBy, select }: any = {}) => {
+      await tick();
+      const dir = orderBy?.createdAt === 'asc' ? 1 : -1;
+      return [...store.orders.values()].filter(o => matchRow(o, where))
+        .sort((a, b) => dir * (num(a.createdAt) - num(b.createdAt))).slice(0, take ?? Infinity).map(o => project(o, { select }));
+    },
+  },
+  webStoreOrder: {
+    ...collection(webStoreRows, 'webStoreOrder'),
+    create: async ({ data }: any) => { const w = { id: `ws${++seq}`, createdAt: new Date(), codUpfrontPaid: 0, ...data }; store.webStoreOrders.set(w.id, w); return { ...w }; },
+    findUnique: async ({ where, select }: any) => { const w = webStoreRows().find(r => matchRow(r, where)); return w ? project(w, { select }) : null; },
+    update: async ({ where, data }: any) => { const w = webStoreRows().find(r => matchRow(r, where)); if (!w) { const e: any = new Error('Record not found'); e.code = 'P2025'; throw e; } Object.assign(w, data); store.calls.push(`webStoreOrder.update:${w.id}:${data.paymentStatus ?? ''}`); return { ...w }; },
+  },
+  syncLog: {
+    ...collection(() => store.syncLogs, 'syncLog'),
+    create: async ({ data }: any) => { const r = { id: `sl${++seq}`, createdAt: new Date(), ...data }; store.syncLogs.push(r); return { ...r }; },
+  },
+  payment: {
+    ...collection(() => store.payments, 'payment'),
+    create: async ({ data }: any) => { const r = { id: `pay${++seq}`, createdAt: new Date(), ...data }; store.payments.push(r); return { ...r }; },
+  },
+  emailLog: {
+    ...collection(() => store.emailLogs, 'emailLog'),
+    create: async ({ data }: any) => { const r = { id: `el${++seq}`, createdAt: new Date(), ...data }; store.emailLogs.push(r); return { ...r }; },
+  },
+  customerEventDelivery: {
+    ...collection(() => store.customerEventDeliveries, 'customerEventDelivery'),
+    // (eventKey, channel) is unique: deliverOnce relies on P2002 to send once.
+    create: async ({ data }: any) => {
+      if (store.customerEventDeliveries.some(r => r.eventKey === data.eventKey && r.channel === data.channel)) { const e: any = new Error('Unique'); e.code = 'P2002'; throw e; }
+      const r = { id: `ced${++seq}`, error: null, createdAt: new Date(), updatedAt: new Date(), ...data };
+      store.customerEventDeliveries.push(r); return { ...r };
+    },
+    findUnique: async ({ where, select }: any) => { const r = store.customerEventDeliveries.find(x => matchRow(x, where)); return r ? project(r, { select }) : null; },
+    update: async ({ where, data }: any) => { const r = store.customerEventDeliveries.find(x => matchRow(x, where)); Object.assign(r || {}, data, { updatedAt: new Date() }); return r ? { ...r } : null; },
   },
   adConversionDelivery: {
     findUnique: async ({ where }: any) => { await tick(); const r = store.ledger.get(keyOf(where)); return r ? { ...r } : null; },

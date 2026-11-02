@@ -36,6 +36,10 @@ const calls = { rzpOrderFetch: 0, rzpPaymentsList: 0, shopifyCreateAttempts: 0 }
   const json = (status: number, body: any) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body), headers: new Map() });
   const m = u.match(/^https:\/\/api\.razorpay\.com\/v1\/payments\/([^/?]+)/);
   if (m) { const p = razorpayPayments.get(m[1]); return p ? json(200, { ...p }) : json(404, { error: { description: 'not found' } }); }
+  if (u.startsWith('https://api.razorpay.com/v1/payments?')) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    return json(200, { entity: 'collection', items: [...razorpayPayments.values()].map(p => ({ ...p, created_at: nowSec })) });
+  }
   const op = u.match(/^https:\/\/api\.razorpay\.com\/v1\/orders\/([^/?]+)\/payments$/);
   if (op) { calls.rzpPaymentsList++; return json(200, { items: [...razorpayPayments.values()].filter(p => p.order_id === op[1]) }); }
   const o = u.match(/^https:\/\/api\.razorpay\.com\/v1\/orders\/([^/?]+)$/);
@@ -94,6 +98,7 @@ async function main() {
   const { confirmPaymentForRazorpayOrder } = await import('../../lib/services/paymentConfirmation');
   const { withoutShopifyRefundMirrors } = await import('../../lib/returns-filter');
   const { startBackgroundJobs } = await import('../../lib/background-jobs');
+  const { reconcileRazorpayPayments } = await import('../../lib/services/razorpayReconcileService');
   for (const level of ['log', 'warn', 'error'] as const) {
     const orig = console[level].bind(console);
     console[level] = (...args: any[]) => { const line = args.map(String).join(' '); if (/email not sent/.test(line)) adminMails.push(line); orig(...args); };
@@ -250,10 +255,40 @@ async function main() {
   const visibleCount = await prisma.return.count({ where: withoutShopifyRefundMirrors({ returnRequestId: null, status: { in: ['pending', 'REQUESTED'] } }) });
   eq('8d: counters use the same filter', visibleCount, 1);
 
-  // ── 9. background jobs are production-only ───────────────────────────────────
-  console.log('\n— 9. background jobs');
+  // ── 9. scan + payment-driven reconcile together: one email, no false findings ──
+  console.log('\n— 9. our scan and the payment-driven reconcile on the same order');
+  const emails = (id: string) => (db.emailLog || []).filter((e: any) => e.referenceId === id);
+  const j = await precreate();
+  pay('pay_J', j.razorpay_order_id, 'captured', 3797);
+  age(j.localOrderId, 5 * 60_000);
+  await reconcilePendingMainOrders({ minAgeMs: 90_000, throttleOlderOrders: true, budgetMs: 90_000 });
+  await settle();
+  eq('9a: confirmed by the scan: the customer is emailed once (tagged)', [order(j.localOrderId).paymentStatus, emails(j.localOrderId).length, String(order(j.localOrderId).tags).includes('confirmation_emailed')], ['paid', 1, true]);
+  const scan1 = await reconcileRazorpayPayments();
+  await settle();
+  eq('9b: the payment-driven scan then finds nothing to fix or report', [scan1.recovered, scan1.orphanRecovered, scan1.mismatched, scan1.unresolved], [0, 0, 0, 0]);
+  eq('9c: and sends no second email', emails(j.localOrderId).length, 1);
+
+  const k = await precreate();
+  pay('pay_K', k.razorpay_order_id, 'captured', 3797);
+  age(k.localOrderId, 5 * 60_000);
+  const scan2 = await reconcileRazorpayPayments();
+  await settle();
+  eq('9d: an order only the payment-driven scan sees is recovered (paid), emailed exactly once', [scan2.recovered, order(k.localOrderId).paymentStatus, emails(k.localOrderId).length], [1, 'paid', 1]);
+  const scan3 = await reconcileRazorpayPayments();
+  eq('9e: running it again is a no-op', [scan3.recovered, emails(k.localOrderId).length], [0, 1]);
+
+  // A capture whose local order was never written at all: placeholder, held for review, customer not emailed.
+  pay('pay_ORPHAN', 'order_NOLOCAL01', 'captured', 1999);
+  const scan4 = await reconcileRazorpayPayments();
+  const orphan = (db.order || []).find((o: any) => o.razorpayOrderId === 'order_NOLOCAL01');
+  eq('9f: a capture with no local order becomes a held placeholder (never lost)', [scan4.orphanRecovered, orphan?.shopifySyncStatus], [1, 'needs_review']);
+  eq('9g: and the customer is not told "confirmed" for a placeholder', emails(orphan?.id).length, 0);
+
+  // ── 10. background jobs are production-only ───────────────────────────────────
+  console.log('\n— 10. background jobs');
   startBackgroundJobs();
-  eq('9a: not started outside production', (globalThis as any).__zbJobsStarted, undefined);
+  eq('10a: not started outside production', (globalThis as any).__zbJobsStarted, undefined);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

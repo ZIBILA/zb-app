@@ -20,7 +20,8 @@ import { resolveWebCoupon } from '@/lib/web-coupon';
 import { fetchVariantPrices } from '@/lib/variant-prices';
 import { isPaidLikeStatus } from '@/lib/payment-status';
 import { notifyAdminTeam } from '@/lib/services/zohoMailService';
-import { underpaidAlertHtml } from '@/lib/razorpay-webhook-events';
+import { underpaidAlertHtml, recordCheckoutCompleteRetry } from '@/lib/razorpay-webhook-events';
+import { buildOrderConfirmationPayload } from '@/lib/services/orderConfirmationNotice';
 
 export async function POST(req: Request) {
   const requestStartedAt = Date.now();
@@ -28,8 +29,20 @@ export async function POST(req: Request) {
   // AFTER the response is returned so the customer isn't stuck on "Payment successful".
   // Safe on a long-running Node server (Render / next start): the process outlives the request.
   const deferredTasks: Array<{ name: string; run: () => Promise<void> }> = [];
+  // Set once Razorpay confirms the capture. If anything after that point throws
+  // (DB outage, pool exhausted), the money has been taken but no order says so:
+  // the catch below records the request durably (checkout.complete.retry) for the
+  // reconciliation job and asks the browser to retry, instead of a bare 500.
+  let verifiedCapturePaymentId: string | null = null;
+  let rawBody = '';
   try {
-    const body = await req.json();
+    rawBody = await req.text();
+    let body: any;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
 
     // Rate limit per Razorpay order when one is present: the pending-capture poll
     // re-sends this request every 4 s for up to 3 min, and a per-IP bucket shared
@@ -304,6 +317,7 @@ export async function POST(req: Request) {
             if (!capture.captured) throw new Error(capture.reason);
             const payment = capture.payment;
             captureConfirmed = true;
+            verifiedCapturePaymentId = razorpay.razorpay_payment_id;
             capturedRupees = Number(payment.amount) / 100;
             const capturedCurrency = String(payment.currency || '').trim().toUpperCase();
             if (capturedCurrency && capturedCurrency !== requestCurrency) {
@@ -1306,30 +1320,21 @@ export async function POST(req: Request) {
       console.error("[Checkout] Failed to sync WebStoreOrder in DB:", webStoreOrderErr.message);
     }
 
-    // Send order confirmation email to the user
+    // Send order confirmation email to the user. The payload builder is shared
+    // with lib/services/orderConfirmationNotice.ts so an order confirmed later by
+    // a webhook or the reconciliation job gets the identical email.
     try {
-      const orderPayload = {
-        orderId: universalOrderNumber,
-        customerEmail: address.email,
-        customerName: address.name || "Customer",
-        items: items.map((item: any) => ({
-          name: item.title,
-          size: item.size || 'N/A',
-          quantity: Number(item.quantity || 1),
-          price: Number(item.price || 0),
-          image: item.image || '',
-          product_id: item.productId || null,
-          variant_title: item.variantId || null,
-        })),
-        total: Number(total),
+      const orderPayload = buildOrderConfirmationPayload({
+        orderNumber: universalOrderNumber,
+        address,
+        items,
+        total,
         currency: localOrder.currency || body.currency || 'INR',
-        orderDate: new Date(localOrder.createdAt).toLocaleDateString('en-IN', { dateStyle: 'long' }),
+        createdAt: localOrder.createdAt,
         paymentMethod: finalPaymentMethod,
-        subtotal: Number(subtotal),
-        shipping: 0,
-        discount: Number(finalCouponDiscount) || 0,
-        shippingAddress: `${address.street || ''}, ${address.city || ''}, ${address.state || ''} - ${address.zip || ''}, ${address.country || 'India'}`,
-      };
+        subtotal,
+        discount: finalCouponDiscount,
+      });
 
       // Send order confirmation email in background (non-blocking for fast redirect)
       const sendEmailTask = async () => {
@@ -1539,6 +1544,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ orderId: orderIdToReturn });
   } catch (error: any) {
     console.error("Order Completion Error:", error);
+    if (verifiedCapturePaymentId) {
+      // Signature verified and capture confirmed, but the order write (or a step
+      // after it) threw. Keep the request so /api/cron/reconcile-razorpay can finish
+      // it, and answer 503 { retry: true }: the client retries with backoff, and a
+      // retry that finds the order already paid is answered as a replay.
+      const retryRow = await recordCheckoutCompleteRetry({ razorpayPaymentId: verifiedCapturePaymentId, payload: rawBody });
+      console.error(
+        `[Checkout Complete] Payment ${verifiedCapturePaymentId} captured but order write failed; retry row ${retryRow.recorded ? 'recorded' : 'NOT recorded'}${retryRow.reason ? ` (${retryRow.reason})` : ''}`
+      );
+      return NextResponse.json(
+        { error: "Order registration is temporarily unavailable; retrying", retry: true, paymentId: verifiedCapturePaymentId },
+        { status: 503, headers: { 'Retry-After': '2' } }
+      );
+    }
     return NextResponse.json({ error: error.message || "Order completion failed" }, { status: 500 });
   }
 }

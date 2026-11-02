@@ -23,7 +23,11 @@ import {
   nextOrderStatusOnCapture,
   capturedAmountCheck,
   underpaidAlertHtml,
+  orphanRecoveryFailedAlertHtml,
 } from "@/lib/razorpay-webhook-events";
+import { isPaidLikeStatus } from "@/lib/payment-status";
+import { recoverOrphanedRazorpayOrder } from "@/lib/services/razorpayRecoveryService";
+import { sendConfirmationForReconciledOrder } from "@/lib/services/orderConfirmationNotice";
 
 export const dynamic = "force-dynamic";
 
@@ -97,6 +101,24 @@ export async function POST(req: NextRequest) {
           });
 
           if (order) {
+            // Payment-id idempotency, on top of the eventKey claim (same rule as
+            // /api/webhooks/razorpay): if this exact payment is already recorded on a
+            // paid-like order — by /complete, the other webhook route or the
+            // reconciliation job — there is nothing left to do. Re-read for a writer
+            // that finished a moment ago.
+            const recorded = await prisma.order.findUnique({
+              where: { id: order.id },
+              select: { razorpayPaymentId: true, paymentStatus: true },
+            });
+            if (recorded?.razorpayPaymentId === razorpayPaymentId && isPaidLikeStatus(recorded.paymentStatus)) {
+              console.log(`[Razorpay Webhook] Payment ${razorpayPaymentId} already recorded on order ${order.id} (${recorded.paymentStatus}); nothing to do`);
+              await prisma.webhookEvent.update({
+                where: { id: webhookEvent.id },
+                data: { orderId: order.id, processed: true, processedAt: new Date() },
+              });
+              return NextResponse.json({ success: true, alreadyRecorded: true, reason: 'payment_already_recorded' });
+            }
+
             // Detect if this is a COD order (case-insensitive check on method, tags, and note)
             const isCodOrder = (
               (order.paymentMethod || '').toLowerCase() === 'cod' ||
@@ -231,6 +253,15 @@ export async function POST(req: NextRequest) {
             }
 
             console.log(`[Razorpay Webhook] payment.captured → Order ${order.id} marked ${isCodOrder ? 'cod_upfront_paid' : 'paid'}`);
+
+            // Confirmation parity: confirmed here, not by /complete, so the customer
+            // has had no "order confirmed" email (a later /complete replay for the
+            // same payment sends none). Once per order; not awaited.
+            if (!alreadyPaid) {
+              void sendConfirmationForReconciledOrder(order.id, 'payments/webhook')
+                .then((r) => { if (r.status !== 'sent') console.log(`[Razorpay Webhook] Confirmation email ${r.status}${'reason' in r ? ` (${r.reason})` : ''} for ${order.id}`); })
+                .catch((mailErr: any) => console.warn('[Razorpay Webhook] Confirmation email failed:', mailErr?.message));
+            }
 
             // Tracking only (no effect on payment / order logic): the verified
             // capture is a completed purchase, so report it to Snapchat even when
@@ -374,6 +405,52 @@ export async function POST(req: NextRequest) {
             // AWB must be generated manually from the Zica Bella dashboard
             // after entering the correct parcel weight and dimensions.
             console.log(`[Razorpay Webhook] Skipping auto-shipment for order ${order.id} — manual AWB required from dashboard.`);
+          } else {
+            // No local order for a captured payment. This route used to answer 200
+            // and mark the event processed, so the money vanished from every view
+            // until someone opened Admin → Transactions. Do what /api/webhooks/razorpay
+            // does: create the placeholder order (held for review, ops alerted). The
+            // event is marked processed only when that succeeds; a failure answers
+            // 5xx so Razorpay redelivers.
+            const { isCapturedPaymentEntity } = await import('@/lib/razorpay-payment');
+            if (!isCapturedPaymentEntity(payment, { orderId: razorpayOrderId })) {
+              console.warn(`[Razorpay Webhook] Orphan payment ${razorpayPaymentId} is not a verified capture; not recovering`);
+            } else {
+              console.warn(`[Razorpay Webhook] No local Order for captured Razorpay order ${razorpayOrderId}; initiating recovery`);
+              const recoveryResult = await recoverOrphanedRazorpayOrder({
+                razorpayOrderId,
+                razorpayPaymentId,
+                webhookEventId: webhookEvent.id,
+                triggerSource: 'webhook',
+              });
+              if (!recoveryResult.success) {
+                console.error('[Razorpay Webhook] CRITICAL: payment captured but order recovery failed', {
+                  razorpayOrderId,
+                  razorpayPaymentId,
+                  error: recoveryResult.error,
+                });
+                try {
+                  const { notifyAdminTeam } = await import('@/lib/services/zohoMailService');
+                  await notifyAdminTeam(
+                    '🚨 CRITICAL: Razorpay Payment Captured but Order Recovery Failed',
+                    orphanRecoveryFailedAlertHtml({
+                      razorpayOrderId,
+                      razorpayPaymentId,
+                      amountRupees: Number(payment.amount || 0) / 100,
+                      contact: payment.email || payment.contact || null,
+                      error: recoveryResult.error,
+                      source: '/api/payments/webhook',
+                    })
+                  );
+                } catch (alertErr: any) {
+                  console.error('[Razorpay Webhook] Failed to send admin alert email:', alertErr?.message);
+                }
+                return NextResponse.json(
+                  { error: 'Order recovery failed', details: recoveryResult.error },
+                  { status: 500 }
+                );
+              }
+            }
           }
         }
       } else if (eventType === "payment.failed") {

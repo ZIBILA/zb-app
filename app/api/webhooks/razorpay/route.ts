@@ -11,8 +11,11 @@ import {
   nextOrderStatusOnCapture,
   capturedAmountCheck,
   underpaidAlertHtml,
+  orphanRecoveryFailedAlertHtml,
 } from '@/lib/razorpay-webhook-events';
 import { getConfiguredCodUpfrontAmount, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
+import { isPaidLikeStatus } from '@/lib/payment-status';
+import { sendConfirmationForReconciledOrder } from '@/lib/services/orderConfirmationNotice';
 
 export const dynamic = 'force-dynamic';
 
@@ -102,6 +105,29 @@ export async function POST(req: Request) {
       });
 
       if (order) {
+        // Payment-id idempotency, on top of the eventKey claim: payment.captured and
+        // order.paid arrive as two events for one payment, and /complete or the
+        // reconciliation job may have recorded this exact payment already. Re-read
+        // so a writer that finished a moment ago is seen too.
+        const recorded = await prisma.order.findUnique({
+          where: { id: order.id },
+          select: { razorpayPaymentId: true, paymentStatus: true },
+        });
+        if (recorded?.razorpayPaymentId === razorpayPaymentId && isPaidLikeStatus(recorded.paymentStatus)) {
+          paymentLog('info', 'webhook', {
+            message: `Payment ${razorpayPaymentId} already recorded on order ${order.id} (${recorded.paymentStatus}); nothing to do`,
+            orderId: order.id,
+            razorpayPaymentId,
+          });
+          await prisma.webhookEvent.update({
+            where: { id: webhookRecord.id },
+            data: { orderId: order.id, processed: true, processedAt: new Date() },
+          });
+          // Not `duplicate`: that flag means "same delivery seen twice" (eventKey);
+          // this is a different event about a payment already on the order.
+          return NextResponse.json({ success: true, alreadyRecorded: true, reason: 'payment_already_recorded' });
+        }
+
         // Path A: Order exists — update status
         // Canonical COD vocabulary: cod_upfront_paid (not partially_paid)
         const isCOD =
@@ -352,6 +378,16 @@ export async function POST(req: Request) {
           console.warn('[Razorpay Webhook] Snap Purchase dispatch failed:', snapErr?.message);
         });
 
+        // Confirmation parity: this order was confirmed here, not by /complete, so
+        // the customer has had no "order confirmed" email yet (and a later
+        // /complete replay for the same payment sends none). Once per order; not
+        // awaited, like the sends above.
+        if (!isAlreadyPaid) {
+          void sendConfirmationForReconciledOrder(order.id, 'webhooks/razorpay')
+            .then((r) => { if (r.status !== 'sent') paymentLog('info', 'webhook', { message: `Confirmation email ${r.status}${'reason' in r ? ` (${r.reason})` : ''}`, orderId: order.id }); })
+            .catch((mailErr: any) => console.warn('[Razorpay Webhook] Confirmation email failed:', mailErr?.message));
+        }
+
         // Link WebhookEvent to Order
         await prisma.webhookEvent.update({
           where: { id: webhookRecord.id },
@@ -385,18 +421,14 @@ export async function POST(req: Request) {
           try {
             await notifyAdminTeam(
               `🚨 CRITICAL: Razorpay Payment Captured but Order Recovery Failed`,
-              `<div style="font-family: sans-serif; color: #fff; background: #111; padding: 20px; border-radius: 8px;">
-                <h2 style="color: #ef4444; margin-top: 0;">CRITICAL: Razorpay Payment Captured but Order Recovery Failed</h2>
-                <p>A payment was captured on Razorpay, but no matching order existed in the local database and the automatic recovery service failed.</p>
-                <table style="width: 100%; border-collapse: collapse; margin-top: 15px; color: #ccc;">
-                  <tr><td style="padding: 6px; font-weight: bold;">Razorpay Order ID:</td><td>${razorpayOrderId}</td></tr>
-                  <tr><td style="padding: 6px; font-weight: bold;">Razorpay Payment ID:</td><td>${razorpayPaymentId}</td></tr>
-                  <tr><td style="padding: 6px; font-weight: bold;">Amount:</td><td>₹${(payment.amount / 100).toLocaleString('en-IN')}</td></tr>
-                  <tr><td style="padding: 6px; font-weight: bold;">Customer Email/Contact:</td><td>${payment.email || payment.contact || 'N/A'}</td></tr>
-                  <tr><td style="padding: 6px; font-weight: bold;">Error Detail:</td><td style="color: #fca5a5;">${recoveryResult.error || 'Unknown error'}</td></tr>
-                </table>
-                <p style="margin-top: 20px; color: #888; font-size: 12px;">Please open Admin → Transactions to manually resolve this payment.</p>
-              </div>`
+              orphanRecoveryFailedAlertHtml({
+                razorpayOrderId,
+                razorpayPaymentId,
+                amountRupees: payment.amount / 100,
+                contact: payment.email || payment.contact || null,
+                error: recoveryResult.error,
+                source: '/api/webhooks/razorpay',
+              })
             );
           } catch (alertErr: any) {
             console.error('[Razorpay Webhook] Failed to send admin alert email:', alertErr.message);
