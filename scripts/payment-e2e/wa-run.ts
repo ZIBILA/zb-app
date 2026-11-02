@@ -159,6 +159,22 @@ async function main() {
   await postSettings({ header_image_store_credit_earned: '' });
   await credit(250); eq('clearing it goes back to the built-in banner', lastHeader(), BANNER);
 
+  console.log('\n— 8. the dashboard preview shows what is really sent');
+  const { resolveBodyVariables, previewDataFor, eventTypeFromTemplateKey } = await import('../../lib/whatsapp/variable-mapping');
+  const preview = (event: string, text: string) => resolveBodyVariables(event, text, previewDataFor(event)).map((v) => v.value);
+  eq('8a: prepaid confirmation "order {{1}} … ₹{{2}}" → order number, credit (the client\'s screenshot)', preview('order_confirmed_prepaid', 'Your prepaid order {{1}} has been confirmed. ₹{{2}} in store credit'), ['ZB72210', '250']);
+  eq('8b: prepaid store credit "₹{{1}}" → the credit amount, not the name', preview('store_credit_earned', 'YOUR STORE CREDIT: ₹{{1}}'), ['250']);
+  eq('8c: COD store coins "₹{{1}}" → the amount', preview('store_coins_earned', 'You earned ₹{{1}}'), ['250']);
+  eq('8d: expiry reminder "Hi {{1}}, ₹{{2}}" → name, amount', preview('store_credit_expiring', 'Hi {{1}}, you still have ₹{{2}}'), ['Aarav', '250']);
+  eq('8e: standard order confirmation keeps name, order, total', preview('order_confirmed', 'Hi {{1}}, order {{2}} total {{3}}'), ['Aarav', 'ZB72210', '₹1,499']);
+  eq('8f: named variables are filled in the preview too', preview('order_confirmed_prepaid', 'Order {{order_id}}: ₹{{amount}}'), ['ZB72210', '250']);
+  // the sender produces the same values for the same data
+  await setTemplate(PREPAID, [{ type: 'BODY', text: 'Your prepaid order {{1}} has been confirmed. ₹{{2}} in store credit' }]);
+  await setSetting('order_confirmed_prepaid_enabled', 'true'); await setSetting('template_order_confirmed_prepaid', PREPAID);
+  await confirm({ storeCreditAmount: 250, orderId: 'ZB72210' });
+  eq('8g: what is really sent equals the preview', lastBody(), preview('order_confirmed_prepaid', 'Your prepaid order {{1}} has been confirmed. ₹{{2}} in store credit'));
+  eq('8h: settings keys map to the sender\'s event names', ['template_order_confirmed_prepaid', 'template_store_credit_earned', 'template_return_pickup', 'template_exchange_pickup', 'template_out_for_delivery'].map(eventTypeFromTemplateKey), ['order_confirmed_prepaid', 'store_credit_earned', 'return_pickup_scheduled', 'exchange_pickup_scheduled', 'out_for_delivery']);
+
   console.log(`\n${failed === 0 ? 'ALL PASSED' : 'FAILURES'} — ${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
