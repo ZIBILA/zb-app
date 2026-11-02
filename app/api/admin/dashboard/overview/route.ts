@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 import { getSession } from '@/lib/auth/rbac';
 import { fetchCatalogForAdmin } from '@/lib/shopify-admin';
 import { isStorefrontEligible } from '@/lib/storefrontCatalog';
@@ -159,10 +160,10 @@ export async function GET(req: Request) {
         const [reqTotal, standTotal] = await Promise.all([
           prisma.returnRequest.count({ where: channelReturnWhere }),
           prisma.return.count({
-            where: {
+            where: withoutShopifyRefundMirrors({
               returnRequestId: null,
               ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
-            },
+            }),
           }),
         ]);
         return reqTotal + standTotal;
@@ -180,11 +181,11 @@ export async function GET(req: Request) {
             },
           }),
           prisma.return.count({
-            where: {
+            where: withoutShopifyRefundMirrors({
               returnRequestId: null,
               status: { in: ['pending', 'pending_approval', 'submitted', 'approved', 'REQUESTED'] },
               ...(platform !== 'all' ? { order: platformOrderTypeFilter } : {}),
-            },
+            }),
           }),
         ]);
         return reqPending + standPending;

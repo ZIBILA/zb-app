@@ -76,7 +76,19 @@ function match(model: string, row: Row, where: any): boolean {
     if (k === 'OR') { if (!cond.some((c: any) => match(model, row, c))) return false; continue; }
     if (k === 'AND') { if (!(Array.isArray(cond) ? cond : [cond]).every((c: any) => match(model, row, c))) return false; continue; }
     if (k === 'NOT') { if ((Array.isArray(cond) ? cond : [cond]).some((c: any) => match(model, row, c))) return false; continue; }
-    if (RELATIONS[model]?.[k]) continue;
+    const rel = RELATIONS[model]?.[k];
+    if (rel) {
+      // Relation filters: some / none / every over the related rows (others are not modelled).
+      if (cond && typeof cond === 'object' && ('some' in cond || 'none' in cond || 'every' in cond)) {
+        const kids = rel.one
+          ? table(rel.model).filter(x => x[rel.fk] === row[rel.local!])
+          : table(rel.model).filter(x => x[rel.fk] === row.id);
+        if ('some' in cond && !kids.some(x => match(rel.model, x, cond.some))) return false;
+        if ('none' in cond && kids.some(x => match(rel.model, x, cond.none))) return false;
+        if ('every' in cond && !kids.every(x => match(rel.model, x, cond.every))) return false;
+      }
+      continue;
+    }
     if (cond && typeof cond === 'object' && !(cond instanceof Date) && k.includes('_') && !(k in row) && Object.keys(cond).every(f => !['equals','in','notIn','not','contains','startsWith','endsWith','gt','gte','lt','lte','mode'].includes(f))) {
       if (!match(model, row, cond)) return false; // compound unique key
       continue;

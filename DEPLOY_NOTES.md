@@ -63,3 +63,15 @@ pm2 restart <app-name> --update-env
 2. Razorpay Dashboard → Webhooks: URL `https://zicabella.com/api/webhooks/razorpay` (alias `/api/razorpay/webhook`), events `payment.captured`, `order.paid`, `payment.authorized`, `payment.failed`, `refund.created`, `refund.processed`, `refund.failed`, secret = `RAZORPAY_WEBHOOK_SECRET`.
 3. Watch the `needs_review` queue (under-captured payments, placeholder orders) — ops now receive an email for each.
 4. Legacy `/api/razorpay/create-order` and `/api/razorpay/verify-payment` were removed; `/api/pay/[cartId]` redirects to `/cart`.
+
+## Paid orders must always be confirmed and reach Shopify (2026-11-02)
+
+Root causes found on 2026-11-02: the Razorpay webhook had been **Disabled** in the dashboard since 30 Oct (so a UPI payment whose browser never reached `/api/checkout/complete` was never confirmed in real time), the reconcile "every 15 min" cron ran only every ~5 h (GitHub throttles scheduled workflows), and Shopify refused a paid order with `Unable to reserve inventory`.
+
+1. **Razorpay Dashboard → Account & Settings → Webhooks:** the endpoint must show **Active**. If it is Disabled (Razorpay does this after repeated failed deliveries and emails the account owner): make `RAZORPAY_WEBHOOK_SECRET` on the server equal the secret saved on the webhook, deploy, then enable it. Events: `payment.captured`, `order.paid`, `payment.authorized`, `payment.failed`, `refund.created`, `refund.processed`, `refund.failed`. Razorpay does not replay events from a disabled period.
+2. The server now runs its own jobs (`lib/background-jobs.ts`, started from `instrumentation.ts`, production only): payment reconcile every 2 min, web-store payment sync every 10 min, failed Shopify sync retry every 5 min. GitHub Actions / `/api/cron/*` still work as a backup (same idempotent code). Set `DISABLE_INTERNAL_JOBS=true` to turn the jobs off. Several instances are safe.
+3. Shoppers who come back are confirmed immediately: `/api/orders/by-razorpay` (success page) and `/api/orders` (My Orders) check Razorpay for a still-pending order first.
+4. Ops now get an email (max one per 6 h) when a paid order had to be rescued by the reconcile job after more than 10 minutes (= webhook / browser missed it), and when a paid order is still not in Shopify after an hour.
+5. A paid order Shopify refuses for stock is re-sent with `decrement_ignoring_policy`, tagged `oversold`, and ops are emailed. Stock goes negative in Shopify; restock or contact the customer.
+6. `Return` rows created by the old Shopify refund webhook (id ending `-shopify-refund`) are now hidden everywhere and no longer created. Optional one-off cleanup: `DELETE FROM "Return" WHERE id LIKE '%-shopify-refund';`
+7. Regression: `ZOHO_SMTP_HOST=127.0.0.1 ZOHO_SMTP_PORT=1 NODE_OPTIONS="--require $PWD/scripts/payment-e2e/redirect-db.cjs" npx tsx --tsconfig scripts/payment-e2e/tsconfig.json scripts/payment-e2e/confirm-run.ts` (32 checks).

@@ -328,6 +328,7 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                     paymentStatus: finalPaymentStatus,
                     status: nextOrderStatusOnCapture(mOrder.status as string, isCOD),
                     razorpayPaymentId: newPaymentId || undefined,
+                    paymentCapturedAt: mOrder.paymentCapturedAt || new Date(),
                     paymentFailureReason: null,
                     cancelledBy: null,
                     cancelledAt: null,
@@ -361,6 +362,7 @@ export async function syncPendingWebStoreOrders(orderIds?: string[]): Promise<Sy
                     paymentStatus: finalPaymentStatus,
                     status: nextOrderStatusOnCapture(mOrder.status as string, isCOD),
                     razorpayPaymentId: newPaymentId || undefined,
+                    paymentCapturedAt: mOrder.paymentCapturedAt || new Date(),
                     paymentFailureReason: null,
                     cancelledBy: null,
                     cancelledAt: null,
@@ -452,7 +454,27 @@ export interface MainOrderReconcileResult {
   markedPaid: string[];
   timedOut: string[];
   statusRepaired: number;
+  /** Orders confirmed here that had been waiting longer than LATE_CONFIRMATION_MS: neither the browser nor the webhook got there. */
+  lateConfirmed: string[];
 }
+
+export interface MainOrderReconcileOptions {
+  /** Reconcile just this Razorpay order (used when the shopper comes back to the site). */
+  razorpayOrderId?: string;
+  /** Reconcile just these customers' pending orders (used when they open My Orders). */
+  customerIds?: string[];
+  /** Skip orders younger than this, so the browser / webhook usually confirm first. */
+  minAgeMs?: number;
+  /** Max orders examined per run. */
+  limit?: number;
+  /** Re-check orders older than 30 min at most every 10 min (background runs). */
+  throttleOlderOrders?: boolean;
+  /** Stop starting new lookups after this long. */
+  budgetMs?: number;
+}
+
+export const LATE_CONFIRMATION_MS = 10 * 60 * 1000;
+const lastCheckedAt = new Map<string, number>();
 
 const PENDING_MAIN_STATUSES = ["pending", "payment_pending", "awaiting_confirmation"];
 
@@ -489,12 +511,16 @@ export async function repairPaidOrderStatuses(): Promise<number> {
   return repaired;
 }
 
-export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileResult> {
-  const result: MainOrderReconcileResult = { checked: 0, markedPaid: [], timedOut: [], statusRepaired: 0 };
-  try {
-    result.statusRepaired = await repairPaidOrderStatuses();
-  } catch (repairErr: unknown) {
-    console.error("[RazorpaySync] Status repair failed:", repairErr instanceof Error ? repairErr.message : String(repairErr));
+export async function reconcilePendingMainOrders(opts: MainOrderReconcileOptions = {}): Promise<MainOrderReconcileResult> {
+  const result: MainOrderReconcileResult = { checked: 0, markedPaid: [], timedOut: [], statusRepaired: 0, lateConfirmed: [] };
+  const startedAt = Date.now();
+  const targeted = Boolean(opts.razorpayOrderId || opts.customerIds?.length);
+  if (!targeted) {
+    try {
+      result.statusRepaired = await repairPaidOrderStatuses();
+    } catch (repairErr: unknown) {
+      console.error("[RazorpaySync] Status repair failed:", repairErr instanceof Error ? repairErr.message : String(repairErr));
+    }
   }
 
   const creds = await resolveRazorpayCredentials().catch(() => null);
@@ -504,13 +530,16 @@ export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileRe
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const pending = await prisma.order.findMany({
     where: {
-      orderType: "WEB_STORE",
-      razorpayOrderId: { not: null },
+      // Web checkout and the mobile app both pre-create a pending order before payment;
+      // either can be left unconfirmed when the shopper leaves the payment screen.
+      orderType: { in: ["WEB_STORE", "MOBILE_APP"] },
+      razorpayOrderId: opts.razorpayOrderId ? opts.razorpayOrderId : { not: null },
       paymentStatus: { in: PENDING_MAIN_STATUSES },
-      createdAt: { gte: since },
+      createdAt: opts.minAgeMs ? { gte: since, lte: new Date(Date.now() - opts.minAgeMs) } : { gte: since },
+      ...(opts.customerIds?.length ? { customerId: { in: opts.customerIds } } : {}),
     },
     orderBy: { createdAt: "desc" },
-    take: 50,
+    take: opts.limit ?? 50,
   });
 
   const { isCapturedPaymentEntity, paymentAmountRupees } = await import("@/lib/razorpay-payment");
@@ -518,7 +547,17 @@ export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileRe
   const { assignUniversalOrderNumber, isFailedPrefixNumber } = await import("@/lib/orderNumber");
   const expectedCodUpfront = await getConfiguredCodUpfrontAmount().catch(() => DEFAULT_COD_UPFRONT_AMOUNT);
 
+  if (lastCheckedAt.size > 5000) lastCheckedAt.clear();
+
   for (const order of pending) {
+    if (opts.budgetMs && Date.now() - startedAt > opts.budgetMs) break;
+    if (opts.throttleOlderOrders) {
+      // New checkouts are looked at on every run; older abandoned ones only every 10 min.
+      const ageMs = Date.now() - new Date(order.createdAt).getTime();
+      const last = lastCheckedAt.get(order.id) || 0;
+      if (ageMs > 30 * 60 * 1000 && Date.now() - last < 10 * 60 * 1000) continue;
+      lastCheckedAt.set(order.id, Date.now());
+    }
     result.checked++;
     const rzpOrderId = order.razorpayOrderId as string;
     try {
@@ -528,8 +567,12 @@ export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileRe
       try {
         const rzpOrder = (await razorpay.orders.fetch(rzpOrderId)) as unknown as Record<string, unknown>;
         rzpOrderStatus = String(rzpOrder?.status || "");
-        const list = (await razorpay.orders.fetchPayments(rzpOrderId)) as unknown as Record<string, unknown>;
-        payments = (list?.items as Record<string, unknown>[]) || [];
+        // A Razorpay order nobody tried to pay has no payments: skip the second API call.
+        const neverAttempted = rzpOrderStatus === "created" && Number(rzpOrder?.attempts ?? 1) === 0;
+        if (!neverAttempted) {
+          const list = (await razorpay.orders.fetchPayments(rzpOrderId)) as unknown as Record<string, unknown>;
+          payments = (list?.items as Record<string, unknown>[]) || [];
+        }
       } catch (fetchErr: unknown) {
         console.warn(`[RazorpaySync] Razorpay lookup failed for ${rzpOrderId}:`, fetchErr instanceof Error ? fetchErr.message : String(fetchErr));
         continue; // unknown state — never time out on a lookup failure
@@ -605,12 +648,25 @@ export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileRe
           }).catch(() => {});
         }
 
+        if (order.orderType === "MOBILE_APP") {
+          // Same mirror update the app's own /payment/verify performs on capture.
+          const mobileNumber = order.internalOrderNumber && !isFailedPrefixNumber(order.internalOrderNumber)
+            ? order.internalOrderNumber
+            : (await prisma.order.findUnique({ where: { id: order.id }, select: { internalOrderNumber: true } }))?.internalOrderNumber;
+          if (mobileNumber) {
+            await prisma.mobileOrder.updateMany({
+              where: { orderNumber: mobileNumber },
+              data: { paymentStatus: targetPaymentStatus, paymentId: paymentId },
+            }).catch(() => {});
+          }
+        }
+
         if (order.shopifySyncStatus !== "needs_review") {
           try {
             const { syncOrderToShopify } = await import("@/lib/services/shopifyOrderSyncService");
-            await syncOrderToShopify(order.id);
+            await syncOrderToShopify(order.id, order.orderType === "MOBILE_APP" ? { preserveAppTags: true } : undefined);
           } catch (syncErr: unknown) {
-            console.error("[RazorpaySync] Shopify sync error (cron retries):", syncErr instanceof Error ? syncErr.message : String(syncErr));
+            console.error("[RazorpaySync] Shopify sync error (retry job picks it up):", syncErr instanceof Error ? syncErr.message : String(syncErr));
           }
         }
         void import("@/lib/meta/purchase-server")
@@ -621,6 +677,9 @@ export async function reconcilePendingMainOrders(): Promise<MainOrderReconcileRe
           .catch(() => {});
 
         result.markedPaid.push(order.internalOrderNumber || order.id);
+        if (Date.now() - new Date(order.createdAt).getTime() > LATE_CONFIRMATION_MS) {
+          result.lateConfirmed.push(order.internalOrderNumber || order.id);
+        }
         console.log(`[RazorpaySync] Order ${order.internalOrderNumber || order.id} marked ${targetPaymentStatus} from Razorpay capture ${paymentId}`);
         continue;
       }
