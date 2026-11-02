@@ -215,7 +215,9 @@ const apis: Record<string, any> = {};
 export const faults = { transaction: 0 };
 const prisma: any = new Proxy({}, {
   get(_, prop: string) {
-    if (prop === '_isMock') return true; // rate-limit uses its in-memory fallback
+    // rate-limit uses its in-memory fallback; a test may set globalThis.__zbSettingsFromDb so
+    // getWhatsAppSetting reads the whatsapp_settings rows instead of returning its default.
+    if (prop === '_isMock') return !(globalThis as any).__zbSettingsFromDb;
     if (prop === '$transaction') return async (fn: any) => {
       if (faults.transaction > 0) { faults.transaction--; throw new Error('simulated DB outage: connection terminated unexpectedly'); }
       return typeof fn === 'function' ? fn(prisma) : Promise.all(fn);
