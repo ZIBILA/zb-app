@@ -65,8 +65,10 @@ async function main() {
 
   console.log('\n— 3. Store Coins (COD) uses the same rules');
   await setTemplate(COINS, [{ type: 'BODY', text: 'You earned ₹{{1}} in Store Coins' }]);
+  await setTemplate(COINS, [{ type: 'HEADER', format: 'IMAGE' }, { type: 'BODY', text: 'You earned ₹{{1}} in Store Coins' }]);
   await t.sendStoreCoinsEarned({ phone: '919811122244', customerName: 'Aarav', orderId: 'ZB2', coinsAmount: 99 });
   eq('one variable: the coins amount', lastBody(), ['99']);
+  eq('the COD template with an image header gets the same banner', lastHeader(), BANNER);
 
   console.log('\n— 4. nothing sent without an amount; other events unchanged');
   const before = sent.length;
