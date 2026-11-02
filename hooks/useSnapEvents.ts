@@ -366,15 +366,27 @@ export function toSnapItemId(raw: string | number | null | undefined): string {
   return normalizeVariantId(raw) || '';
 }
 
-/** Cart items → { ids, contents, numItems } for Snap events. */
+/**
+ * Cart items → { ids, contents, numItems } for Snap events. One `contents` entry per variant id:
+ * lines sharing a variant are merged (quantities summed, the first line's unit price kept) so an
+ * id is never repeated in `ids`.
+ */
 export function snapCartPayload(
   items: Array<{ variantId?: string; productId?: string; quantity?: number; price?: string | number }>
 ): { ids: string[]; contents: SnapContent[]; numItems: number } {
-  const contents = items.map(it => ({
-    id: toSnapItemId(it.variantId),
-    quantity: Number(it.quantity) || 1,
-    item_price: num(it.price),
-  })).filter(c => c.id);
+  const byId = new Map<string, SnapContent & { quantity: number }>();
+  for (const it of items) {
+    const id = toSnapItemId(it.variantId);
+    if (!id) continue;
+    const quantity = Number(it.quantity) || 1;
+    const seen = byId.get(id);
+    if (seen) {
+      seen.quantity += quantity;
+    } else {
+      byId.set(id, { id, quantity, item_price: num(it.price) });
+    }
+  }
+  const contents = Array.from(byId.values()); // Map keeps first-seen order
   return {
     ids: contents.map(c => c.id),
     contents,

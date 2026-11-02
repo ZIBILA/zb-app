@@ -6,6 +6,7 @@ import { authOptions } from "../../auth/[...nextauth]/options";
 export const dynamic = "force-dynamic";
 
 import { checkRateLimit } from "@/lib/rate-limit";
+import { collapseVariantLines } from "@/lib/cart-merge";
 
 /**
  * GET /api/cart/me
@@ -88,7 +89,8 @@ export async function GET(req: Request) {
           });
 
           // Return the recovered cart items
-          const items = recoveryCart.items.map((item: any) => ({
+          // One line per variant: rows stored before the sync deduped them are summed on the way out.
+          const items = collapseVariantLines(recoveryCart.items.map((item: any) => ({
             id: `${item.productId}_${item.variantId || ""}_${item.size || "one-size"}`,
             productId: item.productId,
             variantId: item.variantId || "",
@@ -98,7 +100,7 @@ export async function GET(req: Request) {
             image: item.image || "",
             quantity: item.quantity || 1,
             size: item.size || null,
-          }));
+          })));
 
           return NextResponse.json({ items, cartId: recoverId, updatedAt: recoveryCart.lastActivityAt });
         }
@@ -120,7 +122,7 @@ export async function GET(req: Request) {
       });
     }
 
-    const items = activeCart.items.map((item: any) => ({
+    const items = collapseVariantLines(activeCart.items.map((item: any) => ({
       id: `${item.productId}_${item.variantId || ""}_${item.size || "one-size"}`,
       productId: item.productId,
       variantId: item.variantId || "",
@@ -130,7 +132,7 @@ export async function GET(req: Request) {
       image: item.image || "",
       quantity: item.quantity || 1,
       size: item.size || null,
-    }));
+    })));
 
     return NextResponse.json({ items, cartId: activeCart.id, updatedAt: activeCart.lastActivityAt });
   } catch (error: any) {
