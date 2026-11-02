@@ -634,10 +634,13 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
           const totalAmount = orderData.total_price || orderData.current_total_price || '';
           const itemCount = (orderData.line_items || []).length || 1;
           const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
+          const { getStoreCreditEarnedForOrder } = await import('@/lib/storeCreditsHelper');
+          const storeCreditAmount = await getStoreCreditEarnedForOrder(order.id).catch(() => 0);
+          const prepaidConfirmTemplate = String(await getWhatsAppSetting('template_order_confirmed_prepaid', '') || '').trim();
           await deliverOrderWhatsApp({
             event: 'ORDER_CONFIRMED', orderRef: ref, rawPhone: phone, legacyOrderIds,
-            legacyTemplates: await used('template_order_confirmed', 'zica_order_confirmed_v1'),
-            run: (to) => sendOrderConfirmation({ phone: to, customerName, orderId: String(orderIdStr), productImageUrl, orderStatusUrl, totalAmount, itemCount }),
+            legacyTemplates: [...(await used('template_order_confirmed', 'zica_order_confirmed_v1')), ...(prepaidConfirmTemplate ? [prepaidConfirmTemplate] : [])],
+            run: (to) => sendOrderConfirmation({ phone: to, customerName, orderId: String(orderIdStr), productImageUrl, orderStatusUrl, totalAmount, itemCount, storeCreditAmount }),
           });
         }
       } else if (topic === 'orders/fulfilled') {

@@ -1411,12 +1411,16 @@ export async function POST(req: Request) {
             const enabled = (await getWhatsAppSetting('order_confirmed', 'true')) === 'true';
             if (enabled && customerPhone) {
               const templateName = await getWhatsAppSetting('template_order_confirmed', 'zica_order_confirmed_v1');
+              const prepaidTemplateName = await getWhatsAppSetting('template_order_confirmed_prepaid', '');
               const alreadySent = await prisma.whatsAppMessage.findFirst({
-                where: { orderId: orderIdStr, templateName }
+                where: { orderId: orderIdStr, templateName: { in: [templateName, prepaidTemplateName].filter(Boolean) } }
               });
               if (!alreadySent) {
                 const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
+                const { getStoreCreditEarnedForOrder } = await import('@/lib/storeCreditsHelper');
+                const storeCreditAmount = await getStoreCreditEarnedForOrder(localOrder.id).catch(() => 0);
                 await sendOrderConfirmation({
+                  storeCreditAmount,
                   phone: customerPhone,
                   customerName,
                   orderId: orderIdStr,

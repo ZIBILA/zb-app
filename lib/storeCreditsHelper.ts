@@ -409,3 +409,17 @@ export async function reverseCouponCashbackForReturn({
   }
 }
 
+
+/**
+ * Store credit an order has earned so far (pending or released coupon rebate), in rupees; 0 when none.
+ * Used by the order-confirmation WhatsApp, which names the amount for prepaid orders.
+ */
+export async function getStoreCreditEarnedForOrder(orderId: string): Promise<number> {
+  if (!orderId) return 0;
+  const rows = await prisma.storeCredit.findMany({
+    where: { orderId, type: { in: ['PENDING_COUPON_REBATE', 'COUPON_REBATE'] }, amount: { gt: 0 } },
+    select: { amount: true },
+  });
+  const total = rows.reduce((sum: number, r: { amount: number }) => sum + Number(r.amount || 0), 0);
+  return Number.isFinite(total) && total > 0 ? Math.round(total * 100) / 100 : 0;
+}
