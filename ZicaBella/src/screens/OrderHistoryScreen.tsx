@@ -11,6 +11,7 @@ import GlassHeader from '../components/GlassHeader';
 import { useColors } from '../constants/colors';
 import { useThemeStore } from '../store/themeStore';
 import { useAuth } from '../hooks/useAuth';
+import { useAuthStore } from '../store/authStore';
 import { config } from '../constants/config';
 import { formatPrice } from '../utils/formatPrice';
 import { haptics } from '../utils/haptics';
@@ -59,8 +60,12 @@ export default function OrderHistoryScreen() {
 
       const url = `${config.appUrl}/api/app/orders?${params.toString()}`;
 
+      // The server binds this lookup to the logged-in account (app JWT); without the token it answers 401.
       const res = await fetch(url, {
-        headers: { 'Accept': 'application/json' },
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${useAuthStore.getState().token || ''}`,
+        },
       });
 
       const contentType = res.headers.get('content-type') || '';
@@ -74,6 +79,7 @@ export default function OrderHistoryScreen() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to fetch orders');
 
+      setError(null);
       setOrders(json.orders || []);
     } catch (err: any) {
       setError(err.message);
@@ -407,9 +413,9 @@ export default function OrderHistoryScreen() {
               <View style={[styles.emptyIconCircle, { backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)' }]}>
                 <Ionicons name="bag-outline" size={32} color={colors.textExtraLight} />
               </View>
-              <Typography size={16} weight="700" color={colors.text} style={{ marginTop: 20 }}>No orders yet</Typography>
+              <Typography size={16} weight="700" color={colors.text} style={{ marginTop: 20 }}>{error ? "Couldn't load your orders" : 'No orders yet'}</Typography>
               <Typography size={13} color={colors.textMuted} style={{ marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
-                Your orders will appear here once you make a purchase
+                {error ? 'Pull down to try again. If it keeps happening, log out and log in again.' : 'Your orders will appear here once you make a purchase'}
               </Typography>
               <TouchableOpacity
                 style={[styles.shopBtn, { backgroundColor: colors.foreground }]}

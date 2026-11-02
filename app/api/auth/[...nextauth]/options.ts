@@ -918,6 +918,7 @@ export const authOptions: AuthOptions = {
           const superAdminPermissions = allModules.map(m => ({ module: m, canView: true, canEdit: true, canDelete: true, pages: null }));
 
           let user: any = null;
+          let dbFailed = false;
           try {
             user = await prisma.user.findUnique({
               where: { email },
@@ -928,10 +929,14 @@ export const authOptions: AuthOptions = {
           } catch (dbErr: any) {
             console.error('[AUTH] DB user query error:', dbErr.message);
             user = null;
+            dbFailed = true;
           }
 
-          // ── SUPER ADMIN FALLBACK: Check env credentials if DB fails or user not found ──
-          if (!user && email === superAdminEmail && providedPassword === superAdminPassword) {
+          // ── SUPER ADMIN BOOTSTRAP: SUPER_ADMIN_PASSWORD only creates the very first super admin, when the
+          // database has no account with a password for that email. Once an account exists, its stored
+          // password is the only one that works: a password changed in the dashboard replaces it for good
+          // (the env value must never stay a second way in). Never used while the database is unreachable. ──
+          if (!user && !dbFailed && superAdminPassword && email === superAdminEmail && providedPassword === superAdminPassword) {
             console.log('[AUTH] Super admin fallback login granted for:', email);
             try {
               const hashedPassword = await bcrypt.hash(superAdminPassword, 12);
@@ -958,26 +963,12 @@ export const authOptions: AuthOptions = {
           }
 
           if (!user || !user.isActive) {
-            if (email === superAdminEmail && providedPassword === superAdminPassword) {
-              console.log('[AUTH] Super-admin credential override for inactive/missing user:', email);
-              return {
-                id: user?.id || 'super_admin_env_id',
-                name: 'Super Admin',
-                email: superAdminEmail,
-                role: 'SUPER_ADMIN',
-                permissions: superAdminPermissions,
-              };
-            }
             return null;
           }
 
           // Check if locked
           if (user.lockUntil && user.lockUntil > new Date()) {
-            if (email === superAdminEmail && providedPassword === superAdminPassword) {
-              console.log('[AUTH] Bypassing lock for super admin env credential match');
-            } else {
-              throw new Error(`Account locked until ${user.lockUntil.toLocaleTimeString()}`);
-            }
+            throw new Error(`Account locked until ${user.lockUntil.toLocaleTimeString()}`);
           }
 
           let isValid = false;
@@ -985,11 +976,6 @@ export const authOptions: AuthOptions = {
             isValid = await bcrypt.compare(providedPassword, user.passwordHash);
           } catch (bcryptErr: any) {
             console.error('[AUTH] bcrypt compare error:', bcryptErr.message);
-          }
-
-          if (!isValid && email === superAdminEmail && providedPassword === superAdminPassword) {
-            console.log('[AUTH] Password matched SUPER_ADMIN_PASSWORD fallback!');
-            isValid = true;
           }
 
           if (!isValid) {
@@ -1020,23 +1006,6 @@ export const authOptions: AuthOptions = {
           return await buildAdminSessionUser(user);
         } catch (error: any) {
           console.error("[AUTH] Admin authorize error:", error);
-          if (process.env.SUPER_ADMIN_PASSWORD && credentials?.email?.toLowerCase().trim() === (process.env.SUPER_ADMIN_EMAIL || 'admin@zicabella.com').toLowerCase().trim()
-              && credentials?.password?.trim() === process.env.SUPER_ADMIN_PASSWORD.trim()) {
-            console.log('[AUTH] Emergency fallback authorization for super admin!');
-            const allModules = [
-              'DASHBOARD_HOME', 'SUPPORT', 'ORDERS', 'MOBILE_ORDERS', 'CUSTOMERS',
-              'PRODUCTS', 'INVENTORY', 'LOGISTICS', 'RETURNS_EXCHANGES', 'STOREFRONT',
-              'COMMUNITY', 'MARKETING', 'MANUFACTURING', 'FINANCIAL', 'INTEGRATIONS',
-              'SETTINGS', 'ADMIN_USERS', 'AUDIT_LOG'
-            ];
-            return {
-              id: 'super_admin_env_id',
-              name: 'Super Admin',
-              email: credentials.email.toLowerCase().trim(),
-              role: 'SUPER_ADMIN',
-              permissions: allModules.map(m => ({ module: m, canView: true, canEdit: true, canDelete: true, pages: null })),
-            };
-          }
           throw new Error(error.message || "Invalid credentials");
         }
       },
