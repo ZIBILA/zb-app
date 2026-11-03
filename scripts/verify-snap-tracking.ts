@@ -452,6 +452,17 @@ async function main() {
     check(`paymentStatus "${st}" → no Purchase`, out.status === 'skipped');
   }
   check('nothing sent for unpaid orders', sent.length === 0);
+  // A COD order Shopify re-labelled partially_paid (its mirror's financial_status, written back
+  // by the orders webhook) is still the one COD sale: sends once, full order value.
+  sent.length = 0;
+  orders.set('ord_cod_shopify', baseOrder('ord_cod_shopify', { paymentStatus: 'partially_paid', paymentMethod: 'cod', codUpfrontPaid: 99, totalPrice: 2499 }));
+  const codShopify = await delivery.emitSnapPurchase('ord_cod_shopify', scClick, PAID);
+  check('COD order re-labelled partially_paid by Shopify → sends once with the full order value',
+    codShopify.status === 'sent' && sent.length === 1 && capi.buildSnapCapiEvent(sent[0]).custom_data.value === 2499, codShopify);
+  orders.set('ord_underpaid', baseOrder('ord_underpaid', { paymentStatus: 'partially_paid', paymentMethod: 'razorpay', tags: 'underpaid, needs_review' }));
+  const underpaid = await delivery.emitSnapPurchase('ord_underpaid', scClick, PAID);
+  check('under-captured prepaid order (partially_paid, needs_review) still never sends', underpaid.status === 'skipped' && sent.length === 1, underpaid);
+  sent.length = 0;
 
   // Scenario: native app orders are never sent through the web pixel
   for (const t of ['MOBILE_APP', 'MOBILE', 'APP']) {
@@ -580,14 +591,14 @@ async function main() {
   const read = (p: string) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('app payment verify no longer calls sendSnapEvent', !/sendSnapEvent\s*\(/.test(read('app/api/app/payment/verify/route.ts')));
   check('checkout/complete has no inline sendSnapEvent', !/sendSnapEvent\s*\(/.test(read('app/api/checkout/complete/route.ts')));
-  // Gate lives in lib/meta/browser-purchase.ts (decideSnapBrowserPurchase: paid / cod_upfront_paid only, fires after pending → paid).
+  // Gate lives in lib/meta/browser-purchase.ts (decideSnapBrowserPurchase: isPurchasePaidStatus — paid / cod_upfront_paid, or a COD order Shopify re-labelled partially_paid; fires after pending → paid).
   // The decision runs on the order as the SERVER stores it (trackingOrder = displayed copy + serverFacts),
   // never on the optimistic checkout copy alone (it has no payment status → the Purchase could never fire).
   const confirmationPage = read('app/orders/[id]/confirmation/page.tsx');
   check('confirmation page gates Snap purchase on payment status',
     /decideSnapBrowserPurchase\(trackingOrder/.test(confirmationPage)
     && !/decide(Snap|Meta)BrowserPurchase\(order\b/.test(confirmationPage)
-    && /PAID = new Set\(\['paid', 'cod_upfront_paid'\]\)/.test(read('lib/meta/browser-purchase.ts')));
+    && /if \(isPurchasePaidStatus\(order\)\)/.test(read('lib/meta/browser-purchase.ts')));
   check('confirmation page reads the server facts before it turns "confirmed"',
     /await fetchOrderServerFacts\(confirmedId, \{ timeoutMs: \d+ \}\)[\s\S]{0,600}setRegistrationStatus\("confirmed"\)/.test(confirmationPage));
   // The completion hand-off is recorded (cache written, pending payload removed) BEFORE
