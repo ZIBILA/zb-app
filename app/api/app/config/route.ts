@@ -159,7 +159,8 @@ export async function GET() {
         title: nullIfEmpty(s.spotlightTitle),
         subtitle: nullIfEmpty(s.spotlightSubtitle),
         collection: s.spotlightCollection || null,
-        products: safeJsonParse(s.spotlightProducts),
+        // saved by the dashboard as a comma list ("id1, id2"), not JSON
+        products: String(s.spotlightProducts || '').split(',').map((x: string) => x.trim()).filter(Boolean),
         media: s.spotlightMedia || null,
       },
       homepage: {

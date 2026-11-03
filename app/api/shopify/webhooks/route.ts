@@ -1,3 +1,4 @@
+import { totalAfterStoreCredit } from '@/lib/order-totals';
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import prisma from '@/lib/db';
@@ -324,6 +325,13 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
   if (discountAmount > 0 && Math.abs(finalTotalPrice - finalSubtotalPrice) < 0.01) {
     finalTotalPrice = finalSubtotalPrice - discountAmount;
   }
+  // Store credit paid from the wallet: keep it off the total even when Shopify was never told about it.
+  finalTotalPrice = totalAfterStoreCredit({
+    shopifyTotal: finalTotalPrice,
+    subtotal: finalSubtotalPrice,
+    discountAmount: Number(discountAmount) || 0,
+    storeCredit: Number((existingLocalOrder as any)?.storeCreditAmount || 0),
+  });
 
   const shopifyPaymentStatus = orderData.financial_status || 'pending';
   const localPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'partially-paid'].includes(
@@ -634,10 +642,13 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
           const totalAmount = orderData.total_price || orderData.current_total_price || '';
           const itemCount = (orderData.line_items || []).length || 1;
           const { sendOrderConfirmation } = await import('@/lib/whatsapp/templates');
+          const { getStoreCreditEarnedForOrder } = await import('@/lib/storeCreditsHelper');
+          const storeCreditAmount = await getStoreCreditEarnedForOrder(order.id).catch(() => 0);
+          const prepaidConfirmTemplate = String(await getWhatsAppSetting('template_order_confirmed_prepaid', '') || '').trim();
           await deliverOrderWhatsApp({
             event: 'ORDER_CONFIRMED', orderRef: ref, rawPhone: phone, legacyOrderIds,
-            legacyTemplates: await used('template_order_confirmed', 'zica_order_confirmed_v1'),
-            run: (to) => sendOrderConfirmation({ phone: to, customerName, orderId: String(orderIdStr), productImageUrl, orderStatusUrl, totalAmount, itemCount }),
+            legacyTemplates: [...(await used('template_order_confirmed', 'zica_order_confirmed_v1')), ...(prepaidConfirmTemplate ? [prepaidConfirmTemplate] : [])],
+            run: (to) => sendOrderConfirmation({ phone: to, customerName, orderId: String(orderIdStr), productImageUrl, orderStatusUrl, totalAmount, itemCount, storeCreditAmount }),
           });
         }
       } else if (topic === 'orders/fulfilled') {
@@ -720,58 +731,15 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
 }
 
 async function handleRefundWebhook(shop: string, refundData: any) {
-  const shopRecord = await prisma.shop.findUnique({ where: { domain: shop } });
-  if (!shopRecord) return;
-
-  const orderId = refundData.order_id?.toString();
-  if (!orderId) return;
-
-  const order = await prisma.order.findUnique({
-    where: { shopifyOrderId: orderId },
-    include: { items: true },
-  });
-  if (!order) return;
-
-  // Refunds released from our Refund Management are already tracked on the request itself;
-  // echoing them back would create a duplicate ₹0 "refunded" row in the refund queue.
-  if (String(refundData.note || '').startsWith('Admin approved refund')) return;
-
-  const refundLineItems =
-    refundData.refund_line_items && Array.isArray(refundData.refund_line_items)
-      ? refundData.refund_line_items
-      : [];
-
-  for (const rli of refundLineItems) {
-    const lineItemId = rli.line_item_id?.toString();
-    if (!lineItemId) continue;
-
-    const orderItem = order.items.find(
-      (item: any) => item.shopifyLineItemId === lineItemId,
-    );
-    if (!orderItem || !orderItem.productId) continue;
-
-    // Upsert a Return record representing this Shopify refund
-    await prisma.return.upsert({
-      where: {
-        // One return per order+product from Shopify refunds
-        // (schema has id as PK only, so emulate by looking up then create if missing)
-        id: `${order.id}-${orderItem.productId}-shopify-refund`,
-      },
-      update: {
-        status: 'refunded',
-        updatedAt: new Date(),
-      },
-      create: {
-        id: `${order.id}-${orderItem.productId}-shopify-refund`,
-        orderId: order.id,
-        productId: orderItem.productId,
-        customerId: order.customerId,
-        sku: orderItem.sku,
-        reason: refundData.note || 'Refund created in Shopify',
-        status: 'refunded',
-      },
-    });
-  }
+  // A Shopify refund is money going back to the customer, not a return request. This handler
+  // used to upsert a `Return` row per refunded line item, which turned every cancelled order
+  // (and every refund typed into Shopify admin) into a phantom "return" in the Returns queue,
+  // the customer's My Returns list and the return counters. Genuine returns are created only by
+  // the return flow (ReturnRequest / portal), and refund results from Razorpay are applied by
+  // the Razorpay webhook. Nothing is written here; rows created by the old behaviour are hidden
+  // by lib/returns-filter.ts.
+  const orderId = refundData?.order_id?.toString();
+  console.log(`[Shopify Webhook] refunds/create for order ${orderId || 'unknown'} acknowledged (no Return row created)`);
 }
 
 async function handleInventoryWebhook(shop: string, inventoryData: any) {

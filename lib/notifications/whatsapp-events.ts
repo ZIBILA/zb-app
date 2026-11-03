@@ -3,7 +3,8 @@
  *
  * Covers the customer messages that have no inline trigger today:
  *   order cancelled · refund initiated · return accepted · return received · exchange delivered ·
- *   Store Credit earned (prepaid, on payment) · Store Coins earned (COD, only after delivery).
+ *   Store Credit earned (prepaid, on payment) · Store Coins earned (COD, only after delivery) ·
+ *   Store Credit expiring (one reminder, N days before unused credit expires).
  * (Order confirmed / shipped / out for delivery / delivered, pickups, exchange confirmed/shipped, COD
  * confirmation, account-created and cart recovery are already sent by their own triggers — not repeated here.)
  *
@@ -21,8 +22,8 @@
 
 import prisma from '@/lib/db';
 import { deliverOnce, normalizeOrderRef, pageAll, type CustomerEventType } from '@/lib/notifications/customer-events';
-import type { ScanSummary } from '@/lib/notifications/event-scanner';
-import { toggleDefault } from '@/lib/whatsapp/automation-defaults';
+import { calendarDaysBetween, type ScanSummary } from '@/lib/notifications/event-scanner';
+import { toggleDefault, STORE_CREDIT_EXPIRY_REMINDER_DAYS_DEFAULT } from '@/lib/whatsapp/automation-defaults';
 import { getWhatsAppSetting } from '@/lib/whatsapp/logger';
 import { formatPhone } from '@/lib/whatsapp/client';
 import * as templates from '@/lib/whatsapp/templates';
@@ -56,6 +57,7 @@ export interface WhatsAppSenders {
   exchangeDelivered: Sender;
   storeCreditEarned: Sender;
   storeCoinsEarned: Sender;
+  storeCreditExpiring: Sender;
 }
 
 export interface WhatsAppScanDeps {
@@ -77,6 +79,7 @@ const defaultSenders = (): WhatsAppSenders => ({
   exchangeDelivered: templates.sendExchangeDelivered,
   storeCreditEarned: templates.sendStoreCreditEarned,
   storeCoinsEarned: templates.sendStoreCoinsEarned,
+  storeCreditExpiring: templates.sendStoreCreditExpiring,
 });
 
 /** First run: create the marker and return its time. Later runs: the marker's time. */
@@ -525,5 +528,48 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
     }
   }
 
+  // ── 8. Unused store credit expiring: ONE reminder per customer and expiry date, `store_credit_expiry_reminder_days`
+  //       (default 15) before it expires. Only credit that is still unused (remainingAmount > 0) and not yet expired
+  //       counts; the amount is what is left to lose on that date, so spending it first removes the reminder. ──
+  if (await isOn('store_credit_expiring_enabled')) {
+    const configured = parseInt(await getWhatsAppSetting('store_credit_expiry_reminder_days', ''), 10);
+    const reminderDays = Number.isFinite(configured) && configured > 0 && configured <= 60 ? configured : STORE_CREDIT_EXPIRY_REMINDER_DAYS_DEFAULT;
+    const expiring: any[] = await pageAll((page) => prisma.storeCredit.findMany({
+      where: {
+        amount: { gt: 0 },
+        remainingAmount: { gt: 0 },
+        expiresAt: { gt: now, lte: new Date(now.getTime() + (reminderDays + 1) * DAY_MS) },
+      },
+      include: { customer: true },
+      ...page,
+      orderBy: [{ expiresAt: 'asc' }, { id: 'asc' }],
+    }), { pageSize: BATCH });
+    const groups = new Map<string, { customer: any; amount: number; expiresAt: Date }>();
+    for (const c of expiring) {
+      const key = `${c.customerId}:${istDate(c.expiresAt)}`;
+      const g = groups.get(key) || { customer: c.customer, amount: 0, expiresAt: c.expiresAt };
+      g.amount += Number(c.remainingAmount) || 0;
+      groups.set(key, g);
+    }
+    for (const [key, g] of groups) {
+      if (outOfTime()) break;
+      const daysLeft = calendarDaysBetween(now, g.expiresAt);
+      if (daysLeft > reminderDays || g.amount <= 0) continue;
+      await emit('STORE_CREDIT_EXPIRING', `credit:${key}:expiry:whatsapp`, phoneOf(g.customer, null), (to) =>
+        senders.storeCreditExpiring({
+          phone: to,
+          customerName: g.customer?.name || 'there',
+          amount: Math.round(g.amount * 100) / 100,
+          expiryDate: fmtDate(g.expiresAt),
+          daysLeft,
+        })
+      );
+    }
+  }
+
   return summary;
 }
+
+const fmtDate = (d: Date) => d.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'long', year: 'numeric' });
+/** India-time calendar date (YYYY-MM-DD) of an instant. */
+const istDate = (d: Date) => new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);

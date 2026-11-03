@@ -4,14 +4,14 @@
  *
  *   npx tsx --tsconfig scripts/meta-regression/tsconfig.json scripts/verify-dashboard-host.ts
  *
- * Checks the pure helpers behind the storefront → dashboard 301 (which paths, which hosts,
- * the target keeps path + query), the host rule for admin sign-in, the host-only NextAuth
- * cookies and the dashboard link helper. No network, no database.
+ * Checks the admin-page rule behind the storefront → dashboard 301 (main's isAdminPagePath:
+ * pages only, APIs stay where they are), the host rule for admin sign-in, the host-only
+ * NextAuth cookies and the dashboard link helper. No network, no database.
  */
 import fs from 'fs';
 import path from 'path';
 import {
-  DASHBOARD_HOST, STOREFRONT_HOSTS, isDashboardPath, isDashboardHost, dashboardRedirectTarget, requestHost,
+  ADMIN_HOST, DASHBOARD_HOST, STOREFRONT_HOSTS, isAdminPagePath, isDashboardHost, requestHost,
   isAppHostPathToRedirect, isNonCanonicalStorefrontHost,
 } from '../lib/tracking/host';
 import { DASHBOARD_ORIGIN, STOREFRONT_ORIGIN, dashboardUrl, storefrontUrl } from '../lib/storefront-url';
@@ -25,43 +25,33 @@ function eq(name: string, got: unknown, want: unknown) {
 }
 
 console.log('— 1. The rule');
-eq('dashboard host', DASHBOARD_HOST, 'app.zicabella.com');
+eq('dashboard host (one constant for the middleware and the sign-in rule)', [DASHBOARD_HOST, ADMIN_HOST], ['app.zicabella.com', 'app.zicabella.com']);
 eq('storefront hosts are zicabella.com and www', [...STOREFRONT_HOSTS], ['zicabella.com', 'www.zicabella.com']);
 
-console.log('\n— 2. isDashboardPath');
-const dashboardPaths = [
-  '/dashboard', '/dashboard/', '/dashboard/login', '/dashboard/orders/ord_1', '/dashboard?x=1',
-  '/web-store', '/web-store/orders',
-  '/api/admin', '/api/admin/orders', '/api/admin/orders/ord_1/approve', '/api/admin/users', '/api/admin/settings',
-  '/api/web-store/orders', '/api/web-store/stats', '/api/web-store/coupons/1', '/api/webstore-settings', '/api/webstore-settings/upload-social-image',
-];
-eq('dashboard pages, the admin login page and dashboard-only APIs', dashboardPaths.map(isDashboardPath), dashboardPaths.map(() => true));
+console.log('\n— 2. isAdminPagePath (what the storefront host 301s to the app host)');
+const adminPages = ['/dashboard', '/dashboard/', '/dashboard/login', '/dashboard/login?callbackUrl=%2Fdashboard', '/dashboard/orders/ord_1', '/dashboard?x=1', '/admin', '/admin/users', '/web-store', '/web-store/orders'];
+eq('dashboard pages, the admin login page, /admin and the legacy /web-store pages', adminPages.map(isAdminPagePath), adminPages.map(() => true));
 const storefrontPaths = [
   '/', '/products/viscera-denim', '/collections/all', '/cart', '/checkout', '/checkout/success', '/login', '/orders/ord_1', '/profile', '/community', '/gallery',
-  '/api/meta/event', '/api/snap/event', '/api/auth/callback/admin-login', '/api/auth/session', '/api/app/payment/verify', '/api/checkout/complete', '/api/webhooks/razorpay',
-  '/api/collections/handles', '/api/discounts', '/api/email/low-stock', '/_next/data/x', '/sitemap.xml',
+  '/_next/data/x', '/sitemap.xml',
 ];
-eq('storefront pages and every other API are not', storefrontPaths.map(isDashboardPath), storefrontPaths.map(() => false));
-eq('look-alike prefixes are not', ['/dashboardx', '/dashboard-old', '/api/adminx', '/api/administrator', '/web-storefront', '/xdashboard'].map(isDashboardPath), [false, false, false, false, false, false]);
-eq('the storefront host keeps the middleware permission lookup and the public banner / gallery reads',
-  ['/api/admin/users/check-permissions', '/api/admin/users/check-permissions?userId=u', '/api/web-store/banners', '/api/web-store/gallery', '/api/web-store/gallery/1', '/api/web-store/banners/reorder'].map(isDashboardPath),
-  [false, false, false, false, false, false]);
-eq('…but the rest of /api/admin/users stays dashboard-only', ['/api/admin/users', '/api/admin/users/u1', '/api/admin/users/check-permissionsx'].map(isDashboardPath), [true, true, true]);
-eq('junk', [isDashboardPath(''), isDashboardPath('dashboard'), isDashboardPath(undefined as any)], [false, false, false]);
-
-console.log('\n— 3. dashboardRedirectTarget (middleware, storefront hosts)');
-eq('zicabella.com /dashboard?x=1 → app host, query kept', dashboardRedirectTarget('zicabella.com', '/dashboard', '?x=1'), 'https://app.zicabella.com/dashboard?x=1');
-eq('/dashboard/login with a callbackUrl → app host login, query kept', dashboardRedirectTarget('zicabella.com', '/dashboard/login', '?callbackUrl=%2Fdashboard%2Forders'), 'https://app.zicabella.com/dashboard/login?callbackUrl=%2Fdashboard%2Forders');
-eq('/api/admin/orders → app host', dashboardRedirectTarget('zicabella.com', '/api/admin/orders', ''), 'https://app.zicabella.com/api/admin/orders');
-eq('/api/web-store/orders and /api/webstore-settings → app host', [dashboardRedirectTarget('zicabella.com', '/api/web-store/orders'), dashboardRedirectTarget('zicabella.com', '/api/webstore-settings')], ['https://app.zicabella.com/api/web-store/orders', 'https://app.zicabella.com/api/webstore-settings']);
-eq('www host handled the same', [dashboardRedirectTarget('www.zicabella.com', '/dashboard/orders', '?page=2'), dashboardRedirectTarget('WWW.ZicaBella.com:443', '/dashboard/login')], ['https://app.zicabella.com/dashboard/orders?page=2', 'https://app.zicabella.com/dashboard/login']);
-eq('host case / port / trailing dot normalised', [dashboardRedirectTarget('ZICABELLA.COM:443', '/dashboard'), dashboardRedirectTarget('zicabella.com.', '/dashboard')], ['https://app.zicabella.com/dashboard', 'https://app.zicabella.com/dashboard']);
-eq('a search without "?" and an empty / undefined search', [dashboardRedirectTarget('zicabella.com', '/dashboard', 'x=1'), dashboardRedirectTarget('zicabella.com', '/dashboard', ''), dashboardRedirectTarget('zicabella.com', '/dashboard', undefined as any)], ['https://app.zicabella.com/dashboard?x=1', 'https://app.zicabella.com/dashboard', 'https://app.zicabella.com/dashboard']);
-eq('storefront pages and APIs on the storefront host are untouched', ['/products/x', '/api/meta/event', '/', '/cart', '/login', '/api/auth/callback/admin-login', '/api/web-store/gallery', '/api/admin/users/check-permissions'].map(p => dashboardRedirectTarget('zicabella.com', p, '?a=1')), [null, null, null, null, null, null, null, null]);
-eq('app.zicabella.com/dashboard is untouched (so are its APIs)', ['/dashboard', '/dashboard/login', '/api/admin/orders', '/api/web-store/stats'].map(p => dashboardRedirectTarget('app.zicabella.com', p)), [null, null, null, null]);
-eq('other hosts are untouched (dev, platform default, staging, look-alikes, none)', ['localhost:3000', '127.0.0.1', 'zb-app-xyz.ondigitalocean.app', 'staging.example.com', 'zicabella.com.evil.io', 'evil-zicabella.com', '', undefined].map(h => dashboardRedirectTarget(h, '/dashboard')), [null, null, null, null, null, null, null, null]);
+eq('storefront pages are not', storefrontPaths.map(isAdminPagePath), storefrontPaths.map(() => false));
+const apiPaths = ['/api/admin/orders', '/api/admin/users/check-permissions', '/api/web-store/orders', '/api/webstore-settings', '/api/meta/event', '/api/snap/event', '/api/auth/callback/admin-login', '/api/checkout/complete', '/api/webhooks/razorpay'];
+eq('no API is moved (the storefront and the payment webhooks call them on zicabella.com)', apiPaths.map(isAdminPagePath), apiPaths.map(() => false));
+eq('look-alike prefixes are not', ['/dashboardx', '/dashboard-old', '/adminx', '/web-storefront', '/xdashboard'].map(isAdminPagePath), [false, false, false, false, false]);
+eq('junk', [isAdminPagePath(''), isAdminPagePath('dashboard'), isAdminPagePath(undefined as any)], [false, false, false]);
+eq('every admin page is on the app-host keep-list (never 301\'d back to the storefront)', adminPages.map(p => isAppHostPathToRedirect(p)), adminPages.map(() => false));
 eq('platform default hosts still go through the existing storefront rule only', [isNonCanonicalStorefrontHost('zb-app-xyz.ondigitalocean.app'), isAppHostPathToRedirect('/dashboard')], [true, false]);
-eq('every dashboard path is on the app-host keep-list (never 301\'d back to the storefront)', dashboardPaths.map(p => isAppHostPathToRedirect(p)), dashboardPaths.map(() => false));
+
+console.log('\n— 3. middleware wiring (source)');
+const mwSrc = fs.readFileSync(path.join(process.cwd(), 'middleware.ts'), 'utf8');
+eq('zicabella.com admin pages → 301 to ADMIN_HOST, GET / HEAD only, path + query kept (url.clone)', [
+  mwSrc.includes('isAdminPagePath(pathname)'), mwSrc.includes('url.hostname = ADMIN_HOST;'),
+  /isAdminPagePath\(pathname\)\)[\s\S]{0,260}NextResponse\.redirect\(url, 301\)/.test(mwSrc),
+  /\(req\.method === "GET" \|\| req\.method === "HEAD"\) && isAdminPagePath/.test(mwSrc),
+], [true, true, true, true]);
+eq('the app host\'s bare root opens the dashboard', /host === ADMIN_HOST[\s\S]{0,120}pathname === "\/"[\s\S]{0,200}url\.pathname = "\/dashboard"/.test(mwSrc), true);
+eq('the branch\'s own API-moving redirect is gone (superseded by main\'s page rule)', mwSrc.includes('dashboardRedirectTarget'), false);
 
 console.log('\n— 4. isDashboardHost (admin sign-in)');
 eq('app.zicabella.com — any case, port, trailing dot', ['app.zicabella.com', 'APP.ZicaBella.com:443', 'app.zicabella.com.'].map(h => isDashboardHost(h, '')), [true, true, true]);
@@ -100,8 +90,6 @@ eq('customer links still on the storefront', [STOREFRONT_ORIGIN, storefrontUrl('
 
 console.log('\n— 8. Wiring (source checks)');
 const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), 'utf8');
-const mw = read('middleware.ts');
-eq('middleware: redirects and bypasses withAuth for storefront-host dashboard paths', [mw.includes('const dashboardTarget = dashboardRedirectTarget(host, pathname, req.nextUrl.search)'), mw.includes('if (dashboardRedirectTarget(host, pathname)) return true;'), mw.includes('NextResponse.redirect(dashboardTarget, 301)')], [true, true, true]);
 const opts = read('app/api/auth/[...nextauth]/options.ts');
 eq('options: host-only cookies, admin-login and admin-passkey host-checked, otp untouched', [
   opts.includes('cookies: authCookies(),'), /domain:/.test(opts.slice(opts.indexOf('cookies: authCookies('))),

@@ -21,7 +21,7 @@ const senders = {
   orderCancelled: sender('orderCancelled'), refundInitiated: sender('refundInitiated'),
   returnAccepted: sender('returnAccepted'), returnReceived: sender('returnReceived'),
   exchangeDelivered: sender('exchangeDelivered'), storeCreditEarned: sender('storeCreditEarned'),
-  storeCoinsEarned: sender('storeCoinsEarned'),
+  storeCoinsEarned: sender('storeCoinsEarned'), storeCreditExpiring: sender('storeCreditExpiring'),
 };
 
 let pass = 0, fail = 0;
@@ -223,6 +223,51 @@ async function main() {
   } finally {
     (prismaMem as any).customerEventDelivery.update = realUpdate;
   }
+
+  // ── Unused store credit expiring: one reminder per customer + expiry date, 15 days before ──
+  const inDays = (d: number) => new Date(Date.now() + d * DAY);
+  const credit = (customerId: string, extra: any) => add('storeCredit', { customerId, amount: 100, type: 'COUPON_REBATE', description: 'x', remainingAmount: 100, ...extra });
+  const expCust = customer({ name: 'Expiry Cust' });
+  const expOff = await scanWhatsAppEvents(new Date(), { send: senders as any, isEnabled: async (k) => k !== 'store_credit_expiring_enabled' });
+  const c1 = credit(expCust, { expiresAt: inDays(10), remainingAmount: 100 });
+  const c2 = credit(expCust, { expiresAt: inDays(10), remainingAmount: 60 });       // same expiry date: summed into ONE message
+  credit(expCust, { expiresAt: inDays(40), remainingAmount: 500 });                  // far away: not yet
+  credit(expCust, { expiresAt: inDays(-2), remainingAmount: 80 });                   // already expired
+  credit(expCust, { expiresAt: inDays(8), remainingAmount: 0 });                     // fully used
+  const noPhoneCust = customer({ phone: '' });
+  credit(noPhoneCust, { expiresAt: inDays(5), remainingAmount: 90 });
+  const lateCust = customer({ name: 'Late Cust' });
+  credit(lateCust, { expiresAt: inDays(2), remainingAmount: 40 });
+  const exactCust = customer({ name: 'Exact Cust' });
+  credit(exactCust, { expiresAt: inDays(15), remainingAmount: 75 });
+  const farCust = customer({ name: 'Far Cust' });
+  credit(farCust, { expiresAt: inDays(17), remainingAmount: 75 });
+  check('M0 reminders are OFF until the automation is switched on', sent('storeCreditExpiring') === 0, JSON.stringify(calls.filter(c => c.event === 'storeCreditExpiring')));
+  await scan();
+  const mine = calls.filter(c => c.event === 'storeCreditExpiring' && c.args.customerName === 'Expiry Cust');
+  check('M1 two credits expiring the same day → ONE reminder with the unused total (₹160)', mine.length === 1 && mine[0].args.amount === 160, JSON.stringify(mine.map(m => m.args)));
+  check('M2 the reminder carries the expiry date and days left', !!mine[0] && /\d{4}/.test(mine[0].args.expiryDate) && mine[0].args.daysLeft >= 9 && mine[0].args.daysLeft <= 10, JSON.stringify(mine[0]?.args));
+  check('M3 credit expiring in 40 days, already expired, or fully used is not counted', mine[0]?.args.amount === 160);
+  check('M4 a customer with NO phone gets nothing', sent('storeCreditExpiring', a => a.customerName === 'Cust ' + (seq)) === 0 && calls.filter(c => c.event === 'storeCreditExpiring').length === 3, String(calls.filter(c => c.event === 'storeCreditExpiring').length));
+  check('M5 credit expiring in 2 days is still reminded (the scanner was off before)', sent('storeCreditExpiring', a => a.customerName === 'Late Cust') === 1);
+  check('M6 credit expiring in exactly 15 days is reminded; in 17 days is not yet', sent('storeCreditExpiring', a => a.customerName === 'Exact Cust') === 1 && sent('storeCreditExpiring', a => a.customerName === 'Far Cust') === 0);
+  const nExp = sent('storeCreditExpiring');
+  await scan(); await scan();
+  check('M7 running again never sends the same reminder twice', sent('storeCreditExpiring') === nExp, `${sent('storeCreditExpiring') - nExp} extra`);
+  const spend = db.storeCredit.find((r: any) => r.id === c1.id); spend.remainingAmount = 0;
+  const spend2 = db.storeCredit.find((r: any) => r.id === c2.id); spend2.remainingAmount = 0;
+  const farLater = customer({ name: 'Spent Cust' });
+  const sp = credit(farLater, { expiresAt: inDays(14), remainingAmount: 50 });
+  db.storeCredit.find((r: any) => r.id === sp.id).remainingAmount = 0;
+  await scan();
+  check('M8 credit spent before the reminder → no reminder', sent('storeCreditExpiring', a => a.customerName === 'Spent Cust') === 0);
+  failures['storeCreditExpiring'] = 1;
+  const retryCust = customer({ name: 'Retry Cust' });
+  credit(retryCust, { expiresAt: inDays(9), remainingAmount: 30 });
+  await scan();
+  check('M9 a failed send is not recorded as sent', sent('storeCreditExpiring', a => a.customerName === 'Retry Cust') === 0);
+  await scan();
+  check('M10 …and the next scan retries it once', sent('storeCreditExpiring', a => a.customerName === 'Retry Cust') === 1);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

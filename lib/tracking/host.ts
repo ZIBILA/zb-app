@@ -92,12 +92,12 @@ export function isNonCanonicalStorefrontHost(hostname: unknown): boolean {
 
 /**
  * Storefront pages on app.zicabella.com are 301'd to zicabella.com by the middleware.
- * These stay on the app host: the admin dashboard and APIs, Next internals, pages a
- * shopper may already be in the middle of on that host (cart, checkout, orders,
- * login, profile, portal, returns), machine-read files (feeds, sitemap, robots,
- * manifest, BIMI, .well-known) and anything that looks like a static file.
+ * These stay on the app host: the admin dashboard and APIs, Next internals,
+ * machine-read files (feeds, sitemap, robots, manifest, BIMI, .well-known) and
+ * anything that looks like a static file. Every shopper page (cart, checkout, orders,
+ * login, profile, portal, returns, affiliate links) goes to zicabella.com.
  */
-const APP_HOST_KEEP = /^\/(?:dashboard|admin|web-store|api|_next|cart|checkout|orders|login|profile|portal|returns|unauthorized|uploads|r|bimi|\.well-known)(?:\/|$)|^\/(?:feed\.(?:xml|csv)|sitemap[^/]*\.xml|robots\.txt|manifest\.(?:json|webmanifest)|favicon\.ico)$/;
+const APP_HOST_KEEP = /^\/(?:dashboard|admin|web-store|api|_next|unauthorized|uploads|bimi|\.well-known)(?:\/|$)|^\/(?:feed\.(?:xml|csv)|sitemap[^/]*\.xml|robots\.txt|manifest\.(?:json|webmanifest)|favicon\.ico)$/;
 const LOOKS_LIKE_FILE = /\.[a-z0-9]{2,5}$/i;
 
 /** true when a GET for `pathname` on app.zicabella.com should be sent to zicabella.com. */
@@ -109,62 +109,46 @@ export function isAppHostPathToRedirect(pathname: string): boolean {
   return true;
 }
 
-// ── the dashboard lives on app.zicabella.com only (middleware + admin sign-in) ──
+// ── zicabella.com → app.zicabella.com/dashboard (middleware) ─────────────────
 
-/** The admin dashboard host: the only host the dashboard is served on and admins may sign in from. */
-export const DASHBOARD_HOST = 'app.zicabella.com';
+/** The one host the admin dashboard lives on. */
+export const ADMIN_HOST = 'app.zicabella.com';
 
-/** The storefront hosts (zicabella.com and www): a dashboard path asked for here is sent to DASHBOARD_HOST. */
-export const STOREFRONT_HOSTS: readonly string[] = EVENT_HOSTS;
+const ADMIN_PAGE_PREFIX = /^\/(?:dashboard|admin|web-store)(?:\/|$)/;
 
 /**
- * Paths that belong to the dashboard: the admin pages, the admin login page, the legacy
- * /web-store pages (next.config 307s them to /dashboard/webstore) and the APIs only
- * dashboard pages call (/api/admin, /api/web-store, /api/webstore-settings).
+ * true for admin dashboard pages. zicabella.com (and www) 301 these to
+ * app.zicabella.com, so the shop host never serves the dashboard. APIs are not pages
+ * and are not moved (the storefront and the payment webhooks call them on zicabella.com).
  */
-const DASHBOARD_PATH = /^\/(?:dashboard|web-store|api\/admin|api\/web-store|api\/webstore-settings)(?:\/|$)/;
-/**
- * …except what the storefront host needs itself: the middleware's own permission lookup
- * (INTERNAL_API_SECRET, built from the request's host) and the public banner / gallery
- * reads (app/gallery). Every other /api/admin and /api/web-store route is admin-only.
- */
-const DASHBOARD_PATH_EXCEPT = /^\/api\/(?:admin\/users\/check-permissions|web-store\/(?:banners|gallery))(?:\/|$)/;
-
-/** true when `pathname` is a dashboard page, the admin login page or a dashboard-only API. */
-export function isDashboardPath(pathname: string): boolean {
-  const path = String(pathname ?? '').replace(/[?#][\s\S]*$/, '');
-  if (!path.startsWith('/')) return false;
-  return DASHBOARD_PATH.test(path) && !DASHBOARD_PATH_EXCEPT.test(path);
+export function isAdminPagePath(pathname: string): boolean {
+  return ADMIN_PAGE_PREFIX.test(String(pathname ?? '').replace(/[?#][\s\S]*$/, ''));
 }
+
+// ── admin sign-in host rule (NextAuth admin-login / admin-passkey) ───────────
+
+/** Alias of ADMIN_HOST for the sign-in rule below and lib/auth / lib/storefront-url callers. */
+export const DASHBOARD_HOST = ADMIN_HOST;
+
+/** The storefront hosts (zicabella.com and www): admins never sign in here. */
+export const STOREFRONT_HOSTS: readonly string[] = EVENT_HOSTS;
 
 /** Dev hosts admins may also sign in from. */
 const DEV_HOSTS: readonly string[] = ['localhost', '127.0.0.1', '[::1]'];
 
 /**
- * May the dashboard be used — and an admin sign in — on `hostname`? app.zicabella.com,
- * the local dev hosts, and any host listed in ADMIN_LOGIN_HOSTS (comma-separated; a
- * staging deployment that serves its own dashboard). Never the storefront hosts.
+ * May an admin sign in on `hostname`? app.zicabella.com, the local dev hosts, and any
+ * host listed in ADMIN_LOGIN_HOSTS (comma-separated; a staging deployment that serves
+ * its own dashboard). Never the storefront hosts: the admin session is host-only, so a
+ * sign-in on zicabella.com would replace the shopper's session there (and the pixels'
+ * external_id) — the middleware already moves the dashboard pages, this closes the
+ * credentials callback itself.
  */
 export function isDashboardHost(hostname: unknown, extra: string | undefined = process.env.ADMIN_LOGIN_HOSTS): boolean {
   const h = normalizeHost(hostname);
   if (!h || STOREFRONT_HOSTS.includes(h)) return false;
   if (h === DASHBOARD_HOST || DEV_HOSTS.includes(h)) return true;
   return String(extra ?? '').split(',').map(normalizeHost).filter(Boolean).includes(h);
-}
-
-/**
- * Where a request for `pathname` on a storefront host belongs: `https://app.zicabella.com`
- * + the same pathname + the same query string when it is a dashboard path, else null
- * (not a storefront host, or a storefront page / API). The middleware answers a GET / HEAD
- * with a 301 there and anything else with a 404.
- */
-export function dashboardRedirectTarget(hostname: unknown, pathname: string, search: string = ''): string | null {
-  const h = normalizeHost(hostname);
-  if (!h || !STOREFRONT_HOSTS.includes(h)) return null;
-  const path = String(pathname ?? '').replace(/[?#][\s\S]*$/, '');
-  if (!isDashboardPath(path)) return null;
-  const qs = String(search ?? '');
-  return `https://${DASHBOARD_HOST}${path}${qs && !qs.startsWith('?') ? `?${qs}` : qs}`;
 }
 
 /**

@@ -78,8 +78,17 @@ async function sendViaApns(deviceToken: string, title: string, body: string, dat
 
 export const NotificationService = {
   async sendToUser(userId: string, title: string, body: string, data?: Record<string, string>) {
-    const devices = await db.deviceToken.findMany({
+    const rows = await db.deviceToken.findMany({
       where: { userId, isActive: true },
+    });
+
+    // The app can register one token under several deviceIds; send once per distinct token.
+    const seen = new Set<string>();
+    const devices = rows.filter((d: any) => {
+      const key = d.apnsToken || d.fcmToken;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
 
     if (devices.length === 0) return { success: false, reason: 'No active devices.' };
@@ -118,7 +127,7 @@ export const NotificationService = {
   },
 
   async sendToTokens(tokens: string[], title: string, body: string, data?: Record<string, string>) {
-    const results = await Promise.all(tokens.map(async token => {
+    const results = await Promise.all(Array.from(new Set(tokens)).map(async token => {
       if (isLegacyExpoToken(token)) return false;
       if (isApnsToken(token)) return sendViaApns(token, title, body, data);
       return (await sendViaFcm(token, title, body, data)).ok;

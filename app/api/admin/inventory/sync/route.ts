@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from "@/lib/db";
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 import { adjustInventoryLevel, fetchLocations, fetchAllProducts, fetchProductById } from '@/lib/shopify-admin';
 import { requirePermission, handleAuthError } from "@/lib/auth/rbac";
 import { shopifyAlreadyDeductedForOrder } from '@/lib/inventoryPolicy';
@@ -311,14 +312,14 @@ export async function POST(req: Request) {
           // Automate Return request status updates
           try {
             const returnRecord = await prisma.return.findFirst({
-              where: {
+              where: withoutShopifyRefundMirrors({
                 OR: [
                   { sku: normalizedCode },
                   { sku: matchedVariant?.sku ? normalizeSku(matchedVariant.sku) : '' },
                   { productId: resolvedLocalProduct?.id || '' }
                 ],
                 status: { notIn: ['RECEIVED', 'REFUNDED'] }
-              }
+              })
             });
             if (returnRecord) {
               await prisma.return.update({

@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/options";
 import { summarizeRequest } from '@/lib/services/requestSummary';
 import prisma from "@/lib/db";
+import { confirmPaymentsForCustomers } from "@/lib/services/paymentConfirmation";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,10 @@ export async function GET(req: Request) {
 
     // Only real Customer row ids — never NextAuth ids that are not in Customer
     const customerIds = matchingCustomers.map((c: any) => c.id as string);
+
+    // A paid order left pending (shopper left the UPI screen, webhook late) is invisible in this
+    // list. Confirm any such order against Razorpay before listing so it shows up right away.
+    await confirmPaymentsForCustomers(customerIds);
     const primaryCustomerId =
       matchingCustomers.find((c: any) => c.id === sessionUserId || c.id === userIdParam)?.id ||
       matchingCustomers[0]?.id ||

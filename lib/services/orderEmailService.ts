@@ -41,15 +41,16 @@ export interface OrderData {
 }
 
 async function getItemsHtml(items: OrderData['items'], currencySymbol: string): Promise<string> {
-  const fetchProduct = await getFetchProductById();
-
   const rows = await Promise.all(items.map(async (item) => {
     let imageUrl = item.image || '';
     
-    // Attempt to fetch product image from Shopify if not already set
+    // Attempt to fetch product image from Shopify if not already set. The Shopify
+    // admin client (and the DB handle it imports) is loaded only here, when an
+    // item actually has no image; most confirmation emails never need it.
     if (!imageUrl) {
       try {
         if (item.product_id) {
+          const fetchProduct = await getFetchProductById();
           const product = await fetchProduct(String(item.product_id));
           imageUrl = product?.images?.[0]?.src ?? '';
         }

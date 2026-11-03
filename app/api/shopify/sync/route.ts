@@ -1,3 +1,4 @@
+import { totalAfterStoreCredit } from '@/lib/order-totals';
 import { NextResponse } from 'next/server';
 import {
   fetchAllOrders,
@@ -357,6 +358,13 @@ export async function POST() {
           if (discountAmount > 0 && Math.abs(finalTotalPrice - finalSubtotalPrice) < 0.01) {
             finalTotalPrice = finalSubtotalPrice - discountAmount;
           }
+          // Store credit paid from the wallet stays off the total even when Shopify was never told about it.
+          finalTotalPrice = totalAfterStoreCredit({
+            shopifyTotal: finalTotalPrice,
+            subtotal: finalSubtotalPrice,
+            discountAmount: Number(discountAmount) || 0,
+            storeCredit: Number((existingLocalOrder as any)?.storeCreditAmount || 0),
+          });
 
           const order = await prisma.order.upsert({
             where: { shopifyOrderId: String(o.id) },

@@ -110,6 +110,18 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Invalid item quantity. Please refresh your bag and try again.' }, { status: 400, headers: corsHeaders });
       }
     }
+    // A size with no stock cannot be paid for (lib/stock-availability.ts); a slow Shopify lets the sale through.
+    if (lineItems.length > 0) {
+      const { checkCartStock, stockShortageMessage } = await import('@/lib/stock-availability');
+      const stock = await checkCartStock(lineItems, { timeoutMs: 4000 });
+      if (stock.shortages.length > 0) {
+        console.warn(`[MobileCheckout] Refused: out of stock ${stock.shortages.map((x) => `${x.label} ${x.available}/${x.requested}`).join(', ')}`);
+        return NextResponse.json(
+          { error: stockShortageMessage(stock.shortages), code: 'OUT_OF_STOCK', items: stock.shortages },
+          { status: 409, headers: corsHeaders }
+        );
+      }
+    }
     const clientLinesTotal = lineItems.reduce(
       (sum: number, li: any) => sum + (Number(li?.price) || 0) * Math.max(1, Number(li?.quantity) || 1), 0);
     let pricedSubtotal: number | null = null;

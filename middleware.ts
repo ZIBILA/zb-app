@@ -2,7 +2,7 @@ import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import { isPrivateIP } from "@/lib/ip-geo";
 import { clientIpFromHeaders } from "@/lib/client-ip";
-import { dashboardRedirectTarget, isAppHostPathToRedirect, isNonCanonicalStorefrontHost } from "@/lib/tracking/host";
+import { ADMIN_HOST, isAdminPagePath, isAppHostPathToRedirect, isNonCanonicalStorefrontHost } from "@/lib/tracking/host";
 import { isIdentityCookieRequest, identityCookieDomain, planMetaIdentityCookies, IDENTITY_REFRESH_MARKER, IDENTITY_REFRESH_INTERVAL_S } from "@/lib/meta/identity-cookies";
 
 // ── Unknown collection / product handles → a real 404 ───────────────────────
@@ -166,30 +166,30 @@ export default withAuth(
     const { pathname } = req.nextUrl;
     const token = req.nextauth.token;
 
-    const host = req.headers.get("x-forwarded-host")?.split(":")[0] || req.headers.get("host")?.split(":")[0] || req.nextUrl.hostname;
-
-    // The dashboard lives on app.zicabella.com only (lib/tracking/host.ts). A dashboard
-    // page, the admin login page or a dashboard-only API asked for on the storefront host
-    // (zicabella.com / www) is sent there with a 301, query string intact, so the admin
-    // session is only ever set on the app host and never replaces a shopper's session on
-    // zicabella.com. Anything but GET / HEAD is a 404: nothing on the storefront host can
-    // be posted to that signs an admin in. (next.config's www → apex redirect runs before
-    // the middleware, so www takes two hops.) The `authorized` callback below lets these
-    // requests through so withAuth does not bounce them to /dashboard/login first.
-    const dashboardTarget = dashboardRedirectTarget(host, pathname, req.nextUrl.search);
-    if (dashboardTarget) {
-      if (req.method === "GET" || req.method === "HEAD") return NextResponse.redirect(dashboardTarget, 301);
-      return pathname.startsWith("/api/")
-        ? new NextResponse(JSON.stringify({ error: "Not found" }), { status: 404, headers: { "Content-Type": "application/json" } })
-        : new NextResponse(null, { status: 404 });
-    }
-
     // Defense-in-depth: www -> apex 308 redirect
+    const host = req.headers.get("x-forwarded-host")?.split(":")[0] || req.headers.get("host")?.split(":")[0] || req.nextUrl.hostname;
     if (host === "www.zicabella.com" || req.nextUrl.hostname === "www.zicabella.com") {
       const url = req.nextUrl.clone();
       url.hostname = "zicabella.com";
       url.protocol = "https";
       return NextResponse.redirect(url, 308);
+    }
+
+    // One host per job: the dashboard lives only on app.zicabella.com. Admin pages asked
+    // for on the shop host move there (the session cookie is per host, so an admin signs in
+    // once on app.zicabella.com); the app host's bare root opens the dashboard.
+    if ((host === "zicabella.com" || req.nextUrl.hostname === "zicabella.com") && (req.method === "GET" || req.method === "HEAD") && isAdminPagePath(pathname)) {
+      const url = req.nextUrl.clone();
+      url.hostname = ADMIN_HOST;
+      url.protocol = "https";
+      url.port = "";
+      return NextResponse.redirect(url, 301);
+    }
+    if (host === ADMIN_HOST && (req.method === "GET" || req.method === "HEAD") && pathname === "/") {
+      const url = req.nextUrl.clone();
+      url.pathname = "/dashboard";
+      url.search = "";
+      return NextResponse.redirect(url, 302);
     }
 
     // Shoppers belong on zicabella.com: the Meta / Snap ads, pixels and relays are tied
@@ -726,11 +726,6 @@ export default withAuth(
         if (host === "www.zicabella.com" || req.nextUrl.hostname === "www.zicabella.com") {
           return true;
         }
-
-        // Dashboard paths on the storefront host: bypass so the middleware function sends them
-        // straight to app.zicabella.com (301) — otherwise withAuth would first bounce an
-        // unauthenticated request to /dashboard/login on zicabella.com (an extra hop).
-        if (dashboardRedirectTarget(host, pathname)) return true;
 
         // Determine if route requires NextAuth admin validation
         const shopifyPublicGet =

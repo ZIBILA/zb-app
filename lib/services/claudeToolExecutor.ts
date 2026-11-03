@@ -1,9 +1,11 @@
+
 // ──────────────────────────────────────────────────
 // Claude Tool Executor — Resolves tool_use calls
 // against real Zica Bella data (server-side only)
 // ──────────────────────────────────────────────────
 
 import prisma from "@/lib/db";
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 import { logMfgAudit } from "@/lib/manufacturing/audit";
 import { getTrackingStatus } from "@/lib/services/logistics";
 import type { Principal } from "@/lib/ai/principal";
@@ -448,7 +450,7 @@ async function getReturnsExchanges(type?: string, principal?: Principal): Promis
   const [returns, exchanges] = await Promise.all([
     type !== "exchanges"
       ? prisma.return.findMany({
-          where: returnWhere,
+          where: withoutShopifyRefundMirrors(returnWhere),
           take: 10,
           orderBy: { requestedAt: "desc" },
           select: {

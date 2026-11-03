@@ -7,7 +7,7 @@
  * which hosts may send Meta / Snap events, and which app.zicabella.com paths are
  * sent to zicabella.com. Pure functions, no network, no database.
  */
-import { EVENT_HOSTS, NON_EVENT_HOSTS, eventHosts, isEventHost, isAppHostPathToRedirect, normalizeHost } from '../lib/tracking/host';
+import { EVENT_HOSTS, NON_EVENT_HOSTS, eventHosts, isEventHost, isAppHostPathToRedirect, isAdminPagePath, normalizeHost } from '../lib/tracking/host';
 import { snapStorefrontHosts, snapStorefrontOrigin } from '../lib/snap/config';
 import { STOREFRONT_ORIGIN, STOREFRONT_HOST, storefrontUrl } from '../lib/storefront-url';
 
@@ -57,10 +57,12 @@ eq('storefront pages are redirected', ['/', '/products/viscera-denim', '/collect
   [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]);
 eq('admin, API and Next internals stay', ['/dashboard', '/dashboard/login', '/admin/x', '/web-store', '/api/app/payment/verify', '/api/meta/event', '/api/webhooks/razorpay', '/_next/data/x', '/unauthorized', '/uploads/x.pdf'].map(isAppHostPathToRedirect),
   [false, false, false, false, false, false, false, false, false, false]);
-eq('pages a shopper may be mid-flow on stay', ['/cart', '/cart?recover=abc', '/checkout', '/checkout/success', '/orders/ord_1/confirmation', '/orders', '/login', '/profile', '/portal/requests/new', '/returns', '/r/abc'].map(isAppHostPathToRedirect),
-  [false, false, false, false, false, false, false, false, false, false, false]);
+eq('shopper pages (cart, checkout, orders, login, profile, portal, returns, affiliate links) move too', ['/cart', '/cart?recover=abc', '/checkout', '/checkout/success', '/orders/ord_1/confirmation', '/orders', '/login', '/profile', '/portal/requests/new', '/returns', '/r/abc'].map(isAppHostPathToRedirect),
+  [true, true, true, true, true, true, true, true, true, true, true]);
 eq('machine-read files and static assets stay', ['/feed.xml', '/feed.csv', '/sitemap.xml', '/sitemap-0.xml', '/robots.txt', '/manifest.webmanifest', '/favicon.ico', '/bimi/logo.svg', '/.well-known/x', '/fonts/a.woff2', '/videos/hero.mp4', '/logo.png'].map(isAppHostPathToRedirect),
   [false, false, false, false, false, false, false, false, false, false, false, false]);
+eq('zicabella.com sends dashboard pages (not APIs or shop pages) to the app host', ['/dashboard', '/dashboard/orders?x=1', '/dashboard/login', '/admin/x', '/web-store/orders', '/api/admin/x', '/api/webhooks/razorpay', '/products/x', '/', '/dashboards', '/administrator'].map(isAdminPagePath),
+  [true, true, true, true, true, false, false, false, false, false, false]);
 eq('look-alike prefixes are still redirected', ['/cartography', '/checkouts', '/loginx', '/products/cart'].map(isAppHostPathToRedirect), [true, true, true, true]);
 
 console.log('\n— 5. Customer links');

@@ -6,6 +6,7 @@ import { resolveRefundMethod, isCodOrder } from "@/lib/returnPolicy";
 import { countByReverseStageFilter } from "@/lib/returnPolicy";
 import { filterByLiveStage, liveReverseFields } from "@/lib/services/reverseShipmentExtras";
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,8 @@ async function GET_impl(req: Request) {
       : status && status !== 'all' && !isLiveFilter
         ? { returnRequestId: null, status: status.toUpperCase() }
         : { returnRequestId: null };
+    // Shopify refund echoes (cancelled orders etc.) are not return requests.
+    const standaloneWhereGenuine = withoutShopifyRefundMirrors(standaloneWhere);
 
     // Cap row fetch to avoid unbounded concurrent DB load (counts still via groupBy)
     const rowCap = Math.min(Math.max(limit + offset, limit), 100);
@@ -85,7 +88,7 @@ async function GET_impl(req: Request) {
         _count: { id: true }
       }),
       prisma.return.findMany({
-        where: standaloneWhere,
+        where: standaloneWhereGenuine,
         include: {
           product: true,
           customer: true,
@@ -109,10 +112,10 @@ async function GET_impl(req: Request) {
         orderBy: { requestedAt: "desc" },
         take: rowCap,
       }),
-      prisma.return.count({ where: standaloneWhere }),
+      prisma.return.count({ where: standaloneWhereGenuine }),
       prisma.return.groupBy({
         by: ['status'],
-        where: { returnRequestId: null },
+        where: withoutShopifyRefundMirrors({ returnRequestId: null }),
         _count: { id: true }
       })
     ]);
@@ -230,7 +233,7 @@ async function GET_impl(req: Request) {
         },
       }),
       prisma.return.findMany({
-        where: { returnRequestId: null },
+        where: withoutShopifyRefundMirrors({ returnRequestId: null }),
         select: {
           status: true,
           order: {
