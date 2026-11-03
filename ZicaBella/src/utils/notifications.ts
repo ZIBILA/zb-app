@@ -5,17 +5,9 @@ import { Platform } from 'react-native';
 import { config } from '../constants/config';
 
 /**
- * Resolve the EAS project ID from Constants.
- */
-export function getExpoProjectId(): string | undefined {
-  return (
-    Constants.expoConfig?.extra?.eas?.projectId ??
-    Constants.easConfig?.projectId
-  );
-}
-
-/**
- * Register for push notifications and return BOTH Expo and Native tokens.
+ * Register for push notifications and return the native APNs device token.
+ * Delivery is server -> Apple (APNs) directly; the Expo push service is not used.
+ * (`expoToken` stays in the type only for callers that still read it; it is never set.)
  */
 export async function registerForPushNotifications(): Promise<{
   expoToken?: string;
@@ -48,24 +40,18 @@ export async function registerForPushNotifications(): Promise<{
       return undefined;
     }
 
-    let expoToken: string | undefined;
     let deviceToken: string | undefined;
 
-    // 2. Get Expo Push Token
-    const projectId = getExpoProjectId();
-    if (projectId && projectId !== 'your-eas-project-id') {
-      try {
-        const expoData = await Notifications.getExpoPushTokenAsync({ projectId });
-        expoToken = expoData?.data;
-      } catch (err) {
-        console.warn('[Notifications] Expo token fetch failed:', err);
-      }
+    // 2. Native APNs registration token
+    try {
+      const native = await Notifications.getDevicePushTokenAsync();
+      deviceToken = typeof native?.data === 'string' ? native.data : undefined;
+    } catch (err) {
+      console.warn('[Notifications] APNs token fetch failed:', err);
     }
 
-
-
-    console.log('[Notifications] Registration successful:', { expoToken, deviceToken });
-    return { expoToken, deviceToken };
+    console.log('[Notifications] Registration successful:', { hasDeviceToken: !!deviceToken });
+    return { deviceToken };
   } catch (err) {
     console.warn('[Notifications] Error during registration:', err);
     return undefined;
@@ -80,8 +66,8 @@ export async function postPushTokenToBackend(
   userId: string
 ): Promise<boolean> {
   try {
-    const primaryToken = tokens.deviceToken || tokens.expoToken;
-    const tokenType = tokens.deviceToken ? 'apns' : 'expo';
+    const primaryToken = tokens.deviceToken;
+    const tokenType = 'apns';
 
     if (!primaryToken) {
       return false;
@@ -89,8 +75,6 @@ export async function postPushTokenToBackend(
 
     const payload = {
       userId,
-      expoToken: tokens.expoToken,
-      expoPushToken: tokens.expoToken,
       deviceToken: tokens.deviceToken,
       apnsToken: tokens.deviceToken,
       pushToken: primaryToken,
@@ -107,7 +91,7 @@ export async function postPushTokenToBackend(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...payload,
-        deviceId: `android_${userId}`,
+        deviceId: `ios_${userId}`,
         fcmToken: primaryToken, // Backward-compatible legacy field name.
       }),
     });

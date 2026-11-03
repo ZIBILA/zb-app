@@ -6,7 +6,6 @@ import Constants from 'expo-constants';
 import { useNotificationStore } from '../store/notificationStore';
 import { useAuthStore } from '../store/authStore';
 import { config } from '../constants/config';
-import { getExpoProjectId } from '../utils/notifications';
 
 export function usePushNotifications() {
   const notificationListener = useRef<Notifications.EventSubscription>(null);
@@ -105,15 +104,9 @@ async function registerForPushNotifications() {
   }
 
   try {
-    const projectId = getExpoProjectId();
-    if (!projectId) {
-      console.warn('Missing EAS projectId. Add expo.extra.eas.projectId in app.json.');
-      return;
-    }
-
-    const token = await Notifications.getExpoPushTokenAsync({ projectId });
-    console.log('Push token:', token.data);
-    return token.data;
+    // Native APNs token; the Expo push service is not used.
+    const token = await Notifications.getDevicePushTokenAsync();
+    return typeof token?.data === 'string' ? token.data : undefined;
   } catch (error) {
     console.log('Error getting push token:', error);
   }

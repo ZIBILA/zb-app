@@ -406,7 +406,9 @@ export async function retryFailedPaidShopifySyncs(limit = 10): Promise<SyncRetry
       shopifySyncStatus: true,
       shopifyOrderId: true,
     },
-    orderBy: { createdAt: 'asc' }, // oldest historical failures first
+    // Least-recently-attempted first. Every attempt touches updatedAt, so an order that keeps
+    // failing rotates to the back instead of blocking newer paid orders behind it.
+    orderBy: { updatedAt: 'asc' },
     take: Math.min(Math.max(limit, 1), 50),
   });
 

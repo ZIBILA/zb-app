@@ -92,12 +92,12 @@ export function isNonCanonicalStorefrontHost(hostname: unknown): boolean {
 
 /**
  * Storefront pages on app.zicabella.com are 301'd to zicabella.com by the middleware.
- * These stay on the app host: the admin dashboard and APIs, Next internals, pages a
- * shopper may already be in the middle of on that host (cart, checkout, orders,
- * login, profile, portal, returns), machine-read files (feeds, sitemap, robots,
- * manifest, BIMI, .well-known) and anything that looks like a static file.
+ * These stay on the app host: the admin dashboard and APIs, Next internals,
+ * machine-read files (feeds, sitemap, robots, manifest, BIMI, .well-known) and
+ * anything that looks like a static file. Every shopper page (cart, checkout, orders,
+ * login, profile, portal, returns, affiliate links) goes to zicabella.com.
  */
-const APP_HOST_KEEP = /^\/(?:dashboard|admin|web-store|api|_next|cart|checkout|orders|login|profile|portal|returns|unauthorized|uploads|r|bimi|\.well-known)(?:\/|$)|^\/(?:feed\.(?:xml|csv)|sitemap[^/]*\.xml|robots\.txt|manifest\.(?:json|webmanifest)|favicon\.ico)$/;
+const APP_HOST_KEEP = /^\/(?:dashboard|admin|web-store|api|_next|unauthorized|uploads|bimi|\.well-known)(?:\/|$)|^\/(?:feed\.(?:xml|csv)|sitemap[^/]*\.xml|robots\.txt|manifest\.(?:json|webmanifest)|favicon\.ico)$/;
 const LOOKS_LIKE_FILE = /\.[a-z0-9]{2,5}$/i;
 
 /** true when a GET for `pathname` on app.zicabella.com should be sent to zicabella.com. */
@@ -107,4 +107,20 @@ export function isAppHostPathToRedirect(pathname: string): boolean {
   if (APP_HOST_KEEP.test(path)) return false;
   if (LOOKS_LIKE_FILE.test(path)) return false;
   return true;
+}
+
+// ── zicabella.com → app.zicabella.com/dashboard (middleware) ─────────────────
+
+/** The one host the admin dashboard lives on. */
+export const ADMIN_HOST = 'app.zicabella.com';
+
+const ADMIN_PAGE_PREFIX = /^\/(?:dashboard|admin|web-store)(?:\/|$)/;
+
+/**
+ * true for admin dashboard pages. zicabella.com (and www) 301 these to
+ * app.zicabella.com, so the shop host never serves the dashboard. APIs are not pages
+ * and are not moved (the storefront and the payment webhooks call them on zicabella.com).
+ */
+export function isAdminPagePath(pathname: string): boolean {
+  return ADMIN_PAGE_PREFIX.test(String(pathname ?? '').replace(/[?#][\s\S]*$/, ''));
 }

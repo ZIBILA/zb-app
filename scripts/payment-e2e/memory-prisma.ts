@@ -19,6 +19,7 @@ const RELATIONS: Record<string, Record<string, { model: string; fk: string; one?
     payments: { model: 'payment', fk: 'orderId' },
     shipments: { model: 'shipment', fk: 'orderId' },
   },
+  storeCredit: { customer: { model: 'customer', fk: 'id', one: true, local: 'customerId' } },
   returnRequest: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' } },
   exchangeRequest: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' } },
   mobileOrder: { items: { model: 'mobileOrderItem', fk: 'mobileOrderId' }, customer: { model: 'customer', fk: 'id', one: true, local: 'customerId' } },
@@ -76,7 +77,19 @@ function match(model: string, row: Row, where: any): boolean {
     if (k === 'OR') { if (!cond.some((c: any) => match(model, row, c))) return false; continue; }
     if (k === 'AND') { if (!(Array.isArray(cond) ? cond : [cond]).every((c: any) => match(model, row, c))) return false; continue; }
     if (k === 'NOT') { if ((Array.isArray(cond) ? cond : [cond]).some((c: any) => match(model, row, c))) return false; continue; }
-    if (RELATIONS[model]?.[k]) continue;
+    const rel = RELATIONS[model]?.[k];
+    if (rel) {
+      // Relation filters: some / none / every over the related rows (others are not modelled).
+      if (cond && typeof cond === 'object' && ('some' in cond || 'none' in cond || 'every' in cond)) {
+        const kids = rel.one
+          ? table(rel.model).filter(x => x[rel.fk] === row[rel.local!])
+          : table(rel.model).filter(x => x[rel.fk] === row.id);
+        if ('some' in cond && !kids.some(x => match(rel.model, x, cond.some))) return false;
+        if ('none' in cond && kids.some(x => match(rel.model, x, cond.none))) return false;
+        if ('every' in cond && !kids.every(x => match(rel.model, x, cond.every))) return false;
+      }
+      continue;
+    }
     if (cond && typeof cond === 'object' && !(cond instanceof Date) && k.includes('_') && !(k in row) && Object.keys(cond).every(f => !['equals','in','notIn','not','contains','startsWith','endsWith','gt','gte','lt','lte','mode'].includes(f))) {
       if (!match(model, row, cond)) return false; // compound unique key
       continue;
@@ -199,10 +212,17 @@ function sort(rows: Row[], orderBy: any) {
   });
 }
 const apis: Record<string, any> = {};
+/** Fault injection: while `transaction` > 0, each `$transaction` call throws once (simulated DB outage). */
+export const faults = { transaction: 0 };
 const prisma: any = new Proxy({}, {
   get(_, prop: string) {
-    if (prop === '_isMock') return true; // rate-limit uses its in-memory fallback
-    if (prop === '$transaction') return async (fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn));
+    // rate-limit uses its in-memory fallback; a test may set globalThis.__zbSettingsFromDb so
+    // getWhatsAppSetting reads the whatsapp_settings rows instead of returning its default.
+    if (prop === '_isMock') return !(globalThis as any).__zbSettingsFromDb;
+    if (prop === '$transaction') return async (fn: any) => {
+      if (faults.transaction > 0) { faults.transaction--; throw new Error('simulated DB outage: connection terminated unexpectedly'); }
+      return typeof fn === 'function' ? fn(prisma) : Promise.all(fn);
+    };
     if (prop === '$queryRawUnsafe' || prop === '$queryRaw') return async (q: any) => {
       const m = String(Array.isArray(q) ? q.join('') : q).match(/nextval\('(\w+)'\)/);
       if (m) return [{ seq_val: ++seqs[m[1]] }];

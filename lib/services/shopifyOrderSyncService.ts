@@ -1,3 +1,4 @@
+import { shopifyDiscountCodes, totalAfterStoreCredit } from '@/lib/order-totals';
 import prisma from '@/lib/db';
 import { createOrder, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
@@ -8,6 +9,7 @@ import {
   resolveShopifyCustomerIdentity,
   classifyShopifySyncError,
   isContactConflictError,
+  isInventoryReservationError,
 } from '@/lib/services/shopifyCustomerIdentity';
 
 export interface SyncOptions {
@@ -637,34 +639,54 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       }];
     }
 
-    // Always attach discount codes for coupon / free orders so Shopify totals match local ₹0.
-    const discountAmount = Number(order.discountAmount || 0);
-    if (order.discountCode && discountAmount > 0) {
-      shopifyOrderPayload.discount_codes = [{
-        code: order.discountCode,
-        amount: discountAmount.toFixed(2),
-        type: 'fixed_amount',
-      }];
-    } else if (isZeroPaidOrder && orderTotal <= 0.009) {
-      // Fallback: derive discount from line totals when discountAmount was not persisted.
+    // Always attach the discounts (coupon AND store credit) so Shopify's total matches what the customer paid.
+    // Store credit used to be left out, so Shopify showed the full price and the sync then copied it back.
+    {
       const lineSum = shopifyLineItems.reduce(
         (sum: number, li: any) => sum + Number(li.price || 0) * Number(li.quantity || 1),
         0
       );
-      if (lineSum > 0) {
-        shopifyOrderPayload.discount_codes = [{
-          code: order.discountCode || 'ZERO_TOTAL',
-          amount: lineSum.toFixed(2),
-          type: 'fixed_amount',
-        }];
-      }
+      const discountLines = shopifyDiscountCodes({
+        discountCode: order.discountCode,
+        discountAmount: Number(order.discountAmount || 0),
+        storeCreditAmount: Number((order as any).storeCreditAmount || 0),
+        lineTotal: lineSum,
+        zeroTotal: isZeroPaidOrder && orderTotal <= 0.009,
+      });
+      if (discountLines.length > 0) shopifyOrderPayload.discount_codes = discountLines;
     }
+
+    // The customer has already paid, so Shopify must receive the order even when its stock
+    // count says the variant is sold out. The first attempt respects the stock policy; if
+    // Shopify refuses it with "Unable to reserve inventory", send it again ignoring the policy
+    // (stock goes negative, as for exchange replacements) and flag the order as oversold.
+    let inventoryOverridden = false;
+    const sendOrder = async (payload: any, idempotencyKey: string) => {
+      try {
+        return await createOrder(payload, { idempotencyKey });
+      } catch (err: any) {
+        if (!isInventoryReservationError(err)) throw err;
+        const already = await findShopifyOrderByInternalNumber(universalOrderNumber);
+        if (already?.id) return already;
+        console.warn(`[ShopifyOrderSync] ${order.id}: Shopify refused to reserve stock (${String(err?.message || '').slice(0, 160)}); creating the paid order ignoring the stock policy`);
+        inventoryOverridden = true;
+        return await createOrder(
+          {
+            ...payload,
+            inventory_behaviour: 'decrement_ignoring_policy',
+            note_attributes: [
+              ...(payload.note_attributes || []),
+              { name: 'inventory_override', value: 'insufficient_stock_when_synced' },
+            ],
+          },
+          { idempotencyKey: `${idempotencyKey}-ignoreinv` }
+        );
+      }
+    };
 
     let createdOrder: any;
     try {
-      createdOrder = await createOrder(shopifyOrderPayload, {
-        idempotencyKey: universalOrderNumber,
-      });
+      createdOrder = await sendOrder(shopifyOrderPayload, universalOrderNumber);
     } catch (createErr: any) {
       if (!isContactConflictError(createErr)) throw createErr;
       // Last resort for a contact-field clash Shopify still reports: make sure the
@@ -684,7 +706,7 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
           ...(emailToUse ? [{ name: 'checkout_email', value: emailToUse }] : []),
           { name: 'sync_fallback', value: 'contact_fields_stripped_after_422' },
         ];
-        createdOrder = await createOrder(stripped, { idempotencyKey: `${universalOrderNumber}-nocontact` });
+        createdOrder = await sendOrder(stripped, `${universalOrderNumber}-nocontact`);
       }
     }
     const shopifyOrderId = String(createdOrder.id);
@@ -698,9 +720,24 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         shopifyOrderName,
         shopifySyncStatus: 'synced',
         shopifySyncError: null,
-        tags: withInventoryTag(order.tags, INV_DEDUCTED_TAG),
+        tags: Array.from(new Set(
+          [...String(withInventoryTag(order.tags, INV_DEDUCTED_TAG) || '').split(','), ...(inventoryOverridden ? ['oversold'] : [])]
+            .map((t) => t.trim())
+            .filter(Boolean)
+        )).join(', '),
       },
     });
+
+    if (inventoryOverridden) {
+      void import('@/lib/services/zohoMailService')
+        .then(({ notifyAdminTeam }) =>
+          notifyAdminTeam(
+            `⚠️ Oversold: ${universalOrderNumber} was paid for stock Shopify shows as unavailable`,
+            `<div style="font-family:sans-serif;padding:20px;"><p>Order <b>${universalOrderNumber}</b> is paid and has been created in Shopify (${shopifyOrderName || shopifyOrderId}), but Shopify reported insufficient stock for at least one item, so inventory went negative. Check the stock for its items and either fulfil, restock or contact the customer. The order is tagged <b>oversold</b>.</p></div>`
+          )
+        )
+        .catch((e: any) => console.warn('[ShopifyOrderSync] oversold alert failed:', e?.message));
+    }
 
     // Update WebStoreOrder notes if applicable
     await prisma.webStoreOrder.updateMany({
@@ -1017,6 +1054,12 @@ export async function pullAndSyncShopifyOrder(
       if (discountAmount > 0 && Math.abs(finalTotalPrice - finalSubtotalPrice) < 0.01) {
         finalTotalPrice = finalSubtotalPrice - discountAmount;
       }
+      finalTotalPrice = totalAfterStoreCredit({
+        shopifyTotal: finalTotalPrice,
+        subtotal: finalSubtotalPrice,
+        discountAmount: Number(discountAmount) || 0,
+        storeCredit: Number((order as any).storeCreditAmount || 0),
+      });
 
       order = await prisma.order.update({
         where: { id: order.id },

@@ -21,7 +21,7 @@
 import type { CapiEventPayload } from '@/lib/metaCapi';
 import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult } from '@/lib/snap/ledger';
 import { isEventTimeSendable } from '@/lib/snap-capi';
-import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder } from '@/lib/meta/order-value';
+import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder, isPurchasePaidStatus, PURCHASE_PAID_STATUSES, PURCHASE_SCAN_STATUSES } from '@/lib/meta/order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { orderContentCategory } from '@/lib/tracking/product-type';
 import { isPrivateIP } from '@/lib/ip-geo';
@@ -37,8 +37,12 @@ const EVENT = 'Purchase';
 /** Regions where a shopper must opt in (empty = no consent gating). */
 const CONSENT_REGIONS = parseConsentRegions(process.env.NEXT_PUBLIC_META_CONSENT_REGIONS);
 
-/** Payment states that represent a completed conversion. */
-export const META_PURCHASE_PAYMENT_STATUSES = new Set(['paid', 'cod_upfront_paid']);
+/**
+ * Payment states that represent a completed conversion. A COD order that Shopify's
+ * webhook re-labelled `partially_paid` counts too: always decide with
+ * isPurchasePaidStatus(order) (lib/meta/order-value.ts), never with this set alone.
+ */
+export const META_PURCHASE_PAYMENT_STATUSES = PURCHASE_PAID_STATUSES;
 
 export interface MetaClickContext {
   fbp?: string;
@@ -404,7 +408,7 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
       }
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
-    if (!META_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
+    if (!isPurchasePaidStatus(order)) {
       if (ctx) await recordMetaPurchaseContext(orderId, ctx);
       return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     }
@@ -494,7 +498,7 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
     const candidates: string[] = (await prisma.order.findMany({
       where: {
         orderType: 'WEB_STORE',
-        paymentStatus: { in: Array.from(META_PURCHASE_PAYMENT_STATUSES) },
+        paymentStatus: { in: [...PURCHASE_SCAN_STATUSES] },
         createdAt: { gt: new Date(lower), lt: new Date(upper) },
       },
       orderBy: { createdAt: 'asc' },
@@ -521,11 +525,11 @@ export function createMetaPurchaseDelivery({ db: prisma, send, configError, aler
       const batch = await prisma.order.findMany({
         where: { id: { in: missing.slice(i, i + 100) } },
         orderBy: { createdAt: 'asc' },
-        select: { id: true, tags: true, totalPrice: true, orderType: true, customerId: true, items: true },
+        select: { id: true, tags: true, totalPrice: true, orderType: true, customerId: true, items: true, paymentStatus: true, paymentMethod: true, codUpfrontPaid: true, codUpfrontPaymentId: true },
       });
       for (const o of batch) {
         if (out.length >= limit) break;
-        if (isWebsiteOrder(o) && !isUnresolvedRecoveryOrder(o) && !internalOrderReason(o) && metaPurchaseValue(o) !== null) out.push(o.id);
+        if (isWebsiteOrder(o) && isPurchasePaidStatus(o) && !isUnresolvedRecoveryOrder(o) && !internalOrderReason(o) && metaPurchaseValue(o) !== null) out.push(o.id);
       }
     }
     return out;

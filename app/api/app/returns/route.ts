@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 import { orderBaseNumber } from '@/lib/linkedIds';
 import { buildRequestSummaries, isInternalExchangeReturn } from '@/lib/services/requestEnrichment';
 import { resolveRequestCustomer, resolveCustomerIdentityIds } from '@/lib/requestAuth';
@@ -109,7 +110,7 @@ export async function GET(req: Request) {
 
     // Legacy standalone item rows (created before requests were grouped)
     const legacy = await prisma.return.findMany({
-      where: { customerId: { in: customerIds }, returnRequestId: null },
+      where: withoutShopifyRefundMirrors({ customerId: { in: customerIds }, returnRequestId: null }),
       orderBy: { requestedAt: 'desc' },
       include: {
         order: { select: { id: true, shopifyOrderId: true, shopifyOrderName: true, internalOrderNumber: true, totalPrice: true } },

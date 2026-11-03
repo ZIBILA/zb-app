@@ -59,7 +59,7 @@ export async function sendRefundRequestNotification(payload: RefundNotificationP
     )
     .join('');
 
-  const adminDashboardUrl = `${process.env.NEXTAUTH_URL || 'https://zicabella.com'}/dashboard/refunds`;
+  const adminDashboardUrl = `https://app.zicabella.com/dashboard/refunds`;
 
   const html = `
   <!DOCTYPE html>

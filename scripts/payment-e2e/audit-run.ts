@@ -112,7 +112,7 @@ const check = (label: string, ok: boolean, detail?: unknown) => {
 const eq = (label: string, got: unknown, want: unknown) => check(label, JSON.stringify(got) === JSON.stringify(want), { got, want });
 
 async function main() {
-  const { db, default: prisma } = await import('./memory-prisma');
+  const { db, default: prisma, faults } = await import('./memory-prisma');
   const authMock = await import('../meta-regression/mocks');
   const preCreate = await import('../../app/api/checkout/razorpay/route');
   const checkoutComplete = await import('../../app/api/checkout/complete/route');
@@ -445,6 +445,27 @@ async function main() {
     const c2 = classifyShopifySyncError(new Error('The operation was aborted due to timeout'));
     const c3 = classifyShopifySyncError(new Error('Shopify API 429: {"errors":"Exceeded 2 calls per second"}'));
     eq('S20: 422 → validation (needs attention); timeout and 429 → retryable', [c1.kind, c1.retryable, c2.kind, c2.retryable, c3.kind, c3.retryable], ['validation', false, 'timeout', true, 'rate_limit', true]);
+  }
+
+  // ── S21 capture confirmed but the order write fails → 503 retry + durable row; the reconcile job finishes it ──
+  console.log('\n— S21 verified capture, order write throws → 503 {retry:true}, checkout.complete.retry row, reconciliation finishes it');
+  report.push('', '## S21 — a verified payment whose order write failed is kept and finished');
+  { const pre = await precreate({ ...basePre, checkoutSessionId: 'cs_S21' });
+    pay('pay_S21', pre.razorpay_order_id, 'captured', 3797);
+    const body = { ...basePre, localOrderId: pre.localOrderId, razorpay: { razorpay_order_id: pre.razorpay_order_id, razorpay_payment_id: 'pay_S21', razorpay_signature: sig(pre.razorpay_order_id, 'pay_S21') } };
+    faults.transaction = 1; // the pre-created order update + item rewrite runs in $transaction
+    const r = await complete(body); const j: any = await r.json(); await settle(150);
+    const row = (db.webhookEvent || []).find((w: any) => w.eventType === 'checkout.complete.retry');
+    eq('S21: 503 { retry: true }; order still pending; retry row recorded unprocessed with the raw body', [r.status, j.retry, orderById(pre.localOrderId)?.paymentStatus, row?.processed, row?.source, String(row?.payload || '').includes('pay_S21')], [503, true, 'pending', false, 'checkout', true]);
+    // Browser gone for good: the reconciliation job picks the row up once it is older than a minute.
+    if (row) row.createdAt = new Date(Date.now() - 2 * 60_000);
+    const { reconcileRazorpayPayments } = await import('../../lib/services/razorpayReconcileService');
+    const FakeRazorpay = (await import('../snap-test-support/fake-razorpay')).default;
+    const rr = await reconcileRazorpayPayments({ razorpay: new FakeRazorpay({}) }); await settle(150);
+    const o = orderById(pre.localOrderId);
+    eq('S21: reconcile job → order paid with the payment id and a real ZB number, retry row processed, confirmation EmailLog once', [rr.retryRowsSeen, rr.recovered, o?.paymentStatus, o?.razorpayPaymentId, /^ZB\d+$/.test(o?.internalOrderNumber || ''), (db.webhookEvent || []).find((w: any) => w.id === row?.id)?.processed, emailsFor(pre.localOrderId).length], [1, 1, 'paid', 'pay_S21', true, true, 1]);
+    const again = await complete(body); const aj: any = await again.json(); await settle(150);
+    eq('S21: the browser\'s late retry is answered as a replay, nothing re-run', [again.status, aj.alreadyCompleted, emailsFor(pre.localOrderId).length], [200, true, 1]);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

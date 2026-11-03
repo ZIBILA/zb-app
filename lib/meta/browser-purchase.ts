@@ -16,7 +16,7 @@
  *    synchronous, leaving only a sub-millisecond window, and the shared event_id
  *    still lets Meta deduplicate.
  */
-import { metaPurchaseValue, metaPurchaseCurrency, isWebsiteOrder } from './order-value';
+import { metaPurchaseValue, metaPurchaseCurrency, isWebsiteOrder, isPurchasePaidStatus } from './order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
 import { normalizeProductType, orderContentCategory } from '@/lib/tracking/product-type';
 import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
@@ -28,7 +28,7 @@ export const metaBrowserPurchaseKey = (orderId: string) => `${META_BROWSER_PURCH
 export const META_BROWSER_PURCHASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Payment states that can still turn into paid (webhook capture pending). */
 export const META_AWAITING_PAYMENT_STATUSES = new Set(['payment_pending', 'pending', 'authorized']);
-const PAID = new Set(['paid', 'cod_upfront_paid']);
+// Paid-like states (paid / cod_upfront_paid / a COD order Shopify re-labelled partially_paid): isPurchasePaidStatus.
 
 /** While awaiting capture the confirmation page re-checks the order this often, this many times. */
 export const META_PENDING_POLL_INTERVAL_MS = 10_000;
@@ -55,6 +55,9 @@ export type MetaBrowserPurchaseDecision =
  */
 export interface OrderServerFacts {
   paymentStatus: string;
+  /** How the order is paid ("COD", "razorpay", …): with codUpfrontPaid it tells a COD order apart once Shopify has re-labelled it partially_paid. */
+  paymentMethod?: string;
+  codUpfrontPaid?: number;
   orderType?: string;
   /** true = staff / QA / demo order: never a Meta or Snap Purchase (lib/meta/internal-orders.ts). */
   internal?: boolean;
@@ -72,6 +75,9 @@ export function pickOrderServerFacts(serverOrder: any, expectedOrderId?: string)
   if (expectedOrderId && String(serverOrder.id) !== String(expectedOrderId)) return null;
   if (typeof serverOrder.paymentStatus !== 'string' || !serverOrder.paymentStatus.trim()) return null;
   const facts: OrderServerFacts = { paymentStatus: serverOrder.paymentStatus };
+  if (typeof serverOrder.paymentMethod === 'string' && serverOrder.paymentMethod.trim()) facts.paymentMethod = serverOrder.paymentMethod;
+  const codUpfront = Number(serverOrder.codUpfrontPaid);
+  if (serverOrder.codUpfrontPaid !== null && serverOrder.codUpfrontPaid !== undefined && Number.isFinite(codUpfront)) facts.codUpfrontPaid = codUpfront;
   if (typeof serverOrder.orderType === 'string') facts.orderType = serverOrder.orderType;
   if (serverOrder.internal === true) facts.internal = true;
   const total = Number(serverOrder.totalPrice);
@@ -157,7 +163,7 @@ export function decideBrowserPurchase(
     return { action: 'done', reason: 'stale order' };
   }
   const status = String(order.paymentStatus || '').toLowerCase();
-  if (PAID.has(status)) {
+  if (isPurchasePaidStatus(order)) {
     return metaPurchaseValue(order) === null ? { action: 'done', reason: 'no value' } : { action: 'fire' };
   }
   if (META_AWAITING_PAYMENT_STATUSES.has(status)) return { action: 'wait', reason: `paymentStatus=${status}` };

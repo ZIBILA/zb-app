@@ -14,6 +14,7 @@ import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/pu
 import { resolveWebCoupon } from "@/lib/web-coupon";
 import { fetchVariantPrices, variantNumericId } from "@/lib/variant-prices";
 import { resolveCartProductTypes } from "@/lib/services/orderItemProductType";
+import { checkCartStock, stockShortageMessage } from "@/lib/stock-availability";
 
 export const dynamic = 'force-dynamic';
 
@@ -110,6 +111,20 @@ export async function POST(req: Request) {
     const checkoutCountry = resolveCheckoutCountry({ displayCountry, currency, address });
     if (isCodOrder && !isCodAllowedForCountry(checkoutCountry)) {
       return NextResponse.json({ error: COD_INDIA_ONLY_ERROR }, { status: 400 });
+    }
+
+    // ── Stock: a size with no stock cannot be paid for (lib/stock-availability.ts). Checked before any
+    // Razorpay order exists. If Shopify cannot answer in time the sale goes through; the oversold
+    // fallback in the Shopify sync + the admin email cover that rare case. ──
+    if (Array.isArray(items) && items.length > 0) {
+      const stock = await checkCartStock(items, { timeoutMs: 4000 });
+      if (stock.shortages.length > 0) {
+        console.warn(`[Razorpay Pre-Create] Refused: out of stock ${stock.shortages.map((x) => `${x.label} ${x.available}/${x.requested}`).join(', ')}`);
+        return NextResponse.json(
+          { error: stockShortageMessage(stock.shortages), code: 'OUT_OF_STOCK', items: stock.shortages },
+          { status: 409 }
+        );
+      }
     }
 
     // ── Server-side re-pricing (PAYMENT_AUDIT.md P2) ──

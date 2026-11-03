@@ -14,7 +14,6 @@ import { useNotificationStore } from '../store/notificationStore';
 import Constants from 'expo-constants';
 import { config } from '../constants/config';
 import { haptics } from '../utils/haptics';
-import { getExpoProjectId } from '../utils/notifications';
 
 // NOTE: setNotificationHandler is called once in index.ts (module-level, before
 // any component renders). Do NOT duplicate it here — it causes race conditions.
@@ -86,26 +85,19 @@ export class NotificationService {
 
       // ── 3. Get push tokens and register with backend ─────────────────
       try {
-        let expoToken: string | undefined;
         let deviceToken: string | undefined;
 
-        // Fetch Expo token if we have a project ID
-        const projectId = getExpoProjectId();
-        if (projectId && projectId !== 'your-eas-project-id') {
-          try {
-            const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-            expoToken = tokenData?.data;
-          } catch (_expoErr) {
-            // Non-fatal
-          }
+        // Native APNs registration token (delivered directly by Apple; no Expo push service)
+        try {
+          const native = await Notifications.getDevicePushTokenAsync();
+          deviceToken = typeof native?.data === 'string' ? native.data : undefined;
+        } catch (_apnsErr) {
+          // Non-fatal
         }
 
-
-
-        const primaryToken = expoToken || deviceToken;
-        if (primaryToken) {
-          useNotificationStore.getState().setPushToken(primaryToken);
-          await this.registerDevice(expoToken, deviceToken);
+        if (deviceToken) {
+          useNotificationStore.getState().setPushToken(deviceToken);
+          await this.registerDevice(undefined, deviceToken);
         }
       } catch (_tokenErr) {
         // Non-fatal — app still works, just won't receive remote pushes
@@ -181,18 +173,18 @@ export class NotificationService {
 
     // Use values from store as fallback if not provided
     const storedToken = useNotificationStore.getState().pushToken;
-    const finalExpoToken = expoToken || (storedToken?.startsWith('ExponentPushToken') ? storedToken : undefined);
+    const finalExpoToken: string | undefined = undefined; // Expo push service is not used
     const finalDeviceToken = deviceToken || (storedToken && !storedToken.startsWith('ExponentPushToken') ? storedToken : undefined);
 
-    const primaryToken = finalExpoToken || finalDeviceToken;
+    const primaryToken = finalDeviceToken;
     if (!primaryToken) {
       return;
     }
 
     try {
       // Use userId if available, otherwise fallback to device-only registration
-      const deviceId = userId ? `dev_android_${userId}` : `guest_android_${Constants.sessionId || Date.now()}`;
-      const tokenType = finalExpoToken ? 'expo' : 'apns';
+      const deviceId = userId ? `dev_ios_${userId}` : `guest_ios_${Constants.sessionId || Date.now()}`;
+      const tokenType = 'apns';
 
       // Register with the existing detailed endpoint
       const response = await fetch(`${config.appUrl}/api/notifications/register-device`, {

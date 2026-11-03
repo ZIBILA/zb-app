@@ -199,6 +199,10 @@ export async function GET(
         order: {
           id: order.id,
           paymentStatus: order.paymentStatus,
+          // With paymentStatus these tell a COD order apart once Shopify's webhook has
+          // re-labelled it partially_paid (lib/meta/order-value.ts isPurchasePaidStatus).
+          paymentMethod: order.paymentMethod || null,
+          codUpfrontPaid: Number(order.codUpfrontPaid || 0),
           orderType: order.orderType,
           // Staff / QA / demo orders: the browser pixels skip Purchase (no PII leaves here)
           internal: isInternalOrder(order),

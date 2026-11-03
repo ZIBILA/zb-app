@@ -1,4 +1,5 @@
 "use client";
+import { resolveBodyVariables, previewDataFor, eventTypeFromTemplateKey } from "@/lib/whatsapp/variable-mapping";
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -201,19 +202,19 @@ const TEMPLATE_PRESETS = [
   },
   {
     id: 'new_product', label: '🆕 New Product Launch', desc: 'Introduce a new product with image and link',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, meet our newest piece: {{2}}. {{3}} Be the first to get yours.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'View Product', url: 'https://app.zicabella.com/products/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, meet our newest piece: {{2}}. {{3}} Be the first to get yours.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'View Product', url: 'https://zicabella.com/products/{{1}}' }] }
   },
   {
     id: 'festival_sale', label: '🪔 Festival Sale', desc: 'Festival offer with end date and shop link',
-    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our {{2}} sale is on! Enjoy {{3}} on selected styles until {{4}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop the Sale', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'IMAGE', headerImage: '', bodyText: 'Hi {{1}}, our {{2}} sale is on! Enjoy {{3}} on selected styles until {{4}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Shop the Sale', url: 'https://zicabella.com/collections/{{1}}' }] }
   },
   {
     id: 'discount_offer', label: '🏷️ Discount Offer', desc: 'Discount with a copy-code button',
-    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, here is {{2}} off your next order. Use the code below at checkout before {{3}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'COPY_CODE', example: 'ZICA20' }, { type: 'URL', text: 'Shop Now', url: 'https://app.zicabella.com/collections/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, here is {{2}} off your next order. Use the code below at checkout before {{3}}.', footerText: 'Reply STOP to opt out', buttons: [{ type: 'COPY_CODE', example: 'ZICA20' }, { type: 'URL', text: 'Shop Now', url: 'https://zicabella.com/collections/{{1}}' }] }
   },
   {
     id: 'announcement', label: '📣 Announcement', desc: 'Special announcement, text only',
-    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, {{2}}', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Learn More', url: 'https://app.zicabella.com/{{1}}' }] }
+    preset: { category: 'MARKETING', headerType: 'NONE', headerImage: '', bodyText: 'Hi {{1}}, {{2}}', footerText: 'Reply STOP to opt out', buttons: [{ type: 'URL', text: 'Learn More', url: 'https://zicabella.com/{{1}}' }] }
   },
   {
     id: 'order_confirmation', label: '📦 Order Confirm', desc: 'Confirm order with tracking link',
@@ -2909,6 +2910,16 @@ function OrderNotifications() {
     }
   };
 
+  const handleHeaderImageSave = async (settingKey: string, url: string) => {
+    const value = url.trim();
+    if ((settings[settingKey] || '') === value) return;
+    if (value && !/^https:\/\/\S+$/i.test(value)) {
+      toast.error("The image link must start with https://");
+      return;
+    }
+    await handleTemplateChange(settingKey, value);
+  };
+
   const handleDelaySave = async (key: string, value: string, unit: string) => {
     const minutes = convertToMinutes(value, unit);
     const prev = settings[key];
@@ -2964,8 +2975,10 @@ function OrderNotifications() {
     { key: "exchange_delivered_enabled", templateKey: "template_exchange_delivered", defaultTemplate: "zb_exchange_delivered", title: "Exchange Delivered", desc: "Sent once when the replacement parcel is delivered. Checked every 15 minutes." },
     { key: "order_cancelled_enabled", templateKey: "template_order_cancelled", defaultTemplate: "zb_order_cancelled", title: "Order Cancelled", desc: "Sent once when an order is cancelled. Separate from the refund message." },
     { key: "refund_initiated_enabled", templateKey: "template_refund_initiated", defaultTemplate: "zb_refund_initiated", title: "Refund Initiated", desc: "Sent only after the refund has actually been started to the original payment source, with the refund amount." },
-    { key: "store_credit_earned_enabled", templateKey: "template_store_credit_earned", defaultTemplate: "zb_store_credit_earned", title: "Store Credit Earned (Prepaid)", desc: "Sent when a prepaid order is paid: 10% of the final amount paid after discounts, as calculated at checkout." },
-    { key: "store_coins_earned_enabled", templateKey: "template_store_coins_earned", defaultTemplate: "zb_store_coins_earned", title: "Store Coins Earned (COD)", desc: "Sent only after a COD order is delivered and the coins have actually been released." },
+    { key: "store_credit_earned_enabled", templateKey: "template_store_credit_earned", headerImageKey: "header_image_store_credit_earned", defaultTemplate: "zb_store_credit_earned", title: "Store Credit Earned (Prepaid)", desc: "Sent when a prepaid order is paid: 10% of the final amount paid after discounts, as calculated at checkout." },
+    { key: "store_coins_earned_enabled", templateKey: "template_store_coins_earned", headerImageKey: "header_image_store_coins_earned", defaultTemplate: "zb_store_coins_earned", title: "Store Coins Earned (COD)", desc: "Sent only after a COD order is delivered and the coins have actually been released." },
+    { key: "order_confirmed_prepaid_enabled", templateKey: "template_order_confirmed_prepaid", defaultTemplate: "standard confirmation", title: "Prepaid Confirmation with Store Credit", desc: "Prepaid orders that earn store credit get this order confirmation, which names the exact credit amount, instead of the standard one. Utility template with {{order_id}} and {{amount}}. Other orders keep the standard confirmation." },
+    { key: "store_credit_expiring_enabled", templateKey: "template_store_credit_expiring", headerImageKey: "header_image_store_credit_expiring", defaultTemplate: "zb_store_credit_expiring", title: "Store Credit Expiring Reminder", desc: "One reminder about 15 days before a customer's unused store credit expires. Template variables: {{amount}} (unused credit) and {{expiry_date}}." },
     { key: "cod_confirmation_enabled", templateKey: "template_cod_confirmation", defaultTemplate: "zica_cod_confirmation_v1", title: "COD Confirmation", desc: "Auto-send confirmation request to Cash on Delivery orders." },
     { key: "cart_recovery_enabled", templateKey: "template_abandoned_cart", defaultTemplate: "abandoned_cart_a1", delayKey: "delay_abandoned_cart_step1", title: "Cart Recovery (Step 1)", desc: "Initial abandoned cart reminder sent when a cart goes inactive." },
     { key: "cart_recovery_step2_enabled", templateKey: "template_cart_followup", defaultTemplate: "abandoned_cart_a2", delayKey: "delay_abandoned_cart_step2", title: "Cart Recovery (Step 2)", desc: "Second reminder containing a discount code to recover abandoned items." },
@@ -3104,6 +3117,21 @@ function OrderNotifications() {
                     </div>
                   )}
 
+                  {/* Header image link, for templates that open with an image */}
+                  {(a as any).headerImageKey && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-muted-foreground whitespace-nowrap">Header image link:</span>
+                      <input
+                        type="url"
+                        defaultValue={settings[(a as any).headerImageKey] || ''}
+                        key={`${a.key}-${settings[(a as any).headerImageKey] || ''}`}
+                        onBlur={(e) => handleHeaderImageSave((a as any).headerImageKey, e.target.value)}
+                        placeholder="https://… (only needed if the template has an image at the top)"
+                        className="flex-1 text-xs bg-foreground/5 border border-foreground/10 rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500/50 transition-all"
+                      />
+                    </div>
+                  )}
+
                   {/* Preview of the template this event will send */}
                   {a.templateKey && (
                     <div>
@@ -3116,6 +3144,7 @@ function OrderNotifications() {
                       </button>
                       {previewKey === a.key && (
                         <TemplatePreview
+                          eventType={eventTypeFromTemplateKey(a.templateKey)}
                           name={settings[a.templateKey] || a.defaultTemplate}
                           template={approvedTemplates.find((t: any) => t.name === (settings[a.templateKey] || a.defaultTemplate))}
                         />
@@ -3188,10 +3217,7 @@ function OrderNotifications() {
   }
 }
 
-/** Sample values shown in a preview, in {{1}}, {{2}}… order. Real sends use the customer's own data. */
-const PREVIEW_SAMPLES = ["Aarav", "ZB72210", "₹360", "ZB-TRACK-123", "https://zicabella.com"];
-
-function TemplatePreview({ name, template }: { name: string; template?: any }) {
+function TemplatePreview({ name, template, eventType }: { name: string; template?: any; eventType: string }) {
   if (!template) {
     return (
       <p className="mt-2 text-[11px] text-amber-500">
@@ -3199,11 +3225,13 @@ function TemplatePreview({ name, template }: { name: string; template?: any }) {
       </p>
     );
   }
-  const fill = (text: string) =>
-    String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, v) => {
-      const i = parseInt(v, 10);
-      return Number.isFinite(i) ? PREVIEW_SAMPLES[i - 1] ?? `{{${v}}}` : `{{${v}}}`;
-    });
+  // The same mapping the sender uses (lib/whatsapp/variable-mapping.js), with example data for this automation.
+  const sample = previewDataFor(eventType);
+  const fill = (text: string) => {
+    const values = resolveBodyVariables(eventType, String(text || ""), sample);
+    let n = 0;
+    return String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, () => values[n++]?.value ?? "");
+  };
   const comps: any[] = Array.isArray(template.components) ? template.components : [];
   const header = comps.find((c) => c?.type === "HEADER");
   const body = comps.find((c) => c?.type === "BODY");

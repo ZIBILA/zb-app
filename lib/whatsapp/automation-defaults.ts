@@ -14,7 +14,12 @@ export const SCANNER_TOGGLES_DEFAULT_OFF = [
   'refund_initiated_enabled',
   'store_credit_earned_enabled',
   'store_coins_earned_enabled',
+  'store_credit_expiring_enabled', // reminder shortly before unused store credit expires
+  'order_confirmed_prepaid_enabled', // prepaid confirmation that names the store credit earned
 ];
+
+/** Days before store credit expires that the WhatsApp reminder goes out. */
+export const STORE_CREDIT_EXPIRY_REMINDER_DAYS_DEFAULT = 15;
 
 /** 'true' / 'false' string, as stored in whatsapp_settings. */
 export const toggleDefault = (key: string): 'true' | 'false' =>

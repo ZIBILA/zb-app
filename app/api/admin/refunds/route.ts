@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { withoutShopifyRefundMirrors } from '@/lib/returns-filter';
 import { requirePermission, handleAuthError } from '@/lib/auth/rbac';
 import { calculateOrderRefundLimits } from '@/lib/services/refundAccuracy';
 import { resolveRefundMethod } from '@/lib/returnPolicy';
@@ -77,7 +78,7 @@ export async function GET(req: Request) {
 
     // 2. Fetch standalone Returns (if any not linked to ReturnRequest)
     const standaloneReturns = await prisma.return.findMany({
-      where: { returnRequestId: null },
+      where: withoutShopifyRefundMirrors({ returnRequestId: null }),
       include: {
         product: true,
         customer: true,

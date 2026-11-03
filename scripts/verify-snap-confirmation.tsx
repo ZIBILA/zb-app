@@ -179,7 +179,7 @@ async function main() {
   eq('full payload includes paymentStatus + orderType (it had neither)', [full.order.paymentStatus, full.order.orderType, full.order.totalPrice, full.order.currency], ['paid', 'WEB_STORE', 113.91, 'USD']);
   const trackingView: any = await (await g.fetch(`/api/orders/${apiOrder}/confirmation?bypass_auth=true&view=tracking`)).json();
   eq('tracking view = only the server facts the pixels need', [Object.keys(trackingView.order).sort(), trackingView.order.paymentStatus, trackingView.order.currency, trackingView.order.items.map((i: any) => [i.variantId, i.quantity, i.price])],
-    [['currency', 'id', 'internal', 'items', 'orderType', 'paymentStatus', 'totalPrice'], 'paid', 'USD', [[V.DENIM, 2, 44.97], [V.TEE, 1, 23.97]]]);
+    [['codUpfrontPaid', 'currency', 'id', 'internal', 'items', 'orderType', 'paymentMethod', 'paymentStatus', 'totalPrice'], 'paid', 'USD', [[V.DENIM, 2, 44.97], [V.TEE, 1, 23.97]]]);
   check('tracking view exposes no customer details', !/john|415|Market Street|94105/i.test(JSON.stringify(trackingView)));
   const old = await mkOrder({ createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) });
   eq('same access rule as the full payload: an order older than 24 h needs a session', (await g.fetch(`/api/orders/${old}/confirmation?bypass_auth=true&view=tracking`)).status, 401);
@@ -299,6 +299,11 @@ async function main() {
     await visit(id);
     eq(`${label} → no Purchase`, [snapPurchases().length, fbqPurchases().length], [0, 0]);
   }
+  // A COD order whose status Shopify's webhook already re-labelled partially_paid is still the sale.
+  clearBrowser();
+  const oCodShopify = await mkOrder({ paymentStatus: 'partially_paid', paymentMethod: 'COD', codUpfrontPaid: 99 });
+  await visit(oCodShopify);
+  eq('COD order re-labelled partially_paid by Shopify → both browser Purchases fire once', [snapPurchases().length, fbqPurchases().length], [1, 1]);
   clearBrowser();
   const oApp = await mkOrder({ orderType: 'MOBILE_APP' });
   await visit(oApp);

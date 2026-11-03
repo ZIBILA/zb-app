@@ -100,7 +100,9 @@ const HomeScreen = React.memo(() => {
   const [heroVideoReady, setHeroVideoReady] = useState(false);
   const heroVideoSrc = heroVideoReady ? heroVideoSrcFromSettings : null;
 
-  const { products, loading, isError, refetch } = useProducts(24);
+  // The whole catalogue, not its first 24: the hand-picked homepage products are looked up in it, and any pick
+  // outside the first 24 was missing, which shifted every product grid compared with the website.
+  const { products, loading, isError, refetch } = useProducts(100);
   const { collections, refetch: refetchCollections } = useCollections(renderStage1 ? 20 : 0, 'page');
   const { products: accessories } = useCollectionByHandle(renderStage1 ? ringHandle : '');
 
@@ -464,6 +466,11 @@ const HomeScreen = React.memo(() => {
                 </View>
               ) : null}
 
+              {/* ═══ PRODUCT GRID 3 ═══ */}
+              {displayHomepageProducts.length > 12 && (
+                <ProductGrid items={homeGrid3} onQuickAdd={handleQuickAdd} />
+              )}
+
               {/* ═══ SPOTLIGHT SECTION ═══ */}
               <SpotlightSection 
                 collectionHandle={settings?.spotlight?.collection ?? undefined} 
@@ -474,11 +481,6 @@ const HomeScreen = React.memo(() => {
                 products={displayHomepageProducts}
                 mediaActive={isVideoActive('spotlight')}
               />
-
-              {/* ═══ PRODUCT GRID 3 ═══ */}
-              {displayHomepageProducts.length > 12 && (
-                <ProductGrid items={homeGrid3} onQuickAdd={handleQuickAdd} />
-              )}
 
               {/* ═══ COMMUNITY SECTION ═══ */}
               <CommunitySection community={settings?.community} />
