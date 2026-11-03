@@ -44,7 +44,8 @@ interface CartContextType {
 const CartContext = createContext<CartContextType | null>(null);
 
 import { getClientCookie, setClientCookie } from "@/lib/metaPixel";
-import { decideCartRestore, EMPTY_META, type CartMeta } from "@/lib/cart-restore";
+import { decideCartRestore, mergeCartCopies, EMPTY_META, type CartMeta } from "@/lib/cart-restore";
+import { cartLineKey, collapseVariantLines } from "@/lib/cart-merge";
 
 const STORAGE_KEY = "zb_cart_v1";
 /** Bookkeeping (see CartMeta) that tells which copy is newer — this browser's or the account's DB cart. */
@@ -125,7 +126,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          setItems(parsed);
+          // A cart saved with the same variant on two lines heals here (quantities summed).
+          setItems(collapseVariantLines(parsed));
         }
       }
     } catch {}
@@ -143,7 +145,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       if (e.key !== STORAGE_KEY || e.newValue == null) return;
       try {
         const parsed = JSON.parse(e.newValue);
-        if (Array.isArray(parsed)) setItems(parsed);
+        if (Array.isArray(parsed)) setItems(collapseVariantLines(parsed));
       } catch {}
     };
     window.addEventListener("storage", onStorage);
@@ -394,8 +396,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   const add = useCallback((item: Omit<CartItem, "id" | "quantity">) => {
     const id = cartLineId(item.productId, item.variantId, item.size);
+    // A variant is one line however the caller spelled its size / product id (see lib/cart-merge.ts).
+    const lineKey = cartLineKey({ id, variantId: item.variantId }) || id;
     // Synchronous debounce: blocks double-tap / duplicate handler fires before React re-renders
-    if (!acceptAdd(id)) return;
+    if (!acceptAdd(lineKey)) return;
 
     // Track Add To Cart event
     trackStorefrontEvent('Add To Cart', {
@@ -417,10 +421,10 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
     touch();
     setItems((prev) => {
-      const existing = prev.find((i) => i.id === id);
+      const existing = prev.find((i) => cartLineKey(i) === lineKey);
       if (existing) {
         return prev.map((i) =>
-          i.id === id ? { ...i, quantity: i.quantity + 1 } : i
+          i === existing ? { ...i, quantity: i.quantity + 1 } : i
         );
       }
       return [...prev, { ...item, id, quantity: 1 }];
@@ -471,17 +475,9 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const loadFromDB = useCallback((dbItems: CartItem[]) => {
     touch();
     setItems((prev) => {
-      if (prev.length === 0) return dbItems;
-      const map = new Map(prev.map((i) => [i.id, { ...i }]));
-      for (const di of dbItems) {
-        const ex = map.get(di.id);
-        if (ex) {
-          ex.quantity = Math.max(ex.quantity, di.quantity);
-        } else {
-          map.set(di.id, di);
-        }
-      }
-      return Array.from(map.values());
+      if (prev.length === 0) return collapseVariantLines(dbItems);
+      // Same variant in both copies → max quantity; the same variant twice in one copy → summed.
+      return mergeCartCopies(prev, dbItems);
     });
   }, [touch]);
 
