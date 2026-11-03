@@ -24,6 +24,7 @@ import { useProducts, useCollections, useCollectionByHandle } from '../hooks/use
 import { FlatProduct } from '../api/types';
 import MenuDrawer from '../components/MenuDrawer';
 import SpotlightSection from '../components/SpotlightSection';
+import { prefetchProductDetail } from '../hooks/useProducts';
 import FlipbookSection from '../components/FlipbookSection';
 import CommunitySection from '../components/CommunitySection';
 import { useAdminSettings } from '../hooks/useAdminFeatures';
@@ -146,6 +147,12 @@ const HomeScreen = React.memo(() => {
   }, [specifiedHomepageIds, homepageCollectionProducts, products]);
 
   const homeGrid1 = useMemo(() => displayHomepageProducts.slice(0, 4), [displayHomepageProducts]);
+
+  // The first three products are the most likely to be opened: load their pages while the home screen settles.
+  useEffect(() => {
+    if (!renderStage2) return;
+    homeGrid1.slice(0, 3).forEach((p) => prefetchProductDetail(p.handle));
+  }, [renderStage2, homeGrid1]);
   const homeGrid2 = useMemo(() => displayHomepageProducts.slice(4, 8), [displayHomepageProducts]);
   const homeGrid3 = useMemo(() => displayHomepageProducts.slice(12, 16), [displayHomepageProducts]);
   const accessoriesItems = useMemo(() => (accessories || []).slice(0, Platform.OS === 'android' ? 8 : 15), [accessories]);

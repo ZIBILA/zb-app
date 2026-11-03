@@ -18,6 +18,8 @@ import { registerForPushNotifications, postPushTokenToBackend } from './src/util
 import { useAuthStore } from './src/store/authStore';
 import { useNotificationStore } from './src/store/notificationStore';
 import { getCacheService } from './src/services/cacheService';
+import { prefetchHomeData } from './src/hooks/useProducts';
+import { useAdminStore } from './src/store/adminStore';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 
 
@@ -43,6 +45,14 @@ function App() {
   // Refs for notification listeners to avoid duplicates
   const notificationReceivedRef = useRef<Notifications.Subscription | null>(null);
   const notificationResponseRef = useRef<Notifications.Subscription | null>(null);
+
+  // Start the home screen's requests now, in parallel, instead of when the home screen has rendered.
+  useEffect(() => {
+    prefetchHomeData(async () => {
+      await useAdminStore.getState().fetchSettings();
+      return useAdminStore.getState().settings as any;
+    });
+  }, []);
 
   useEffect(() => {
     if (!fontsLoaded) return;

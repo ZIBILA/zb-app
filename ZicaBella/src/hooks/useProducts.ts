@@ -39,6 +39,47 @@ async function cachedFetch<T>(key: string, fetchFn: () => Promise<T>, ttl = 3000
   return promise;
 }
 
+/**
+ * Start the home screen's data requests together at app launch, BEFORE the home screen mounts. The screen used to
+ * start some of them only after it had rendered (collections and accessories waited ~0.5s, the spotlight collection
+ * waited for the settings), and every request pays the network delay to the server. These use exactly the same cache
+ * keys and requests as the hooks below, so when the screen mounts it simply picks up the answers (or the request
+ * already on its way). Failures are ignored: the hooks fetch again and show their own errors.
+ */
+export function prefetchHomeData(
+  loadSettings?: () => Promise<{ spotlight?: { collection?: string | null } | null; homepage?: { collection?: string | null } | null } | null | undefined>,
+) {
+  const run = (key: string, fn: () => Promise<any>) => { cachedFetch(key, fn).catch(() => {}); };
+  run('products_list_catalog_50', () => apiGet<any>(ENDPOINTS.products, { limit: '100', fields: LIST_FIELDS }));
+  run('collections_20_page', () => apiGet<any>(ENDPOINTS.collections, { limit: '20', location: 'page' }));
+  prefetchCollection('accessories');
+  // The collections named in the dashboard settings can only be known once the settings arrive.
+  loadSettings?.()
+    .then((settings) => {
+      prefetchCollection(settings?.spotlight?.collection);
+      prefetchCollection(settings?.homepage?.collection);
+    })
+    .catch(() => {});
+}
+
+function prefetchCollection(handle?: string | null) {
+  const h = String(handle || '').trim();
+  if (!h || h === 'all') return;
+  cachedFetch(`collection_products_${h}`, () => apiGet<any>(ENDPOINTS.collectionByHandle(h), { limit: '50', fields: LIST_FIELDS })).catch(() => {});
+}
+
+/**
+ * Start loading a product page's full data. Called the moment a product card is touched (before the tap completes) and
+ * for the first products on the home screen, so by the time the page opens its data is usually already here.
+ */
+export function prefetchProductDetail(handle?: string | null) {
+  const h = String(handle || '').trim();
+  if (!h) return;
+  const key = `product_detail_${h}`;
+  if (apiCache.has(key)) return;
+  cachedFetch(key, () => apiGet<any>(ENDPOINTS.productByHandle(h), { fields: FULL_FIELDS })).catch(() => {});
+}
+
 function isShopifyProduct(product: any): product is Product {
   return Boolean(product?.variants?.edges && product?.images?.edges);
 }
