@@ -11,6 +11,17 @@ export function getCachedAppProduct(handle: string): any | null {
   return null;
 }
 
+/**
+ * A copy older than the fresh window but newer than `maxAgeMs` (default 1 hour): shown immediately while a fresh one
+ * is loaded in the background, so a product page never waits on Shopify just because its cache entry expired.
+ */
+export function getStaleAppProduct(handle: string, maxAgeMs = 60 * 60 * 1000): any | null {
+  const handleKey = String(handle || '').toLowerCase().trim();
+  const cached = productCache.get(handleKey);
+  if (cached && Date.now() - cached.timestamp < maxAgeMs) return cached.data;
+  return null;
+}
+
 export function getInflightAppProduct(handle: string): Promise<any> | undefined {
   const handleKey = String(handle || '').toLowerCase().trim();
   return inflightFetches.get(handleKey);

@@ -13,6 +13,7 @@ import { Typography } from './Typography';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 import { resolveImageUrl, resolveImageArray } from '../utils/imageUtils';
+import { prefetchProductDetail } from '../hooks/useProducts';
 import OptimizedImage from './OptimizedImage';
 
 interface Props {
@@ -125,6 +126,7 @@ const ProductCard = React.memo(({ product, onQuickAdd, onRemove, style, compact,
                 <TouchableOpacity 
                   key={`${product.id}-img-${index}`}
                   activeOpacity={0.85} 
+                  onPressIn={() => prefetchProductDetail(product?.handle)}
                   onPress={handlePress}
                   style={{ width: currentCardWidth, height: '100%' }}
                   accessibilityLabel={`View details for ${product.title}`}
@@ -145,6 +147,7 @@ const ProductCard = React.memo(({ product, onQuickAdd, onRemove, style, compact,
           </ScrollView>
         ) : images[0] ? (
           <TouchableOpacity 
+            onPressIn={() => prefetchProductDetail(product?.handle)}
             onPress={handlePress} 
             activeOpacity={0.95} 
             style={StyleSheet.absoluteFill}

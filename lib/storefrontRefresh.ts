@@ -1,6 +1,7 @@
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { clearShopifyCache, SHOPIFY_CATALOG_CACHE_TAG } from '@/lib/shopify-admin';
 import { clearAppProductCache } from '@/lib/appProductCache';
+import { clearAppListCache } from '@/lib/app-list-cache';
 
 /**
  * Makes the live storefront pick up catalogue / CMS changes now instead of whenever caches expire.
@@ -11,6 +12,7 @@ export function refreshStorefront(): { refreshed: string[] } {
   try {
     clearShopifyCache();
     clearAppProductCache();
+    clearAppListCache();
     refreshed.push('shopify-cache');
   } catch (e) {
     console.warn('[Storefront Refresh] cache clear failed:', e);
