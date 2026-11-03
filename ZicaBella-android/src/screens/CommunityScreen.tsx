@@ -12,6 +12,7 @@ import { GlassView, GlassBackdrop } from '../components/GlassView';
 import { useColors } from '../constants/colors';
 import { useAuth } from '../hooks/useAuth';
 import { config } from '../constants/config';
+import { useAuthStore } from '../store/authStore';
 import { Typography } from '../components/Typography';
 import CommunitySection from '../components/CommunitySection';
 import { useAdminSettings, useFeaturedUsers } from '../hooks/useAdminFeatures';
@@ -79,12 +80,13 @@ export default function CommunityScreen() {
     });
 
     try {
-      const res = await fetch(`${config.appUrl}/api/upload`, {
+      const res = await fetch(`${config.appUrl}/api/community/upload`, {
         method: 'POST',
         body: formData,
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'multipart/form-data',
+          'Authorization': `Bearer ${useAuthStore.getState().token || ''}`,
         },
       });
       
@@ -111,16 +113,16 @@ export default function CommunityScreen() {
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${config.appUrl}/api/featured-users`, {
+      const res = await fetch(`${config.appUrl}/api/community/submit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${useAuthStore.getState().token || ''}`,
+        },
         body: JSON.stringify({
-          name: form.name,
-          email: form.email,
           imageUrl: form.imageUrl,
           instagramUrl: form.instagramUrl,
           styleDescription: form.quote,
-          status: 'PENDING'
         }),
       });
 

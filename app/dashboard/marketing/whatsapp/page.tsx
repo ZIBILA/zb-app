@@ -1,4 +1,5 @@
 "use client";
+import { resolveBodyVariables, previewDataFor, eventTypeFromTemplateKey } from "@/lib/whatsapp/variable-mapping";
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -3143,6 +3144,7 @@ function OrderNotifications() {
                       </button>
                       {previewKey === a.key && (
                         <TemplatePreview
+                          eventType={eventTypeFromTemplateKey(a.templateKey)}
                           name={settings[a.templateKey] || a.defaultTemplate}
                           template={approvedTemplates.find((t: any) => t.name === (settings[a.templateKey] || a.defaultTemplate))}
                         />
@@ -3215,10 +3217,7 @@ function OrderNotifications() {
   }
 }
 
-/** Sample values shown in a preview, in {{1}}, {{2}}… order. Real sends use the customer's own data. */
-const PREVIEW_SAMPLES = ["Aarav", "ZB72210", "₹360", "ZB-TRACK-123", "https://zicabella.com"];
-
-function TemplatePreview({ name, template }: { name: string; template?: any }) {
+function TemplatePreview({ name, template, eventType }: { name: string; template?: any; eventType: string }) {
   if (!template) {
     return (
       <p className="mt-2 text-[11px] text-amber-500">
@@ -3226,11 +3225,13 @@ function TemplatePreview({ name, template }: { name: string; template?: any }) {
       </p>
     );
   }
-  const fill = (text: string) =>
-    String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, v) => {
-      const i = parseInt(v, 10);
-      return Number.isFinite(i) ? PREVIEW_SAMPLES[i - 1] ?? `{{${v}}}` : `{{${v}}}`;
-    });
+  // The same mapping the sender uses (lib/whatsapp/variable-mapping.js), with example data for this automation.
+  const sample = previewDataFor(eventType);
+  const fill = (text: string) => {
+    const values = resolveBodyVariables(eventType, String(text || ""), sample);
+    let n = 0;
+    return String(text || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, () => values[n++]?.value ?? "");
+  };
   const comps: any[] = Array.isArray(template.components) ? template.components : [];
   const header = comps.find((c) => c?.type === "HEADER");
   const body = comps.find((c) => c?.type === "BODY");

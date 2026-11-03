@@ -1,3 +1,4 @@
+import { shopifyDiscountCodes, totalAfterStoreCredit } from '@/lib/order-totals';
 import prisma from '@/lib/db';
 import { createOrder, findShopifyOrderByInternalNumber, fetchOrder } from '@/lib/shopify-admin';
 import { normalizeOrderShippingAddress } from '@/lib/order-shipping-address';
@@ -638,27 +639,21 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
       }];
     }
 
-    // Always attach discount codes for coupon / free orders so Shopify totals match local ₹0.
-    const discountAmount = Number(order.discountAmount || 0);
-    if (order.discountCode && discountAmount > 0) {
-      shopifyOrderPayload.discount_codes = [{
-        code: order.discountCode,
-        amount: discountAmount.toFixed(2),
-        type: 'fixed_amount',
-      }];
-    } else if (isZeroPaidOrder && orderTotal <= 0.009) {
-      // Fallback: derive discount from line totals when discountAmount was not persisted.
+    // Always attach the discounts (coupon AND store credit) so Shopify's total matches what the customer paid.
+    // Store credit used to be left out, so Shopify showed the full price and the sync then copied it back.
+    {
       const lineSum = shopifyLineItems.reduce(
         (sum: number, li: any) => sum + Number(li.price || 0) * Number(li.quantity || 1),
         0
       );
-      if (lineSum > 0) {
-        shopifyOrderPayload.discount_codes = [{
-          code: order.discountCode || 'ZERO_TOTAL',
-          amount: lineSum.toFixed(2),
-          type: 'fixed_amount',
-        }];
-      }
+      const discountLines = shopifyDiscountCodes({
+        discountCode: order.discountCode,
+        discountAmount: Number(order.discountAmount || 0),
+        storeCreditAmount: Number((order as any).storeCreditAmount || 0),
+        lineTotal: lineSum,
+        zeroTotal: isZeroPaidOrder && orderTotal <= 0.009,
+      });
+      if (discountLines.length > 0) shopifyOrderPayload.discount_codes = discountLines;
     }
 
     // The customer has already paid, so Shopify must receive the order even when its stock
@@ -1059,6 +1054,12 @@ export async function pullAndSyncShopifyOrder(
       if (discountAmount > 0 && Math.abs(finalTotalPrice - finalSubtotalPrice) < 0.01) {
         finalTotalPrice = finalSubtotalPrice - discountAmount;
       }
+      finalTotalPrice = totalAfterStoreCredit({
+        shopifyTotal: finalTotalPrice,
+        subtotal: finalSubtotalPrice,
+        discountAmount: Number(discountAmount) || 0,
+        storeCredit: Number((order as any).storeCreditAmount || 0),
+      });
 
       order = await prisma.order.update({
         where: { id: order.id },

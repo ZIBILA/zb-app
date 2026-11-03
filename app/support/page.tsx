@@ -84,6 +84,32 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: any }) {
 /* ──────────────────────────────────────────────
    Page
    ────────────────────────────────────────────── */
+/**
+ * The part of the screen that is actually visible while the phone keyboard is open, or null when it is closed.
+ * Mobile browsers (Chrome on Android, Safari on iPhone) leave the page layout as tall as the full screen and just
+ * draw the keyboard over its bottom, so a composer pinned to the bottom ends up behind the keyboard. While the
+ * keyboard is open the chat is sized to the visible area instead, so the input always sits just above it.
+ */
+function useKeyboardViewport() {
+  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const covered = window.innerHeight - vv.height;
+      setBox(covered > 120 ? { top: Math.round(vv.offsetTop), height: Math.round(vv.height) } : null);
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, []);
+  return box;
+}
+
 function SupportPageContent() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -107,6 +133,8 @@ function SupportPageContent() {
   const forceScrollRef = useRef(true);
   const prevMsgSigRef = useRef('');
 
+  const keyboardBox = useKeyboardViewport();
+
   const isLoggedIn = status === 'authenticated';
   const sessionCustomerId: string | undefined =
     (session as any)?.customer?.id || (session?.user as any)?.id || undefined;
@@ -126,6 +154,19 @@ function SupportPageContent() {
       isNearBottomRef.current = true;
     });
   }, []);
+
+  // Keyboard opened or closed: keep the latest message in view above the composer.
+  useEffect(() => {
+    if (keyboardBox) scrollToBottom();
+  }, [keyboardBox?.height, scrollToBottom]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The input grows with the text (up to 5 lines, then it scrolls inside) and shrinks again after sending.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [newMessage]);
 
   // URL params
   useEffect(() => {
@@ -365,9 +406,12 @@ function SupportPageContent() {
 
   return (
     <div
-      className={`flex flex-col h-[100dvh] bg-background text-foreground ${
-        isMobileApp ? 'pt-[env(safe-area-inset-top)]' : 'pt-[72px] md:pt-[76px]'
+      className={`flex flex-col bg-background text-foreground ${
+        keyboardBox ? 'fixed left-0 right-0 z-[70] pt-2' : 'h-[100dvh]'
+      } ${
+        keyboardBox ? '' : isMobileApp ? 'pt-[env(safe-area-inset-top)]' : 'pt-[72px] md:pt-[76px]'
       }`}
+      style={keyboardBox ? { top: keyboardBox.top, height: keyboardBox.height } : undefined}
     >
       {/* Conversation */}
       <div
@@ -427,7 +471,7 @@ function SupportPageContent() {
       </div>
 
       {/* Composer — pinned to the bottom */}
-      <div className="shrink-0 bg-background pb-[max(env(safe-area-inset-bottom),12px)]">
+      <div className={`shrink-0 bg-background ${keyboardBox ? 'pb-2' : 'pb-[max(env(safe-area-inset-bottom),12px)]'}`}>
         <div className="max-w-3xl mx-auto w-full px-4 md:px-6">
           {!aiAutoReply && (
             <p className="pb-2 text-center text-xs text-foreground/55">
@@ -446,6 +490,7 @@ function SupportPageContent() {
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={onKeyDown}
+              onFocus={() => setTimeout(scrollToBottom, 300)}
               placeholder="Message Zica Support…"
               enterKeyHint="send"
               autoComplete="off"

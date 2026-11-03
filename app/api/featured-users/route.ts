@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { createCommunitySubmission, resolveSubmitter } from '@/lib/community-submissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,24 +34,20 @@ export async function GET(req: Request) {
   }
 }
 
+/** Submissions from customers: same rules as /api/community/submit (this open route used to accept anything). */
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { name, email, imageUrl, styleDescription, instagramUrl } = body;
-
-    const user = await prisma.featuredUser.create({
-      data: {
-        name,
-        email,
-        imageUrl,
-        styleDescription,
-        instagramUrl,
-        status: 'PENDING',
-      },
+    const who = await resolveSubmitter(req);
+    if (!who) return NextResponse.json({ error: 'Please log in to share your look.' }, { status: 401 });
+    const body = await req.json().catch(() => ({}));
+    const result = await createCommunitySubmission(who, {
+      imageUrl: body?.imageUrl,
+      styleDescription: body?.styleDescription,
+      instagramUrl: body?.instagramUrl,
     });
-
-    return NextResponse.json({ success: true, user });
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    return NextResponse.json({ success: true, user: { id: result.id, status: result.status } });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to submit' }, { status: 500 });
   }
 }

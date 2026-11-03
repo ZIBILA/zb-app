@@ -78,7 +78,7 @@ export default function CommunityPage() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const res = await fetch("/api/community/upload", { method: "POST", body: formData });
       const data = await res.json();
       if (data.success) {
         setSubForm(prev => ({ ...prev, imageUrl: data.url }));
@@ -97,16 +97,13 @@ export default function CommunityPage() {
     e.preventDefault();
     setSubStatus({ type: 'loading', msg: '' });
     try {
-      const res = await fetch('/api/admin/featured-users', {
+      const res = await fetch('/api/community/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: subForm.name,
-          email: subForm.email,
           imageUrl: subForm.imageUrl,
           instagramUrl: subForm.instagramUrl,
           styleDescription: subForm.quote,
-          status: 'PENDING'
         })
       });
       if (res.ok) {
@@ -117,7 +114,8 @@ export default function CommunityPage() {
           setShowSubForm(false);
         }, 3000);
       } else {
-        setSubStatus({ type: 'error', msg: 'Submission failed. Check your data.' });
+        const err = await res.json().catch(() => ({}));
+        setSubStatus({ type: 'error', msg: err?.error || 'Submission failed. Please try again.' });
       }
     } catch (e) {
       setSubStatus({ type: 'error', msg: 'Network error. Try again.' });

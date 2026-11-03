@@ -1,3 +1,4 @@
+import { localOrderTotal } from '@/lib/order-totals';
 import GoogleProvider from "next-auth/providers/google";
 import AppleProvider from "next-auth/providers/apple";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -504,16 +505,17 @@ export const authOptions: AuthOptions = {
                   }
 
                   for (const o of shopifyOrders) {
+                    const orderTotal = await localOrderTotal(prisma, o);
                     const dbOrder = await prisma.order.upsert({
                       where: { shopifyOrderId: String(o.id) },
                       create: {
                         shopId: shopId, shopifyOrderId: String(o.id), customerId: bgCustomerId,
-                        status: 'active', totalPrice: parseFloat(o.total_price || '0'),
+                        status: 'active', totalPrice: orderTotal,
                         currency: o.currency || 'INR', paymentStatus: o.financial_status || 'pending',
                         fulfillmentStatus: o.fulfillment_status || 'unfulfilled', createdAt: new Date(o.created_at),
                       },
                       update: {
-                        status: 'active', totalPrice: parseFloat(o.total_price || '0'),
+                        status: 'active', totalPrice: orderTotal,
                         paymentStatus: o.financial_status || 'pending',
                         fulfillmentStatus: o.fulfillment_status || 'unfulfilled',
                       }
@@ -691,17 +693,18 @@ export const authOptions: AuthOptions = {
                   }
 
                   for (const o of shopifyOrders) {
+                    const orderTotal = await localOrderTotal(prisma, o);
                     const dbOrder = await prisma.order.upsert({
                       where: { shopifyOrderId: String(o.id) },
                       create: {
                         shopId: shopId, shopifyOrderId: String(o.id), customerId: bgCustId,
-                        status: 'active', totalPrice: parseFloat(o.total_price || '0'),
+                        status: 'active', totalPrice: orderTotal,
                         currency: o.currency || 'INR', paymentStatus: o.financial_status || 'pending',
                         fulfillmentStatus: o.fulfillment_status || 'unfulfilled', createdAt: new Date(o.created_at),
                       },
                       update: {
                         customerId: bgCustId,
-                        status: 'active', totalPrice: parseFloat(o.total_price || '0'),
+                        status: 'active', totalPrice: orderTotal,
                         paymentStatus: o.financial_status || 'pending',
                         fulfillmentStatus: o.fulfillment_status || 'unfulfilled',
                       }
