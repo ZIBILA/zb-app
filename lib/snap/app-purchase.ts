@@ -16,6 +16,7 @@ import { pickRealEmail, pickRealName } from '@/lib/tracking/placeholder-identity
 import { snapPurchasePhone } from '@/lib/snap/identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
+import { isPurchasePaidStatus, PURCHASE_SCAN_STATUSES } from '@/lib/meta/order-value';
 import { createDeliveryLedger, isMissingTable, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
 import { findRecoveryCandidates } from '@/lib/snap/recovery';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
@@ -192,7 +193,7 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
       return { status: 'skipped', reason: `internal order (${internal})` };
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
-    if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
+    if (!isPurchasePaidStatus(order)) return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     if (snapPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
 
     const { device } = splitContext(stored?.context || {});
@@ -304,7 +305,7 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
       const { candidates, truncated } = await findRecoveryCandidates(db, ledger, {
         platform: PLATFORM,
         eventName: EVENT,
-        paidStatuses: Array.from(SNAP_PURCHASE_PAYMENT_STATUSES),
+        paidStatuses: [...PURCHASE_SCAN_STATUSES],
         acceptsOrderType: (t) => NATIVE_APP_ORDER_TYPES.has(t),
       });
       if (truncated) tally.scan_truncated = 1;
@@ -313,7 +314,7 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
 
       const details = new Map<string, any>((await db.order.findMany({
         where: { id: { in: batch.map(c => c.orderId) } },
-        select: { id: true, paymentStatus: true, paymentMethod: true, razorpayPaymentId: true, orderType: true },
+        select: { id: true, paymentStatus: true, paymentMethod: true, razorpayPaymentId: true, orderType: true, codUpfrontPaid: true, codUpfrontPaymentId: true, tags: true },
       })).map((o: any) => [o.id, o]));
 
       let sends = 0;
@@ -325,7 +326,7 @@ export function createSnapAppPurchaseDelivery({ db, send: rawSend, env = process
         let hold: string | null = null;
         if (!order) hold = 'no_order';
         else if (!NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) hold = 'not_app';
-        else if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(String(order.paymentStatus || '').toLowerCase())) hold = 'unpaid';
+        else if (!isPurchasePaidStatus(order)) hold = 'unpaid';
         else if (!(await verifyCapture(order).catch(() => false))) hold = 'capture_unverified';
         if (hold) {
           bump(`pending_${hold}`);
