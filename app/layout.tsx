@@ -180,23 +180,6 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <script
-          id="theme-fallback"
-          dangerouslySetInnerHTML={{
-            __html: `
-              try {
-                var theme = localStorage.getItem('theme');
-                if (!theme) {
-                  var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                  var prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-                  if (!prefersDark && !prefersLight) {
-                    localStorage.setItem('theme', 'dark');
-                  }
-                }
-              } catch (e) {}
-            `,
-          }}
-        />
         {/* GTM stub only — network gtm.js loads via lazyOnload below so it stays off the critical path. */}
         <script
           id="google-tag-manager-stub"
