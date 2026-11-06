@@ -1,4 +1,5 @@
 import { sendEmail } from '@/lib/mailer';
+import { dashboardUrl } from '@/lib/storefront-url';
 
 export interface RefundNotificationPayload {
   returnRequestId?: string;
@@ -59,7 +60,7 @@ export async function sendRefundRequestNotification(payload: RefundNotificationP
     )
     .join('');
 
-  const adminDashboardUrl = `https://app.zicabella.com/dashboard/refunds`;
+  const adminDashboardUrl = dashboardUrl('/dashboard/refunds');
 
   const html = `
   <!DOCTYPE html>

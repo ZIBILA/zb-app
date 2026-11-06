@@ -124,3 +124,48 @@ const ADMIN_PAGE_PREFIX = /^\/(?:dashboard|admin|web-store)(?:\/|$)/;
 export function isAdminPagePath(pathname: string): boolean {
   return ADMIN_PAGE_PREFIX.test(String(pathname ?? '').replace(/[?#][\s\S]*$/, ''));
 }
+
+// ── admin sign-in host rule (NextAuth admin-login / admin-passkey) ───────────
+
+/** Alias of ADMIN_HOST for the sign-in rule below and lib/auth / lib/storefront-url callers. */
+export const DASHBOARD_HOST = ADMIN_HOST;
+
+/** The storefront hosts (zicabella.com and www): admins never sign in here. */
+export const STOREFRONT_HOSTS: readonly string[] = EVENT_HOSTS;
+
+/** Dev hosts admins may also sign in from. */
+const DEV_HOSTS: readonly string[] = ['localhost', '127.0.0.1', '[::1]'];
+
+/**
+ * May an admin sign in on `hostname`? app.zicabella.com, the local dev hosts, and any
+ * host listed in ADMIN_LOGIN_HOSTS (comma-separated; a staging deployment that serves
+ * its own dashboard). Never the storefront hosts: the admin session is host-only, so a
+ * sign-in on zicabella.com would replace the shopper's session there (and the pixels'
+ * external_id) — the middleware already moves the dashboard pages, this closes the
+ * credentials callback itself.
+ */
+export function isDashboardHost(hostname: unknown, extra: string | undefined = process.env.ADMIN_LOGIN_HOSTS): boolean {
+  const h = normalizeHost(hostname);
+  if (!h || STOREFRONT_HOSTS.includes(h)) return false;
+  if (h === DASHBOARD_HOST || DEV_HOSTS.includes(h)) return true;
+  return String(extra ?? '').split(',').map(normalizeHost).filter(Boolean).includes(h);
+}
+
+/**
+ * The request host (x-forwarded-host first, then host; first value of a comma list),
+ * normalized — from a Headers object or the plain header record NextAuth hands
+ * authorize(). '' when there is none.
+ */
+export function requestHost(headers: { get(name: string): string | null } | Record<string, unknown> | null | undefined): string {
+  if (!headers) return '';
+  const get = (name: string): string => {
+    let raw: unknown;
+    if (typeof (headers as any).get === 'function') raw = (headers as any).get(name);
+    else {
+      const key = Object.keys(headers as object).find(k => k.toLowerCase() === name);
+      raw = key ? (headers as any)[key] : undefined;
+    }
+    return String(raw ?? '').split(',')[0].trim();
+  };
+  return normalizeHost(get('x-forwarded-host') || get('host'));
+}
