@@ -357,6 +357,9 @@ model OrderItem {
   variantId         String?
   variantTitle      String?
   size              String?
+  /// Shopify product_type of the purchased product at order time ("Jackets", "BAGGY JEANS" …).
+  /// Sent as content_category on the server Meta / Snap Purchase. NULL = not known.
+  productType       String?
   order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product           Product? @relation(fields: [productId], references: [id])
 

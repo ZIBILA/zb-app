@@ -10,6 +10,7 @@ import {
 import prisma from '@/lib/db';
 import { registerWebhooks } from '@/lib/shopify-webhooks';
 import { extractSizeFromVariant } from '@/lib/utils';
+import { loadProductTypeCarry } from '@/lib/services/orderItemProductType';
 import { requireAdmin, handleAuthError } from '@/lib/auth/rbac';
 
 export const dynamic = 'force-dynamic';
@@ -429,6 +430,8 @@ export async function POST() {
 
           // Delete old line items that do not match Shopify's IDs
           const shopifyItemIds = o.line_items.map((item: any) => String(item.id));
+          // Shopify's line items carry no product type: keep the one already stored (read BEFORE the delete).
+          const productTypeCarry = await loadProductTypeCarry(prisma, order.id);
           await prisma.orderItem.deleteMany({
             where: {
               orderId: order.id,
@@ -466,6 +469,7 @@ export async function POST() {
                 variantId: vId,
                 variantTitle: vTitle,
                 size: itemSize,
+                productType: productTypeCarry({ variantId: vId, productId: dbProductId }),
               },
               update: {
                 quantity: item.quantity,

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { syncOrderToShopify, pullAndSyncShopifyOrder } from '@/lib/services/shopifyOrderSyncService';
 import { extractSizeFromVariant } from '@/lib/utils';
+import { loadProductTypeCarry } from '@/lib/services/orderItemProductType';
 
 /**
  * POST /api/admin/orders/[id]/sync-shopify
@@ -211,6 +212,8 @@ export async function POST(
 
         // Delete old line items and upsert current ones
         const shopifyItemIds = o.line_items.map((item: any) => String(item.id));
+        // Shopify's line items carry no product type: keep the one already stored (read BEFORE the delete).
+        const productTypeCarry = await loadProductTypeCarry(prisma, order.id);
         await prisma.orderItem.deleteMany({
           where: {
             orderId: order.id,
@@ -254,6 +257,7 @@ export async function POST(
               variantId: vId,
               variantTitle: vTitle,
               size: itemSize,
+              productType: productTypeCarry({ variantId: vId, productId: dbProductId }),
             },
             update: {
               quantity: item.quantity,

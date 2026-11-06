@@ -5,6 +5,7 @@ import prisma from '@/lib/db';
 import { extractSizeFromVariant } from '@/lib/utils';
 import { refreshStorefront } from '@/lib/storefrontRefresh';
 import { shouldHonorShopifyOrderCancel } from '@/lib/services/orderLifecycleService';
+import { loadProductTypeCarry } from '@/lib/services/orderItemProductType';
 
 export async function POST(req: Request) {
   try {
@@ -532,6 +533,9 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
   // orders/fulfilled or orders/cancelled may omit items and must not trigger deletion.
   if (orderData.line_items && Array.isArray(orderData.line_items) && orderData.line_items.length > 0) {
     const shopifyItemIds = orderData.line_items.map((item: any) => item.id.toString());
+    // Shopify's line items carry no product type: keep the one the web checkout stored
+    // on the rows that are replaced below (read BEFORE they are deleted).
+    const productTypeCarry = await loadProductTypeCarry(prisma, order.id);
 
     // Only delete items that are no longer in the payload on authoritative topics
     const isAuthoritativeTopic = topic === 'orders/create' || topic === 'orders/updated';
@@ -586,6 +590,7 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
           variantId: vId,
           variantTitle: vTitle,
           size: itemSize,
+          productType: productTypeCarry({ variantId: vId, productId: dbProductId }),
         },
         update: {
           quantity: item.quantity,
