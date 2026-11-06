@@ -21,9 +21,10 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.zicabella.ios",
       "appleTeamId": "94765P9PT9",
-      "buildNumber": "9",
+      "buildNumber": "10",
       "deploymentTarget": "16.0",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSFaceIDUsageDescription": "Verify your identity to access your profile",
         "NSCameraUsageDescription": "Allow camera access to update your profile photo",
         "NSPhotoLibraryUsageDescription": "Allow photo library access to update your profile photo",
