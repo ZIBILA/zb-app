@@ -27,6 +27,7 @@
 import { pickRealEmail, pickRealFullName } from '@/lib/tracking/placeholder-identity';
 import { isUnresolvedRecoveryOrder } from '@/lib/tracking/order-guards';
 import { internalOrderReason } from '@/lib/meta/internal-orders';
+import { isPurchasePaidStatus, PURCHASE_PAID_STATUSES, PURCHASE_SCAN_STATUSES } from '@/lib/meta/order-value';
 import { snapPurchasePhone } from '@/lib/snap/identity';
 import type { SnapCapiEventPayload } from '@/lib/snap-capi';
 import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
@@ -40,8 +41,12 @@ import { clientIpFromHeaders } from '@/lib/client-ip';
 const PLATFORM = 'snap';
 const EVENT = 'PURCHASE';
 
-/** Payment states that represent a completed conversion. */
-export const SNAP_PURCHASE_PAYMENT_STATUSES = new Set(['paid', 'cod_upfront_paid']);
+/**
+ * Payment states that represent a completed conversion. A COD order that Shopify's
+ * webhook re-labelled `partially_paid` counts too: always decide with
+ * isPurchasePaidStatus(order) (lib/meta/order-value.ts), never with this set alone.
+ */
+export const SNAP_PURCHASE_PAYMENT_STATUSES = PURCHASE_PAID_STATUSES;
 /** Order types created by the native iOS / Android apps. */
 export const NATIVE_APP_ORDER_TYPES = new Set(['MOBILE', 'MOBILE_APP', 'APP']);
 /** Order type every website checkout writes (checkout, Razorpay pre-create, recovery). */
@@ -386,7 +391,7 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
       return { status: 'skipped', reason: `internal order (${internal})` };
     }
     const payStatus = String(order.paymentStatus || '').toLowerCase();
-    if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(payStatus)) {
+    if (!isPurchasePaidStatus(order)) {
       return { status: 'skipped', reason: `paymentStatus=${payStatus || 'empty'}` };
     }
     if (snapPurchaseValue(order) === null) return { status: 'skipped', reason: 'order value missing or negative' };
@@ -528,7 +533,7 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
       const { candidates, truncated } = await findRecoveryCandidates(prisma, ledger, {
         platform: PLATFORM,
         eventName: EVENT,
-        paidStatuses: Array.from(SNAP_PURCHASE_PAYMENT_STATUSES),
+        paidStatuses: [...PURCHASE_SCAN_STATUSES],
         acceptsOrderType: (t) => !NATIVE_APP_ORDER_TYPES.has(t),
         acceptsMissingRow: (t) => t === WEBSITE_ORDER_TYPE,
         cutoverMemo,
@@ -541,6 +546,7 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
         where: { id: { in: batch.map(c => c.orderId) } },
         select: {
           id: true, paymentStatus: true, paymentMethod: true, razorpayPaymentId: true, orderType: true,
+          codUpfrontPaid: true, codUpfrontPaymentId: true,
           tags: true, totalPrice: true, items: { select: { variantId: true, sku: true } },
         },
       })).map((o: any) => [o.id, o]));
@@ -552,7 +558,7 @@ export function createSnapPurchaseDelivery({ db: prisma, send, verifyCapture, co
         let hold: string | null = null;
         if (!order) hold = 'no_order';
         else if (NATIVE_APP_ORDER_TYPES.has(String(order.orderType || '').toUpperCase())) hold = 'not_web';
-        else if (!SNAP_PURCHASE_PAYMENT_STATUSES.has(String(order.paymentStatus || '').toLowerCase())) hold = 'unpaid';
+        else if (!isPurchasePaidStatus(order)) hold = 'unpaid';
         else if (isUnresolvedRecoveryOrder(order)) hold = 'unresolved_items';
         else if (snapPurchaseValue(order) === null) hold = 'no_value';
         else if (!(await verifyCapture(order).catch(() => false))) hold = 'capture_unverified';

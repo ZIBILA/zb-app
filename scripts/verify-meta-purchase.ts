@@ -122,6 +122,18 @@ async function main() {
   store.orders.get('ord_C').paymentStatus = 'paid';
   await emitMetaPurchase('ord_C', undefined, { paymentConfirmed: true });
   check('same order sends once it is captured', graphBodies.length === 1 && graphBodies[0].data[0].user_data.client_user_agent === browserCtx.userAgent);
+  // 3b. A COD order Shopify re-labelled partially_paid (its mirror's financial_status, written
+  // back by the orders webhook) is still the one COD sale: sends once, full order value.
+  graphBodies.length = 0;
+  mkOrder('ord_D2', { paymentStatus: 'partially_paid', paymentMethod: 'COD', codUpfrontPaid: 99 });
+  const rD2 = await emitMetaPurchase('ord_D2', undefined, { paymentConfirmed: true });
+  check('COD order re-labelled partially_paid by Shopify → sends once with the full order value',
+    rD2.status === 'sent' && graphBodies.length === 1 && Number(graphBodies[0]?.data?.[0]?.custom_data?.value) === 3797, { rD2, body: graphBodies[0]?.data?.[0]?.custom_data });
+  const rD2again = await emitMetaPurchase('ord_D2', undefined, { paymentConfirmed: true });
+  check('…and not twice', rD2again.status === 'skipped' && graphBodies.length === 1, rD2again);
+  mkOrder('ord_D3', { paymentStatus: 'partially_paid', paymentMethod: 'razorpay', tags: 'underpaid, needs_review' });
+  const rD3 = await emitMetaPurchase('ord_D3', undefined, { paymentConfirmed: true });
+  check('under-captured prepaid order (partially_paid, needs_review) still never sends', rD3.status === 'skipped' && graphBodies.length === 1, rD3);
 
   // 4. COD with upfront captured counts.
   graphBodies.length = 0;
