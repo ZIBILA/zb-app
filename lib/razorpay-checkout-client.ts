@@ -8,6 +8,7 @@ declare global {
     Razorpay?: new (options: Record<string, unknown>) => {
       open: () => void;
       on: (event: string, handler: (response: unknown) => void) => void;
+      close?: () => void;
     };
   }
 }
@@ -92,7 +93,7 @@ export async function openRazorpayStandardCheckout(
     onPaymentFailed?: (response: unknown) => void;
     onOpened?: () => void;
   }
-): Promise<void> {
+): Promise<{ close: () => void }> {
   await waitForRazorpaySdk();
 
   const validationError = validateRazorpayOpenOptions({
@@ -135,6 +136,15 @@ export async function openRazorpayStandardCheckout(
   try {
     rzp.open();
     hooks?.onOpened?.();
+    return {
+      close: () => {
+        try {
+          rzp.close?.();
+        } catch {
+          /* already closed */
+        }
+      },
+    };
   } catch (err) {
     console.error("[Razorpay] rzp.open() failed:", err);
     throw new Error("Could not open the payment window. Please try again.");

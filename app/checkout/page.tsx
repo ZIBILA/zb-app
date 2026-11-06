@@ -348,6 +348,8 @@ export default function CheckoutPage() {
   // Meta AddPaymentInfo fires once per checkout, at the payment step.
   const metaPaymentInfoFiredRef = useRef<boolean>(false);
   const paymentSucceededRef = useRef(false);
+  // Tears down the "shopper returned from the UPI app" watcher of the current payment attempt.
+  const stopReturnWatchRef = useRef<() => void>(() => {});
 
   const isDark = resolvedTheme === "dark";
 
@@ -1952,6 +1954,7 @@ export default function CheckoutPage() {
       // ═══════════════════════════════════════════════════════════
       const handlePaymentSuccess = async (response: any) => {
         paymentSucceededRef.current = true;
+        stopReturnWatch();
         setIsConfirmingPayment(true);
         setIsOrderPlaced(true);
         setError("");
@@ -2123,6 +2126,7 @@ export default function CheckoutPage() {
         console.error('[Razorpay] Payment error:', error?.error || error);
 
         const failureReason = errorReason || errorCode || errorDesc || "payment_failed";
+        stopReturnWatch();
 
         // Call cancel API to log reason on backend
         if (orderId) {
@@ -2182,7 +2186,75 @@ export default function CheckoutPage() {
       if (useRedirectFlow) {
         console.log("[Razorpay] In-app browser detected — using callback_url redirect flow");
       }
-      await openRazorpayStandardCheckout(
+      // UPI app switch: iOS/Android suspend this page while the UPI app is in front, which
+      // kills Razorpay's in-modal status polling — the modal then sits on "Processing your
+      // payment" and `handler` never fires even though the payment may have gone through.
+      // When the shopper comes back, ask the server (which asks Razorpay) for the outcome.
+      const stopReturnWatch = () => stopReturnWatchRef.current();
+      let rzpHandle: { close: () => void } | null = null;
+      const startReturnWatch = () => {
+        if (typeof document === "undefined" || !orderId) return;
+        let polling = false;
+        let stopped = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const deadline = () => Date.now() + 120_000;
+        let until = 0;
+
+        const poll = async () => {
+          timer = null;
+          if (stopped || paymentSucceededRef.current || Date.now() > until) {
+            polling = false;
+            return;
+          }
+          try {
+            const r = await fetch(`/api/orders/by-razorpay?orderId=${encodeURIComponent(orderId)}`, { cache: "no-store" });
+            if (r.ok) {
+              const d = await r.json();
+              if (d?.orderId && isPaidLikeStatus(d.paymentStatus)) {
+                if (stopped || paymentSucceededRef.current) return;
+                paymentSucceededRef.current = true;
+                stopReturnWatch();
+                setIsConfirmingPayment(true);
+                setIsOrderPlaced(true);
+                setError("");
+                try {
+                  sessionStorage.setItem("last_placed_order_id", d.orderId);
+                  sessionStorage.removeItem("zb_pending_checkout");
+                } catch { /* ignore */ }
+                rzpHandle?.close();
+                clear();
+                router.replace(`/orders/${d.orderId}/confirmation`);
+                return;
+              }
+            }
+          } catch { /* offline / transient: retry */ }
+          polling = true;
+          timer = setTimeout(poll, 3000);
+        };
+
+        const onReturn = () => {
+          if (document.visibilityState === "hidden" || stopped || paymentSucceededRef.current) return;
+          until = deadline();
+          if (!polling) {
+            polling = true;
+            void poll();
+          }
+        };
+        document.addEventListener("visibilitychange", onReturn);
+        window.addEventListener("pageshow", onReturn);
+        window.addEventListener("focus", onReturn);
+        stopReturnWatchRef.current = () => {
+          stopped = true;
+          if (timer) clearTimeout(timer);
+          document.removeEventListener("visibilitychange", onReturn);
+          window.removeEventListener("pageshow", onReturn);
+          window.removeEventListener("focus", onReturn);
+        };
+      };
+      stopReturnWatchRef.current();
+      startReturnWatch();
+
+      rzpHandle = await openRazorpayStandardCheckout(
         {
           key: keyId,
           amount: orderAmountPaise,
@@ -2210,6 +2282,7 @@ export default function CheckoutPage() {
           },
           modal: {
             ondismiss: function () {
+              stopReturnWatch();
               // Success path also closes the modal — don't treat that as cancel
               if (paymentSucceededRef.current) return;
               releasePaymentLock();
@@ -2234,6 +2307,7 @@ export default function CheckoutPage() {
       );
 
     } catch (err: any) {
+      stopReturnWatchRef.current();
       setError(err.message || "An error occurred");
       releasePaymentLock();
     }
