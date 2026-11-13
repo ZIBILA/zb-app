@@ -6,12 +6,6 @@ import { mergeAllDuplicateCustomers } from '@/lib/services/customerDeduplication
 
 export const dynamic = 'force-dynamic';
 
-function getCleanPhone(phone?: string | null): string | null {
-  if (!phone) return null;
-  const digits = String(phone).replace(/\D/g, '').slice(-10);
-  return digits.length === 10 ? digits : null;
-}
-
 function getCleanEmail(email?: string | null): string | null {
   if (!email) return null;
   const trimmed = String(email).trim().toLowerCase();
@@ -35,15 +29,6 @@ export async function GET(req: Request) {
     const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '100', 10)));
     const offset = (page - 1) * limit;
 
-    const customerWhere: any = {};
-    if (search) {
-      customerWhere.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
-        { shopifyId: { contains: search, mode: 'insensitive' } },
-      ];
-    }
 
     // Fire-and-forget background deduplication & Shopify sync on page 1
     if (page === 1 && !search) {
@@ -106,131 +91,109 @@ export async function GET(req: Request) {
       })();
     }
 
-    // Fetch DB customers
-    const dbCustomers = await prisma.customer.findMany({
-      where: customerWhere,
-      orderBy: { createdAt: 'desc' },
-      take: limit * 2, // Take larger batch to allow in-memory deduplication
-      skip: offset,
-      include: {
-        addresses: true,
-        orders: {
-          orderBy: { createdAt: 'desc' },
-          take: 10,
-          include: { items: true },
-        },
-      },
+    // Page of customers with order count + lifetime revenue from real orders, sorted / filtered in SQL so the
+    // sort and the date filter apply to ALL customers, not just the current page.
+    const { listCustomerStats, resolveJoinedRange } = await import('@/lib/services/customerStats');
+    const sort = (url.searchParams.get('sort') || 'newest') as any;
+    const { from: joinedFrom, to: joinedTo } = resolveJoinedRange(url.searchParams);
+    const isCsv = format === 'csv';
+    const stats = await listCustomerStats({
+      search,
+      sort,
+      joinedFrom,
+      joinedTo,
+      limit: isCsv ? 20000 : limit,
+      offset: isCsv ? 0 : offset,
     });
+    const statById = new Map(stats.rows.map((r) => [r.id, r]));
 
-    // In-memory deduplication & aggregation by unique email / phone
-    const uniqueCustomersMap = new Map<string, any>();
-    const seenIds = new Set<string>();
+    const dbCustomers = await prisma.customer.findMany({
+      where: { id: { in: stats.rows.map((r) => r.id) } },
+      include: isCsv
+        ? { addresses: true }
+        : {
+            addresses: true,
+            orders: {
+              orderBy: { createdAt: 'desc' },
+              take: 10,
+              include: { items: true },
+            },
+          },
+    });
+    const byId = new Map(dbCustomers.map((c: any) => [c.id, c]));
 
-    function isOrderFulfilled(status?: string | null): boolean {
-      if (!status) return false;
-      const s = status.toLowerCase().trim();
-      return s === 'fulfilled' || s === 'shipped' || s === 'delivered';
-    }
-
-    for (const c of dbCustomers) {
-      if (seenIds.has(c.id)) continue;
-
-      const effectivePhone = c.phone || c.addresses?.find((a: any) => a.phone && a.phone.trim())?.phone || null;
-      const effectiveEmail = c.email || c.addresses?.find((a: any) => a.email && a.email.trim())?.email || null;
-
-      // Auto-heal missing phone or email in DB if found in linked addresses
-      if ((!c.phone && effectivePhone) || (!c.email && effectiveEmail)) {
-        prisma.customer.update({
-          where: { id: c.id },
-          data: {
-            ...(!c.phone && effectivePhone ? { phone: effectivePhone } : {}),
-            ...(!c.email && effectiveEmail ? { email: effectiveEmail } : {}),
-          }
-        }).catch(() => {});
-      }
-
-      const emailKey = getCleanEmail(effectiveEmail);
-      const phoneKey = getCleanPhone(effectivePhone);
-      const dedupKey = emailKey ? `email:${emailKey}` : phoneKey ? `phone:${phoneKey}` : `id:${c.id}`;
-
-      if (uniqueCustomersMap.has(dedupKey)) {
-        // Merge order stats into existing customer record in payload
-        const existing = uniqueCustomersMap.get(dedupKey);
-        if (!existing.phone && effectivePhone) existing.phone = effectivePhone;
-        if (!existing.email && effectiveEmail) existing.email = effectiveEmail;
-        existing.totalOrders += c.ordersCount || c.orders.length;
-        const cFulfilledOrders = c.orders.filter((o: any) => isOrderFulfilled(o.fulfillmentStatus));
-        existing.totalSpent += cFulfilledOrders.reduce((sum: number, o: any) => sum + (o.totalPrice || 0), 0);
-        
-        // Merge orders list
-        const existingOrderIds = new Set(existing.orders.map((o: any) => o.id));
-        for (const o of c.orders) {
-          if (!existingOrderIds.has(o.id)) {
-            existing.orders.push({
-              id: o.id,
-              shopifyOrderId: o.shopifyOrderId,
-              status: o.status,
-              totalPrice: o.totalPrice || 0,
-              paymentStatus: o.paymentStatus,
-              fulfillmentStatus: o.fulfillmentStatus,
-              createdAt: o.createdAt,
-              items: o.items.map((i: any) => ({
-                id: i.id,
-                title: i.title,
-                quantity: i.quantity,
-                price: i.price,
-                sku: i.sku,
-              })),
-            });
-          }
+    let payload: any[] = stats.rows
+      .map((r) => byId.get(r.id))
+      .filter(Boolean)
+      .map((c: any) => {
+        const effectivePhone = c.phone || c.addresses?.find((a: any) => a.phone && a.phone.trim())?.phone || null;
+        const effectiveEmail = c.email || c.addresses?.find((a: any) => a.email && a.email.trim())?.email || null;
+        // Auto-heal missing phone or email in DB if found in linked addresses
+        if ((!c.phone && effectivePhone) || (!c.email && effectiveEmail)) {
+          prisma.customer.update({
+            where: { id: c.id },
+            data: {
+              ...(!c.phone && effectivePhone ? { phone: effectivePhone } : {}),
+              ...(!c.email && effectiveEmail ? { email: effectiveEmail } : {}),
+            }
+          }).catch(() => {});
         }
-        seenIds.add(c.id);
-        continue;
-      }
-
-      const displayName = c.name || effectiveEmail || (c.shopifyId !== 'anonymous' ? c.shopifyId : 'Anonymous User');
-      const totalOrders = c.ordersCount || c.orders.length;
-      const fulfilledOrders = c.orders.filter((o: any) => isOrderFulfilled(o.fulfillmentStatus));
-      const totalSpent = fulfilledOrders.reduce((sum: any, o: any) => sum + (o.totalPrice || 0), 0);
-
-      const customerObj = {
-        id: c.id,
-        shopifyId: c.shopifyId,
-        email: effectiveEmail,
-        name: displayName,
-        phone: effectivePhone,
-        createdAt: c.createdAt,
-        lastLoginAt: c.lastLoginAt,
-        totalOrders,
-        totalSpent: isNaN(totalSpent) ? 0 : totalSpent,
-        tags: '',
-        orders: c.orders.map((o: any) => ({
-          id: o.id,
-          shopifyOrderId: o.shopifyOrderId,
-          status: o.status,
-          totalPrice: o.totalPrice || 0,
-          paymentStatus: o.paymentStatus,
-          fulfillmentStatus: o.fulfillmentStatus,
-          createdAt: o.createdAt,
-          items: o.items.map((i: any) => ({
-            id: i.id,
-            title: i.title,
-            quantity: i.quantity,
-            price: i.price,
-            sku: i.sku,
+        const st = statById.get(c.id)!;
+        return {
+          id: c.id,
+          shopifyId: c.shopifyId,
+          email: effectiveEmail,
+          name: c.name || effectiveEmail || (c.shopifyId !== 'anonymous' ? c.shopifyId : 'Anonymous User'),
+          phone: effectivePhone,
+          createdAt: c.createdAt,
+          lastLoginAt: c.lastLoginAt,
+          totalOrders: st.orders,
+          totalSpent: st.revenue,
+          tags: '',
+          orders: (c.orders || []).map((o: any) => ({
+            id: o.id,
+            shopifyOrderId: o.shopifyOrderId,
+            status: o.status,
+            totalPrice: o.totalPrice || 0,
+            paymentStatus: o.paymentStatus,
+            fulfillmentStatus: o.fulfillmentStatus,
+            createdAt: o.createdAt,
+            items: (o.items || []).map((i: any) => ({
+              id: i.id,
+              title: i.title,
+              quantity: i.quantity,
+              price: i.price,
+              sku: i.sku,
+            })),
           })),
-        })),
-      };
+        };
+      });
+    let totalCount = stats.total;
 
-      uniqueCustomersMap.set(dedupKey, customerObj);
-      seenIds.add(c.id);
+    if (isCsv) {
+      const esc = (v: unknown) => {
+        const t = v == null ? '' : String(v);
+        return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+      };
+      const lines = [
+        ['Name', 'Email', 'Phone', 'Orders', 'Lifetime revenue (INR)', 'Joined', 'Last login'].join(','),
+        ...payload.map((c) =>
+          [c.name, c.email, c.phone, c.totalOrders, c.totalSpent, new Date(c.createdAt).toISOString().slice(0, 10), c.lastLoginAt ? new Date(c.lastLoginAt).toISOString().slice(0, 10) : '']
+            .map(esc)
+            .join(',')
+        ),
+      ];
+      return new NextResponse(lines.join('\n'), {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="customers-${new Date().toISOString().slice(0, 10)}.csv"`,
+        },
+      });
     }
 
-    let payload = Array.from(uniqueCustomersMap.values()).slice(0, limit);
-    let totalCount = await prisma.customer.count({ where: customerWhere }).catch(() => 0);
-
-    // Fallback: If DB returns 0 customers, fetch live customers directly from Shopify Admin API
-    if (payload.length === 0) {
+    // Fallback: If DB returns 0 customers (no filters applied), fetch live customers directly from Shopify Admin API
+    if (payload.length === 0 && !search && !joinedFrom && !joinedTo && page === 1) {
       try {
         const { shopifyFetch } = await import("@/lib/shopify-client");
         const res: any = await shopifyFetch("customers.json", { limit: String(limit || 50) });

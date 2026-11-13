@@ -76,6 +76,9 @@ interface CustomerDetails {
   lastLoginAt: string | null;
   ordersCount: number;
   totalSpent: number;
+  /** From real orders: placed, not cancelled / refunded (server, lib/services/customerStats.ts). */
+  placedOrders?: number;
+  lifetimeRevenue?: number;
   addresses: Address[];
   wishlist: WishlistItem[];
   orders: Order[];
@@ -159,8 +162,8 @@ export default function CustomerDetailsPage({ params }: { params: { id: string }
   };
 
   const fulfilledOrders = (customer.orders || []).filter((o) => isFulfilled(o.fulfillmentStatus));
-  const totalSpent = fulfilledOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
-  const totalOrders = customer.ordersCount || customer.orders.length;
+  const totalSpent = customer.lifetimeRevenue ?? fulfilledOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+  const totalOrders = customer.placedOrders ?? (customer.ordersCount || customer.orders.length);
 
   return (
     <motion.div

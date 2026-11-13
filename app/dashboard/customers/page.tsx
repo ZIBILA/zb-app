@@ -60,15 +60,31 @@ export default function CustomersPage() {
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
   const limit = 50;
+  // Sort + "joined" date filter, applied on the server across all customers.
+  const [sort, setSort] = useState<string>("newest");
+  const [range, setRange] = useState<"all" | "7d" | "30d" | "custom">("all");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  const filterParams = useCallback(() => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (sort !== "newest") params.set("sort", sort);
+    if (range === "7d" || range === "30d") params.set("range", range);
+    if (range === "custom") {
+      if (fromDate) params.set("from", fromDate);
+      if (toDate) params.set("to", toDate);
+    }
+    return params;
+  }, [search, sort, range, fromDate, toDate]);
 
   const fetchCustomers = useCallback(async (silent = false) => {
     if (!silent && customers.length === 0) setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
+      const params = filterParams();
       params.set("page", String(page));
       params.set("limit", String(limit));
-      if (search) params.set("search", search);
 
       const data = await cachedAdminFetch<any>(`/api/admin/customers?${params.toString()}`, {
         skipCache: silent,
@@ -82,7 +98,7 @@ export default function CustomersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, customers.length]);
+  }, [page, filterParams, customers.length]);
 
   useEffect(() => {
     fetchCustomers();
@@ -146,7 +162,9 @@ export default function CustomersPage() {
             Customers
           </h1>
           <p className="text-[11px] text-foreground/50 tracking-wide max-w-xl">
-            {total > 0 ? `${total} registered customers` : "Manage customer identities and monitor purchase logic."}
+            {range !== "all"
+              ? `${total} new customer${total === 1 ? "" : "s"} joined ${range === "7d" ? "in the last 7 days" : range === "30d" ? "in the last 30 days" : "in the selected dates"}`
+              : total > 0 ? `${total} registered customers` : "Manage customer identities and monitor purchase logic."}
           </p>
         </div>
 
@@ -164,7 +182,7 @@ export default function CustomersPage() {
             Sync Shopify
           </button>
           <a
-            href="/api/admin/customers?format=csv"
+            href={`/api/admin/customers?${(() => { const p = filterParams(); p.set("format", "csv"); return p.toString(); })()}`}
             className="flex items-center gap-2 px-4 py-2 bg-background border border-foreground/[0.05] text-foreground rounded-md text-[10px] font-medium uppercase tracking-[0.15em] hover:bg-foreground/[0.02] transition-colors"
           >
             <Download className="w-3 h-3" />
@@ -209,6 +227,63 @@ export default function CustomersPage() {
         )}
       </div>
 
+      {/* Sort + joined date filter */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={sort}
+          onChange={(e) => { setSort(e.target.value); setPage(1); }}
+          aria-label="Sort customers"
+          className="bg-background border border-foreground/[0.05] rounded-md px-3 py-2 text-[11px] font-medium text-foreground focus:outline-none focus:border-foreground/20"
+        >
+          <option value="newest">Newest to oldest</option>
+          <option value="oldest">Oldest to newest</option>
+          <option value="orders_desc">Orders: high to low</option>
+          <option value="orders_asc">Orders: low to high</option>
+          <option value="revenue_desc">Revenue: high to low</option>
+          <option value="revenue_asc">Revenue: low to high</option>
+        </select>
+        <div className="flex items-center gap-1 p-1 rounded-md bg-foreground/[0.03] border border-foreground/[0.05]">
+          {([
+            ["all", "All time"],
+            ["7d", "Last 7 days"],
+            ["30d", "Last 30 days"],
+            ["custom", "Custom"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => { setRange(value); setPage(1); }}
+              className={`px-3 py-1.5 rounded text-[10px] font-medium uppercase tracking-[0.12em] transition-colors ${
+                range === value ? "bg-foreground text-background" : "text-foreground/60 hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {range === "custom" && (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={fromDate}
+              max={toDate || undefined}
+              onChange={(e) => { setFromDate(e.target.value); setPage(1); }}
+              aria-label="Joined from"
+              className="bg-background border border-foreground/[0.05] rounded-md px-2 py-1.5 text-[11px] text-foreground"
+            />
+            <span className="text-[10px] text-foreground/40">to</span>
+            <input
+              type="date"
+              value={toDate}
+              min={fromDate || undefined}
+              onChange={(e) => { setToDate(e.target.value); setPage(1); }}
+              aria-label="Joined to"
+              className="bg-background border border-foreground/[0.05] rounded-md px-2 py-1.5 text-[11px] text-foreground"
+            />
+          </div>
+        )}
+      </div>
+
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-md p-3 text-[10px] font-medium uppercase tracking-widest text-red-600 dark:text-red-400 mb-6">
           Error: {error}
@@ -241,7 +316,7 @@ export default function CustomersPage() {
           <div className="bg-background border border-foreground/[0.05] rounded-xl p-12 text-center shadow-sm">
             <Users className="w-8 h-8 text-foreground/20 mx-auto mb-4" />
             <h3 className="text-[12px] font-medium text-foreground tracking-tight">
-              {search ? "No customers match your search" : "No Customers Found"}
+              {search || range !== "all" ? "No customers match these filters" : "No Customers Found"}
             </h3>
           </div>
         ) : (
