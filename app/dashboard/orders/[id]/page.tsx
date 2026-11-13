@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { invalidateAdminCache } from "@/lib/adminClientCache";
 import { normalizeOrderShippingAddress } from "@/lib/order-shipping-address";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -322,6 +323,7 @@ export default function OrderDetailPage() {
       if (data.success) {
         setToast("Protocol Updated");
         setIsEditing(false);
+        invalidateAdminCache("/api/admin/orders");
         fetchOrder(true);
       }
     } catch (err) {
@@ -387,6 +389,8 @@ export default function OrderDetailPage() {
       if (data.success) {
         setToast("Order Cancelled");
         setShowCancelModal(false);
+        // The orders list caches for 30 s; drop it so every filter shows the cancellation right away.
+        invalidateAdminCache("/api/admin/orders");
         fetchOrder(true);
       } else {
         setShowCancelModal(false);
@@ -646,7 +650,7 @@ export default function OrderDetailPage() {
               <div>
                 <h4 className="text-[15px] font-bold text-rose-500 uppercase tracking-tighter">Process Terminated</h4>
                 <p className="text-[12px] text-rose-500/60 font-medium mt-1">
-                  This order has been {order.status === 'cancelled' ? 'cancelled by the user' : 'failed due to payment issues'}. All downstream logistics and fulfillment protocols have been suspended.
+                  This order has been {order.status === 'cancelled' ? (['admin', 'shopify'].includes(String((order as any).cancelledBy || '').toLowerCase()) || String(order.internalOrderNumber || '').startsWith('ZBCC') ? 'cancelled by the admin' : 'cancelled by the customer') : 'failed due to payment issues'}. All downstream logistics and fulfillment protocols have been suspended.
                 </p>
               </div>
             </div>
