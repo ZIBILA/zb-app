@@ -2,6 +2,13 @@
 
 import React from 'react'
 import type { TagData } from '../utils/skuGenerator'
+import { CSS_FONT, DEFAULT_LOGO_SRC, DEFAULT_TAG_TEMPLATE, type TagTemplate } from '../utils/tagTemplate'
+
+/** On-screen scale of the printed template: font pt → px and mm → px (calibrated so the default looks as before). */
+const PX_PER_MM = 190 / 44
+const fontPx = (pt: number, ratio: number, scale: number) => `${Math.round(pt * ratio * scale * 10) / 10}px`
+const shift = (xMm: number, yMm: number, scale: number) =>
+  xMm || yMm ? `translate(${Math.round(xMm * PX_PER_MM * scale)}px, ${Math.round(yMm * PX_PER_MM * scale)}px)` : undefined
 
 interface PriceTagCardProps {
   tag: TagData
@@ -11,6 +18,8 @@ interface PriceTagCardProps {
   showCheckbox?: boolean
   /** Renders a slightly larger version for the live preview panel */
   isPreview?: boolean
+  /** Saved default design (logo, fonts, sizes, positions). */
+  template?: TagTemplate
 }
 
 export default function PriceTagCard({
@@ -20,8 +29,10 @@ export default function PriceTagCard({
   onToggleSelect,
   showCheckbox,
   isPreview = false,
+  template = DEFAULT_TAG_TEMPLATE,
 }: PriceTagCardProps) {
   const scale = isPreview ? 1.35 : 1
+  const t = template
 
   return (
     <div
@@ -33,7 +44,7 @@ export default function PriceTagCard({
         border: '0.5px solid #d0d0d0',
         borderRadius: '3px',
         padding: `${Math.round(10 * scale)}px ${Math.round(8 * scale)}px ${Math.round(8 * scale)}px`,
-        fontFamily: "'Inter', 'Helvetica Neue', Arial, sans-serif",
+        fontFamily: t.fontFamily === 'helvetica' ? "'Inter', 'Helvetica Neue', Arial, sans-serif" : CSS_FONT[t.fontFamily],
         color: '#111',
         display: 'flex',
         flexDirection: 'column' as const,
@@ -61,6 +72,7 @@ export default function PriceTagCard({
       )}
 
       {/* Logo — rendered in square 1:1 ratio */}
+      {t.logo.show && (
       <div 
         className="logo-container"
         style={{ 
@@ -69,21 +81,25 @@ export default function PriceTagCard({
           display: 'flex',
           justifyContent: 'center',
           width: '100%',
+          transform: shift(t.logo.offsetX, t.logo.offsetY, scale),
         }}
       >
         <img
           className="logo-image"
-          src="/zb-price-tag-logo.png"
+          src={t.logo.src || DEFAULT_LOGO_SRC}
           alt="Zica Bella"
           style={{
-            height: `${Math.round(44 * scale)}px`,
-            width: `${Math.round(44 * scale)}px`,
+            height: `${Math.round(t.logo.size * 5.5 * scale)}px`,
+            width: `${Math.round(t.logo.size * 5.5 * scale)}px`,
             objectFit: 'contain' as const,
             filter: 'grayscale(100%) contrast(200%)',
           }}
           crossOrigin="anonymous"
         />
       </div>
+      )}
+
+      <div style={{ width: '100%', transform: shift(t.textOffsetX, t.textOffsetY, scale) }}>
 
       {/* MRP Section */}
       <div 
@@ -104,8 +120,8 @@ export default function PriceTagCard({
           <span 
             className="mrp-title"
             style={{
-              fontWeight: 700,
-              fontSize: `${Math.round(10 * scale)}px`,
+              fontWeight: t.mrp.bold ? 700 : 400,
+              fontSize: fontPx(t.mrp.size, 1.333, scale),
               letterSpacing: '0.5px',
               textTransform: 'uppercase' as const,
             }}
@@ -115,8 +131,8 @@ export default function PriceTagCard({
           <span 
             className="mrp-value"
             style={{
-              fontWeight: 700,
-              fontSize: `${Math.round(10 * scale)}px`,
+              fontWeight: t.mrp.bold ? 700 : 400,
+              fontSize: fontPx(t.mrp.size, 1.333, scale),
               letterSpacing: '0.3px',
               display: 'inline-flex',
               alignItems: 'center',
@@ -149,7 +165,8 @@ export default function PriceTagCard({
         <div 
           className="mrp-taxes"
           style={{
-            fontSize: `${Math.round(5.5 * scale)}px`,
+            fontSize: fontPx(t.taxes.size, 1.571, scale),
+            fontWeight: t.taxes.bold ? 700 : 400,
             color: '#888',
             textTransform: 'uppercase' as const,
             letterSpacing: '0.6px',
@@ -169,19 +186,25 @@ export default function PriceTagCard({
       {/* Info Rows */}
       <div 
         className="info-rows"
-        style={{ width: '100%', fontSize: `${Math.round(6.5 * scale)}px` }}
+        style={{ width: '100%' }}
       >
-        <InfoRow label="NET QUANTITY" value={tag.netQuantity} scale={scale} />
-        <InfoRow label="SIZE" value={tag.size} scale={scale} />
-        <InfoRow label="MFG & MKT BY" value="ZICA BELLA PVT. LTD." scale={scale} />
-        <InfoRow label="GENERIC NAME" value={tag.genericName} scale={scale} />
-        <InfoRow label="COUNTRY OF ORIGIN" value="INDIA" scale={scale} />
-        <InfoRow label="CC" value="care@zicabella.com" scale={scale} />
-        <InfoRow label="MFG ON" value={tag.mfgDate} scale={scale} />
-        <InfoRow label="EMAIL" value="support@zicabella.com" scale={scale} />
+        {([
+          ['NET QUANTITY', tag.netQuantity],
+          ['SIZE', tag.size],
+          ['MFG & MKT BY', 'ZICA BELLA PVT. LTD.'],
+          ['GENERIC NAME', tag.genericName],
+          ['COUNTRY OF ORIGIN', 'INDIA'],
+          ['CC', 'care@zicabella.com'],
+          ['MFG ON', tag.mfgDate],
+          ['EMAIL', 'support@zicabella.com'],
+        ] as const).map(([label, value]) => (
+          <InfoRow key={label} label={label} value={value} scale={scale} template={t} />
+        ))}
+      </div>
       </div>
 
       {/* QR Code — always at the bottom */}
+      <div style={{ width: '100%', transform: shift(t.qr.offsetX, t.qr.offsetY, scale) }}>
       <div 
         className="qr-section"
         style={{
@@ -201,8 +224,8 @@ export default function PriceTagCard({
             src={tag.qrDataUrl}
             alt={`QR: ${tag.sku}`}
             style={{
-              width: `${Math.round(60 * scale)}px`,
-              height: `${Math.round(60 * scale)}px`,
+              width: `${Math.round(t.qr.size * 3 * scale)}px`,
+              height: `${Math.round(t.qr.size * 3 * scale)}px`,
               imageRendering: 'pixelated' as const,
             }}
           />
@@ -227,8 +250,8 @@ export default function PriceTagCard({
         className="sku-text"
         style={{
           marginTop: `${Math.round(3 * scale)}px`,
-          fontSize: `${Math.round(6.5 * scale)}px`,
-          fontWeight: 600,
+          fontSize: fontPx(t.sku.size, 1.548, scale),
+          fontWeight: t.sku.bold ? 600 : 400,
           letterSpacing: '0.4px',
           textAlign: 'center' as const,
           fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
@@ -238,11 +261,12 @@ export default function PriceTagCard({
       >
         {tag.sku}
       </div>
+      </div>
     </div>
   )
 }
 
-function InfoRow({ label, value, scale = 1 }: { label: string; value: string; scale?: number }) {
+function InfoRow({ label, value, scale = 1, template = DEFAULT_TAG_TEMPLATE }: { label: string; value: string; scale?: number; template?: TagTemplate }) {
   return (
     <div 
       className="info-row"
@@ -256,13 +280,13 @@ function InfoRow({ label, value, scale = 1 }: { label: string; value: string; sc
       <span 
         className="info-row-label"
         style={{
-          fontWeight: 600,
+          fontWeight: template.infoLabel.bold ? 600 : 400,
           textTransform: 'uppercase' as const,
           letterSpacing: '0.2px',
           color: '#333',
           whiteSpace: 'nowrap' as const,
           flexShrink: 0,
-          fontSize: `${Math.round(6.5 * scale)}px`,
+          fontSize: fontPx(template.infoLabel.size, 1.548, scale),
         }}
       >
         {label}
@@ -271,10 +295,10 @@ function InfoRow({ label, value, scale = 1 }: { label: string; value: string; sc
         className="info-row-value"
         style={{
           textAlign: 'right' as const,
-          fontWeight: 500,
+          fontWeight: template.infoValue.bold ? 700 : 500,
           color: '#111',
           wordBreak: 'break-word' as const,
-          fontSize: `${Math.round(6.5 * scale)}px`,
+          fontSize: fontPx(template.infoValue.size, 1.548, scale),
         }}
       >
         {value}

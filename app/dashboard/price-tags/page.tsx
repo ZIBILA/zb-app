@@ -14,7 +14,7 @@
 'use client'
 
 import React, { useEffect, useCallback, useRef, useState } from 'react'
-import { Tag, RefreshCw, History, Sparkles, ScanLine, BarChart3, Shield } from 'lucide-react'
+import { Tag, RefreshCw, History, Sparkles, ScanLine, BarChart3, Shield, Pencil } from 'lucide-react'
 import { toast } from 'sonner'
 import { motion } from 'framer-motion'
 import { useSession } from 'next-auth/react'
@@ -24,6 +24,8 @@ import TagPreviewPanel from './components/TagPreviewPanel'
 import BatchHistory from './components/BatchHistory'
 import { usePriceTags, type GenerateParams, type BatchRecord } from './hooks/usePriceTags'
 import { downloadTagsPDF } from './utils/pdfExport'
+import TemplateEditor from './components/TemplateEditor'
+import { useTagTemplate } from './hooks/useTagTemplate'
 
 type ActiveTab = 'generator' | 'history'
 
@@ -54,6 +56,9 @@ export default function PriceTagsPage() {
 
   const previewRef = useRef<HTMLDivElement>(null)
   const [activeTab, setActiveTab] = useState<ActiveTab>('generator')
+  // Default tag design (logo, fonts, sizes, positions), editable and shared.
+  const { template, saveTemplate } = useTagTemplate()
+  const [editingTemplate, setEditingTemplate] = useState(false)
 
   // Load products and batch history on mount
   useEffect(() => {
@@ -107,12 +112,12 @@ export default function PriceTagsPage() {
         return
       }
 
-      await downloadTagsPDF(tagsToExport, `zicabella-batch-${batch.batch_number}-${Date.now()}.pdf`, 'thermal')
+      await downloadTagsPDF(tagsToExport, `zicabella-batch-${batch.batch_number}-${Date.now()}.pdf`, 'thermal', template)
       toast.success('PDF downloaded!')
     } catch (err: any) {
       toast.error(`Failed to download: ${err.message}`)
     }
-  }, [loadBatchTags])
+  }, [loadBatchTags, template])
 
   const handleDeleteBatch = useCallback(async (batch: BatchRecord) => {
     try {
@@ -324,6 +329,14 @@ export default function PriceTagsPage() {
             </div>
 
             <button
+              onClick={() => setEditingTemplate(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-foreground/[0.03] hover:bg-foreground/[0.06] border border-foreground/[0.05] rounded-lg text-[8px] font-normal uppercase tracking-[0.2em] text-foreground/50 transition-all active:scale-95"
+            >
+              <Pencil className="w-3 h-3" strokeWidth={1.5} />
+              Edit Template
+            </button>
+
+            <button
               onClick={() => { fetchProducts(); fetchBatches(); }}
               className="flex items-center gap-2 px-4 py-2 bg-foreground/[0.03] hover:bg-foreground/[0.06] border border-foreground/[0.05] rounded-lg text-[8px] font-normal uppercase tracking-[0.2em] text-foreground/50 transition-all active:scale-95"
             >
@@ -411,7 +424,7 @@ export default function PriceTagsPage() {
                 </p>
               </div>
 
-              <TagPreviewPanel tags={tags} />
+              <TagPreviewPanel tags={tags} template={template} />
             </motion.div>
           </div>
         )}
@@ -457,6 +470,15 @@ export default function PriceTagsPage() {
               onApplyFilters={handleApplyFilters}
             />
           </motion.div>
+        )}
+
+        {editingTemplate && (
+          <TemplateEditor
+            initial={template}
+            sampleTag={tags[0] || null}
+            onSave={saveTemplate}
+            onClose={() => setEditingTemplate(false)}
+          />
         )}
 
         {/* ── Info Banner ── */}

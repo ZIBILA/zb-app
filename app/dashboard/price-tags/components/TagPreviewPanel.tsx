@@ -5,13 +5,16 @@ import { Printer, CheckSquare, Square, Loader2, Wifi, FileText } from 'lucide-re
 import PriceTagCard from './PriceTagCard'
 import { printTagsPDF, type PDFLayoutType } from '../utils/pdfExport'
 import type { TagData } from '../utils/skuGenerator'
+import type { TagTemplate } from '../utils/tagTemplate'
 import { toast } from 'sonner'
 
 interface TagPreviewPanelProps {
   tags: TagData[]
+  /** Saved default design; printing uses it. */
+  template?: TagTemplate
 }
 
-export default function TagPreviewPanel({ tags }: TagPreviewPanelProps) {
+export default function TagPreviewPanel({ tags, template }: TagPreviewPanelProps) {
   const printAreaRef = useRef<HTMLDivElement>(null)
   const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(new Set())
   const [isPrinting, setIsPrinting] = useState(false)
@@ -44,14 +47,14 @@ export default function TagPreviewPanel({ tags }: TagPreviewPanelProps) {
     setIsPrinting(true)
     try {
       toast.info('Generating printable PDF...')
-      await printTagsPDF(tags, pdfLayout)
+      await printTagsPDF(tags, pdfLayout, template)
       toast.success('Print-ready PDF opened in new tab')
     } catch (err: any) {
       toast.error(`Print failed: ${err.message}`)
     } finally {
       setIsPrinting(false)
     }
-  }, [tags, pdfLayout])
+  }, [tags, pdfLayout, template])
 
   // ── Direct Print (Connect Printer) — same as print but with guidance ──
   const handleConnectPrinter = useCallback(async () => {
@@ -61,13 +64,13 @@ export default function TagPreviewPanel({ tags }: TagPreviewPanelProps) {
         'Generating PDF for your printer. Select your printer in the dialog that follows.',
         { duration: 5000 }
       )
-      await printTagsPDF(tags, pdfLayout)
+      await printTagsPDF(tags, pdfLayout, template)
     } catch (err: any) {
       toast.error(`Printer connection failed: ${err.message}`)
     } finally {
       setIsPrinting(false)
     }
-  }, [tags, pdfLayout])
+  }, [tags, pdfLayout, template])
 
   // ── Page count calculation ──
   // A4 layout fits 1 tag per page, thermal also fits 1 tag per page
@@ -169,6 +172,7 @@ export default function TagPreviewPanel({ tags }: TagPreviewPanelProps) {
             selected={selectedIndexes.has(i)}
             onToggleSelect={() => toggleSelect(i)}
             showCheckbox={selectMode}
+            template={template}
           />
         ))}
       </div>
