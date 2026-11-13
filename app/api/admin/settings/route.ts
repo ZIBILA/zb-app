@@ -122,12 +122,14 @@ export async function GET(req: Request) {
   try {
     const { getShopSettings } = await import('@/lib/db');
     const settings = await getShopSettings();
+    const { getCodMaxOrderValue } = await import('@/lib/cod-limit');
 
     return NextResponse.json({
       dbStatus: 'connected',
       shopDomain: settings.domain || ENV_DOMAIN,
       accessToken: settings.accessToken || ENV_TOKEN,
       ...settings,
+      codMaxOrderValue: await getCodMaxOrderValue(),
     });
   } catch (e: any) {
     console.error('[Settings API GET Error]:', e);
@@ -179,6 +181,15 @@ export async function PATCH(req: Request) {
       'communityAgeRestricted', 'communityWhatsAppEnabled', 'showRingCarousel',
       'pdpShowInclTaxes'
     ];
+
+    // Rate Card: max COD order value lives in checkout_settings (lib/cod-limit.ts), not on Shop.
+    if (updates.codMaxOrderValue !== undefined && updates.codMaxOrderValue !== '') {
+      const { setCodMaxOrderValue, normalizeCodMaxOrderValue } = await import('@/lib/cod-limit');
+      if (normalizeCodMaxOrderValue(updates.codMaxOrderValue) === null) {
+        return NextResponse.json({ error: 'Maximum COD order value must be a positive amount (INR).' }, { status: 400 });
+      }
+      await setCodMaxOrderValue(Number(updates.codMaxOrderValue), 'admin');
+    }
 
     const data: any = {};
     for (const key of allowedKeys) {

@@ -58,8 +58,11 @@ export async function GET() {
       DEFAULT_COD_UPFRONT_AMOUNT
     );
 
+    const { getCodMaxOrderValue } = await import('@/lib/cod-limit');
+    const maxCodOrderValue = await getCodMaxOrderValue();
+
     return NextResponse.json(
-      { ...publicSettings, codUpfrontAmount },
+      { ...publicSettings, codUpfrontAmount, maxCodOrderValue },
       {
         headers: {
           'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=60',

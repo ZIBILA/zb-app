@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { 
   View, StyleSheet, ScrollView, TouchableOpacity, 
   ActivityIndicator, TextInput, Animated
@@ -27,6 +27,19 @@ export default function PaymentScreen() {
   const [paymentMethod, setPaymentMethod] = useState<'COD' | 'PREPAID' | null>(null);
   const [loading, setLoading] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  // Rate Card (dashboard): orders above this total are prepaid only. The server enforces it too.
+  const [codMaxOrderValue, setCodMaxOrderValue] = useState<number>(19999);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${config.appUrl}/api/checkout/cod-fee`)
+      .then((r) => r.json())
+      .then((data) => {
+        const max = Number(data?.maxCodOrderValue);
+        if (!cancelled && Number.isFinite(max) && max > 0) setCodMaxOrderValue(max);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // ─── Promo Code State ────────────────────────────────────────────────
   const [promoCode, setPromoCode] = useState('');
@@ -43,6 +56,7 @@ export default function PaymentScreen() {
   const deliveryFee = 0;
   const discountAmount = appliedDiscount?.discountAmount ?? 0;
   const grandTotal = Math.max(0, subtotal + deliveryFee - discountAmount);
+  const codBlocked = paymentMethod === 'COD' && grandTotal > codMaxOrderValue;
 
   const handleApplyPromo = async () => {
     if (!promoCode.trim()) return;
@@ -84,6 +98,10 @@ export default function PaymentScreen() {
   const continueToReview = async () => {
     if (!paymentMethod) {
       setInlineError('Please select a payment option.');
+      haptics.error();
+      return;
+    }
+    if (codBlocked) {
       haptics.error();
       return;
     }
@@ -281,6 +299,28 @@ export default function PaymentScreen() {
           </TouchableOpacity>
         </View>
 
+        {codBlocked && (
+          <View style={[styles.codLimitCard, { borderColor: 'rgba(255,59,48,0.25)', backgroundColor: 'rgba(255,59,48,0.07)' }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+              <Ionicons name="alert-circle-outline" size={20} color={colors.error} />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Typography size={12} weight="800" color={colors.text}>COD Not Available for This Order</Typography>
+                <Typography size={10} weight="500" color={colors.textMuted} style={{ marginTop: 4, lineHeight: 15 }}>
+                  Cash on Delivery is available only for orders up to {formatPrice(codMaxOrderValue)}. Your order total is {formatPrice(grandTotal)}.
+                </Typography>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[styles.codLimitButton, { backgroundColor: colors.foreground }]}
+              onPress={() => { haptics.buttonTap(); setPaymentMethod('PREPAID'); setInlineError(null); }}
+              activeOpacity={0.85}
+            >
+              <Typography size={11} weight="800" color={colors.background}>Pay Now (Prepaid)</Typography>
+              <Ionicons name="arrow-forward" size={14} color={colors.background} style={{ marginLeft: 6 }} />
+            </TouchableOpacity>
+          </View>
+        )}
+
         {inlineError && (
           <View style={{ marginTop: 14, padding: 12, borderRadius: 16, backgroundColor: 'rgba(255,59,48,0.08)', borderWidth: 1, borderColor: 'rgba(255,59,48,0.15)' }}>
             <Typography size={10} weight="700" color={colors.error}>{inlineError}</Typography>
@@ -294,13 +334,27 @@ export default function PaymentScreen() {
         total={grandTotal}
         primaryLabel={loading ? "REDIRECTING..." : "REVIEW ORDER"}
         onPrimaryPress={continueToReview}
-        disabled={!paymentMethod || loading}
+        disabled={!paymentMethod || loading || codBlocked}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  codLimitCard: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+  },
+  codLimitButton: {
+    height: 42,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 16 },
   back: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },

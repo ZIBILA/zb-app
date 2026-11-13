@@ -51,6 +51,7 @@ import {
   Wallet,
   Coins,
   ArrowUpRight,
+  ArrowRight,
 } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
@@ -964,6 +965,8 @@ export default function CheckoutPage() {
 
    const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("PAYNOW");
   const [configuredCodFee, setConfiguredCodFee] = useState<number>(99);
+  // Rate Card (dashboard): orders above this total are prepaid only. The server enforces it too.
+  const [codMaxOrderValue, setCodMaxOrderValue] = useState<number>(19999);
 
   // Load dashboard-configured COD upfront fee (falls back to ₹99)
   useEffect(() => {
@@ -974,6 +977,10 @@ export default function CheckoutPage() {
         const amt = Number(data?.amount);
         if (!cancelled && Number.isFinite(amt) && amt > 0) {
           setConfiguredCodFee(amt);
+        }
+        const maxCod = Number(data?.maxCodOrderValue);
+        if (!cancelled && Number.isFinite(maxCod) && maxCod > 0) {
+          setCodMaxOrderValue(maxCod);
         }
       })
       .catch(() => {});
@@ -1030,6 +1037,9 @@ export default function CheckoutPage() {
   const codFeeDisplay = fmtPrice(codFeeBase);
   const codFee = isInternational ? codFeeDisplay.amount : configuredCodFee;
   const codFeeFormatted = isInternational ? codFeeDisplay.formatted : `₹${configuredCodFee.toLocaleString("en-IN")}`;
+  // COD is offered only up to the Rate Card limit (India / INR orders).
+  const codOverLimit = codAllowed && finalTotal > codMaxOrderValue;
+  const codBlocked = paymentMethod === "COD" && codOverLimit;
 
   // Fetch the logged-in customer's store credit balance (server resolves it from the session)
   const sessionUserId = (session?.user as any)?.id as string | undefined;
@@ -1057,7 +1067,7 @@ export default function CheckoutPage() {
 
   // Prefetch Razorpay/COD order on step 2 (serialize overlapping requests)
   useEffect(() => {
-    if (step === 2 && items.length > 0 && address.name && address.phone && finalTotal > 0) {
+    if (step === 2 && items.length > 0 && address.name && address.phone && finalTotal > 0 && !codBlocked) {
       const currentPrefetchKey = `${paymentMethod}_${finalTotal}_${codFee}_${couponValid ? couponCode : ''}_${couponDiscount}_${appliedStoreCredit}_${items.length}`;
       // Freshness tracked via refs — do not depend on prefetchedOrder state (avoids feedback loops)
       if (lastPrefetchKeyRef.current === currentPrefetchKey) {
@@ -1143,7 +1153,7 @@ export default function CheckoutPage() {
 
       prefetchRazorpayOrder();
     }
-  }, [step, paymentMethod, finalTotal, codFee, couponValid, couponCode, couponDiscount, appliedStoreCredit, address.name, address.email, address.phone, address.street, address.houseNo, address.city, address.state, address.zip, items.length, checkoutSessionId, prefetchKick]);
+  }, [step, paymentMethod, finalTotal, codFee, couponValid, couponCode, couponDiscount, appliedStoreCredit, address.name, address.email, address.phone, address.street, address.houseNo, address.city, address.state, address.zip, items.length, checkoutSessionId, prefetchKick, codBlocked]);
 
   useEffect(() => {
     if (!cartLoaded || status === "loading") return;
@@ -1712,6 +1722,11 @@ export default function CheckoutPage() {
       paymentLockRef.current = false;
       setPaymentMethod("PAYNOW");
       setError("Cash on Delivery is only available for orders in India. Please pay in full.");
+      return;
+    }
+    if (codBlocked) {
+      paymentLockRef.current = false;
+      setError(`Cash on Delivery is available only for orders up to ₹${codMaxOrderValue.toLocaleString("en-IN")}. Please pay online (Prepaid).`);
       return;
     }
 
@@ -2339,8 +2354,8 @@ export default function CheckoutPage() {
         {/* Payment selection segment tabs */}
         {(() => {
           const availableMethods = [
-            { id: "PAYNOW" as PaymentMethod, label: "PAY NOW" },
-            ...(codAllowed ? [{ id: "COD" as PaymentMethod, label: "COD" }] : []),
+            { id: "PAYNOW" as PaymentMethod, label: codAllowed ? "PAY NOW (PREPAID)" : "PAY NOW" },
+            ...(codAllowed ? [{ id: "COD" as PaymentMethod, label: "CASH ON DELIVERY (COD)" }] : []),
           ];
           return (
             <div className={`${availableMethods.length > 1 ? "grid grid-cols-2" : "grid grid-cols-1"} gap-1 p-1 rounded-xl bg-foreground/[0.03] border border-foreground/5 mb-4`}>
@@ -2399,11 +2414,37 @@ export default function CheckoutPage() {
 
         {/* Payment info banners */}
         <div className="flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-300 mb-4 w-full">
+          {/* COD above the Rate Card limit: not available, switch to prepaid. */}
+          {codBlocked && (
+            <div role="alert" className="flex flex-col gap-3 p-3.5 rounded-xl bg-red-50 border border-red-200 dark:bg-red-500/10 dark:border-red-500/25">
+              <div className="flex items-start gap-3">
+                <span className="w-7 h-7 rounded-lg bg-red-100 dark:bg-red-500/15 flex items-center justify-center shrink-0">
+                  <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400" strokeWidth={2} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[12px] font-semibold text-foreground leading-snug">COD Not Available for This Order</p>
+                  <p className="text-[10px] text-foreground/70 leading-relaxed mt-0.5">
+                    Cash on Delivery is available only for orders up to{" "}
+                    <span className="font-bold text-foreground">₹{codMaxOrderValue.toLocaleString("en-IN")}</span>. Your order total is{" "}
+                    <span className="font-bold text-foreground">{fmtAmount(finalTotal)}</span>.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setError(""); setPaymentMethod("PAYNOW"); }}
+                className="w-full h-10 rounded-xl bg-black text-white dark:bg-white dark:text-black hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 text-[11px] font-semibold"
+              >
+                Pay Now (Prepaid)
+                <ArrowRight className="w-3.5 h-3.5" strokeWidth={2.5} />
+              </button>
+            </div>
+          )}
           {/* One layout for every method: same box, same icon slot, same text block — only the content changes */}
           {(paymentMethod === "COD" || paymentMethod === "PAYNOW") && (() => {
-            const Icon = CreditCard;
+            const Icon = codBlocked ? Lock : CreditCard;
             const text =
-              paymentMethod === "COD"
+              paymentMethod === "COD" && !codBlocked
                 ? isInternational
                   ? `Pay ${codFeeFormatted} upfront (10% of order value, deducted from total). Remaining ${fmtAmount(Math.max(0, finalTotal - codFeeBase))} due at delivery.`
                   : `Pay ₹${configuredCodFee.toLocaleString("en-IN")} upfront (deducted from total). Remaining ₹${Math.max(0, finalTotal - configuredCodFee).toLocaleString("en-IN")} due at delivery.`
@@ -2721,7 +2762,7 @@ export default function CheckoutPage() {
             <button
               type="button"
               onClick={handlePlaceOrder}
-              disabled={loading}
+              disabled={loading || codBlocked}
               // Same size for every payment method. (The COD variant used h-13/pl-13, which aren't in
               // Tailwind's spacing scale, so it rendered with no height or left inset.) pl-[38px] mirrors the
               // 32px arrow box + 6px right padding so the label stays optically centred.

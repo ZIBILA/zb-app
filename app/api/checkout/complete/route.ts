@@ -238,6 +238,19 @@ export async function POST(req: Request) {
       }
     }
 
+    // Rate Card: COD above the dashboard limit is prepaid only. A request whose upfront was already paid is never
+    // refused here (the money is taken; /api/checkout/razorpay refuses it before that), only a direct bypass.
+    if (isCodOrder && !razorpay?.razorpay_payment_id) {
+      const { getCodMaxOrderValue, isCodAllowedForAmount, codLimitError } = await import('@/lib/cod-limit');
+      const maxCod = await getCodMaxOrderValue();
+      if (!isCodAllowedForAmount(authoritativeTotal, maxCod)) {
+        return NextResponse.json(
+          { error: codLimitError(maxCod, authoritativeTotal), code: 'COD_LIMIT_EXCEEDED', maxCodOrderValue: maxCod },
+          { status: 400 }
+        );
+      }
+    }
+
     // ₹0 payable only when a server-validated coupon/credit actually covers the cart.
     // Never trust paymentMethod:"coupon" alone — that would mark unpaid orders as paid.
     const isZeroPayableMethod =
