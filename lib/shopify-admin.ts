@@ -2413,6 +2413,38 @@ export async function createRefund(
 }
 
 /**
+ * Record a money refund on a Shopify order (no line items: a cancellation already restocked them), so Shopify's
+ * payment status follows what was actually refunded through Razorpay or store credit. Refunds against the order's
+ * own successful sale/capture transaction and never more than what is still unrefunded there, so calling it again
+ * is a no-op. Returns the refunded amount (0 when nothing was left to refund or there is no paid transaction).
+ */
+export async function recordShopifyOrderRefund(
+  orderId: string,
+  amount: number,
+  note: string,
+  opts?: { notify?: boolean }
+): Promise<number> {
+  const id = String(orderId).replace(/\D/g, '');
+  if (!id || !(amount > 0)) return 0;
+  const { transactions } = await shopifyFetch<{ transactions: any[] }>(`orders/${id}/transactions.json`);
+  const ok = (transactions || []).filter((t) => String(t.status) === 'success');
+  const parent = ok.find((t) => t.kind === 'sale' || t.kind === 'capture');
+  if (!parent) return 0;
+  const paid = ok.filter((t) => t.kind === 'sale' || t.kind === 'capture').reduce((s, t) => s + Number(t.amount || 0), 0);
+  const refunded = ok.filter((t) => t.kind === 'refund').reduce((s, t) => s + Number(t.amount || 0), 0);
+  const toRefund = Math.round(Math.min(amount, paid - refunded) * 100) / 100;
+  if (!(toRefund > 0)) return 0;
+  await shopifyPost<{ refund: any }>(`orders/${id}/refunds.json`, {
+    refund: {
+      note,
+      notify: opts?.notify === true,
+      transactions: [{ parent_id: parent.id, amount: toRefund.toFixed(2), kind: 'refund', gateway: parent.gateway }],
+    },
+  });
+  return toRefund;
+}
+
+/**
  * Get order refunds.
  */
 export async function fetchOrderRefunds(orderId: string): Promise<any[]> {

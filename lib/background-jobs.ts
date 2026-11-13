@@ -119,6 +119,15 @@ async function shipmentSync() {
   if (r.updated > 0 || r.errors > 0) console.log(`[jobs] shipment-sync updated=${r.updated} errors=${r.errors} scanned=${r.scanned}`);
 }
 
+/** Failed / interrupted refunds of cancelled orders, with backoff (lib/services/refundService.ts). */
+async function refundRetry() {
+  const { retryFailedRefunds } = await import('@/lib/services/refundService');
+  const r = await retryFailedRefunds();
+  if (r.processed > 0) {
+    console.log(`[jobs] refund-retry processed=${r.processed} ok=${r.results.filter((x) => x.success).length}`);
+  }
+}
+
 /** Rejects if `work` has not settled in `ms`. The abandoned promise is left to finish on its own. */
 export function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -139,6 +148,7 @@ const JOBS: Job[] = [
   { name: 'whatsapp-scheduler', everyMs: 5 * 60_000, firstRunMs: 100_000, run: whatsappScheduler },
   { name: 'customer-events', everyMs: 5 * 60_000, firstRunMs: 140_000, run: customerEvents },
   { name: 'shipment-sync', everyMs: 15 * 60_000, firstRunMs: 160_000, run: shipmentSync },
+  { name: 'refund-retry', everyMs: 10 * 60_000, firstRunMs: 180_000, run: refundRetry },
 ];
 
 const g = globalThis as unknown as { __zbJobsStarted?: boolean };

@@ -508,16 +508,22 @@ export async function POST(req: Request) {
           const newRefundStatus =
             eventType === 'refund.processed' ? 'completed' :
             eventType === 'refund.failed' ? 'failed' : 'processing';
+          const isCancelled = String(order.status || '').toLowerCase() === 'cancelled';
 
-          await prisma.order.update({
-            where: { id: order.id },
-            data: {
-              paymentStatus: eventType === 'refund.processed' ? 'refunded' :
-                             eventType === 'refund.failed' ? 'paid' : 'partial_refund',
-              refundStatus: newRefundStatus,
-              refundError: eventType === 'refund.failed' ? (refund?.error_description || 'Refund failed at Razorpay') : null,
-            },
-          });
+          // Cancellation refunds are driven by lib/services/refundService.ts. A late "refund.created" must not turn
+          // a refund it already completed back into "processing", and a failed refund of a cancelled order keeps its
+          // payment status (the refund retry job re-issues it) instead of marking the cancelled order "paid".
+          if (!(isCancelled && eventType === 'refund.created' && order.refundStatus === 'completed')) {
+            await prisma.order.update({
+              where: { id: order.id },
+              data: {
+                paymentStatus: eventType === 'refund.processed' ? 'refunded' :
+                               eventType === 'refund.failed' ? (isCancelled ? order.paymentStatus : 'paid') : 'partial_refund',
+                refundStatus: newRefundStatus,
+                refundError: eventType === 'refund.failed' ? (refund?.error_description || 'Refund failed at Razorpay') : null,
+              },
+            });
+          }
 
           // Update only the request this refund was issued for (tagged in notes at approval time).
           const requestId: string | undefined = refund?.notes?.refundRequestId || refund?.notes?.exchangeRequestId;
