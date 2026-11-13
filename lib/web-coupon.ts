@@ -30,18 +30,25 @@ export async function resolveWebCoupon(opts: {
   /** Server-verified subtotal in the checkout currency. */
   subtotal: number;
   isCod: boolean;
+  /**
+   * Skip the validity window and usage limit: the order was placed while the coupon was valid (used when the
+   * cashback of an already-paid order is issued later).
+   */
+  ignoreLimits?: boolean;
 }): Promise<WebCouponResolution> {
   const code = String(opts.code || '').trim().toUpperCase();
   if (!code) return NONE;
   const subtotal = Math.max(0, Number(opts.subtotal) || 0);
 
-  const coupon = await prisma.webStoreCoupon.findFirst({ where: { code, isActive: true } });
+  const coupon = await prisma.webStoreCoupon.findFirst({ where: opts.ignoreLimits ? { code } : { code, isActive: true } });
   if (!coupon) return { ...NONE, reason: 'unknown_or_inactive' };
 
   const now = new Date();
-  if (coupon.validFrom && new Date(coupon.validFrom) > now) return { ...NONE, reason: 'not_yet_active' };
-  if (coupon.validUntil && new Date(coupon.validUntil) < now) return { ...NONE, reason: 'expired' };
-  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) return { ...NONE, reason: 'usage_limit' };
+  if (!opts.ignoreLimits) {
+    if (coupon.validFrom && new Date(coupon.validFrom) > now) return { ...NONE, reason: 'not_yet_active' };
+    if (coupon.validUntil && new Date(coupon.validUntil) < now) return { ...NONE, reason: 'expired' };
+    if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) return { ...NONE, reason: 'usage_limit' };
+  }
   const minOrder = Number(coupon.minOrderValue || 0);
   if (minOrder > 0 && subtotal < minOrder) return { ...NONE, reason: 'min_order' };
 

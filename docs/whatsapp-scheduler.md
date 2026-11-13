@@ -6,7 +6,7 @@ This document describes how the automated WhatsApp queue (abandoned cart sequenc
 
 The endpoint `/api/cron/whatsapp-scheduler` processes campaigns, standard message retries, campaign recipient retries, and automated cart recoveries.
 
-In production, the scheduler is triggered by a **GitHub Actions Scheduled Workflow** running every **5 minutes**. This cadence satisfies the business requirement of recovering abandoned carts and retrying orders, without incurring the cost of an always-on DigitalOcean worker.
+In production the server runs the scheduler itself every **5 minutes** (`lib/background-jobs.ts` → `runWhatsAppScheduler()` in `lib/whatsapp/scheduler.ts`), together with the lifecycle scanner (`customer-events`: store credit, out for delivery, delivered, cancelled, refund) and the Shiprocket shipment poll (every 15 minutes). GitHub throttles scheduled workflows to every few hours in practice, so the workflow below is only a backup trigger; every send is claimed in the database first, so both running is safe.
 
 ---
 

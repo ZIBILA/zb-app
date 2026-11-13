@@ -1,5 +1,5 @@
 /**
- * In-process job runner for the money-critical reconcilers.
+ * In-process job runner for the money-critical reconcilers and the customer-messaging schedulers.
  *
  * These used to be triggered only by GitHub Actions schedules set to every 15 minutes. GitHub throttles scheduled
  * workflows, and over the last 72 h the 15-minute job actually ran about every 5 hours (longest
@@ -92,6 +92,33 @@ async function shopifySyncRetry() {
   );
 }
 
+/** Abandoned-cart sequence, campaign sends and the failed-message retry queue (lib/whatsapp/scheduler.ts). */
+async function whatsappScheduler() {
+  const { runWhatsAppScheduler } = await import('@/lib/whatsapp/scheduler');
+  const r = await runWhatsAppScheduler();
+  const sent = (r.results.abandonedCartStep1Sent || 0) + (r.results.abandonedCartStep2Sent || 0) + (r.results.abandonedCartStep3Sent || 0);
+  if (sent > 0 || r.results.errors?.length) {
+    console.log(`[jobs] whatsapp-scheduler cart-recovery sent=${sent} retried=${r.results.messagesRetried || 0} errors=${r.results.errors?.length || 0}`);
+  }
+}
+
+/** Lifecycle emails + WhatsApp (cancelled, refund, out for delivery, delivered, store credit...). */
+async function customerEvents() {
+  const { runCustomerEventsCycle } = await import('@/lib/notifications/run-customer-events');
+  const r = await runCustomerEventsCycle();
+  const wa = r.whatsapp as { sent?: number; failed?: number; error?: string };
+  if (r.sent > 0 || (wa.sent || 0) > 0 || (wa.failed || 0) > 0 || wa.error || r.cashbackIssued > 0) {
+    console.log(`[jobs] customer-events email=${r.sent} whatsapp=${wa.sent || 0} whatsappFailed=${wa.failed || 0} cashback=${r.cashbackIssued}${wa.error ? ` error=${wa.error}` : ''}`);
+  }
+}
+
+/** Shiprocket status for in-flight shipments: drives out-for-delivery / delivered everywhere. */
+async function shipmentSync() {
+  const { pollActiveShipments } = await import('@/lib/services/shipmentPollService');
+  const r = await pollActiveShipments();
+  if (r.updated > 0 || r.errors > 0) console.log(`[jobs] shipment-sync updated=${r.updated} errors=${r.errors} scanned=${r.scanned}`);
+}
+
 /** Rejects if `work` has not settled in `ms`. The abandoned promise is left to finish on its own. */
 export function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -106,6 +133,12 @@ const JOBS: Job[] = [
   { name: 'razorpay-payment-scan', everyMs: 5 * 60_000, firstRunMs: 75_000, run: razorpayPaymentScan },
   { name: 'webstore-payment-sync', everyMs: 10 * 60_000, firstRunMs: 120_000, run: webStorePaymentSync },
   { name: 'shopify-sync-retry', everyMs: 5 * 60_000, firstRunMs: 90_000, run: shopifySyncRetry },
+  // These three used to depend only on GitHub schedules (throttled to every few hours) or, for shipment sync,
+  // on nothing at all, so abandoned-cart reminders, store-credit / delivery messages and carrier statuses lagged
+  // by hours or never happened.
+  { name: 'whatsapp-scheduler', everyMs: 5 * 60_000, firstRunMs: 100_000, run: whatsappScheduler },
+  { name: 'customer-events', everyMs: 5 * 60_000, firstRunMs: 140_000, run: customerEvents },
+  { name: 'shipment-sync', everyMs: 15 * 60_000, firstRunMs: 160_000, run: shipmentSync },
 ];
 
 const g = globalThis as unknown as { __zbJobsStarted?: boolean };
