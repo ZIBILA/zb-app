@@ -41,7 +41,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>10</string>
+	<string>11</string>
 	<key>LSApplicationCategoryType</key>
 	<string></string>
 	<key>LSApplicationQueriesSchemes</key>
@@ -78,6 +78,8 @@
 	<string>Zica Bella uses the camera to let you upload a profile photo.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Zica Bella uses Face ID for quick and secure sign-in.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Zica Bella uses your location to fill your delivery address when you tap Use Current Location.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Allow $(PRODUCT_NAME) to access your microphone</string>
 	<key>NSMotionUsageDescription</key>
@@ -86,6 +88,8 @@
 	<string>Zica Bella may save images to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Zica Bella accesses your photo library to let you upload a profile photo.</string>
+	<key>NSUserTrackingUsageDescription</key>
+	<string>Zica Bella uses this to measure which ads bring you to us and to show you more relevant ads. Your choice does not change your shopping experience.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UIAppFonts</key>

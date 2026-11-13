@@ -14,6 +14,9 @@ import { Dimensions, PixelRatio, Platform } from 'react-native';
 import * as Device from 'expo-device';
 import * as Application from 'expo-application';
 import * as Tracking from 'expo-tracking-transparency';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const ATT_ASKED_KEY = '@zicabella_att_asked';
 
 export type AttStatus = 'authorized' | 'denied' | 'restricted' | 'not_determined' | 'unavailable';
 
@@ -117,6 +120,11 @@ export async function requestTrackingConsentOnce(): Promise<void> {
     if (!Tracking.isAvailable()) return;
     const current = await Tracking.getTrackingPermissionsAsync();
     if (current.status === 'undetermined') {
+      // Asked at most once per install, and the flag is written BEFORE asking: this runs on every launch after the
+      // consent screen, and a build missing NSUserTrackingUsageDescription is killed by iOS on the request (no JS
+      // catch can stop that), which made the app close on every launch. Now such a build could fail once, not forever.
+      if ((await AsyncStorage.getItem(ATT_ASKED_KEY)) === '1') return;
+      await AsyncStorage.setItem(ATT_ASKED_KEY, '1');
       await Tracking.requestTrackingPermissionsAsync();
     }
     cached = null; // re-read ATT / IDFA on the next checkout
