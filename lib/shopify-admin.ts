@@ -497,6 +497,15 @@ export async function createOrder(order: any, options?: { idempotencyKey?: strin
     const e164 = toE164(normalized.billing_address.phone);
     if (e164) normalized.billing_address.phone = e164;
   }
+  // Shopify rejects the whole order (422 "Amount must be greater than zero for sale transactions") when a sale or
+  // capture transaction is ₹0, e.g. an order paid 100% with store credit or a coupon. A ₹0 order needs no
+  // transaction: financial_status "paid" already marks it paid.
+  if (Array.isArray(normalized.transactions)) {
+    normalized.transactions = normalized.transactions.filter(
+      (t: any) => !(['sale', 'capture'].includes(String(t?.kind)) && !(Number(t?.amount) > 0))
+    );
+    if (normalized.transactions.length === 0) delete normalized.transactions;
+  }
 
   // Idempotency support: source_identifier and Idempotency-Key header
   const customHeaders: Record<string, string> = {};
