@@ -41,6 +41,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import ShiprocketActions from "@/components/orders/ShiprocketActions";
+import AddressQuality from "@/components/orders/AddressQuality";
 import LineItemEditor from "@/components/orders/LineItemEditor";
 import { carrierStatusLabel, isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
 import VariantBadge from "@/components/admin/VariantBadge";
@@ -1002,7 +1003,11 @@ export default function OrderDetailPage() {
                 <>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="space-y-1">
-                      <h3 className="text-lg font-semibold text-foreground tracking-tight">Logistics Command</h3>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <h3 className="text-lg font-semibold text-foreground tracking-tight">Logistics Command</h3>
+                        {/* Address check before dispatch (RTO prevention): real checks only, see lib/services/addressQuality.ts */}
+                        <AddressQuality orderId={order.id} awbAssigned={Boolean(awb)} onAddressUpdated={() => fetchOrder(true)} />
+                      </div>
                       <p className="text-[11px] text-foreground/40 font-bold uppercase tracking-widest flex items-center gap-1.5">
                         <Truck className="w-3.5 h-3.5 text-indigo-400" />
                         {courier}
