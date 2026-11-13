@@ -26,8 +26,17 @@ export const CANCELLED_ORDER_STATUSES = ['cancelled', 'CANCELLED', 'canceled', '
 /** cancelledBy values written when a LIVE order is cancelled (checkout abandon writes "customer"). */
 const LIVE_ORDER_CANCELLERS = ['admin', 'user', 'user_processed', 'shopify'];
 
+/**
+ * fulfillmentStatus "cancelled" is written only by order cancellations (admin, customer, Shopify cancel). Older
+ * Shopify-pull cancellations set only that and deliveryStatus, leaving status active (e.g. #ZB81437), so it counts.
+ * deliveryStatus "cancelled" alone does NOT: a voided AWB writes it while the order is still live.
+ */
 export const IS_CANCELLED_WHERE = {
-  OR: [{ status: { in: CANCELLED_ORDER_STATUSES } }, { cancelledAt: { not: null } }],
+  OR: [
+    { status: { in: CANCELLED_ORDER_STATUSES } },
+    { cancelledAt: { not: null } },
+    { fulfillmentStatus: { in: CANCELLED_ORDER_STATUSES } },
+  ],
 };
 
 export const WAS_PLACED_WHERE = {
@@ -70,13 +79,19 @@ export function cancellationSource(order: {
   cancelledBy?: string | null;
   note?: string | null;
   internalOrderNumber?: string | null;
+  fulfillmentStatus?: string | null;
 }): 'customer' | 'admin' | null {
-  const cancelled = CANCELLED_ORDER_STATUSES.includes(String(order.status || '')) || Boolean(order.cancelledAt);
+  const cancelled =
+    CANCELLED_ORDER_STATUSES.includes(String(order.status || '')) ||
+    Boolean(order.cancelledAt) ||
+    CANCELLED_ORDER_STATUSES.includes(String(order.fulfillmentStatus || ''));
   if (!cancelled) return null;
   const by = String(order.cancelledBy || '').toLowerCase();
   if (by === 'admin' || by === 'shopify') return 'admin';
   if (by === 'user' || by === 'user_processed' || by === 'customer') return 'customer';
   if (/cancelled by user/i.test(String(order.note || ''))) return 'customer';
   if (String(order.internalOrderNumber || '').startsWith('ZBCC')) return 'admin';
+  // Cancelled in Shopify (staff) and pulled in before the source was recorded.
+  if (CANCELLED_ORDER_STATUSES.includes(String(order.fulfillmentStatus || '')) && !order.cancelledAt) return 'admin';
   return null;
 }

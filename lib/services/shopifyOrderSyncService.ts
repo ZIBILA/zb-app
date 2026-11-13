@@ -924,6 +924,9 @@ export async function pullAndSyncShopifyOrder(
       }).catch(() => null);
     }
 
+    // Set when a cancellation made in Shopify is accepted here: the order is then cancelled in full (status, time,
+    // source, refund), the same as the orders/cancelled webhook, not only its delivery / fulfillment fields.
+    let honoredShopifyCancel = false;
     if (o.cancelled_at) {
       const { shouldHonorShopifyOrderCancel } = await import('@/lib/services/orderLifecycleService');
       const decision = shouldHonorShopifyOrderCancel(order, {
@@ -934,6 +937,7 @@ export async function pullAndSyncShopifyOrder(
       if (decision.honor) {
         fulfillmentStatus = 'cancelled';
         deliveryStatus = 'cancelled';
+        honoredShopifyCancel = true;
       } else {
         console.warn(
           `[ShopifyOrderSync] Ignoring Shopify cancel for paid local order ` +
@@ -1062,6 +1066,9 @@ export async function pullAndSyncShopifyOrder(
           shopifySyncError: null,
           fulfillmentStatus,
           deliveryStatus,
+          ...(honoredShopifyCancel && String(order.status || '').toLowerCase() !== 'cancelled'
+            ? { status: 'cancelled', cancelledAt: order.cancelledAt || new Date(), cancelledBy: order.cancelledBy || 'shopify' }
+            : {}),
           delhivery_awb: primaryTrackingNumber || order.delhivery_awb,
           tracking_status: deliveryStatus,
           ...(deliveryStatus === 'delivered' ? { deliveredAt: order.deliveredAt || new Date() } : {}),
@@ -1073,6 +1080,15 @@ export async function pullAndSyncShopifyOrder(
         },
         include: { shipments: true }
       });
+    }
+
+    if (honoredShopifyCancel && order?.id) {
+      try {
+        const { processOrderRefund } = await import('@/lib/services/refundService');
+        await processOrderRefund(order.id, 'shopify-cancel');
+      } catch (refundErr: any) {
+        console.warn(`[ShopifyOrderSync] Refund after Shopify cancel failed for ${order.id}:`, refundErr?.message);
+      }
     }
 
     // 5. Update WebStoreOrder
