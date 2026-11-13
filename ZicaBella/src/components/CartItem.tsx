@@ -20,6 +20,9 @@ interface Props {
     image: string;
     size: string | null;
     quantity: number;
+    /** Set when the row is one unit of a stored line (utils/cartUnits). */
+    lineId?: string;
+    lineQuantity?: number;
   };
   onUpdateQuantity: (id: string, quantity: number) => void;
   onRemove: (id: string) => void;
@@ -73,7 +76,8 @@ const CartItem = React.memo(({ item, onUpdateQuantity, onRemove, onPress }: Prop
       <View style={styles.actions}>
         <QuantityControl 
           quantity={item.quantity} 
-          onUpdate={(qty) => onUpdateQuantity(item.id, qty)} 
+          // A unit row shows 1; − removes this unit, + adds another unit (a new row) to the stored line.
+          onUpdate={(qty) => onUpdateQuantity(item.lineId ?? item.id, (item.lineQuantity ?? item.quantity) + (qty - item.quantity))} 
           min={0}
         />
       </View>

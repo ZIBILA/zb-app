@@ -14,6 +14,7 @@ import { haptics } from '../../utils/haptics';
 import { useAuth } from '../../hooks/useAuth';
 import { config } from '../../constants/config';
 import { formatPrice } from '../../utils/formatPrice';
+import { expandCartUnits } from '../../utils/cartUnits';
 
 export default function PaymentScreen() {
   const insets = useSafeAreaInsets();
@@ -121,8 +122,8 @@ export default function PaymentScreen() {
           <Typography size={7} weight="700" color={colors.textExtraLight} style={{ letterSpacing: 2, marginBottom: 12 }}>
             ORDER SUMMARY
           </Typography>
-          {(checkoutItems || []).slice(0, 3).map((it: any) => (
-            <View key={it.id} style={styles.summaryItemRow}>
+          {expandCartUnits(checkoutItems || []).slice(0, 3).map((it: any) => (
+            <View key={it.unitKey} style={styles.summaryItemRow}>
               <View style={[styles.thumb, { backgroundColor: colors.background }]}>
                 <Ionicons name="shirt-outline" size={16} color={colors.textExtraLight} />
               </View>
@@ -137,9 +138,9 @@ export default function PaymentScreen() {
               </Typography>
             </View>
           ))}
-          {checkoutItems.length > 3 && (
+          {expandCartUnits(checkoutItems || []).length > 3 && (
             <Typography size={9} color={colors.textExtraLight} style={{ marginTop: 8 }}>
-              +{checkoutItems.length - 3} more item(s)
+              +{expandCartUnits(checkoutItems || []).length - 3} more item(s)
             </Typography>
           )}
 

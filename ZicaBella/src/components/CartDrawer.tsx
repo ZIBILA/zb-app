@@ -24,6 +24,7 @@ import { formatPrice } from '../utils/formatPrice';
 import CartItem from './CartItem';
 import { Typography } from './Typography';
 import { haptics } from '../utils/haptics';
+import { expandCartUnits } from '../utils/cartUnits';
 
 interface Props {
   visible: boolean;
@@ -188,8 +189,8 @@ export default function CartDrawer({ visible, onClose, onCheckout }: Props) {
             ) : (
               <View style={{ flex: 1 }}>
                 <FlatList
-                  data={items}
-                  keyExtractor={(item) => item.id}
+                  data={expandCartUnits(items)}
+                  keyExtractor={(item) => item.unitKey}
                   contentContainerStyle={[styles.listContent, { paddingBottom: 220 }]}
                   showsVerticalScrollIndicator={false}
                   renderItem={({ item }) => (

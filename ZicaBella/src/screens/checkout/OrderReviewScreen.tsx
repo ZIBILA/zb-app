@@ -16,6 +16,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { Image } from 'expo-image';
 import { getSnapDeviceContext } from '../../services/snapDeviceContext';
 import { requireValidAuth, handleAuthError, isUnauthorizedError } from '../../utils/tokenUtils';
+import { expandCartUnits } from '../../utils/cartUnits';
 
 const { width } = Dimensions.get('window');
 
@@ -525,8 +526,8 @@ export default function OrderReviewScreen() {
         <View style={styles.section}>
           <Typography size={7} weight="700" color={colors.textExtraLight} style={styles.sectionLabel}>ITEMS IN ORDER</Typography>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight, padding: 16 }]}>
-            {checkoutItems.map((item, idx) => (
-              <View key={item.id || idx} style={[styles.itemRow, idx > 0 && { borderTopWidth: 1, borderTopColor: colors.borderLight, paddingTop: 12, marginTop: 12 }]}>
+            {expandCartUnits(checkoutItems).map((item, idx) => (
+              <View key={item.unitKey || idx} style={[styles.itemRow, idx > 0 && { borderTopWidth: 1, borderTopColor: colors.borderLight, paddingTop: 12, marginTop: 12 }]}>
                 <View style={{ width: 48, height: 48, borderRadius: 8, backgroundColor: colors.background, overflow: 'hidden' }}>
                   {item.image && <Image source={{ uri: item.image }} style={StyleSheet.absoluteFill} contentFit="cover" />}
                 </View>

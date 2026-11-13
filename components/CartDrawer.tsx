@@ -6,6 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { useCart } from "@/lib/cart-context";
+import { expandCartUnits } from "@/lib/cart-units";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useCountry } from "@/lib/country-context";
@@ -22,7 +23,9 @@ interface CartDrawerProps {
 export default function CartDrawer({ isOpen, onClose }: CartDrawerProps) {
   const { formatPrice: fmtPrice } = useCountry();
   const router = useRouter();
-  const { items, count, subtotal, remove, update, clear } = useCart();
+  const { items, count, subtotal, update, clear } = useCart();
+  // One row per unit: the same product + size added twice shows as two rows, never "QTY: 2".
+  const unitRows = expandCartUnits(items);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -119,9 +122,9 @@ export default function CartDrawer({ isOpen, onClose }: CartDrawerProps) {
                 ) : (
                   <div className="flex flex-col gap-3">
                     <AnimatePresence>
-                      {items.map((item) => (
+                      {unitRows.map((item) => (
                         <motion.div
-                          key={item.id}
+                          key={item.unitKey}
                           initial={{ opacity: 0, y: 8 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, x: -20, scale: 0.95 }}
@@ -144,24 +147,24 @@ export default function CartDrawer({ isOpen, onClose }: CartDrawerProps) {
                             )}
                             <div className="mt-auto flex justify-between items-center">
                               <p className="text-[11px] font-normal tracking-tight text-foreground/70">
-                                {fmtPrice(parseFloat(item.price) * item.quantity).formatted}
+                                {fmtPrice(parseFloat(item.price)).formatted}
                               </p>
                               <div
                                 className="flex items-center gap-1 rounded-lg px-1.5 py-1 bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 transition-colors duration-500"
                               >
                                 <button
-                                  onClick={() => update(item.id, item.quantity - 1)}
-                                  aria-label="Decrease quantity"
+                                  onClick={() => update(item.lineId, item.lineQuantity - 1)}
+                                  aria-label="Remove this item"
                                   className="w-5 h-5 flex items-center justify-center text-foreground/40 hover:text-foreground transition-colors active:scale-90"
                                 >
                                   <Minus className="w-2.5 h-2.5" />
                                 </button>
                                 <span className="text-[10px] font-bold min-w-[18px] text-center text-foreground/70">
-                                  {item.quantity}
+                                  1
                                 </span>
                                 <button
-                                  onClick={() => update(item.id, item.quantity + 1)}
-                                  aria-label="Increase quantity"
+                                  onClick={() => update(item.lineId, item.lineQuantity + 1)}
+                                  aria-label="Add another"
                                   className="w-5 h-5 flex items-center justify-center text-foreground/40 hover:text-foreground transition-colors active:scale-90"
                                 >
                                   <Plus className="w-2.5 h-2.5" />

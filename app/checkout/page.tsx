@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/lib/cart-context";
+import { expandCartUnits } from "@/lib/cart-units";
 import { useMetaEvents, metaCartPayload, ga4AddPaymentInfo, ga4BeginCheckout } from "@/hooks/useMetaEvents";
 import { useSnapEvents, snapCartPayload } from "@/hooks/useSnapEvents";
 import { useOpenAiEvents } from "@/hooks/useOpenAiEvents";
@@ -2429,8 +2430,9 @@ export default function CheckoutPage() {
       <div className="flex flex-col gap-3.5 w-full">
         {/* Product Preview Card */}
         <div className="apple-glass-capsule px-5 py-5 rounded-[24px] flex flex-col gap-4">
-          {items.map((item) => (
-            <div key={item.id} className="flex gap-3.5 items-center">
+          {/* One row per unit (same product + size twice = two rows), so a duplicate is never hidden in "Qty: 2". */}
+          {expandCartUnits(items).map((item) => (
+            <div key={item.unitKey} className="flex gap-3.5 items-center">
               <div className="w-10 h-[52px] rounded-lg bg-foreground/[0.02] border border-foreground/10 overflow-hidden shrink-0 relative">
                 {item.image ? (
                   <img src={item.image} className="w-full h-full object-cover animate-in fade-in duration-300" alt={item.title} />
@@ -2441,10 +2443,10 @@ export default function CheckoutPage() {
               <div className="flex-1 min-w-0">
                 <h4 className="text-[10px] font-normal text-foreground/85 uppercase tracking-wide truncate leading-tight">{item.title}</h4>
                 <p className="text-[8px] text-foreground/40 font-light uppercase tracking-wider mt-1 leading-none">
-                  Size: {item.size || "Free"} &nbsp;•&nbsp; Qty: {item.quantity}
+                  Size: {item.size || "Free"} &nbsp;•&nbsp; Qty: 1
                 </p>
               </div>
-              <span className="text-[10px] font-normal text-foreground/80 shrink-0">{fmtAmount(parseFloat(item.price) * item.quantity)}</span>
+              <span className="text-[10px] font-normal text-foreground/80 shrink-0">{fmtAmount(parseFloat(item.price))}</span>
             </div>
           ))}
         </div>
