@@ -603,13 +603,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       if (!isMobileOrder) {
         const order = await prisma.order.findUnique({ where: { id } });
         if (order && order.shopifyOrderId && !order.shopifyOrderId.startsWith('#') && !order.shopifyOrderId.startsWith('app_pending_')) {
-          try {
-            const { cancelOrder } = await import('@/lib/shopify-admin');
-            await cancelOrder(order.shopifyOrderId);
-          } catch (shopifyErr) {
-            console.error('[Admin Order PATCH] Failed to cancel order in Shopify:', shopifyErr);
-          }
-          // Sync the new ZBCC number to Shopify tags after cancellation
+          // The Shopify cancel (with restock) happens once, further down with the refund. Cancelling here as well
+          // made that second cancel fail as "already cancelled", which then restocked Shopify a second time.
+          // Sync the new ZBCC number to Shopify tags
           if (body.internalOrderNumber) {
             try {
               const { updateOrderTags } = await import('@/lib/shopify-admin');
