@@ -25,6 +25,7 @@ const RELATIONS: Record<string, Record<string, { model: string; fk: string; one?
   mobileOrder: { items: { model: 'mobileOrderItem', fk: 'mobileOrderId' }, customer: { model: 'customer', fk: 'id', one: true, local: 'customerId' } },
   customer: { addresses: { model: 'address', fk: 'customerId' }, orders: { model: 'order', fk: 'customerId' } },
   orderItem: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' }, product: { model: 'product', fk: 'id', one: true, local: 'productId' } },
+  shipment: { order: { model: 'order', fk: 'id', one: true, local: 'orderId' } },
   cart: {
     items: { model: 'cartItem', fk: 'cartId' },
     customer: { model: 'customer', fk: 'id', one: true, local: 'customerId' },
