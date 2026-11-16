@@ -117,6 +117,7 @@ export async function applyShipmentStatusUpdate(
           paymentStatus: true,
           note: true,
           deliveryStatus: true,
+          tracking_status: true,
           deliveredAt: true,
           internalOrderNumber: true,
           razorpayOrderId: true,
@@ -180,7 +181,9 @@ export async function applyShipmentStatusUpdate(
   // the Cancellation Requested phrase — only Cancelled/Requested may update it.
   const staleWhileVoiding =
     previous === 'cancellation_requested' && next !== 'cancelled' && next !== 'cancellation_requested';
-  if (rawPhrase && shipment.orderId && !staleWhileVoiding) {
+  // (Only when it changed: this used to rewrite the order on EVERY poll, which bumped Order.updatedAt every 15 minutes
+  // for every in-flight order and kept old orders re-entering the customer-message scanners.)
+  if (rawPhrase && shipment.orderId && !staleWhileVoiding && rawPhrase !== (shipment.order?.tracking_status ?? null)) {
     await prisma.order
       .update({
         where: { id: shipment.orderId },
@@ -325,6 +328,12 @@ export async function applyShipmentStatusUpdate(
       // Order.paymentStatus may already read "paid" for COD-upfront orders; keep.
       settleCod = true;
     }
+  }
+
+  // Nothing changed (same carrier status, order already shows it, no COD settlement due): the shipment's scan log is
+  // already saved above, so leave the order, its website copy and its "last updated" time alone and report no change.
+  if (previous === next && !deliveredNow && !settleCod && !clearAwbOnFinalCancel && order.deliveryStatus === deliveryStatus && !isRtoCarrierStatus(next)) {
+    return { ...base, applied: false };
   }
 
   await prisma.order.update({ where: { id: order.id }, data: orderData });

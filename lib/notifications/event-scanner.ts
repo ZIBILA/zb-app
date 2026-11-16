@@ -20,6 +20,7 @@ import {
   deliverOnce,
   pageAll,
   isDeliverableEmail,
+  isDeliveryHandled,
   isFreshParcelEvent,
   normalizeOrderRef,
   type CustomerEventType,
@@ -119,10 +120,16 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
   };
 
   /** Existing order templates dedupe internally (same key scheme), so a manual send never repeats. */
-  const emitOrderTemplate = async (event: CustomerEventType, fn: () => Promise<void>) => {
+  const emitOrderTemplate = async (
+    event: CustomerEventType,
+    ref: string,
+    fn: () => Promise<'sent' | 'already_sent' | 'skipped' | 'failed' | void>
+  ) => {
+    // Already sent (or given up after repeated failures): nothing to build, nothing to count.
+    if (await isDeliveryHandled(`order:${ref}:${event}`, 'email')) return tally(event, 'skipped');
     try {
-      await fn();
-      tally(event, 'sent');
+      const outcome = await fn();
+      tally(event, outcome === 'sent' || outcome === undefined ? 'sent' : outcome === 'failed' ? 'failed' : 'skipped');
     } catch {
       tally(event, 'failed');
     }
@@ -176,9 +183,9 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
     }
 
     if (isOrderCancelled(order)) {
-      await emitOrderTemplate('ORDER_CANCELLED', () => sendOrderCancelledEmail(orderData));
+      await emitOrderTemplate('ORDER_CANCELLED', ref, () => sendOrderCancelledEmail(orderData));
     } else if (delivery === 'delivered') {
-      await emitOrderTemplate('ORDER_DELIVERED', () => sendOrderDeliveredEmail(orderData));
+      await emitOrderTemplate('ORDER_DELIVERED', ref, () => sendOrderDeliveredEmail(orderData));
     } else if (delivery === 'out_for_delivery') {
       await emitLifecycle('ORDER_OUT_FOR_DELIVERY', `order:${ref}:ORDER_OUT_FOR_DELIVERY`, to, {
         customerName: order.customer?.name,
@@ -187,7 +194,7 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
         courier: shipment?.courier,
       });
     } else if (['shipped', 'in_transit', 'picked_up', 'dispatched'].includes(delivery)) {
-      await emitOrderTemplate('ORDER_SHIPPED', () =>
+      await emitOrderTemplate('ORDER_SHIPPED', ref, () =>
         sendOrderShippedEmail({
           ...orderData,
           trackingNumber: shipment?.awb || shipment?.trackingNumber || undefined,

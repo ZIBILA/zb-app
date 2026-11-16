@@ -82,6 +82,8 @@ async function getItemsHtml(items: OrderData['items'], currencySymbol: string): 
   return rows.join('');
 }
 
+export type EmailOutcome = 'sent' | 'already_sent' | 'skipped' | 'failed';
+
 async function sendDynamicEmail(
   trigger: string,
   order: OrderData,
@@ -164,7 +166,7 @@ const LIFECYCLE_EVENT_BY_TRIGGER: Record<string, CustomerEventType | undefined> 
 /**
  * Sends a premium order confirmation email to the customer
  */
-export async function sendOrderConfirmationEmail(order: OrderData): Promise<void> {
+export async function sendOrderConfirmationEmail(order: OrderData): Promise<EmailOutcome> {
   try {
     console.log(`[OrderEmailService] Building confirmation email for Order #${order.orderId}`);
     
@@ -186,15 +188,17 @@ export async function sendOrderConfirmationEmail(order: OrderData): Promise<void
     const outcome = await sendDynamicEmail('ORDER_CONFIRMATION', order, fallback.subject, fallback.html, fallback.text);
 
     console.log(`[OrderEmailService] Order confirmation email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
+    return outcome;
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send order confirmation email for Order #${order.orderId}:`, error);
+    return 'failed';
   }
 }
 
 /**
  * Sends a COD order confirmation email to the customer
  */
-export async function sendOrderCodConfirmationEmail(order: OrderData): Promise<void> {
+export async function sendOrderCodConfirmationEmail(order: OrderData): Promise<EmailOutcome> {
   try {
     console.log(`[OrderEmailService] Building COD confirmation email for Order #${order.orderId}`);
     
@@ -219,8 +223,10 @@ export async function sendOrderCodConfirmationEmail(order: OrderData): Promise<v
     const outcome = await sendDynamicEmail('ORDER_CONFIRMATION', order, fallback.subject, fallback.html, fallback.text);
 
     console.log(`[OrderEmailService] COD confirmation email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
+    return outcome;
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send COD confirmation email for Order #${order.orderId}:`, error);
+    return 'failed';
   }
 }
 
@@ -229,7 +235,7 @@ export async function sendOrderCodConfirmationEmail(order: OrderData): Promise<v
  */
 export async function sendOrderShippedEmail(
   order: OrderData & { trackingNumber?: string; courier?: string }
-): Promise<void> {
+): Promise<EmailOutcome> {
   try {
     console.log(`[OrderEmailService] Building shipping email for Order #${order.orderId}`);
     
@@ -253,15 +259,17 @@ export async function sendOrderShippedEmail(
     });
 
     console.log(`[OrderEmailService] Shipping notification email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
+    return outcome;
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send shipping notification email for Order #${order.orderId}:`, error);
+    return 'failed';
   }
 }
 
 /**
  * Sends a delivery confirmation and review request email to the customer
  */
-export async function sendOrderDeliveredEmail(order: OrderData): Promise<void> {
+export async function sendOrderDeliveredEmail(order: OrderData): Promise<EmailOutcome> {
   try {
     console.log(`[OrderEmailService] Building delivery email for Order #${order.orderId}`);
     
@@ -278,15 +286,17 @@ export async function sendOrderDeliveredEmail(order: OrderData): Promise<void> {
     const outcome = await sendDynamicEmail('ORDER_DELIVERED', order, fallback.subject, fallback.html, fallback.text);
 
     console.log(`[OrderEmailService] Delivery email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
+    return outcome;
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send delivery email for Order #${order.orderId}:`, error);
+    return 'failed';
   }
 }
 
 /**
  * Sends an order cancellation email to the customer
  */
-export async function sendOrderCancelledEmail(order: OrderData): Promise<void> {
+export async function sendOrderCancelledEmail(order: OrderData): Promise<EmailOutcome> {
   try {
     console.log(`[OrderEmailService] Building cancellation email for Order #${order.orderId}`);
     
@@ -304,7 +314,9 @@ export async function sendOrderCancelledEmail(order: OrderData): Promise<void> {
     });
 
     console.log(`[OrderEmailService] Cancellation email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
+    return outcome;
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send cancellation email for Order #${order.orderId}:`, error);
+    return 'failed';
   }
 }

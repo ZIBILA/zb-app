@@ -211,7 +211,17 @@ export const eventTracker = {
 
       } catch (metaErr: any) {
         const errorMsg = metaErr.response?.data?.error?.message || metaErr.message;
-        console.error('[Event Tracker] Meta Conversions API request failed:', errorMsg);
+        // A known SETUP problem (the WhatsApp dataset id is the website pixel, or Meta is not configured) fails every single
+        // event the same way, which filled the log with identical lines. Say it once an hour; real failures log every time.
+        const isSetupProblem = /whatsapp_dataset_id is the website Meta Pixel|Meta Conversions API is not fully configured/.test(String(errorMsg));
+        if (!isSetupProblem) {
+          console.error('[Event Tracker] Meta Conversions API request failed:', errorMsg);
+        } else {
+          const { shouldLogThrottled } = await import('@/lib/log-throttle');
+          if (shouldLogThrottled(`meta-capi-setup:${String(errorMsg).slice(0, 40)}`, 60 * 60 * 1000)) {
+            console.error('[Event Tracker] Meta Conversions API is not forwarding WhatsApp events (setup problem, logged once an hour):', errorMsg);
+          }
+        }
 
         // Update local event status to failed
         await db.whatsAppEvent.update({

@@ -71,6 +71,26 @@ export function isDeliverableEmail(email: string | null | undefined): email is s
 }
 
 /**
+ * True when this (event, channel) needs nothing more: it was sent, or it failed MAX_ATTEMPTS times and is given up.
+ * A failed row with attempts left, or a claim interrupted mid-send, is NOT handled (it is retried).
+ */
+export async function isDeliveryHandled(eventKey: string, channel: DeliveryChannel): Promise<boolean> {
+  const existing = await prisma.customerEventDelivery.findUnique({
+    where: { eventKey_channel: { eventKey, channel } },
+    select: { status: true, error: true, updatedAt: true },
+  });
+  if (!existing) return false;
+  if (existing.status === 'failed') {
+    const attempts = Number(String(existing.error || '').match(/^\[attempt (\d+)\]/)?.[1] || 1);
+    return attempts >= MAX_ATTEMPTS;
+  }
+  if (existing.status === 'sending') {
+    return new Date(existing.updatedAt).getTime() >= Date.now() - STALE_SENDING_MS;
+  }
+  return true;
+}
+
+/**
  * Run `send` at most once for (eventKey, channel).
  * Returns "sent" | "duplicate" (already handled) | "failed".
  */
@@ -82,35 +102,18 @@ export async function deliverOnce(opts: {
   send: () => Promise<void>;
 }): Promise<'sent' | 'duplicate' | 'failed'> {
   let rowId: string;
-  // Already handled and not retryable: answer without attempting the insert. The scanner re-checks the same orders
-  // every few minutes, and each refused insert was logged by Prisma as an error.
-  const prior = await prisma.customerEventDelivery.findUnique({
-    where: { eventKey_channel: { eventKey: opts.eventKey, channel: opts.channel } },
-    select: { status: true },
-  });
-  if (prior && prior.status !== 'failed' && prior.status !== 'sending') return 'duplicate';
-  try {
-    const row = await prisma.customerEventDelivery.create({
-      data: {
-        eventKey: opts.eventKey,
-        eventType: opts.eventType,
-        channel: opts.channel,
-        recipient: opts.recipient,
-        status: 'sending',
-      },
-    });
-    rowId = row.id;
-  } catch (err: any) {
-    if (err?.code !== 'P2002') throw err;
-    // Already claimed. Retry a previous failure, or a claim that was interrupted before it finished.
-    const existing = await prisma.customerEventDelivery.findUnique({
-      where: { eventKey_channel: { eventKey: opts.eventKey, channel: opts.channel } },
-    });
-    const attempts = Number(String(existing?.error || '').match(/^\[attempt (\d+)\]/)?.[1] || 1);
+  const where = { eventKey_channel: { eventKey: opts.eventKey, channel: opts.channel } };
+
+  // Look first and only insert when the record does not exist. Inserting a record that exists is refused by the
+  // database and Prisma logs every refusal as an error; the scanners re-check the same messages every few minutes.
+  // Existing and handled (sent, or failed MAX_ATTEMPTS times) → nothing to do. Existing and retryable → re-claim it.
+  const reclaim = async (): Promise<string | null> => {
+    const existing = await prisma.customerEventDelivery.findUnique({ where });
+    if (!existing) return null;
+    const attempts = Number(String(existing.error || '').match(/^\[attempt (\d+)\]/)?.[1] || 1);
     const staleCutoff = new Date(Date.now() - STALE_SENDING_MS);
-    const interrupted =
-      existing?.status === 'sending' && new Date(existing.updatedAt).getTime() < staleCutoff.getTime();
-    if (!existing || (existing.status !== 'failed' && !interrupted) || attempts >= MAX_ATTEMPTS) return 'duplicate';
+    const interrupted = existing.status === 'sending' && new Date(existing.updatedAt).getTime() < staleCutoff.getTime();
+    if ((existing.status !== 'failed' && !interrupted) || attempts >= MAX_ATTEMPTS) return 'duplicate';
     // Atomic re-claim: only one retrier can win it.
     const { count } = await prisma.customerEventDelivery.updateMany({
       where: interrupted
@@ -120,8 +123,32 @@ export async function deliverOnce(opts: {
         ? { status: 'sending', error: `[attempt ${attempts + 1}] reclaimed after an interrupted send` }
         : { status: 'sending' },
     });
-    if (count === 0) return 'duplicate';
-    rowId = existing.id;
+    return count === 0 ? 'duplicate' : existing.id;
+  };
+
+  const claimed = await reclaim();
+  if (claimed === 'duplicate') return 'duplicate';
+  if (claimed) {
+    rowId = claimed;
+  } else {
+    try {
+      const row = await prisma.customerEventDelivery.create({
+        data: {
+          eventKey: opts.eventKey,
+          eventType: opts.eventType,
+          channel: opts.channel,
+          recipient: opts.recipient,
+          status: 'sending',
+        },
+      });
+      rowId = row.id;
+    } catch (err: any) {
+      if (err?.code !== 'P2002') throw err;
+      // Another worker inserted it between our look and our insert (a real race): treat it like any existing record.
+      const again = await reclaim();
+      if (!again || again === 'duplicate') return 'duplicate';
+      rowId = again;
+    }
   }
 
   try {
