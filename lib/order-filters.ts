@@ -2,11 +2,11 @@
  * Which orders the dashboard lists, and what "cancelled" means there.
  *
  * - "Placed" = the order really happened: payment captured / COD upfront paid / store credit or coupon paid, a refund
- *   was issued, it reached Shopify, or staff / the customer cancelled a live order. Failed payments and checkouts the
- *   shopper abandoned are never placed, even when they carry status "cancelled" (the Razorpay "cancel" button writes
- *   that), so they never show up as cancelled orders.
- * - "Cancelled" = status cancelled (any spelling) or a cancellation time. The current payment status can't be used:
- *   a customer-cancelled COD order has its payment status overwritten with "cancelled".
+ *   was issued, or it reached Shopify. Failed payments, checkouts the shopper abandoned and never-paid orders that
+ *   were then cancelled are never placed, even when they carry status "cancelled", so they never show up as
+ *   cancelled orders.
+ * - "Cancelled": see IS_CANCELLED_WHERE. The current payment status can't be used: a customer-cancelled COD order has
+ *   its payment status overwritten with "cancelled".
  */
 
 const PAID_LIKE = ['paid', 'PAID', 'success', 'SUCCESS'];
@@ -23,8 +23,6 @@ export const PLACED_PAYMENT_STATUSES = [
   'partial_refund',
 ];
 export const CANCELLED_ORDER_STATUSES = ['cancelled', 'CANCELLED', 'canceled', 'CANCELED', 'Cancelled'];
-/** cancelledBy values written when a LIVE order is cancelled (checkout abandon writes "customer"). */
-const LIVE_ORDER_CANCELLERS = ['admin', 'user', 'user_processed', 'shopify'];
 
 /** Payment states meaning the money is in right now (not refunded). */
 export const PAID_NOW_STATUSES = ['paid', 'PAID', 'success', 'SUCCESS', 'captured', 'cod_upfront_paid', 'partially_paid', 'partially-paid'];
@@ -83,7 +81,7 @@ export const WAS_PLACED_WHERE = {
     { codUpfrontPaid: { gt: 0 } },
     { refundId: { not: null } },
     { refundStatus: 'completed' },
-    { cancelledBy: { in: LIVE_ORDER_CANCELLERS } },
+    // Who cancelled it is NOT evidence: a customer can cancel an order they never paid for (e.g. ZBPP01256231).
     {
       AND: [
         { shopifyOrderId: { not: null } },

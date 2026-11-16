@@ -31,6 +31,8 @@ async function main() {
   o('shopify_pulled_cancel', { status: 'open', paymentStatus: 'cod_upfront_paid', codUpfrontPaid: 99, fulfillmentStatus: 'cancelled', deliveryStatus: 'cancelled', shopifyOrderId: '333' });
   // AWB voided by the carrier: the order is still live and needs a new booking.
   o('voided_awb', { status: 'open', paymentStatus: 'paid', fulfillmentStatus: 'unfulfilled', deliveryStatus: 'cancelled', shopifyOrderId: '444' });
+  // Never paid, then cancelled by the customer from My Orders: not a placed order.
+  o('unpaid_user_cancel', { status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'user', cancelledAt: new Date(), internalOrderNumber: 'ZBPP01256231' });
   o('pending_payment', { status: 'payment_pending', paymentStatus: 'payment_pending', internalOrderNumber: 'ZBPP90004' });
 
   const ids = async (where: any) => (await prisma.order.findMany({ where })).map((r: any) => r.id).sort();
@@ -38,7 +40,7 @@ async function main() {
 
   const all = await ids({ AND: gate });
   check('F1 All = every placed order, cancelled ones included', JSON.stringify(all) === JSON.stringify(['active_cod', 'active_paid', 'admin_cancelled', 'cust_cancelled_cod', 'shopify_pulled_cancel', 'upper_cancelled', 'voided_awb']), JSON.stringify(all));
-  check('F2 All never shows failed payments or abandoned checkouts', !all.some((i: string) => ['checkout_abandoned', 'payment_failed', 'pending_payment'].includes(i)));
+  check('F2 All never shows failed payments, abandoned checkouts or never-paid orders the customer cancelled', !all.some((i: string) => ['checkout_abandoned', 'payment_failed', 'pending_payment', 'unpaid_user_cancel'].includes(i)));
 
   const cancelled = await ids({ AND: [...gate, IS_CANCELLED_WHERE, WAS_PLACED_WHERE] });
   check('F3 Cancelled shows every order cancelled after placement (any spelling, any refund state)', JSON.stringify(cancelled) === JSON.stringify(['admin_cancelled', 'cust_cancelled_cod', 'shopify_pulled_cancel', 'upper_cancelled']), JSON.stringify(cancelled));
