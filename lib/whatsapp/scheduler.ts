@@ -26,6 +26,8 @@ function getNextRetryTime(retryCount: number): Date | null {
 /** Carts read per run (newest first) and the time the cart step may take before leaving the rest to the next run. */
 const CART_SCAN_LIMIT = 500;
 const CART_TIME_BUDGET_MS = 120_000;
+/** Step 1 is not sent for a cart idle longer than this (a day): by then a reminder is stale. */
+const STEP1_MAX_IDLE_MINUTES = 24 * 60;
 /** A claim still "processing" after this long was interrupted mid-send and may be taken again. */
 const STALE_CLAIM_MS = 15 * 60 * 1000;
 
@@ -733,7 +735,10 @@ export async function runWhatsAppScheduler(): Promise<{ success: boolean; result
             continue;
           }
           // Step 1: Fired if elapsed time is at least delay1 (default 5m)
-          if (elapsedMinutes >= delay1) {
+          // A first reminder is only timely soon after the cart was left. A cart idle for days that never got one (the
+          // old query never reached it) is not messaged now: that would be a stale nudge, followed minutes later by
+          // step 2 with the discount code.
+          if (elapsedMinutes >= delay1 && elapsedMinutes <= STEP1_MAX_IDLE_MINUTES) {
             if (await convertedByOrder()) continue;
             if (!(await claimRecoveryStage(cart.id, 1, step1Template, formattedPhone))) {
               console.log(`[Scheduler] Cart ${cart.id} Step 1 already claimed or attempted, skipping.`);
@@ -827,7 +832,8 @@ export async function runWhatsAppScheduler(): Promise<{ success: boolean; result
             : lastActivityTime;
           const elapsedSinceLast = (now.getTime() - lastStepTime) / (60 * 1000);
 
-          if (elapsedMinutes >= delay2 && elapsedSinceLast >= 15) {
+          // Keep the intended spacing between step 1 and step 2 (delay2 - delay1, default ~3.75 h), never a back-to-back pair.
+          if (elapsedMinutes >= delay2 && elapsedSinceLast >= Math.max(15, delay2 - delay1)) {
             if (await convertedByOrder()) continue;
             if (!(await claimRecoveryStage(cart.id, 2, step2Template, formattedPhone))) {
               console.log(`[Scheduler] Cart ${cart.id} Step 2 already claimed or attempted, skipping.`);
