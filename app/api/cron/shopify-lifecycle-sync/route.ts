@@ -19,7 +19,8 @@ export async function GET(req: NextRequest) {
   }
   const days = Math.min(Math.max(Number(new URL(req.url).searchParams.get('days')) || 3, 1), 120);
   try {
-    const summary = await syncRecentOrderLifecyclesToShopify({ days, limit: days > 3 ? 2000 : 300, budgetMs: 270_000 });
+    // A manual call with the cron secret is an explicit request, so it is not limited to orders after go-live.
+    const summary = await syncRecentOrderLifecyclesToShopify({ days, limit: days > 3 ? 2000 : 300, budgetMs: 270_000, ignoreGoLive: true });
     return NextResponse.json({ success: true, days, ...summary });
   } catch (error: any) {
     console.error('[Shopify Lifecycle Cron] Error:', error);

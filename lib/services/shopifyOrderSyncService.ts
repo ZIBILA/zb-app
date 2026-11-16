@@ -937,7 +937,10 @@ export async function pullAndSyncShopifyOrder(
       if (decision.honor) {
         fulfillmentStatus = 'cancelled';
         deliveryStatus = 'cancelled';
-        honoredShopifyCancel = true;
+        // Full cancellation (status, source, refund) only for orders placed after go-live; an older order that was
+        // cancelled in Shopify keeps its previous handling, so syncing it can never cancel or refund it now.
+        const goLive = await (await import('@/lib/go-live')).getGoLive();
+        honoredShopifyCancel = Boolean(order?.createdAt && new Date(order.createdAt) >= goLive);
       } else {
         console.warn(
           `[ShopifyOrderSync] Ignoring Shopify cancel for paid local order ` +

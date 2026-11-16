@@ -207,7 +207,9 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
   };
 
   const floor = await notificationFloor();
-  const since = new Date(Math.max(floor.getTime(), now.getTime() - SCAN_WINDOW_MS));
+  const goLive = await (await import('@/lib/go-live')).getGoLive();
+  // Messages only for what happens after go-live, never for events that were already in the past.
+  const since = new Date(Math.max(floor.getTime(), now.getTime() - SCAN_WINDOW_MS, goLive.getTime()));
   const createdFrom = new Date(floor.getTime() - ORDER_LOOKBACK_MS);
 
   const tally = (event: string, result: 'sent' | 'duplicate' | 'failed' | 'skipped') => {

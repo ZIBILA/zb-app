@@ -42,6 +42,8 @@ const get = (id: string) => db.order.find((o) => o.id === id)!;
 const bal = (id = 'c1') => db.customer.find((c) => c.id === id)!.storeCredits;
 
 async function main() {
+  // These scenarios act on pre-built data, so the go-live marker is set far in the past (go-live-run.ts proves history is skipped).
+  (db.customerEventDelivery ||= []).push({ id: 'gl_seed', eventKey: '__fixes_go_live__', channel: 'system', eventType: 'SCANNER_INIT', status: 'sent', createdAt: new Date(0), updatedAt: new Date(0) });
   const { processOrderRefund, retryFailedRefunds } = await import('../../lib/services/refundService');
   const run = (id: string) => processOrderRefund(id, 'test', { razorpay: rzp });
   customer('c1');

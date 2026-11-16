@@ -45,6 +45,8 @@ function addCart(opts: { phone: string; idleMs: number; createdMs?: number; stag
 const stageRows = (cartId: string, stage = 1) => (db.whatsAppMessage || []).filter((m) => m.cartId === cartId && m.recoveryStage === stage);
 
 async function main() {
+  // These scenarios act on pre-built data, so the go-live marker is set far in the past (go-live-run.ts proves history is skipped).
+  (db.customerEventDelivery ||= []).push({ id: 'gl_seed', eventKey: '__fixes_go_live__', channel: 'system', eventType: 'SCANNER_INIT', status: 'sent', createdAt: new Date(0), updatedAt: new Date(0) });
   // Template definition in the DB so nothing is fetched from Meta.
   (db.whatsAppTemplate ||= []).push(
     ...['abandoned_cart_a1', 'abandoned_cart_a2', 'abandoned_cart_a3'].map((name) => ({

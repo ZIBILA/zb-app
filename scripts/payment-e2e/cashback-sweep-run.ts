@@ -22,6 +22,8 @@ const order = (id: string, extra: Record<string, any>) =>
 const credits = (orderId: string) => (db.storeCredit || []).filter((c) => c.orderId === orderId);
 
 async function main() {
+  // These scenarios act on pre-built data, so the go-live marker is set far in the past (go-live-run.ts proves history is skipped).
+  (db.customerEventDelivery ||= []).push({ id: 'gl_seed', eventKey: '__fixes_go_live__', channel: 'system', eventType: 'SCANNER_INIT', status: 'sent', createdAt: new Date(0), updatedAt: new Date(0) });
   (db.customer ||= []).push({ id: 'cust1', storeCredits: 0 });
   (db.webStoreCoupon ||= []).push({
     id: 'cp1', code: 'PREPAID10', isActive: true, discountType: 'percentage', discountValue: 10, applicability: 'PREPAID_ONLY',

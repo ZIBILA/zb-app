@@ -436,7 +436,11 @@ export async function getStoreCreditEarnedForOrder(orderId: string): Promise<num
  * Returns how many orders were credited.
  */
 export async function issueMissingCouponCashback(opts: { since?: Date; limit?: number } = {}): Promise<number> {
-  const since = opts.since ?? new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  const { getGoLive } = await import('@/lib/go-live');
+  const goLive = await getGoLive();
+  const requested = opts.since ?? new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  // Only orders placed after go-live: past orders are never credited by this job.
+  const since = requested > goLive ? requested : goLive;
   const orders = await prisma.order.findMany({
     where: {
       createdAt: { gte: since },

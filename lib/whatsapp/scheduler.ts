@@ -475,7 +475,9 @@ export async function runWhatsAppScheduler(): Promise<{ success: boolean; result
       // This ensures Step 3 carts (default 7 days = 10080 min) are still picked up.
       const maxDelayMinutes = Math.max(delay1, delay2, delay3);
       const lookbackMinutes = maxDelayMinutes + 1440; // max delay + 1 day buffer
-      const cutoffDate = new Date(Date.now() - lookbackMinutes * 60 * 1000);
+      // Carts only from after go-live: a cart abandoned before the fixes went live is never reminded.
+      const goLive = await (await import('@/lib/go-live')).getGoLive();
+      const cutoffDate = new Date(Math.max(Date.now() - lookbackMinutes * 60 * 1000, goLive.getTime()));
 
       // Newest first, and only carts that can still get a message: idle for at least the first delay and not
       // already through the whole sequence. This used to read the 50 OLDEST carts of the window, which were
