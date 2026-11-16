@@ -138,6 +138,17 @@ export async function POST(req: Request) {
       Math.round((linesTotal - appliedStoreCredits - couponDiscount) * 100) / 100
     );
 
+    // Rate Card: COD above the dashboard limit is prepaid only (the upfront payment order is refused first, in
+    // /api/app/payment/create-order; this stops a direct call without a paid upfront).
+    if (isCod && !clientClaimsPaid) {
+      const { getCodMaxOrderValue, isCodAllowedForAmount, codLimitError } = await import('@/lib/cod-limit');
+      const maxCod = await getCodMaxOrderValue();
+      const codOrderValue = Math.max(0, linesTotal - appliedStoreCredits - couponDiscount);
+      if (!isCodAllowedForAmount(codOrderValue, maxCod)) {
+        return jsonError(codLimitError(maxCod, codOrderValue), 400);
+      }
+    }
+
     if (isFullStoreCreditPayment || isFullCouponPayment) {
       if (appliedStoreCredits + couponDiscount + 0.01 < linesTotal) {
         return jsonError('Store credit / discount does not cover the order total', 400);

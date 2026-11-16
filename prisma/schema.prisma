@@ -1919,6 +1919,17 @@ model MfgEmployeePerformance {
   @@map("mfg_employee_performance")
 }
 
+/// Small checkout rules edited from the dashboard (Rate Card), as key → value. Kept out of Shop so a missing
+/// migration can only affect these values (callers fall back to defaults), never every Shop query.
+model CheckoutSetting {
+  key       String   @id
+  value     String
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("checkout_settings")
+}
+
 model StoreSettings {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   pageKey         String   @unique @map("page_key")

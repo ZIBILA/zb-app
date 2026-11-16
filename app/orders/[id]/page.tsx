@@ -266,6 +266,8 @@ export default function OrderDetailsPage() {
   }, [order]);
   const isCancelled = useMemo(() => {
     if (!order) return false;
+    // The server decides with the one rule shared by the website, the app and the dashboard.
+    if (typeof (order as any).isCancelled === 'boolean') return (order as any).isCancelled;
     const s = String(order.status || '').toLowerCase();
     const p = String(order.paymentStatus || '').toLowerCase();
     const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(p);

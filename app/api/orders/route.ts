@@ -1,3 +1,4 @@
+import { isOrderCancelled, cancellationSource, isStandaloneMirrorAnOrder } from '@/lib/order-filters';
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/options";
@@ -88,7 +89,9 @@ export async function GET(req: Request) {
               ],
             },
             { paymentStatus: { in: ['failed', 'FAILED', 'voided'] } },
-            { status: { in: ['payment_failed', 'failed', 'FAILED', 'payment_pending'] } }
+            { status: { in: ['payment_failed', 'failed', 'FAILED', 'payment_pending'] } },
+            // A checkout the shopper closed and never paid (written by /api/checkout/cancel) is not an order.
+            { AND: [{ cancelledBy: 'customer' }, { paymentStatus: { notIn: ['paid', 'PAID', 'success', 'SUCCESS', 'captured', 'cod_upfront_paid', 'partially_paid', 'refunded', 'partially_refunded'] } }] },
           ]
         }
       },
@@ -215,9 +218,13 @@ export async function GET(req: Request) {
         const isEligible = isWithin15Days && !hasActiveRequest;
         const remainingDays = Math.max(0, 15 - diffDays);
 
+        // One cancellation rule for the website, the app and the dashboard (lib/order-filters.ts).
+        const isCancelled = isOrderCancelled(order);
         return {
           ...order,
           orderNumber,
+          isCancelled,
+          cancellationSource: isCancelled ? cancellationSource(order) : null,
           userReturnRequests,
           userExchangeRequests,
           activeReturn: activeReturn || null,
@@ -231,17 +238,26 @@ export async function GET(req: Request) {
       })
     );
 
-    // Track master order IDs and razorpay IDs to deduplicate standalone WebStoreOrders
-    const masterOrderRzpIds = new Set(orders.map((o: any) => o.razorpayOrderId).filter(Boolean));
-    const masterOrderNums = new Set(orders.map((o: any) => (o.internalOrderNumber || "").toUpperCase()).filter(Boolean));
-
-    const standaloneWebOrders = webStoreOrders.filter((wso: any) => {
-      const numUpper = (wso.orderNumber || "").toUpperCase();
-      const rzpId = wso.razorpayOrderId;
-      if (numUpper && masterOrderNums.has(numUpper)) return false;
-      if (rzpId && masterOrderRzpIds.has(rzpId)) return false;
-      return true;
-    });
+    // A WebStoreOrder is only the checkout-time mirror of an Order. Match it against ALL of this customer's orders,
+    // including the ones hidden above (abandoned / failed attempts), by Razorpay order id and every number the
+    // order has had. A checkout the shopper closed used to leave a "cancelled" mirror that no listed order matched,
+    // so it appeared as a separate CANCELLED order next to the real one they paid for on retry.
+    const allCustomerOrders = masterOrClauses.length > 0
+      ? await prisma.order.findMany({
+          where: { OR: masterOrClauses },
+          select: { razorpayOrderId: true, internalOrderNumber: true, previousOrderNumbers: true },
+        })
+      : [];
+    const masterOrderRzpIds = new Set<string>(allCustomerOrders.map((o: any) => String(o.razorpayOrderId || "")).filter(Boolean));
+    const masterOrderNums = new Set<string>(
+      allCustomerOrders
+        .flatMap((o: any) => [o.internalOrderNumber, ...String(o.previousOrderNumbers || '').split(',')])
+        .map((n: any) => String(n || '').trim().toUpperCase())
+        .filter(Boolean)
+    );
+    const standaloneWebOrders = webStoreOrders.filter((wso: any) =>
+      isStandaloneMirrorAnOrder(wso, { orderNumbers: masterOrderNums, razorpayOrderIds: masterOrderRzpIds })
+    );
 
     const transformedWebOrders = standaloneWebOrders.map((wso: any) => {
       const items = Array.isArray(wso.items) ? wso.items.map((i: any) => ({
@@ -276,6 +292,8 @@ export async function GET(req: Request) {
         id: wso.id,
         orderNumber: wso.orderNumber,
         status: derivedStatus,
+        isCancelled,
+        cancellationSource: null,
         paymentStatus: wso.paymentStatus,
         paymentMethod: wso.paymentMethod,
         totalPrice: Number(wso.totalAmount || 0),

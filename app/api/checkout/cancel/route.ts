@@ -34,6 +34,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid order id" }, { status: 400 });
     }
 
+    // Ask Razorpay before cancelling anything. Closing the Razorpay window does NOT mean the shopper did not pay:
+    // after paying in the UPI app the window often sits on "Processing" (the page was suspended) and gets closed
+    // while the payment is captured seconds later. Cancelling on the dismiss alone showed paid, shipped orders as
+    // "Cancelled" to the customer. A payment that is captured, authorized or still being processed blocks the
+    // cancel; if Razorpay cannot be asked, nothing is cancelled (the reconciler settles the order either way).
+    let rzpId: string | null = razorpayOrderId ? String(razorpayOrderId) : null;
+    if (!rzpId && localOrderId) {
+      const local = await prisma.order.findFirst({
+        where: { id: String(localOrderId), customerId: sessionUserId },
+        select: { razorpayOrderId: true },
+      });
+      rzpId = local?.razorpayOrderId || null;
+    }
+    if (rzpId) {
+      try {
+        const { createRazorpayClient } = await import("@/lib/razorpay-client");
+        const rzp = await createRazorpayClient();
+        if (!rzp) {
+          return NextResponse.json({ success: true, updated: 0, reason: "unverified" });
+        }
+        const res: any = await rzp.orders.fetchPayments(rzpId);
+        const payments: any[] = Array.isArray(res?.items) ? res.items : [];
+        const inFlight = payments.some((p) => ["captured", "authorized", "created"].includes(String(p?.status)));
+        if (inFlight) {
+          console.warn(`[Checkout Cancel] Not cancelling ${rzpId}: Razorpay has a payment that is captured, authorized or in progress`);
+          return NextResponse.json({ success: true, updated: 0, reason: "payment_in_progress" });
+        }
+      } catch (verifyErr: any) {
+        console.warn(`[Checkout Cancel] Could not verify ${rzpId} with Razorpay; leaving the order as it is:`, verifyErr?.message || verifyErr);
+        return NextResponse.json({ success: true, updated: 0, reason: "unverified" });
+      }
+    }
+
     const failureReason = String(reason || "payment_cancelled_by_user").slice(0, 200);
     const isCancelled = failureReason === "payment_cancelled_by_user";
 

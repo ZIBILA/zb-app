@@ -617,18 +617,10 @@ export async function syncOrderToShopify(orderId: string, options?: SyncOptions)
         authorization: order.razorpayPaymentId || `cod_upfront_${Date.now()}`,
       }];
     } else if (isZeroPaidOrder) {
-      // Manual ₹0 sale so Shopify marks the order paid (Razorpay gateway with 0.00 is unreliable).
-      shopifyOrderPayload.transactions = [{
-        kind: 'sale',
-        status: 'success',
-        amount: '0.00',
-        currency: order.currency || 'INR',
-        gateway: 'manual',
-        authorization: order.discountCode
-          ? `coupon_${order.discountCode}_${Date.now()}`
-          : `zero_paid_${Date.now()}`,
-      }];
-    } else if (order.paymentStatus === 'paid' || (order.paymentMethod !== 'COD' && order.paymentMethod !== 'cod' && orderTotal > 0)) {
+      // ₹0 paid (100% store credit / coupon): NO transaction. Shopify refuses a ₹0 sale with 422 "Amount must be
+      // greater than zero for sale transactions", which kept these orders out of Shopify (#ZB81594). The order is
+      // still created as paid through financial_status, and the store credit / coupon is on its discount lines.
+    } else if (orderTotal > 0 && (order.paymentStatus === 'paid' || (order.paymentMethod !== 'COD' && order.paymentMethod !== 'cod'))) {
       shopifyOrderPayload.transactions = [{
         kind: 'sale',
         status: 'success',
@@ -932,6 +924,9 @@ export async function pullAndSyncShopifyOrder(
       }).catch(() => null);
     }
 
+    // Set when a cancellation made in Shopify is accepted here: the order is then cancelled in full (status, time,
+    // source, refund), the same as the orders/cancelled webhook, not only its delivery / fulfillment fields.
+    let honoredShopifyCancel = false;
     if (o.cancelled_at) {
       const { shouldHonorShopifyOrderCancel } = await import('@/lib/services/orderLifecycleService');
       const decision = shouldHonorShopifyOrderCancel(order, {
@@ -942,6 +937,7 @@ export async function pullAndSyncShopifyOrder(
       if (decision.honor) {
         fulfillmentStatus = 'cancelled';
         deliveryStatus = 'cancelled';
+        honoredShopifyCancel = true;
       } else {
         console.warn(
           `[ShopifyOrderSync] Ignoring Shopify cancel for paid local order ` +
@@ -1070,6 +1066,9 @@ export async function pullAndSyncShopifyOrder(
           shopifySyncError: null,
           fulfillmentStatus,
           deliveryStatus,
+          ...(honoredShopifyCancel && String(order.status || '').toLowerCase() !== 'cancelled'
+            ? { status: 'cancelled', cancelledAt: order.cancelledAt || new Date(), cancelledBy: order.cancelledBy || 'shopify' }
+            : {}),
           delhivery_awb: primaryTrackingNumber || order.delhivery_awb,
           tracking_status: deliveryStatus,
           ...(deliveryStatus === 'delivered' ? { deliveredAt: order.deliveredAt || new Date() } : {}),
@@ -1081,6 +1080,15 @@ export async function pullAndSyncShopifyOrder(
         },
         include: { shipments: true }
       });
+    }
+
+    if (honoredShopifyCancel && order?.id) {
+      try {
+        const { processOrderRefund } = await import('@/lib/services/refundService');
+        await processOrderRefund(order.id, 'shopify-cancel');
+      } catch (refundErr: any) {
+        console.warn(`[ShopifyOrderSync] Refund after Shopify cancel failed for ${order.id}:`, refundErr?.message);
+      }
     }
 
     // 5. Update WebStoreOrder

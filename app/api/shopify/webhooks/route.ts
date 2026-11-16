@@ -349,6 +349,17 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
   const protectedFromShopifyCancel =
     Boolean(topic === 'orders/cancelled' || orderData.cancelled_at) && !honorShopifyCancel;
 
+  // Orders whose parcel we book ourselves (Shiprocket AWB on a local shipment) get their delivery state from the
+  // carrier; Shopify's fulfillment/delivery for them is only the copy we push (lib/services/shopifyLifecycleSync.ts).
+  // Copying it back would reset "in transit" to "pending", or call a parcel "shipped" before pickup.
+  const carrierManaged = existingLocalOrder?.id
+    ? (await prisma.shipment.count({ where: { orderId: existingLocalOrder.id, awb: { not: null } } })) > 0
+    : false;
+  const nextDeliveryStatus = carrierManaged ? existingLocalOrder!.deliveryStatus : deliveryStatus;
+  const nextFulfillmentStatus = carrierManaged
+    ? existingLocalOrder!.fulfillmentStatus
+    : orderData.fulfillment_status || 'unfulfilled';
+
   const order = await prisma.order.upsert({
     where: { shopifyOrderId: orderData.id.toString() },
     create: {
@@ -388,9 +399,9 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
       currency: orderData.currency || 'INR',
       paymentStatus: resolvedPaymentStatus,
       paymentMethod: orderData.gateway || (orderData.payment_gateway_names && orderData.payment_gateway_names[0]) || existingLocalOrder?.paymentMethod || null,
-      fulfillmentStatus: orderData.fulfillment_status || 'unfulfilled',
-      deliveryStatus: deliveryStatus,
-      ...(deliveryStatus === 'delivered' ? { deliveredAt: existingLocalOrder?.deliveredAt || new Date() } : {}),
+      fulfillmentStatus: nextFulfillmentStatus,
+      deliveryStatus: nextDeliveryStatus,
+      ...(nextDeliveryStatus === 'delivered' ? { deliveredAt: existingLocalOrder?.deliveredAt || new Date() } : {}),
       shippingAddress: orderData.shipping_address ? JSON.stringify(orderData.shipping_address) : null,
       billingAddress: orderData.billing_address ? JSON.stringify(orderData.billing_address) : null,
       note: orderData.note || null,
@@ -852,6 +863,16 @@ async function handleFulfillmentWebhook(shop: string, fulfillment: any) {
 
   const isCancelled = fulfillment.status === 'cancelled';
   const fulfillmentStatus = isCancelled ? 'unfulfilled' : 'fulfilled';
+
+  // Our own Shiprocket shipment is the source of truth for its status; this fulfillment is the copy we pushed.
+  if (order && (await prisma.shipment.count({ where: { orderId: order.id, awb: { not: null } } })) > 0) {
+    if (!isCancelled && order.fulfillmentStatus !== 'fulfilled') {
+      await prisma.order
+        .update({ where: { id: order.id }, data: { fulfillmentStatus: 'fulfilled' } })
+        .catch((e: any) => console.error('[Fulfillment Webhook] Failed to update order:', e.message));
+    }
+    return;
+  }
 
   // 1. Upsert Shipment row if trackingNumber is present
   if (trackingNumber && order) {

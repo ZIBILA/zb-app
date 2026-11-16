@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Minus, Plus, Trash2, ShoppingBag, Loader2, Lock, LogIn, User } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
+import { expandCartUnits } from "@/lib/cart-units";
 import { useCountry } from "@/lib/country-context";
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
@@ -18,7 +19,7 @@ function CartPageInner() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { items, count, subtotal, remove, update, clear, loadFromDB, isLoaded } = useCart();
+  const { items, count, subtotal, update, clear, loadFromDB, isLoaded } = useCart();
   const { formatPrice: fmtPrice } = useCountry();
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
@@ -228,9 +229,9 @@ function CartPageInner() {
             {/* Left Column: Cart Items List */}
             <div className="lg:col-span-8 space-y-3">
               <AnimatePresence>
-                {items.map((item) => (
+                {expandCartUnits(items).map((item) => (
                   <motion.div
-                    key={item.id}
+                    key={item.unitKey}
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, x: -30, scale: 0.95 }}
@@ -255,7 +256,7 @@ function CartPageInner() {
                         </p>
                       )}
                       <p className="text-[9.5px] font-inter font-semibold tracking-wider text-foreground/70">
-                        {fmtPrice(parseFloat(item.price) * item.quantity).formatted}
+                        {fmtPrice(parseFloat(item.price)).formatted}
                       </p>
                     </div>
 
@@ -263,23 +264,26 @@ function CartPageInner() {
                     <div className="flex flex-col items-center gap-2 flex-shrink-0">
                       <div className="glass-button flex items-center gap-1.5 !rounded-full px-2 py-1">
                         <button
-                          onClick={() => update(item.id, item.quantity - 1)}
+                          onClick={() => update(item.lineId, item.lineQuantity - 1)}
+                          aria-label="Remove this item"
                           className="w-5 h-5 flex items-center justify-center text-foreground/50 hover:text-foreground transition-colors active:scale-90"
                         >
                           <Minus className="w-3 h-3" />
                         </button>
                         <span className="text-[9.5px] font-inter font-semibold tracking-wider text-foreground/80 min-w-[20px] text-center">
-                          {item.quantity}
+                          1
                         </span>
                         <button
-                          onClick={() => update(item.id, item.quantity + 1)}
+                          onClick={() => update(item.lineId, item.lineQuantity + 1)}
+                          aria-label="Add another"
                           className="w-5 h-5 flex items-center justify-center text-foreground/50 hover:text-foreground transition-colors active:scale-90"
                         >
                           <Plus className="w-3 h-3" />
                         </button>
                       </div>
                       <button
-                        onClick={() => remove(item.id)}
+                        onClick={() => update(item.lineId, item.lineQuantity - 1)}
+                        aria-label="Remove this item"
                         className="text-foreground/20 hover:text-foreground/50 transition-colors active:scale-90 p-1"
                       >
                         <Trash2 className="w-3 h-3" />

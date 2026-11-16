@@ -6,6 +6,7 @@ import { enrichItemsWithSize } from '@/lib/enrichSize';
 import { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
 import { parseLinkedId } from '@/lib/linkedIds';
 import { isLogisticsFilter, LOGISTICS_BUCKET_STATUSES, pickActiveOutboundShipment, shipmentAwb, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
+import { IS_CANCELLED_WHERE, WAS_PLACED_WHERE, NEVER_PLACED_WHERE, cancellationSource, isOrderCancelled } from '@/lib/order-filters';
 
 /** Same definition of "COD order" the rest of the app uses (see isCodOrder below). */
 const COD_ORDER_WHERE = {
@@ -42,36 +43,13 @@ export async function GET(req: Request) {
       (logisticsParam && logisticsParam !== 'any') ||
       Boolean(search);
 
-    // All / Unfulfilled (payment=any): only successful prepaid + COD-upfront.
-    // Unpaid tab sets paymentStatus=pending explicitly and skips this gate.
+    // All / Unfulfilled / Cancelled (payment=any): every successfully placed order, cancelled ones included, never
+    // failed payments or abandoned checkouts (lib/order-filters.ts). This used to require a paid payment status and
+    // exclude status "cancelled", so the Cancelled filter always showed 0 and cancelled orders could not be found by
+    // search, while cancelled orders written as "CANCELLED" still showed under Unfulfilled.
     if (!paymentStatus || paymentStatus === 'any') {
-      conditions.push({
-        paymentStatus: {
-          in: [...COD_PAID_LIKE, ...REFUNDED_LIKE],
-        },
-      });
-      conditions.push({
-        NOT: {
-          OR: [
-            { internalOrderNumber: { startsWith: 'ZBPF' } },
-            {
-              AND: [
-                { internalOrderNumber: { startsWith: 'ZBPP' } },
-                { paymentStatus: { in: ['pending', 'payment_pending', 'failed', 'payment_failed'] } },
-              ],
-            },
-            {
-              AND: [
-                { orderType: 'MOBILE_APP' },
-                { status: 'awaiting_approval' },
-              ],
-            },
-            { status: 'cancelled' },
-            { status: 'payment_failed' },
-            { paymentStatus: { in: ['cancelled', 'CANCELLED', 'canceled', 'CANCELED', 'voided', 'VOIDED', 'failed', 'payment_failed', 'pending', 'payment_pending'] } },
-          ],
-        },
-      });
+      conditions.push(WAS_PLACED_WHERE);
+      conditions.push({ NOT: NEVER_PLACED_WHERE });
     } else if (!isExplicitQuery) {
       conditions.push({
         NOT: {
@@ -96,7 +74,11 @@ export async function GET(req: Request) {
       });
     }
 
-    if (status && status !== 'any') {
+    if (status === 'cancelled') {
+      // Cancelled after being placed (any spelling of the status); abandoned checkouts are excluded by WAS_PLACED.
+      conditions.push(IS_CANCELLED_WHERE);
+      conditions.push(WAS_PLACED_WHERE);
+    } else if (status && status !== 'any') {
       conditions.push({ status });
     }
 
@@ -147,8 +129,9 @@ export async function GET(req: Request) {
 
     if (fulfillmentStatus && fulfillmentStatus !== 'any') {
       conditions.push({ fulfillmentStatus });
-      // Unfulfilled tab: only orders that still need AWB generation
+      // Unfulfilled tab: only active orders that still need AWB generation (never a cancelled one)
       if (fulfillmentStatus === 'unfulfilled') {
+        conditions.push({ NOT: IS_CANCELLED_WHERE });
         conditions.push({
           AND: [
             { OR: [{ delhivery_awb: null }, { delhivery_awb: '' }] },
@@ -239,7 +222,9 @@ export async function GET(req: Request) {
           { shopifyOrderName: { contains: cleanNum, mode: 'insensitive' } },
           { internalOrderNumber: { contains: trimmed, mode: 'insensitive' } },
           { internalOrderNumber: { contains: cleanNum, mode: 'insensitive' } },
-          { shopifyOrderId: { contains: cleanNum, mode: 'insensitive' } }
+          { shopifyOrderId: { contains: cleanNum, mode: 'insensitive' } },
+          // A cancelled order is renumbered ZBCC…; its original number stays searchable.
+          { previousOrderNumbers: { contains: cleanNum, mode: 'insensitive' } }
         );
       }
 
@@ -357,7 +342,9 @@ export async function GET(req: Request) {
       const noteLower = ((order.note as string) || '').toLowerCase();
       const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
       const paymentMethod = isCodOrder ? 'COD' : ((webStoreOrder?.paymentMethod as string) || (order.paymentMethod as string) || 'razorpay');
-      let paymentStatus = (webStoreOrder?.paymentStatus as string) || (order.paymentStatus as string);
+      // The Order row is the source of truth. The WebStoreOrder mirror is not always revived after a late capture
+      // (it can still say "cancelled" for a paid order), so it is only a fallback.
+      let paymentStatus = (order.paymentStatus as string) || (webStoreOrder?.paymentStatus as string);
       // COD lifecycle: upfront paid → (delivered + cash collected by courier) → Paid / Settled.
       const isDelivered = String(order.deliveryStatus || '').toLowerCase() === 'delivered';
       const settledCod =
@@ -421,9 +408,14 @@ export async function GET(req: Request) {
       const trackingUrl = latestShipment?.trackingUrl || (webStoreOrder?.trackingUrl as string) || (trackingNumber ? `https://zicabella.shiprocket.co/tracking/${trackingNumber}` : null);
       const courier = latestShipment?.courier || (order.delhivery_awb ? 'Delhivery' : (trackingNumber ? 'Standard Express' : null));
 
+      const isCancelled = isOrderCancelled(order as any);
+      const cancelSource = isCancelled ? cancellationSource(order as any) : null;
+
       return {
         ...order,
         displayOrderNumber,
+        isCancelled,
+        cancellationSource: cancelSource,
         totalPrice,
         codUpfrontPaid,
         paymentMethod,

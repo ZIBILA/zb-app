@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { invalidateAdminCache } from "@/lib/adminClientCache";
 import { normalizeOrderShippingAddress } from "@/lib/order-shipping-address";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -40,6 +41,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { formatExactDateTime, extractItemVariantAndSize } from "@/lib/utils";
 import ShiprocketActions from "@/components/orders/ShiprocketActions";
+import AddressQuality from "@/components/orders/AddressQuality";
 import LineItemEditor from "@/components/orders/LineItemEditor";
 import { carrierStatusLabel, isReverseShipmentType, normalizeCarrierStatus, pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
 import VariantBadge from "@/components/admin/VariantBadge";
@@ -322,6 +324,7 @@ export default function OrderDetailPage() {
       if (data.success) {
         setToast("Protocol Updated");
         setIsEditing(false);
+        invalidateAdminCache("/api/admin/orders");
         fetchOrder(true);
       }
     } catch (err) {
@@ -387,6 +390,8 @@ export default function OrderDetailPage() {
       if (data.success) {
         setToast("Order Cancelled");
         setShowCancelModal(false);
+        // The orders list caches for 30 s; drop it so every filter shows the cancellation right away.
+        invalidateAdminCache("/api/admin/orders");
         fetchOrder(true);
       } else {
         setShowCancelModal(false);
@@ -465,6 +470,9 @@ export default function OrderDetailPage() {
     </div>
   );
 
+  // Server-computed with the one shared rule (lib/order-filters.ts); raw status only as a fallback.
+  const orderCancelled: boolean = (order as any).isCancelled ?? order.status === 'cancelled';
+
   let shippingAddr: any = null;
   try {
     shippingAddr = order.shippingAddress ? JSON.parse(order.shippingAddress) : null;
@@ -536,7 +544,7 @@ export default function OrderDetailPage() {
                     <span className="ml-2 text-lg text-foreground/40 font-normal">({order.shopifyOrderName})</span>
                   )}
                 </h1>
-                <div className={`px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${order.status === 'cancelled' || order.status === 'payment_failed' ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                <div className={`px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${orderCancelled || order.status === 'payment_failed' ? 'bg-rose-500/10 text-rose-500' : 'bg-blue-500/10 text-blue-500'}`}>
                   {order.status}
                 </div>
                 {order.orderType === 'MOBILE_APP' && (
@@ -638,7 +646,7 @@ export default function OrderDetailPage() {
         {/* Main Content */}
         <div className="lg:col-span-8 space-y-12">
           {/* Status Alert for Failed/Cancelled */}
-          {(order.status === 'cancelled' || order.status === 'payment_failed') && (
+          {(orderCancelled || order.status === 'payment_failed') && (
             <div className="p-8 rounded-[32px] bg-rose-500/5 border border-rose-500/10 flex items-center gap-6">
               <div className="w-12 h-12 rounded-2xl bg-rose-500/10 flex items-center justify-center border border-rose-500/20">
                 <AlertCircle className="w-6 h-6 text-rose-500" />
@@ -646,7 +654,7 @@ export default function OrderDetailPage() {
               <div>
                 <h4 className="text-[15px] font-bold text-rose-500 uppercase tracking-tighter">Process Terminated</h4>
                 <p className="text-[12px] text-rose-500/60 font-medium mt-1">
-                  This order has been {order.status === 'cancelled' ? 'cancelled by the user' : 'failed due to payment issues'}. All downstream logistics and fulfillment protocols have been suspended.
+                  This order has been {orderCancelled ? ((order as any).cancellationSource === 'admin' ? 'cancelled by the admin' : (order as any).cancellationSource === 'customer' ? 'cancelled by the customer' : 'cancelled') : 'failed due to payment issues'}. All downstream logistics and fulfillment protocols have been suspended.
                 </p>
               </div>
             </div>
@@ -658,14 +666,14 @@ export default function OrderDetailPage() {
               { 
                 label: "Financial", 
                 key: 'paymentStatus', 
-                value: isEditing ? editValues.paymentStatus : (order.status === 'cancelled' ? 'cancelled' : (order.paymentStatus === 'failed' || order.status === 'payment_failed' ? 'failed' : order.paymentStatus)), 
+                value: isEditing ? editValues.paymentStatus : (orderCancelled ? 'cancelled' : (order.paymentStatus === 'failed' || order.status === 'payment_failed' ? 'failed' : order.paymentStatus)), 
                 icon: CreditCard,
                 options: ['pending', 'paid', 'failed', 'refunded']
               },
               { 
                 label: "Inventory", 
                 key: 'fulfillmentStatus', 
-                value: isEditing ? editValues.fulfillmentStatus : (order.status === 'cancelled' ? 'cancelled' : (order.paymentStatus === 'failed' || order.status === 'payment_failed' ? 'failed' : order.fulfillmentStatus)), 
+                value: isEditing ? editValues.fulfillmentStatus : (orderCancelled ? 'cancelled' : (order.paymentStatus === 'failed' || order.status === 'payment_failed' ? 'failed' : order.fulfillmentStatus)), 
                 icon: Box,
                 options: ['unfulfilled', 'fulfilled', 'cancelled']
               },
@@ -674,7 +682,7 @@ export default function OrderDetailPage() {
                 key: 'deliveryStatus', 
                 value: isEditing
                   ? editValues.deliveryStatus
-                  : (order.status === 'cancelled'
+                  : (orderCancelled
                     ? 'cancelled'
                     : (order.paymentStatus === 'failed' || order.status === 'payment_failed'
                       ? 'failed'
@@ -931,7 +939,7 @@ export default function OrderDetailPage() {
           )}
 
           {/* Logistics Terminal */}
-          <div className={`p-10 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-8 ${(order.status === 'cancelled' || order.status === 'payment_failed') ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
+          <div className={`p-10 rounded-[40px] bg-foreground/[0.02] border border-foreground/5 space-y-8 ${(orderCancelled || order.status === 'payment_failed') ? 'opacity-40 pointer-events-none grayscale' : ''}`}>
             {(() => {
               const allShipments = ((order as any).shipments || []) as Array<{
                 type?: string | null;
@@ -998,7 +1006,11 @@ export default function OrderDetailPage() {
                 <>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="space-y-1">
-                      <h3 className="text-lg font-semibold text-foreground tracking-tight">Logistics Command</h3>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <h3 className="text-lg font-semibold text-foreground tracking-tight">Logistics Command</h3>
+                        {/* Address check before dispatch (RTO prevention): real checks only, see lib/services/addressQuality.ts */}
+                        <AddressQuality orderId={order.id} awbAssigned={Boolean(awb)} onAddressUpdated={() => fetchOrder(true)} />
+                      </div>
                       <p className="text-[11px] text-foreground/40 font-bold uppercase tracking-widest flex items-center gap-1.5">
                         <Truck className="w-3.5 h-3.5 text-indigo-400" />
                         {courier}
@@ -1267,7 +1279,7 @@ export default function OrderDetailPage() {
             <div className="h-[1px] bg-foreground/5 relative z-10" />
 
             {/* Refund Status Row (only if cancelled) */}
-            {order.status === 'cancelled' && (
+            {orderCancelled && (
               <>
                 <div className="space-y-4 relative z-10">
                   <div className="flex justify-between items-center">

@@ -8,6 +8,7 @@ import { useCartStore } from '../../store/cartStore';
 import { Typography } from '../../components/Typography';
 import CartItem from '../../components/CartItem';
 import CheckoutSummaryBar from '../../components/CheckoutSummaryBar';
+import { expandCartUnits } from '../../utils/cartUnits';
 
 export default function BagReviewScreen() {
   const insets = useSafeAreaInsets();
@@ -34,9 +35,9 @@ export default function BagReviewScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.content}>
-          {items.map((item) => (
+          {expandCartUnits(items).map((item) => (
             <CartItem 
-              key={item.id}
+              key={item.unitKey}
               item={item}
               onUpdateQuantity={updateQuantity}
               onRemove={removeItem}

@@ -219,7 +219,7 @@ function OrdersPageInner() {
               const paymentLower = String(order.paymentStatus || '').toLowerCase();
               const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(paymentLower);
               const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
-              const isCancelled =
+              const isCancelled = typeof order.isCancelled === 'boolean' ? order.isCancelled :
                 statusLower === 'cancelled' ||
                 statusLower === 'canceled' ||
                 paymentLower === 'cancelled' ||
@@ -237,7 +237,7 @@ function OrdersPageInner() {
                 : (safeDeliveryStatus || safeStatus || 'pending');
               const statusConfig = getStatusConfig(statusKey);
               const statusLabel =
-                isCancelled && String(order.cancelledBy || '').toLowerCase() === 'admin'
+                isCancelled && (order.cancellationSource === 'admin' || String(order.cancelledBy || '').toLowerCase() === 'admin')
                   ? 'Cancelled by Zica Bella'
                   : statusConfig.label;
               const StatusIcon = statusConfig.icon;

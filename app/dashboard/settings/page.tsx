@@ -15,6 +15,7 @@ interface SettingsData {
   razorpayKeyId: string;
   razorpayKeySecret: string;
   codUpfrontAmount: number | string;
+  codMaxOrderValue: number | string;
   shiprocketEmail: string;
   shiprocketPassword: string;
   shiprocketToken: string;
@@ -145,7 +146,7 @@ export default function AdminSettingsPage() {
 
     const adminKeys: (keyof SettingsData)[] = [
         'shopDomain', 'accessToken',
-        'razorpayKeyId', 'razorpayKeySecret', 'codUpfrontAmount',
+        'razorpayKeyId', 'razorpayKeySecret', 'codUpfrontAmount', 'codMaxOrderValue',
         'shiprocketEmail', 'shiprocketPassword', 'shiprocketToken', 'webhookSecret',
         'whatsappPhoneId', 'whatsappToken', 'firebaseProjectId', 'firebaseClientEmail',
         'firebasePrivateKey', 'sendgridApiKey', 'twilioAccountSid', 'twilioAuthToken', 'twilioPhoneNumber',
@@ -251,6 +252,17 @@ export default function AdminSettingsPage() {
                  → Razorpay status, webhooks, and mobile app notes
               </Link>
            </div>
+        </SettingsGroup>
+
+        {/* Rate Card */}
+        <SettingsGroup title="Rate Card" icon={Shield}>
+           <SettingsRow label="Maximum COD Order Value (₹)" icon={Shield} description="Orders above this total are prepaid only, on the website and the app (checked again on the server)">
+              <InputField
+                value={String(settings.codMaxOrderValue ?? 19999)}
+                onChange={(v) => set('codMaxOrderValue')(v.replace(/[^\d]/g, ''))}
+                placeholder="19999"
+              />
+           </SettingsRow>
         </SettingsGroup>
 
         {/* Logistics Group */}

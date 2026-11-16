@@ -57,6 +57,8 @@ export default function OrderDetailsScreen() {
     const p = String(order.paymentStatus || '').toLowerCase();
     const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(p);
     const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
+    // The server decides with the one rule shared by the app, the website and the dashboard.
+    if (typeof (order as any).isCancelled === 'boolean') return (order as any).isCancelled;
     return s === 'cancelled' || s === 'canceled' || p === 'cancelled' || p === 'voided' || (Boolean(order.cancelledBy) && !isPaidLike && !isDeliveredOrShipped);
   }, [order]);
 
@@ -243,7 +245,7 @@ export default function OrderDetailsScreen() {
   const payLower = String(order.paymentStatus || '').toLowerCase();
   const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
   const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(order.deliveryStatus || '').toLowerCase());
-  const isCancelled =
+  const isCancelled = typeof (order as any).isCancelled === 'boolean' ? (order as any).isCancelled :
     String(order.status || '').toLowerCase() === 'cancelled' ||
     String(order.status || '').toLowerCase() === 'canceled' ||
     payLower === 'cancelled' ||

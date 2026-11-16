@@ -185,9 +185,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       }
     });
 
+    const { getCustomerStats } = await import('@/lib/services/customerStats');
+    const stats = await getCustomerStats(params.id).catch(() => null);
+
     return NextResponse.json({
       success: true,
-      customer: finalCustomer
+      customer: finalCustomer ? { ...finalCustomer, ...(stats ? { placedOrders: stats.orders, lifetimeRevenue: stats.revenue } : {}) } : finalCustomer
     });
   } catch (error) {
     return handleAuthError(error);

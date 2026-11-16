@@ -13,6 +13,7 @@
  */
 
 import prisma from '@/lib/db';
+import { isOrderCancelled } from '@/lib/order-filters';
 import { sendEmail } from '@/lib/mailer';
 import { lifecycleEmail, type LifecycleEmailData } from '@/lib/email-templates/lifecycle';
 import {
@@ -161,7 +162,9 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
     };
     if (!isDeliverableEmail(to)) continue;
 
-    if (status === 'cancelled' || delivery.includes('cancel')) {
+    // Shared cancellation rule (lib/order-filters.ts). A voided / re-booked AWB writes deliveryStatus "cancelled" on a
+    // live order; that used to email the customer "your order has been cancelled" for a parcel still on its way.
+    if (isOrderCancelled(order)) {
       await emitOrderTemplate('ORDER_CANCELLED', () => sendOrderCancelledEmail(orderData));
     } else if (delivery === 'delivered') {
       await emitOrderTemplate('ORDER_DELIVERED', () => sendOrderDeliveredEmail(orderData));

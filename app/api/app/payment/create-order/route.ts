@@ -206,6 +206,20 @@ export async function POST(req: Request) {
         );
       }
     }
+    // Rate Card: orders above the dashboard COD limit are prepaid only (enforced before the upfront is charged).
+    if (isCod) {
+      const { getCodMaxOrderValue, isCodAllowedForAmount, codLimitError } = await import('@/lib/cod-limit');
+      const maxCod = await getCodMaxOrderValue();
+      const codOrderValue = lineItems.length > 0
+        ? Math.max(0, linesSubtotal - appliedCredits - verifiedDiscount)
+        : Number(orderData?.total ?? orderData?.total_price ?? amountRupees) || 0;
+      if (!isCodAllowedForAmount(codOrderValue, maxCod)) {
+        return NextResponse.json(
+          { error: codLimitError(maxCod, codOrderValue), code: 'COD_LIMIT_EXCEEDED', maxCodOrderValue: maxCod },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+    }
     if (!isCod && prepaidCharge <= 0) {
       return NextResponse.json(
         { error: 'Invalid prepaid amount after discounts' },

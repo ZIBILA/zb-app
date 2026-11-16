@@ -13,6 +13,7 @@ import { Typography } from '../components/Typography';
 import { useRef } from 'react';
 import { useThemeStore } from '../store/themeStore';
 import { requireValidAuth } from '../utils/tokenUtils';
+import { expandCartUnits } from '../utils/cartUnits';
 
 
 export default function CartScreen() {
@@ -88,8 +89,8 @@ export default function CartScreen() {
       ) : (
         <View style={styles.cartContent}>
           <FlatList
-            data={items}
-            keyExtractor={(item) => item.id}
+            data={expandCartUnits(items)}
+            keyExtractor={(item) => item.unitKey}
             renderItem={({ item }) => (
               <CartItem
                 item={item}

@@ -122,7 +122,7 @@ export default function OrderHistoryScreen() {
       const payLower = String(o.paymentStatus || o.payment_status || o.financialStatus || o.financial_status || '').toLowerCase();
       const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
       const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(o.deliveryStatus || '').toLowerCase()) || !!deliveredAt;
-      const isCancelled =
+      const isCancelled = typeof o.isCancelled === 'boolean' ? o.isCancelled :
         mainStatus === 'cancelled' ||
         mainStatus === 'canceled' ||
         payLower === 'cancelled' ||
@@ -339,7 +339,7 @@ export default function OrderHistoryScreen() {
       const payLower = finStatus;
       const isPaidLike = ['paid', 'cod_upfront_paid', 'partially_paid', 'success'].includes(payLower);
       const isDeliveredOrShipped = ['delivered', 'shipped', 'out_for_delivery'].includes(String(o.deliveryStatus || '').toLowerCase()) || !!deliveredAt;
-      const isCancelled =
+      const isCancelled = typeof o.isCancelled === 'boolean' ? o.isCancelled :
         s === 'cancelled' ||
         s === 'canceled' ||
         payLower === 'cancelled' ||

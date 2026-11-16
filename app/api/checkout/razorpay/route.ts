@@ -228,6 +228,18 @@ export async function POST(req: Request) {
 
     const calculatedTotal = Math.max(0, rawSubtotal + rawShipping - finalCouponDiscount - rawStoreCredit);
 
+    // Rate Card: orders above the dashboard COD limit are prepaid only (enforced here, before any payment).
+    if (isCodOrder) {
+      const { getCodMaxOrderValue, isCodAllowedForAmount, codLimitError } = await import('@/lib/cod-limit');
+      const maxCod = await getCodMaxOrderValue();
+      if (!isCodAllowedForAmount(calculatedTotal, maxCod)) {
+        return NextResponse.json(
+          { error: codLimitError(maxCod, calculatedTotal), code: 'COD_LIMIT_EXCEEDED', maxCodOrderValue: maxCod },
+          { status: 400 }
+        );
+      }
+    }
+
     // COD: always charge the dashboard-configured upfront fee (ignore client amount for safety).
     // Prepaid: charge the calculated order total.
     const { getConfiguredCodUpfrontAmount } = await import("@/lib/cod-upfront");

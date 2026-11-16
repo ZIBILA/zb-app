@@ -423,3 +423,70 @@ export async function getStoreCreditEarnedForOrder(orderId: string): Promise<num
   const total = rows.reduce((sum: number, r: { amount: number }) => sum + Number(r.amount || 0), 0);
   return Number.isFinite(total) && total > 0 ? Math.round(total * 100) / 100 : 0;
 }
+
+/**
+ * Coupon cashback (store credit) for paid prepaid web orders that never got it.
+ *
+ * Checkout issues the cashback only when the browser finishes /api/checkout/complete. An order confirmed by the
+ * Razorpay webhook or the reconciler instead (shopper closed the tab, came back from the UPI app late...) was paid
+ * but never credited, so the customer got neither the credit nor its WhatsApp message. This issues exactly what
+ * checkout would have: same coupon maths on the order's pre-discount subtotal, 90-day expiry, and the same
+ * idempotency key (`cashback:<orderId>`), so it can never double-credit an order /complete already handled.
+ *
+ * Returns how many orders were credited.
+ */
+export async function issueMissingCouponCashback(opts: { since?: Date; limit?: number } = {}): Promise<number> {
+  const since = opts.since ?? new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  const orders = await prisma.order.findMany({
+    where: {
+      createdAt: { gte: since },
+      discountCode: { not: null },
+      paymentStatus: { in: ['paid', 'PAID'] },
+      status: { notIn: ['cancelled', 'CANCELLED'] },
+      orderType: { not: 'EXCHANGE' },
+    },
+    select: { id: true, customerId: true, discountCode: true, subtotalPrice: true, paymentMethod: true },
+    orderBy: { createdAt: 'desc' },
+    take: opts.limit ?? 200,
+  });
+
+  const { resolveWebCoupon } = await import('@/lib/web-coupon');
+  let credited = 0;
+  for (const o of orders) {
+    if (/cod|cash/i.test(String(o.paymentMethod || '')) || /store_credit|coupon/i.test(String(o.paymentMethod || ''))) continue;
+    const existing = await prisma.storeCredit.findFirst({
+      where: { OR: [{ orderId: o.id, type: { in: ['PENDING_COUPON_REBATE', 'COUPON_REBATE'] } }, { idempotencyKey: `cashback:${o.id}` }] },
+      select: { id: true },
+    });
+    if (existing) continue;
+
+    const coupon = await resolveWebCoupon({ code: o.discountCode, subtotal: Number(o.subtotalPrice) || 0, isCod: false, ignoreLimits: true });
+    const amount = Number(coupon.cashback) || 0;
+    if (!coupon.valid || amount <= 0) continue;
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 90);
+    try {
+      await prisma.$transaction([
+        prisma.customer.update({ where: { id: o.customerId }, data: { storeCredits: { increment: amount } } }),
+        prisma.storeCredit.create({
+          data: {
+            customerId: o.customerId,
+            amount,
+            type: 'COUPON_REBATE',
+            description: `Cashback for applying coupon code ${String(o.discountCode).toUpperCase()}`,
+            orderId: o.id,
+            expiresAt,
+            remainingAmount: amount,
+            idempotencyKey: `cashback:${o.id}`,
+          },
+        }),
+      ]);
+      credited += 1;
+      console.log(`[Store Credits] Issued missing ₹${amount} cashback for paid order ${o.id}`);
+    } catch (err: any) {
+      if (err?.code !== 'P2002') console.error(`[Store Credits] Cashback for order ${o.id} failed:`, err?.message);
+    }
+  }
+  return credited;
+}

@@ -497,6 +497,15 @@ export async function createOrder(order: any, options?: { idempotencyKey?: strin
     const e164 = toE164(normalized.billing_address.phone);
     if (e164) normalized.billing_address.phone = e164;
   }
+  // Shopify rejects the whole order (422 "Amount must be greater than zero for sale transactions") when a sale or
+  // capture transaction is ₹0, e.g. an order paid 100% with store credit or a coupon. A ₹0 order needs no
+  // transaction: financial_status "paid" already marks it paid.
+  if (Array.isArray(normalized.transactions)) {
+    normalized.transactions = normalized.transactions.filter(
+      (t: any) => !(['sale', 'capture'].includes(String(t?.kind)) && !(Number(t?.amount) > 0))
+    );
+    if (normalized.transactions.length === 0) delete normalized.transactions;
+  }
 
   // Idempotency support: source_identifier and Idempotency-Key header
   const customHeaders: Record<string, string> = {};
@@ -2055,6 +2064,85 @@ export async function createFulfillment(
   return data.fulfillment;
 }
 
+export type ShopifyTrackingInfo = { number: string; url?: string | null; company?: string | null };
+
+/**
+ * Fulfil every still-open fulfillment order of a Shopify order with the given tracking (current fulfillment-orders
+ * API; the old POST orders/{id}/fulfillments.json no longer exists in API 2025-01). notify_customer is off: the
+ * customer already gets our own shipping messages. Returns the created fulfillments.
+ */
+export async function fulfillShopifyOrder(orderId: string, tracking: ShopifyTrackingInfo): Promise<any[]> {
+  const id = String(orderId).replace(/\D/g, '');
+  const { fulfillment_orders } = await shopifyFetch<{ fulfillment_orders: any[] }>(`orders/${id}/fulfillment_orders.json`, undefined, { ttlMs: 0 });
+  const open = (fulfillment_orders || []).filter(
+    (fo) => ['open', 'in_progress', 'scheduled'].includes(String(fo.status)) &&
+      (!Array.isArray(fo.supported_actions) || fo.supported_actions.includes('create_fulfillment'))
+  );
+  const created: any[] = [];
+  for (const fo of open) {
+    const data = await shopifyPost<{ fulfillment: any }>('fulfillments.json', {
+      fulfillment: {
+        line_items_by_fulfillment_order: [{ fulfillment_order_id: fo.id }],
+        tracking_info: {
+          number: tracking.number,
+          ...(tracking.url ? { url: tracking.url } : {}),
+          ...(tracking.company ? { company: tracking.company } : {}),
+        },
+        notify_customer: false,
+      },
+    });
+    if (data?.fulfillment) created.push(data.fulfillment);
+  }
+  return created;
+}
+
+/** Replace the tracking of an existing fulfillment (AWB re-assigned). */
+export async function updateShopifyFulfillmentTracking(fulfillmentId: string | number, tracking: ShopifyTrackingInfo): Promise<any> {
+  const data = await shopifyPost<{ fulfillment: any }>(`fulfillments/${fulfillmentId}/update_tracking.json`, {
+    fulfillment: {
+      tracking_info: {
+        number: tracking.number,
+        ...(tracking.url ? { url: tracking.url } : {}),
+        ...(tracking.company ? { company: tracking.company } : {}),
+      },
+      notify_customer: false,
+    },
+  });
+  return data?.fulfillment;
+}
+
+/** Shipment progress on a fulfillment: in_transit, out_for_delivery, attempted_delivery, delivered... */
+export async function createShopifyFulfillmentEvent(orderId: string, fulfillmentId: string | number, status: string): Promise<any> {
+  const id = String(orderId).replace(/\D/g, '');
+  const data = await shopifyPost<{ fulfillment_event: any }>(`orders/${id}/fulfillments/${fulfillmentId}/events.json`, {
+    event: { status },
+  });
+  return data?.fulfillment_event;
+}
+
+/** Cancel a fulfillment (its shipment was cancelled before dispatch). */
+export async function cancelShopifyFulfillment(fulfillmentId: string | number): Promise<any> {
+  const data = await shopifyPost<{ fulfillment: any }>(`fulfillments/${fulfillmentId}/cancel.json`, {});
+  return data?.fulfillment;
+}
+
+/**
+ * Mark the outstanding balance of an order as paid (a delivered COD order whose cash was collected), so Shopify
+ * shows "Paid" instead of "Partially paid".
+ */
+export async function markShopifyOrderAsPaid(orderId: string): Promise<string | null> {
+  const id = String(orderId).replace(/\D/g, '');
+  const res = await shopifyGraphqlFetch<any>(
+    `mutation MarkPaid($input: OrderMarkAsPaidInput!) {
+      orderMarkAsPaid(input: $input) { order { id displayFinancialStatus } userErrors { field message } }
+    }`,
+    { input: { id: `gid://shopify/Order/${id}` } }
+  );
+  const errors = res?.orderMarkAsPaid?.userErrors || [];
+  if (errors.length) throw new Error(`orderMarkAsPaid: ${errors.map((e: any) => e.message).join('; ')}`);
+  return res?.orderMarkAsPaid?.order?.displayFinancialStatus || null;
+}
+
 /**
  * Update a Shopify product (e.g., change status to active/draft).
  */
@@ -2410,6 +2498,38 @@ export async function createRefund(
     }
   );
   return data.refund;
+}
+
+/**
+ * Record a money refund on a Shopify order (no line items: a cancellation already restocked them), so Shopify's
+ * payment status follows what was actually refunded through Razorpay or store credit. Refunds against the order's
+ * own successful sale/capture transaction and never more than what is still unrefunded there, so calling it again
+ * is a no-op. Returns the refunded amount (0 when nothing was left to refund or there is no paid transaction).
+ */
+export async function recordShopifyOrderRefund(
+  orderId: string,
+  amount: number,
+  note: string,
+  opts?: { notify?: boolean }
+): Promise<number> {
+  const id = String(orderId).replace(/\D/g, '');
+  if (!id || !(amount > 0)) return 0;
+  const { transactions } = await shopifyFetch<{ transactions: any[] }>(`orders/${id}/transactions.json`, undefined, { ttlMs: 0 });
+  const ok = (transactions || []).filter((t) => String(t.status) === 'success');
+  const parent = ok.find((t) => t.kind === 'sale' || t.kind === 'capture');
+  if (!parent) return 0;
+  const paid = ok.filter((t) => t.kind === 'sale' || t.kind === 'capture').reduce((s, t) => s + Number(t.amount || 0), 0);
+  const refunded = ok.filter((t) => t.kind === 'refund').reduce((s, t) => s + Number(t.amount || 0), 0);
+  const toRefund = Math.round(Math.min(amount, paid - refunded) * 100) / 100;
+  if (!(toRefund > 0)) return 0;
+  await shopifyPost<{ refund: any }>(`orders/${id}/refunds.json`, {
+    refund: {
+      note,
+      notify: opts?.notify === true,
+      transactions: [{ parent_id: parent.id, amount: toRefund.toFixed(2), kind: 'refund', gateway: parent.gateway }],
+    },
+  });
+  return toRefund;
 }
 
 /**

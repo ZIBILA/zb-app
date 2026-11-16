@@ -572,6 +572,16 @@ export async function POST(req: Request) {
       String(financial_status || '').toLowerCase()
     );
 
+    // Rate Card: COD above the dashboard limit is prepaid only (a COD order without a paid upfront).
+    if (isCod && !claimedPaid) {
+      const { getCodMaxOrderValue, isCodAllowedForAmount, codLimitError } = await import('@/lib/cod-limit');
+      const maxCod = await getCodMaxOrderValue();
+      const codOrderValue = Number(total_price) || 0;
+      if (!isCodAllowedForAmount(codOrderValue, maxCod)) {
+        return NextResponse.json({ success: false, error: codLimitError(maxCod, codOrderValue) }, { status: 400, headers: corsHeaders });
+      }
+    }
+
     // Never trust client financial_status — require live Razorpay capture before confirming.
     let verifiedPaymentStatus = 'pending';
     let verifiedCodUpfrontPaid = 0;

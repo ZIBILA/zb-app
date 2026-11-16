@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isOrderCancelled, cancellationSource } from '@/lib/order-filters';
 import prisma from '@/lib/db';
 import { fetchProductById } from '@/lib/shopify-admin';
 import { extractItemVariantAndSize } from '@/lib/utils';
@@ -236,7 +237,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             Number(webStoreOrder?.codUpfrontPaid) ||
             Number((order as any).codUpfrontPaid) ||
             0,
-          paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
+          paymentStatus: order.paymentStatus || webStoreOrder?.paymentStatus,
           paymentMethod: order.paymentMethod,
           tags: order.tags,
           note: order.note,
@@ -250,7 +251,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         })
       : 0;
 
-    const baseStatus = String(webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
+    // The Order row is the source of truth; the WebStoreOrder mirror is only a fallback (it can be stale).
+    const baseStatus = String(order.paymentStatus || webStoreOrder?.paymentStatus || '').toLowerCase();
     const codSettled =
       isCodOrder &&
       String(order.deliveryStatus || '').toLowerCase() === 'delivered' &&
@@ -291,9 +293,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       paymentMethod: finalPaymentMethod,
       paymentStatus: codSettled
         ? 'paid'
-        : webStoreOrder?.paymentStatus || (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus),
+        : (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus) || webStoreOrder?.paymentStatus,
       /** COD cash collected by the courier on delivery → fully settled. */
       codSettled,
+      // Same cancellation rule as the dashboard list, the website and the app (lib/order-filters.ts).
+      isCancelled: isOrderCancelled(order as any),
+      cancellationSource: cancellationSource(order as any),
     };
 
     return NextResponse.json({
@@ -603,13 +608,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       if (!isMobileOrder) {
         const order = await prisma.order.findUnique({ where: { id } });
         if (order && order.shopifyOrderId && !order.shopifyOrderId.startsWith('#') && !order.shopifyOrderId.startsWith('app_pending_')) {
-          try {
-            const { cancelOrder } = await import('@/lib/shopify-admin');
-            await cancelOrder(order.shopifyOrderId);
-          } catch (shopifyErr) {
-            console.error('[Admin Order PATCH] Failed to cancel order in Shopify:', shopifyErr);
-          }
-          // Sync the new ZBCC number to Shopify tags after cancellation
+          // The Shopify cancel (with restock) happens once, further down with the refund. Cancelling here as well
+          // made that second cancel fail as "already cancelled", which then restocked Shopify a second time.
+          // Sync the new ZBCC number to Shopify tags
           if (body.internalOrderNumber) {
             try {
               const { updateOrderTags } = await import('@/lib/shopify-admin');

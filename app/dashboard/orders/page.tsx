@@ -40,6 +40,9 @@ interface Order {
   id: string;
   shopifyOrderId: string;
   status: string;
+  /** Cancelled after being placed (any spelling) and who cancelled it, from the server. */
+  isCancelled?: boolean;
+  cancellationSource?: 'customer' | 'admin' | null;
   totalPrice: number;
   paymentStatus: string;
   paymentMethod: string | null;
@@ -112,7 +115,7 @@ const STATUS_THEME: Record<string, { label: string; color: string; bg: string; d
   razorpay: { label: "Prepaid", color: "text-emerald-500", bg: "bg-emerald-500/10", dot: "bg-emerald-500" },
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, label }: { status: string; label?: string }) {
   const normalizedStatus = status.toLowerCase().replace(/[_-]/g, ' ');
   const theme = STATUS_THEME[normalizedStatus] || STATUS_THEME[status.toLowerCase()] || { 
     label: status.replace(/[_-]/g, ' '), 
@@ -125,7 +128,7 @@ function StatusBadge({ status }: { status: string }) {
     <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-foreground/5 ${theme.bg}`}>
       <div className={`w-1 h-1 rounded-full ${theme.dot}`} />
       <span className={`text-[9px] font-bold uppercase tracking-widest ${theme.color}`}>
-        {theme.label}
+        {label || theme.label}
       </span>
     </div>
   );
@@ -596,7 +599,14 @@ export default function OrdersPage() {
                   </div>
 
                   <div className="col-span-2">
-                    <StatusBadge status={order.status === 'cancelled' ? 'cancelled' : (order.deliveryStatus || order.fulfillmentStatus || 'unfulfilled')} />
+                    {order.isCancelled ? (
+                      <StatusBadge
+                        status="cancelled"
+                        label={order.cancellationSource === 'customer' ? 'Cancelled · Customer' : order.cancellationSource === 'admin' ? 'Cancelled · Admin' : 'Cancelled'}
+                      />
+                    ) : (
+                      <StatusBadge status={order.deliveryStatus || order.fulfillmentStatus || 'unfulfilled'} />
+                    )}
                     {(order.returnRequests?.length || order.exchangeRequests?.length) ? (
                       <div className="mt-1.5 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
                         {order.returnRequests?.filter((r) => r.status !== 'cancelled' && (r.displayId || !order.exchangeRequests?.length)).map((r) => (

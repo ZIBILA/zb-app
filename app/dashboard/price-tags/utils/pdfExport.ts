@@ -11,6 +11,7 @@
 
 import jsPDF from 'jspdf'
 import type { TagData } from './skuGenerator'
+import { DEFAULT_LOGO_SRC, DEFAULT_TAG_TEMPLATE, type TagTemplate } from './tagTemplate'
 
 // ── Layout constants ──────────────────────────────────────────
 export type PDFLayoutType = 'a4' | 'thermal'
@@ -70,6 +71,142 @@ function drawRupeeVector(pdf: jsPDF, x: number, y: number, h: number) {
   pdf.stroke()
 }
 
+/** 1 pt in mm. */
+const PT = 0.3528
+
+/**
+ * Thermal label (50 × 100 mm) drawn from the editable template. DEFAULT_TAG_TEMPLATE prints the layout that was
+ * hard-coded before (same text, positions within 0.1 mm). Returns the bottom of the drawn content (mm) so the editor can warn
+ * when larger text no longer fits on the label.
+ */
+function drawThermalTag(pdf: jsPDF, tag: TagData, x: number, y: number, logoDataUrl: string | null, tpl: TagTemplate): number {
+  const tagW = 44
+  const pad = 3
+  const contentX = x + pad
+  const contentW = tagW - 2 * pad
+  const rightX = x + tagW - pad
+  const font = (style: { bold: boolean }, family: string = tpl.fontFamily) => pdf.setFont(family, style.bold ? 'bold' : 'normal')
+
+  let curY = y + pad + 1.5
+
+  // ── Logo ──
+  if (tpl.logo.show) {
+    const size = tpl.logo.size
+    const logoX = x + (tagW - size) / 2 + tpl.logo.offsetX
+    const logoY = curY + tpl.logo.offsetY
+    let drawn = false
+    if (logoDataUrl) {
+      try {
+        pdf.addImage(logoDataUrl, 'PNG', logoX, logoY, size, size)
+        drawn = true
+      } catch {
+        /* text fallback below */
+      }
+    }
+    if (!drawn) {
+      pdf.setFontSize(8)
+      pdf.setFont(tpl.fontFamily, 'bold')
+      pdf.setTextColor(30, 30, 30)
+      pdf.text('ZICA BELLA', x + tagW / 2 + tpl.logo.offsetX, logoY + 4, { align: 'center' })
+    }
+    curY += size + 2.5
+  }
+
+  // ── Text block (MRP + details), moved together by textOffsetX / textOffsetY ──
+  const tx = tpl.textOffsetX
+  const ty = tpl.textOffsetY
+  pdf.setDrawColor(220, 220, 220)
+  pdf.setLineWidth(0.15)
+  pdf.line(contentX + tx, curY + ty, rightX + tx, curY + ty)
+  curY += 2.5
+
+  const mrpSize = tpl.mrp.size
+  const mrpBase = curY + mrpSize * PT * 0.75
+  pdf.setFontSize(mrpSize)
+  font(tpl.mrp)
+  pdf.setTextColor(17, 17, 17)
+  pdf.text('MRP', contentX + tx, mrpBase + ty)
+  const priceValStr = tag.mrp.toLocaleString('en-IN')
+  const priceW = pdf.getTextWidth(priceValStr)
+  const rupeeH = mrpSize * 0.24
+  const rupeeW = rupeeH * 0.7
+  drawRupeeVector(pdf, rightX + tx - priceW - rupeeW - rupeeH * 0.33, mrpBase + ty - rupeeH, rupeeH)
+  pdf.text(priceValStr, rightX + tx, mrpBase + ty, { align: 'right' })
+  curY += mrpSize * PT * 1.7
+
+  const taxSize = tpl.taxes.size
+  pdf.setFontSize(taxSize)
+  font(tpl.taxes)
+  pdf.setTextColor(140, 140, 140)
+  pdf.text('INCLUSIVE OF ALL TAXES', contentX + tx, curY + taxSize * PT * 0.4 + ty)
+  curY += taxSize * PT * 2
+
+  pdf.setDrawColor(220, 220, 220)
+  pdf.line(contentX + tx, curY + ty, rightX + tx, curY + ty)
+  curY += 3.5
+
+  const infoRows = [
+    ['NET QUANTITY', tag.netQuantity || '1 Pc'],
+    ['SIZE', tag.size],
+    ['MFG & MKT BY', 'ZICA BELLA PVT. LTD.'],
+    ['GENERIC NAME', tag.genericName],
+    ['COUNTRY OF ORIGIN', 'INDIA'],
+    ['CC', 'care@zicabella.com'],
+    ['MFG ON', tag.mfgDate],
+    ['EMAIL', 'support@zicabella.com'],
+  ]
+  const rowFont = Math.max(tpl.infoLabel.size, tpl.infoValue.size)
+  const rowH = rowFont * PT * 2.09
+  const rowBase = rowFont * PT * 1.01
+  for (const [label, value] of infoRows) {
+    pdf.setFontSize(tpl.infoLabel.size)
+    font(tpl.infoLabel)
+    pdf.setTextColor(80, 80, 80)
+    pdf.text(label, contentX + tx, curY + rowBase + ty)
+    const labelWidth = pdf.getTextWidth(label)
+
+    pdf.setFontSize(tpl.infoValue.size)
+    font(tpl.infoValue)
+    pdf.setTextColor(17, 17, 17)
+    const maxValW = contentW - labelWidth - 2
+    let displayVal = String(value ?? '')
+    while (pdf.getTextWidth(displayVal) > maxValW && displayVal.length > 3) {
+      displayVal = displayVal.slice(0, -1)
+    }
+    pdf.text(displayVal, rightX + tx, curY + rowBase + ty, { align: 'right' })
+    curY += rowH
+  }
+  curY += 1.5
+
+  // ── QR separator ──
+  pdf.setDrawColor(220, 220, 220)
+  pdf.setLineWidth(0.15)
+  pdf.line(contentX, curY, rightX, curY)
+  curY += 2.5
+
+  // ── QR code + SKU, moved together by qr.offsetX / qr.offsetY ──
+  const qx = tpl.qr.offsetX
+  const qy = tpl.qr.offsetY
+  if (tag.qrDataUrl && tag.qrDataUrl.startsWith('data:')) {
+    const qrSize = tpl.qr.size
+    try {
+      pdf.addImage(tag.qrDataUrl, 'PNG', x + (tagW - qrSize) / 2 + qx, curY + qy, qrSize, qrSize)
+    } catch {
+      // Skip if QR fails
+    }
+    curY += qrSize + 1.5
+  } else {
+    curY += 3
+  }
+
+  const skuSize = tpl.sku.size
+  pdf.setFontSize(skuSize)
+  pdf.setFont('courier', tpl.sku.bold ? 'bold' : 'normal')
+  pdf.setTextColor(50, 50, 50)
+  pdf.text(tag.sku, x + tagW / 2 + qx, curY + skuSize * PT * 0.67 + qy, { align: 'center' })
+  return Math.max(curY + skuSize * PT + qy, curY + ty)
+}
+
 // ── Draw a single price tag ──────────────────────────────────
 function drawTag(
   pdf: jsPDF,
@@ -77,9 +214,14 @@ function drawTag(
   x: number,
   y: number,
   logoDataUrl: string | null,
-  layout: PDFLayoutType = 'a4'
+  layout: PDFLayoutType = 'a4',
+  template: TagTemplate = DEFAULT_TAG_TEMPLATE
 ) {
-  const isThermal = layout === 'thermal'
+  if (layout === 'thermal') {
+    drawThermalTag(pdf, tag, x, y, logoDataUrl, template)
+    return
+  }
+  const isThermal = false
   
   // Dimensions based on page layout
   const tagW = isThermal ? 44 : 190
@@ -215,87 +357,61 @@ function drawTag(
   pdf.text(tag.sku, x + tagW / 2, curY + (isThermal ? 1 : 3), { align: 'center' })
 }
 
+// ── Build the PDF (shared by download, print and the template editor preview) ──
+async function loadTemplateLogo(template: TagTemplate): Promise<string | null> {
+  if (!template.logo.show) return null
+  try {
+    return await loadImageAsDataURL(template.logo.src || DEFAULT_LOGO_SRC)
+  } catch {
+    console.warn('Could not load logo for PDF, using text fallback')
+    return null
+  }
+}
+
+export async function buildTagsPDF(
+  tags: TagData[],
+  layout: PDFLayoutType = 'thermal',
+  template: TagTemplate = DEFAULT_TAG_TEMPLATE
+): Promise<{ pdf: jsPDF; overflow: boolean }> {
+  const isThermal = layout === 'thermal'
+  const pageFormat = isThermal ? [50, 100] : 'a4'
+  const pdf = new jsPDF({ unit: 'mm', format: pageFormat, orientation: 'portrait' })
+  const logoDataUrl = await loadTemplateLogo(template)
+  const marginX = isThermal ? 3 : 10
+  const marginY = isThermal ? 3 : 10
+  let overflow = false
+  for (let i = 0; i < tags.length; i++) {
+    if (i > 0) pdf.addPage(pageFormat, 'portrait')
+    if (isThermal) {
+      const bottom = drawThermalTag(pdf, tags[i], marginX, marginY, logoDataUrl, template)
+      if (bottom > 99) overflow = true
+    } else {
+      drawTag(pdf, tags[i], marginX, marginY, logoDataUrl, layout, template)
+    }
+  }
+  return { pdf, overflow }
+}
+
 // ── Main export function ──────────────────────────────────────
 export async function downloadTagsPDF(
   tags: TagData[],
   filename?: string,
-  layout: PDFLayoutType = 'a4'
+  layout: PDFLayoutType = 'a4',
+  template: TagTemplate = DEFAULT_TAG_TEMPLATE
 ): Promise<void> {
   if (tags.length === 0) return
-
-  const isThermal = layout === 'thermal'
-  const pageFormat = isThermal ? [50, 100] : 'a4'
-  
-  const pdf = new jsPDF({ 
-    unit: 'mm', 
-    format: pageFormat, 
-    orientation: 'portrait' 
-  })
-
-  // Pre-load the official circular SVG logo
-  let logoDataUrl: string | null = null
-  try {
-    logoDataUrl = await loadImageAsDataURL('/zb-price-tag-logo.png')
-  } catch {
-    console.warn('Could not load logo for PDF, using text fallback')
-  }
-
-  const pageW = isThermal ? 50 : 210
-  const pageH = isThermal ? 100 : 297
-  const marginX = isThermal ? 3 : 10
-  const marginY = isThermal ? 3 : 10
-
-  const tagW = pageW - 2 * marginX
-  const tagH = pageH - 2 * marginY
-
-  for (let i = 0; i < tags.length; i++) {
-    // Add a new page for each tag (except the first)
-    if (i > 0) {
-      pdf.addPage(pageFormat, 'portrait')
-    }
-
-    drawTag(pdf, tags[i], marginX, marginY, logoDataUrl, layout)
-  }
-
-  const outputFilename = filename || `zicabella-price-tags-${Date.now()}.pdf`
-  pdf.save(outputFilename)
+  const { pdf } = await buildTagsPDF(tags, layout, template)
+  pdf.save(filename || `zicabella-price-tags-${Date.now()}.pdf`)
 }
 
 // ── Print helper: open printable PDF in new tab ───────────────
 export async function printTagsPDF(
   tags: TagData[],
-  layout: PDFLayoutType = 'a4'
+  layout: PDFLayoutType = 'a4',
+  template: TagTemplate = DEFAULT_TAG_TEMPLATE
 ): Promise<void> {
   if (tags.length === 0) return
-
-  const isThermal = layout === 'thermal'
-  const pageFormat = isThermal ? [50, 100] : 'a4'
-
-  const pdf = new jsPDF({ 
-    unit: 'mm', 
-    format: pageFormat, 
-    orientation: 'portrait' 
-  })
-
-  let logoDataUrl: string | null = null
-  try {
-    logoDataUrl = await loadImageAsDataURL('/zb-price-tag-logo.png')
-  } catch {
-    console.warn('Could not load logo for PDF print')
-  }
-
-  const pageW = isThermal ? 50 : 210
-  const pageH = isThermal ? 100 : 297
-  const marginX = isThermal ? 3 : 10
-  const marginY = isThermal ? 3 : 10
-
-  for (let i = 0; i < tags.length; i++) {
-    if (i > 0) {
-      pdf.addPage(pageFormat, 'portrait')
-    }
-
-    drawTag(pdf, tags[i], marginX, marginY, logoDataUrl, layout)
-  }
+  const { pdf } = await buildTagsPDF(tags, layout, template)
 
   // Open in new tab for printing
   const pdfBlob = pdf.output('blob')

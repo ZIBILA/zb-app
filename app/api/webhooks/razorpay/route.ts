@@ -207,6 +207,19 @@ export async function POST(req: Request) {
             },
           });
 
+          // Keep the WebStoreOrder mirror in step. It was left "cancelled" when the shopper closed the Razorpay window
+          // before this capture arrived, and customer pages showed that.
+          await prisma.webStoreOrder.updateMany({
+            where: {
+              OR: [
+                { razorpayOrderId },
+                ...(order.internalOrderNumber ? [{ orderNumber: order.internalOrderNumber }] : []),
+              ],
+              paymentStatus: { notIn: ['paid', 'cod_upfront_paid', 'partially_paid', 'refunded', 'partially_refunded'] },
+            },
+            data: { paymentStatus: finalPaymentStatus, razorpayPaymentId, paymentFailureReason: null },
+          }).catch((wsErr: any) => console.warn('[Razorpay Webhook] WebStoreOrder mirror update failed:', wsErr?.message));
+
           if (underpaid) {
             paymentLog('error', 'webhook', {
               message: `Under-captured payment: ₹${amountCheck.capturedRupees} of ₹${amountCheck.expectedRupees}; order marked partially_paid + needs_review`,
@@ -508,16 +521,22 @@ export async function POST(req: Request) {
           const newRefundStatus =
             eventType === 'refund.processed' ? 'completed' :
             eventType === 'refund.failed' ? 'failed' : 'processing';
+          const isCancelled = String(order.status || '').toLowerCase() === 'cancelled';
 
-          await prisma.order.update({
-            where: { id: order.id },
-            data: {
-              paymentStatus: eventType === 'refund.processed' ? 'refunded' :
-                             eventType === 'refund.failed' ? 'paid' : 'partial_refund',
-              refundStatus: newRefundStatus,
-              refundError: eventType === 'refund.failed' ? (refund?.error_description || 'Refund failed at Razorpay') : null,
-            },
-          });
+          // Cancellation refunds are driven by lib/services/refundService.ts. A late "refund.created" must not turn
+          // a refund it already completed back into "processing", and a failed refund of a cancelled order keeps its
+          // payment status (the refund retry job re-issues it) instead of marking the cancelled order "paid".
+          if (!(isCancelled && eventType === 'refund.created' && order.refundStatus === 'completed')) {
+            await prisma.order.update({
+              where: { id: order.id },
+              data: {
+                paymentStatus: eventType === 'refund.processed' ? 'refunded' :
+                               eventType === 'refund.failed' ? (isCancelled ? order.paymentStatus : 'paid') : 'partial_refund',
+                refundStatus: newRefundStatus,
+                refundError: eventType === 'refund.failed' ? (refund?.error_description || 'Refund failed at Razorpay') : null,
+              },
+            });
+          }
 
           // Update only the request this refund was issued for (tagged in notes at approval time).
           const requestId: string | undefined = refund?.notes?.refundRequestId || refund?.notes?.exchangeRequestId;

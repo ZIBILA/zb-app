@@ -1421,6 +1421,35 @@ export async function getShiprocketCouriers(
 }
 
 /**
+ * Shiprocket's own answer for a delivery pincode: can any courier deliver there, and can it collect cash (COD)?
+ * Used by the address check on the order page. Null when Shiprocket is not the active provider.
+ */
+export async function checkShiprocketPincode(
+  deliveryPincode: string,
+  opts: { cod: boolean; codAmount?: number }
+): Promise<{ serviceable: boolean; codAvailable: boolean; courierCount: number; message: string | null } | null> {
+  const config = await getLogisticsConfig();
+  if (config.provider !== 'shiprocket') return null;
+  const pin = String(deliveryPincode || '').replace(/\D/g, '');
+  if (pin.length !== 6) return { serviceable: false, codAvailable: false, courierCount: 0, message: 'Invalid pincode' };
+  const params = new URLSearchParams({
+    pickup_postcode: await getShiprocketPickupPincode(),
+    delivery_postcode: pin,
+    weight: '0.5',
+    cod: opts.cod ? '1' : '0',
+  });
+  if (opts.cod && opts.codAmount && opts.codAmount > 0) params.set('cod_amount', String(Math.round(opts.codAmount)));
+  const data = await logisticsApiFetch(`/courier/serviceability/?${params.toString()}`, 'GET', undefined, true);
+  const companies: any[] = data?.data?.available_courier_companies || [];
+  return {
+    serviceable: companies.length > 0,
+    codAvailable: companies.some((c) => Boolean(c.cod)),
+    courierCount: companies.length,
+    message: data?.message || null,
+  };
+}
+
+/**
  * Assign AWB to a chosen courier and update an existing local shipment row.
  */
 async function assignCourierAwbAndPersist(
