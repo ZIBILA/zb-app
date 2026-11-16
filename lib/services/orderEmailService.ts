@@ -89,7 +89,7 @@ async function sendDynamicEmail(
   fallbackHtml: string,
   fallbackText: string,
   extraVars: Record<string, any> = {}
-) {
+): Promise<'sent' | 'already_sent' | 'skipped'> {
   const currencySymbols: Record<string, string> = {
     INR: '₹', USD: '$', GBP: '£', CAD: '$', AUD: '$', AED: 'د.إ', EUR: '€'
   };
@@ -138,8 +138,11 @@ async function sendDynamicEmail(
 
   // Lifecycle emails go out once per order (shared with the event scanner and manual status updates).
   const eventType = LIFECYCLE_EVENT_BY_TRIGGER[trigger];
-  if (!eventType) return send();
-  if (!isDeliverableEmail(order.customerEmail)) return;
+  if (!eventType) {
+    await send();
+    return 'sent';
+  }
+  if (!isDeliverableEmail(order.customerEmail)) return 'skipped';
   const result = await deliverOnce({
     eventKey: `order:${normalizeOrderRef(order.orderId)}:${eventType}`,
     eventType,
@@ -148,6 +151,7 @@ async function sendDynamicEmail(
     send,
   });
   if (result === 'failed') throw new Error(`${trigger} email failed for order ${order.orderId}`);
+  return result === 'duplicate' ? 'already_sent' : 'sent';
 }
 
 const LIFECYCLE_EVENT_BY_TRIGGER: Record<string, CustomerEventType | undefined> = {
@@ -179,9 +183,9 @@ export async function sendOrderConfirmationEmail(order: OrderData): Promise<void
       paymentMethod: order.paymentMethod,
     });
 
-    await sendDynamicEmail('ORDER_CONFIRMATION', order, fallback.subject, fallback.html, fallback.text);
+    const outcome = await sendDynamicEmail('ORDER_CONFIRMATION', order, fallback.subject, fallback.html, fallback.text);
 
-    console.log(`[OrderEmailService] Order confirmation email successfully sent for Order #${order.orderId}`);
+    console.log(`[OrderEmailService] Order confirmation email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send order confirmation email for Order #${order.orderId}:`, error);
   }
@@ -212,9 +216,9 @@ export async function sendOrderCodConfirmationEmail(order: OrderData): Promise<v
     fallback.subject = `COD Order Confirmed — #${order.orderId} | Zica Bella`;
     fallback.text = `Your Cash on Delivery order has been placed successfully.\n\n` + fallback.text;
 
-    await sendDynamicEmail('ORDER_CONFIRMATION', order, fallback.subject, fallback.html, fallback.text);
+    const outcome = await sendDynamicEmail('ORDER_CONFIRMATION', order, fallback.subject, fallback.html, fallback.text);
 
-    console.log(`[OrderEmailService] COD confirmation email successfully sent for Order #${order.orderId}`);
+    console.log(`[OrderEmailService] COD confirmation email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send COD confirmation email for Order #${order.orderId}:`, error);
   }
@@ -241,14 +245,14 @@ export async function sendOrderShippedEmail(
       courier: order.courier,
     });
 
-    await sendDynamicEmail('ORDER_SHIPPED', order, fallback.subject, fallback.html, fallback.text, {
+    const outcome = await sendDynamicEmail('ORDER_SHIPPED', order, fallback.subject, fallback.html, fallback.text, {
       trackingNumber: order.trackingNumber || 'N/A',
       courier: order.courier || 'Standard Shipping',
       carrier: order.courier || 'Standard Shipping',
       trackingUrl: order.trackingNumber ? `https://zicabella.com/track?id=${order.trackingNumber}` : 'https://zicabella.com/account/orders'
     });
 
-    console.log(`[OrderEmailService] Shipping notification email successfully sent for Order #${order.orderId}`);
+    console.log(`[OrderEmailService] Shipping notification email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send shipping notification email for Order #${order.orderId}:`, error);
   }
@@ -271,9 +275,9 @@ export async function sendOrderDeliveredEmail(order: OrderData): Promise<void> {
       orderDate: order.orderDate,
     });
 
-    await sendDynamicEmail('ORDER_DELIVERED', order, fallback.subject, fallback.html, fallback.text);
+    const outcome = await sendDynamicEmail('ORDER_DELIVERED', order, fallback.subject, fallback.html, fallback.text);
 
-    console.log(`[OrderEmailService] Delivery email successfully sent for Order #${order.orderId}`);
+    console.log(`[OrderEmailService] Delivery email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send delivery email for Order #${order.orderId}:`, error);
   }
@@ -295,11 +299,11 @@ export async function sendOrderCancelledEmail(order: OrderData): Promise<void> {
     const fallbackSubject = `Order Cancelled — #${order.orderId} | Zica Bella`;
     const fallbackText = `Your order #${order.orderId} has been cancelled.`;
 
-    await sendDynamicEmail('ORDER_CANCELLED', order, fallbackSubject, fallbackHtml, fallbackText, {
+    const outcome = await sendDynamicEmail('ORDER_CANCELLED', order, fallbackSubject, fallbackHtml, fallbackText, {
       reason: 'Requested by customer or out of stock'
     });
 
-    console.log(`[OrderEmailService] Cancellation email successfully sent for Order #${order.orderId}`);
+    console.log(`[OrderEmailService] Cancellation email ${outcome === 'sent' ? 'successfully sent' : outcome === 'already_sent' ? 'already sent earlier, not sent again' : 'skipped (no deliverable email)'} for Order #${order.orderId}`);
   } catch (error) {
     console.error(`[OrderEmailService] Failed to send cancellation email for Order #${order.orderId}:`, error);
   }

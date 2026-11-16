@@ -168,6 +168,18 @@ export async function processOrderRefund(
   if (String(order.status || '').toLowerCase() !== 'cancelled') return { success: false, error: 'Order is not cancelled' };
   if (order.refundStatus === 'completed') return { success: true, message: 'Already refunded' };
 
+  // Automatic refunds start from go-live: an order cancelled before then is never refunded by a background job, a
+  // webhook or a bulk sync (an admin pressing "Retry refund" passes their email and is not limited).
+  const manual = triggeredBy.includes('@') || triggeredBy === 'manual';
+  if (!manual) {
+    const { getGoLive } = await import('@/lib/go-live');
+    const goLive = await getGoLive();
+    const cancelledOn = new Date(order.cancelledAt || order.createdAt);
+    if (cancelledOn < goLive) {
+      return { success: true, message: 'Cancelled before automatic refunds started; refund it manually if it is due' };
+    }
+  }
+
   // Atomic claim: only one worker continues. A "processing" claim older than 10 minutes was interrupted.
   // (This used to filter `refundStatus: null` on a non-null column, which Prisma rejects, and it excluded the
   // column's default "not_applicable", so no cancelled order was ever refunded automatically.)
@@ -395,9 +407,13 @@ async function alertRefundNeedsAttention(orderRef: string, error: string) {
  */
 export async function retryFailedRefunds(opts: { limit?: number; razorpay?: RazorpayRefundClient } = {}) {
   const now = Date.now();
+  const { getGoLive } = await import('@/lib/go-live');
+  const goLive = await getGoLive();
   const candidates = await prisma.order.findMany({
     where: {
       status: { in: ['cancelled', 'CANCELLED'] },
+      // Only cancellations made after go-live; nothing from before is ever retried automatically.
+      cancelledAt: { gte: goLive },
       refundAttempts: { lt: MAX_AUTO_ATTEMPTS },
       OR: [
         { refundStatus: 'failed' },

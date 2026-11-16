@@ -20,6 +20,8 @@ const o = (id: string, extra: Record<string, any>) => (db.order ||= []).push({
 const get = (id: string) => db.order.find((x) => x.id === id)!;
 
 async function main() {
+  // These scenarios act on pre-built data, so the go-live marker is set far in the past (go-live-run.ts proves history is skipped).
+  (db.customerEventDelivery ||= []).push({ id: 'gl_seed', eventKey: '__fixes_go_live__', channel: 'system', eventType: 'SCANNER_INIT', status: 'sent', createdAt: new Date(0), updatedAt: new Date(0) });
   // The incident: shopper closes the Razorpay window (attempt 1 cancelled), pays on retry (attempt 2 shipped).
   o('attempt1', { internalOrderNumber: 'ZBPP90010', razorpayOrderId: 'order_A', status: 'cancelled', paymentStatus: 'cancelled', cancelledBy: 'customer', cancelledAt: new Date() });
   o('attempt2', { internalOrderNumber: 'ZB81700', razorpayOrderId: 'order_B', deliveryStatus: 'shipped' });

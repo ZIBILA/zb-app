@@ -148,12 +148,17 @@ const signature = (o: any) => {
  * Sync orders changed (order row or any of its shipments) in the last `days` days. Run every 10 minutes by the
  * server (lib/background-jobs.ts); `/api/cron/shopify-lifecycle-sync?days=60` backfills older orders.
  */
-export async function syncRecentOrderLifecyclesToShopify(opts: { days?: number; limit?: number; budgetMs?: number } = {}) {
+export async function syncRecentOrderLifecyclesToShopify(
+  opts: { days?: number; limit?: number; budgetMs?: number; /** explicit manual backfill only */ ignoreGoLive?: boolean } = {}
+) {
   const since = new Date(Date.now() - (opts.days ?? 3) * 24 * 60 * 60 * 1000);
+  // The automatic job only syncs orders placed after go-live; it never rewrites Shopify for older orders.
+  const goLive = opts.ignoreGoLive ? null : await (await import('@/lib/go-live')).getGoLive();
   const deadline = Date.now() + (opts.budgetMs ?? 90_000);
   const orders: any[] = await prisma.order.findMany({
     where: {
       shopifyOrderId: { not: null },
+      ...(goLive ? { createdAt: { gte: goLive } } : {}),
       OR: [{ updatedAt: { gte: since } }, { shipments: { some: { updatedAt: { gte: since } } } }],
       // Nothing to push for orders that never left checkout.
       paymentStatus: { notIn: ['failed', 'FAILED', 'payment_failed', 'payment_pending', 'voided'] },

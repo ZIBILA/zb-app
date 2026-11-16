@@ -624,8 +624,17 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
       // Every send below goes through deliverOrderWhatsApp(): it claims `order:<ref>:<EVENT>` first, so repeated
       // or concurrent webhooks (and the lifecycle scanner, which shares the keys) can never message twice.
       const { deliverOrderWhatsApp } = await import('@/lib/notifications/whatsapp-events');
-      const { normalizeOrderRef } = await import('@/lib/notifications/customer-events');
+      const { normalizeOrderRef, isFreshParcelEvent } = await import('@/lib/notifications/customer-events');
       const { toggleDefault } = await import('@/lib/whatsapp/automation-defaults');
+      // Shopify calls back after OUR lifecycle sync marks an order fulfilled / delivered there (lib/services/
+      // shopifyLifecycleSync.ts). That is bookkeeping, not news: shipped / out-for-delivery / delivered messages go out
+      // only while the carrier's own latest scan is recent, never for a parcel that moved days ago.
+      const localShipment = await prisma.shipment.findFirst({
+        where: { orderId: order.id, NOT: { type: { in: ['reverse_pickup', 'reverse', 'return', 'exchange_pickup'] } } },
+        orderBy: { createdAt: 'desc' },
+        select: { events: true, updatedAt: true },
+      });
+      const parcelFresh = isFreshParcelEvent(order, localShipment);
       const ref = order.internalOrderNumber || order.id;
       const legacyOrderIds = [String(orderIdStr), order.shopifyOrderName, order.shopifyOrderId];
       const customerName = orderData.customer?.first_name || orderData.billing_address?.first_name || 'there';
@@ -663,7 +672,7 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
           });
         }
       } else if (topic === 'orders/fulfilled') {
-        if (await enabled('order_shipped')) {
+        if (parcelFresh && (await enabled('order_shipped'))) {
           const fulfillment = orderData.fulfillments?.[0] || {};
           const trackingNumber = fulfillment.tracking_number || '';
           const trackingUrl = fulfillment.tracking_url || fulfillment.tracking_urls?.[0] || '';
@@ -701,7 +710,7 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
         const isOutForDelivery = deliveryStatus === 'out_for_delivery' || shipmentStatus === 'out_for_delivery';
 
         if (isDelivered) {
-          if (await enabled('order_delivered')) {
+          if (parcelFresh && (await enabled('order_delivered'))) {
             const firstLineItem = (orderData.line_items || [])[0];
             const productImageUrl = firstLineItem?.image?.src || firstLineItem?.image || '';
             const totalAmount = orderData.total_price || orderData.current_total_price || '';
@@ -714,7 +723,7 @@ async function handleOrderWebhook(shop: string, orderData: any, topic?: string) 
             });
           }
         } else if (isOutForDelivery) {
-          if (await enabled('out_for_delivery')) {
+          if (parcelFresh && (await enabled('out_for_delivery'))) {
             const { sendOutForDelivery } = await import('@/lib/whatsapp/templates');
             await deliverOrderWhatsApp({
               event: 'ORDER_OUT_FOR_DELIVERY', orderRef: ref, rawPhone: phone, legacyOrderIds,

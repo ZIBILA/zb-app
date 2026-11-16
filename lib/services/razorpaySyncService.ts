@@ -544,9 +544,13 @@ export async function repairPaidOrderStatuses(): Promise<number> {
   // Paid orders still marked cancelled by an earlier "closed the Razorpay window" (cancelledBy "customer" is
   // written only by /api/checkout/cancel, never by a real cancellation): the payment went through, so it is a live
   // order. Real cancellations (admin / customer cancel of a placed order) are never touched.
+  const { getGoLive } = await import("@/lib/go-live");
+  const goLive = await getGoLive();
   const abandonedThenPaid = await prisma.order.findMany({
     where: {
       paymentStatus: { in: paidLike },
+      // Only payments captured after go-live; earlier orders are never repaired automatically.
+      paymentCapturedAt: { gte: goLive },
       cancelledBy: "customer",
       refundStatus: { notIn: ["completed", "processing"] },
     },
@@ -574,7 +578,7 @@ export async function repairPaidOrderStatuses(): Promise<number> {
 
   // WebStoreOrder mirrors that still say cancelled / failed / pending for an order that is paid.
   const recentPaid = await prisma.order.findMany({
-    where: { paymentStatus: { in: paidLike }, razorpayOrderId: { not: null }, updatedAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } },
+    where: { paymentStatus: { in: paidLike }, razorpayOrderId: { not: null }, paymentCapturedAt: { gte: goLive } },
     select: { razorpayOrderId: true, paymentStatus: true },
     take: 2000,
   });

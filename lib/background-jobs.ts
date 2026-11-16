@@ -11,7 +11,8 @@
  * calling the same code: every write the jobs make is a compare-and-set on a still-pending
  * status, and the Shopify sync takes an atomic claim.
  *
- * Disable with DISABLE_INTERNAL_JOBS=true. Started from instrumentation.ts (production only).
+ * Disable all with DISABLE_INTERNAL_JOBS=true, or only some with DISABLED_JOBS=whatsapp-scheduler,customer-events
+ * (comma-separated job names; takes effect on the next restart). Started from instrumentation.ts (production only).
  */
 type Job = {
   name: string;
@@ -170,7 +171,11 @@ export function startBackgroundJobs() {
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
   g.__zbJobsStarted = true;
 
-  for (const job of JOBS) {
+  const disabled = new Set((process.env.DISABLED_JOBS || '').split(',').map((s) => s.trim()).filter(Boolean));
+  const active = JOBS.filter((j) => !disabled.has(j.name));
+  if (disabled.size > 0) console.log(`[jobs] disabled by DISABLED_JOBS: ${JOBS.filter((j) => disabled.has(j.name)).map((j) => j.name).join(', ') || '(no matching job names)'}`);
+
+  for (const job of active) {
     let running = false;
     const tick = async () => {
       if (running) return; // never overlap a slow run
@@ -193,5 +198,5 @@ export function startBackgroundJobs() {
       timer.unref?.();
     }, job.firstRunMs).unref?.();
   }
-  console.log(`[jobs] background jobs started: ${JOBS.map((j) => `${j.name}/${Math.round(j.everyMs / 60000)}m`).join(', ')}`);
+  console.log(`[jobs] background jobs started: ${active.map((j) => `${j.name}/${Math.round(j.everyMs / 60000)}m`).join(', ')}`);
 }

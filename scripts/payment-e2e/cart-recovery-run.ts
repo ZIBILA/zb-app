@@ -45,6 +45,8 @@ function addCart(opts: { phone: string; idleMs: number; createdMs?: number; stag
 const stageRows = (cartId: string, stage = 1) => (db.whatsAppMessage || []).filter((m) => m.cartId === cartId && m.recoveryStage === stage);
 
 async function main() {
+  // These scenarios act on pre-built data, so the go-live marker is set far in the past (go-live-run.ts proves history is skipped).
+  (db.customerEventDelivery ||= []).push({ id: 'gl_seed', eventKey: '__fixes_go_live__', channel: 'system', eventType: 'SCANNER_INIT', status: 'sent', createdAt: new Date(0), updatedAt: new Date(0) });
   // Template definition in the DB so nothing is fetched from Meta.
   (db.whatsAppTemplate ||= []).push(
     ...['abandoned_cart_a1', 'abandoned_cart_a2', 'abandoned_cart_a3'].map((name) => ({
@@ -69,6 +71,11 @@ async function main() {
     status: 'sent', templateName: 'abandoned_cart_a1', body: 'recent', createdAt: ago(60 * MIN), sentAt: ago(60 * MIN),
   });
   const sameSession = addCart({ phone: '9876500004', idleMs: 30 * MIN, createdMs: 2 * 60 * MIN });
+  // Idle for 3 days and never reminded (the old bug starved it): a reminder now would be stale.
+  const stale = addCart({ phone: '9876500005', idleMs: 3 * DAY });
+  // Step 1 sent 2 minutes ago, cart idle 5 h: step 2 must wait for its spacing, not follow back-to-back.
+  const justStepped = addCart({ phone: '9876500006', idleMs: 5 * 60 * MIN, stagesSent: [1] });
+  db.whatsAppMessage.find((m) => m.cartId === justStepped && m.recoveryStage === 1)!.createdAt = ago(2 * MIN);
 
   const { runWhatsAppScheduler } = await import('../../lib/whatsapp/scheduler');
   const r1 = await runWhatsAppScheduler();
@@ -88,6 +95,9 @@ async function main() {
   const after = stageRows(fresh);
   check('C7 a second run does not create another step-1 row', after.length === 1);
   check('C8 the failed step is left to the retry queue (not re-claimed as processing)', after[0].status === 'failed');
+
+  check('C9 a cart idle for 3 days that was never reminded is NOT messaged now (no stale nudge)', stageRows(stale).length === 0);
+  check('C10 step 2 does not follow step 1 within minutes', stageRows(justStepped, 2).length === 0);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
