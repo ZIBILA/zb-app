@@ -20,6 +20,7 @@ import {
   deliverOnce,
   pageAll,
   isDeliverableEmail,
+  isFreshParcelEvent,
   normalizeOrderRef,
   type CustomerEventType,
 } from '@/lib/notifications/customer-events';
@@ -164,6 +165,14 @@ export async function scanCustomerEvents(now = new Date()): Promise<ScanSummary>
 
     // Shared cancellation rule (lib/order-filters.ts). A voided / re-booked AWB writes deliveryStatus "cancelled" on a
     // live order; that used to email the customer "your order has been cancelled" for a parcel still on its way.
+    // Parcel-progress messages only for a recent carrier scan (see isFreshParcelEvent). A backlog of old orders
+    // discovered by one carrier poll must not email customers about parcels that arrived long ago.
+    const parcelEvent = ['delivered', 'out_for_delivery', 'shipped', 'in_transit', 'picked_up', 'dispatched'].includes(delivery);
+    if (!isOrderCancelled(order) && parcelEvent && !isFreshParcelEvent(order, shipment)) {
+      tally(delivery === 'delivered' ? 'ORDER_DELIVERED' : delivery === 'out_for_delivery' ? 'ORDER_OUT_FOR_DELIVERY' : 'ORDER_SHIPPED', 'skipped');
+      continue;
+    }
+
     if (isOrderCancelled(order)) {
       await emitOrderTemplate('ORDER_CANCELLED', () => sendOrderCancelledEmail(orderData));
     } else if (delivery === 'delivered') {

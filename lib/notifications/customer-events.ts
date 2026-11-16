@@ -153,3 +153,36 @@ export async function deliverOnce(opts: {
   }
   return 'sent';
 }
+
+/** A parcel-progress message (shipped / out for delivery / delivered) is only news for this long after the carrier scan. */
+export const PARCEL_MESSAGE_MAX_AGE_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * Is the parcel's status change recent enough to tell the customer about?
+ *
+ * The status reaches us whenever the carrier is polled, which can be long after it happened (the first poll of a
+ * backlog updated ~100 old orders at once and made them all look "just delivered", so the scanners queued late
+ * "delivered" / "out for delivery" messages for parcels that arrived days or weeks earlier). The carrier's own
+ * latest scan time is the truth. Without any scan time we only trust an order created within the last 10 days.
+ */
+export function isFreshParcelEvent(
+  order: { createdAt?: Date | string | null },
+  shipment: { events?: string | null; updatedAt?: Date | string | null } | null | undefined,
+  now = Date.now()
+): boolean {
+  let latest = 0;
+  try {
+    const events = shipment?.events ? JSON.parse(shipment.events) : [];
+    if (Array.isArray(events)) {
+      for (const e of events) {
+        const t = e?.timestamp ? new Date(e.timestamp).getTime() : NaN;
+        if (Number.isFinite(t) && t > latest) latest = t;
+      }
+    }
+  } catch {
+    /* unreadable history: fall through */
+  }
+  if (latest > 0) return now - latest <= PARCEL_MESSAGE_MAX_AGE_MS;
+  const created = order.createdAt ? new Date(order.createdAt).getTime() : 0;
+  return created > 0 && now - created <= 10 * 24 * 60 * 60 * 1000;
+}

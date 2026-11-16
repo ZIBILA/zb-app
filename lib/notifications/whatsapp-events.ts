@@ -22,7 +22,7 @@
 
 import prisma from '@/lib/db';
 import { IS_CANCELLED_WHERE, WAS_PLACED_WHERE } from '@/lib/order-filters';
-import { deliverOnce, normalizeOrderRef, pageAll, type CustomerEventType } from '@/lib/notifications/customer-events';
+import { deliverOnce, isFreshParcelEvent, normalizeOrderRef, pageAll, type CustomerEventType } from '@/lib/notifications/customer-events';
 import { calendarDaysBetween, type ScanSummary } from '@/lib/notifications/event-scanner';
 import { toggleDefault, STORE_CREDIT_EXPIRY_REMINDER_DAYS_DEFAULT } from '@/lib/whatsapp/automation-defaults';
 import { getWhatsAppSetting } from '@/lib/whatsapp/logger';
@@ -280,6 +280,13 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
       const rawPhone = phoneOf(o.customer, o.shippingAddress);
       const name = o.customer?.name || 'there';
       const legacyOrderIds = [o.internalOrderNumber, o.shopifyOrderName, o.shopifyOrderId].map((v: any) => (v == null ? null : String(v)));
+
+      // Only a recent carrier scan is news (see isFreshParcelEvent): one poll of a backlog must not message customers
+      // about parcels that arrived days ago.
+      if (!isFreshParcelEvent(o, o.shipments?.[0])) {
+        tally(delivery === 'delivered' ? 'ORDER_DELIVERED' : delivery === 'out_for_delivery' ? 'ORDER_OUT_FOR_DELIVERY' : 'ORDER_SHIPPED', 'skipped');
+        continue;
+      }
 
       if (delivery === 'delivered' && wantDelivered) {
         const first = (o.items || [])[0];
