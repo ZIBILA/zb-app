@@ -71,6 +71,26 @@ export function isDeliverableEmail(email: string | null | undefined): email is s
 }
 
 /**
+ * True when this (event, channel) needs nothing more: it was sent, or it failed MAX_ATTEMPTS times and is given up.
+ * A failed row with attempts left, or a claim interrupted mid-send, is NOT handled (it is retried).
+ */
+export async function isDeliveryHandled(eventKey: string, channel: DeliveryChannel): Promise<boolean> {
+  const existing = await prisma.customerEventDelivery.findUnique({
+    where: { eventKey_channel: { eventKey, channel } },
+    select: { status: true, error: true, updatedAt: true },
+  });
+  if (!existing) return false;
+  if (existing.status === 'failed') {
+    const attempts = Number(String(existing.error || '').match(/^\[attempt (\d+)\]/)?.[1] || 1);
+    return attempts >= MAX_ATTEMPTS;
+  }
+  if (existing.status === 'sending') {
+    return new Date(existing.updatedAt).getTime() >= Date.now() - STALE_SENDING_MS;
+  }
+  return true;
+}
+
+/**
  * Run `send` at most once for (eventKey, channel).
  * Returns "sent" | "duplicate" (already handled) | "failed".
  */
@@ -82,13 +102,9 @@ export async function deliverOnce(opts: {
   send: () => Promise<void>;
 }): Promise<'sent' | 'duplicate' | 'failed'> {
   let rowId: string;
-  // Already handled and not retryable: answer without attempting the insert. The scanner re-checks the same orders
-  // every few minutes, and each refused insert was logged by Prisma as an error.
-  const prior = await prisma.customerEventDelivery.findUnique({
-    where: { eventKey_channel: { eventKey: opts.eventKey, channel: opts.channel } },
-    select: { status: true },
-  });
-  if (prior && prior.status !== 'failed' && prior.status !== 'sending') return 'duplicate';
+  // Already handled and not retryable (sent, or failed MAX_ATTEMPTS times): answer without attempting the insert. The
+  // scanners re-check the same orders every few minutes, and each refused insert was logged by Prisma as an error.
+  if (await isDeliveryHandled(opts.eventKey, opts.channel)) return 'duplicate';
   try {
     const row = await prisma.customerEventDelivery.create({
       data: {
