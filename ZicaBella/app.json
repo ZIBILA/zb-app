@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zica Bella",
     "slug": "zica-bella",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "scheme": "zicabella",
     "icon": "./assets/zb-logo-icon.png",
