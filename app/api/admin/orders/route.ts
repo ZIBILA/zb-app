@@ -6,7 +6,7 @@ import { enrichItemsWithSize } from '@/lib/enrichSize';
 import { resolveStoredCodUpfrontPaid, DEFAULT_COD_UPFRONT_AMOUNT } from '@/lib/cod-upfront';
 import { parseLinkedId } from '@/lib/linkedIds';
 import { isLogisticsFilter, LOGISTICS_BUCKET_STATUSES, pickActiveOutboundShipment, shipmentAwb, REVERSE_SHIPMENT_TYPES } from '@/lib/logistics/status';
-import { IS_CANCELLED_WHERE, WAS_PLACED_WHERE, NEVER_PLACED_WHERE, cancellationSource } from '@/lib/order-filters';
+import { IS_CANCELLED_WHERE, WAS_PLACED_WHERE, NEVER_PLACED_WHERE, cancellationSource, isOrderCancelled } from '@/lib/order-filters';
 
 /** Same definition of "COD order" the rest of the app uses (see isCodOrder below). */
 const COD_ORDER_WHERE = {
@@ -342,7 +342,9 @@ export async function GET(req: Request) {
       const noteLower = ((order.note as string) || '').toLowerCase();
       const isCodOrder = rawMethod === 'cod' || tagsLower.includes('cod') || noteLower.includes('cod order') || noteLower.includes('upfront fee paid');
       const paymentMethod = isCodOrder ? 'COD' : ((webStoreOrder?.paymentMethod as string) || (order.paymentMethod as string) || 'razorpay');
-      let paymentStatus = (webStoreOrder?.paymentStatus as string) || (order.paymentStatus as string);
+      // The Order row is the source of truth. The WebStoreOrder mirror is not always revived after a late capture
+      // (it can still say "cancelled" for a paid order), so it is only a fallback.
+      let paymentStatus = (order.paymentStatus as string) || (webStoreOrder?.paymentStatus as string);
       // COD lifecycle: upfront paid → (delivered + cash collected by courier) → Paid / Settled.
       const isDelivered = String(order.deliveryStatus || '').toLowerCase() === 'delivered';
       const settledCod =
@@ -406,8 +408,8 @@ export async function GET(req: Request) {
       const trackingUrl = latestShipment?.trackingUrl || (webStoreOrder?.trackingUrl as string) || (trackingNumber ? `https://zicabella.shiprocket.co/tracking/${trackingNumber}` : null);
       const courier = latestShipment?.courier || (order.delhivery_awb ? 'Delhivery' : (trackingNumber ? 'Standard Express' : null));
 
-      const cancelSource = cancellationSource(order as any);
-      const isCancelled = cancelSource !== null || ['cancelled', 'canceled'].includes(String(order.status || '').toLowerCase()) || Boolean(order.cancelledAt);
+      const isCancelled = isOrderCancelled(order as any);
+      const cancelSource = isCancelled ? cancellationSource(order as any) : null;
 
       return {
         ...order,

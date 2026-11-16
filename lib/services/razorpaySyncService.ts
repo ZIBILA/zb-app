@@ -540,6 +540,60 @@ export async function repairPaidOrderStatuses(): Promise<number> {
       console.log(`[RazorpaySync] Repaired status of paid order ${o.internalOrderNumber || o.id}: ${o.status} -> ${nextOrderStatusOnCapture(o.status, isCOD)}`);
     }
   }
+
+  // Paid orders still marked cancelled by an earlier "closed the Razorpay window" (cancelledBy "customer" is
+  // written only by /api/checkout/cancel, never by a real cancellation): the payment went through, so it is a live
+  // order. Real cancellations (admin / customer cancel of a placed order) are never touched.
+  const abandonedThenPaid = await prisma.order.findMany({
+    where: {
+      paymentStatus: { in: paidLike },
+      cancelledBy: "customer",
+      refundStatus: { notIn: ["completed", "processing"] },
+    },
+    select: { id: true, status: true, paymentMethod: true, tags: true, internalOrderNumber: true, fulfillmentStatus: true, deliveryStatus: true },
+    take: 200,
+  });
+  for (const o of abandonedThenPaid) {
+    const isCOD = (o.paymentMethod || "").toLowerCase().trim() === "cod" || (o.tags || "").toLowerCase().includes("cod");
+    const res = await prisma.order.updateMany({
+      where: { id: o.id, cancelledBy: "customer", paymentStatus: { in: paidLike } },
+      data: {
+        status: nextOrderStatusOnCapture(o.status, isCOD),
+        cancelledBy: null,
+        cancelledAt: null,
+        paymentFailureReason: null,
+        ...(String(o.fulfillmentStatus || "").toLowerCase().includes("cancel") ? { fulfillmentStatus: "unfulfilled" } : {}),
+        ...(String(o.deliveryStatus || "").toLowerCase() === "cancelled" ? { deliveryStatus: "pending" } : {}),
+      },
+    });
+    if (res.count > 0) {
+      repaired++;
+      console.warn(`[RazorpaySync] Paid order ${o.internalOrderNumber || o.id} was marked cancelled by a closed checkout window; restored`);
+    }
+  }
+
+  // WebStoreOrder mirrors that still say cancelled / failed / pending for an order that is paid.
+  const recentPaid = await prisma.order.findMany({
+    where: { paymentStatus: { in: paidLike }, razorpayOrderId: { not: null }, updatedAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } },
+    select: { razorpayOrderId: true, paymentStatus: true },
+    take: 2000,
+  });
+  const byStatus = new Map<string, string[]>();
+  for (const o of recentPaid) {
+    const list = byStatus.get(o.paymentStatus) || [];
+    list.push(o.razorpayOrderId as string);
+    byStatus.set(o.paymentStatus, list);
+  }
+  for (const [status, ids] of byStatus) {
+    const res = await prisma.webStoreOrder.updateMany({
+      where: { razorpayOrderId: { in: ids }, paymentStatus: { notIn: [...paidLike, "refunded", "partially_refunded"] } },
+      data: { paymentStatus: status, paymentFailureReason: null },
+    });
+    if (res.count > 0) {
+      repaired += res.count;
+      console.warn(`[RazorpaySync] Synced ${res.count} WebStoreOrder mirror(s) to their paid order (${status})`);
+    }
+  }
   return repaired;
 }
 

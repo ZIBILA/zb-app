@@ -1,3 +1,4 @@
+import { isOrderCancelled, cancellationSource } from '@/lib/order-filters';
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
@@ -163,6 +164,8 @@ export async function GET(req: Request) {
                 { paymentMethod: { notIn: ['COD', 'cod', 'Cash on Delivery', 'cash_on_delivery'] } }
               ]
             },
+            // A checkout the shopper closed and never paid is not an order.
+            { AND: [{ cancelledBy: 'customer' }, { paymentStatus: { notIn: ['paid', 'PAID', 'success', 'SUCCESS', 'captured', 'cod_upfront_paid', 'partially_paid', 'refunded', 'partially_refunded'] } }] },
             // Hide unpaid ZBPP placeholders only — paid / COD-upfront must remain visible
             {
               AND: [
@@ -186,6 +189,9 @@ export async function GET(req: Request) {
         status: o.status,
         cancelledBy: o.cancelledBy || null,
         cancelledAt: o.cancelledAt || null,
+        // One cancellation rule for the app, the website and the dashboard (lib/order-filters.ts).
+        isCancelled: isOrderCancelled(o),
+        cancellationSource: cancellationSource(o),
         paymentMethod: paymentMethodFromOrder(o),
         paymentStatus: paymentStatusFromOrder(o),
         fulfillmentStatus: o.fulfillmentStatus || 'unfulfilled',

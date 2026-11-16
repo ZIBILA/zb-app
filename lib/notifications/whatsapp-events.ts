@@ -21,6 +21,7 @@
  */
 
 import prisma from '@/lib/db';
+import { IS_CANCELLED_WHERE, WAS_PLACED_WHERE } from '@/lib/order-filters';
 import { deliverOnce, normalizeOrderRef, pageAll, type CustomerEventType } from '@/lib/notifications/customer-events';
 import { calendarDaysBetween, type ScanSummary } from '@/lib/notifications/event-scanner';
 import { toggleDefault, STORE_CREDIT_EXPIRY_REMINDER_DAYS_DEFAULT } from '@/lib/whatsapp/automation-defaults';
@@ -318,8 +319,9 @@ export async function scanWhatsAppEvents(now = new Date(), deps: WhatsAppScanDep
         updatedAt: { gte: since },
         createdAt: { gte: createdFrom },
         orderType: { not: 'EXCHANGE' },
-        paymentStatus: { notIn: NEVER_PLACED_PAYMENT },
-        OR: [{ status: { in: CANCELLED_STATUS } }, { cancelledAt: { not: null } }],
+        // Only an order that was really placed and then cancelled (shared rule, lib/order-filters.ts). A checkout the
+        // shopper closed carries status "cancelled" too and must never get an "order cancelled" message.
+        AND: [IS_CANCELLED_WHERE, WAS_PLACED_WHERE],
       },
       include: { customer: true },
       ...page,

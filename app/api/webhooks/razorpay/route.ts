@@ -207,6 +207,19 @@ export async function POST(req: Request) {
             },
           });
 
+          // Keep the WebStoreOrder mirror in step. It was left "cancelled" when the shopper closed the Razorpay window
+          // before this capture arrived, and customer pages showed that.
+          await prisma.webStoreOrder.updateMany({
+            where: {
+              OR: [
+                { razorpayOrderId },
+                ...(order.internalOrderNumber ? [{ orderNumber: order.internalOrderNumber }] : []),
+              ],
+              paymentStatus: { notIn: ['paid', 'cod_upfront_paid', 'partially_paid', 'refunded', 'partially_refunded'] },
+            },
+            data: { paymentStatus: finalPaymentStatus, razorpayPaymentId, paymentFailureReason: null },
+          }).catch((wsErr: any) => console.warn('[Razorpay Webhook] WebStoreOrder mirror update failed:', wsErr?.message));
+
           if (underpaid) {
             paymentLog('error', 'webhook', {
               message: `Under-captured payment: ₹${amountCheck.capturedRupees} of ₹${amountCheck.expectedRupees}; order marked partially_paid + needs_review`,

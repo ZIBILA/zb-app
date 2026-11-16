@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isOrderCancelled, cancellationSource } from '@/lib/order-filters';
 import prisma from '@/lib/db';
 import { fetchProductById } from '@/lib/shopify-admin';
 import { extractItemVariantAndSize } from '@/lib/utils';
@@ -236,7 +237,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             Number(webStoreOrder?.codUpfrontPaid) ||
             Number((order as any).codUpfrontPaid) ||
             0,
-          paymentStatus: webStoreOrder?.paymentStatus || order.paymentStatus,
+          paymentStatus: order.paymentStatus || webStoreOrder?.paymentStatus,
           paymentMethod: order.paymentMethod,
           tags: order.tags,
           note: order.note,
@@ -250,7 +251,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         })
       : 0;
 
-    const baseStatus = String(webStoreOrder?.paymentStatus || order.paymentStatus || '').toLowerCase();
+    // The Order row is the source of truth; the WebStoreOrder mirror is only a fallback (it can be stale).
+    const baseStatus = String(order.paymentStatus || webStoreOrder?.paymentStatus || '').toLowerCase();
     const codSettled =
       isCodOrder &&
       String(order.deliveryStatus || '').toLowerCase() === 'delivered' &&
@@ -291,9 +293,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       paymentMethod: finalPaymentMethod,
       paymentStatus: codSettled
         ? 'paid'
-        : webStoreOrder?.paymentStatus || (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus),
+        : (isCodOrder && order.paymentStatus === 'paid' ? 'cod_upfront_paid' : order.paymentStatus) || webStoreOrder?.paymentStatus,
       /** COD cash collected by the courier on delivery → fully settled. */
       codSettled,
+      // Same cancellation rule as the dashboard list, the website and the app (lib/order-filters.ts).
+      isCancelled: isOrderCancelled(order as any),
+      cancellationSource: cancellationSource(order as any),
     };
 
     return NextResponse.json({

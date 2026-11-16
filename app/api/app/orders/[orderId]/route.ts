@@ -1,3 +1,4 @@
+import { isOrderCancelled, cancellationSource } from '@/lib/order-filters';
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { isReverseShipmentType, pickActiveOutboundShipment, shipmentAwb } from '@/lib/logistics/status';
@@ -277,6 +278,8 @@ export async function GET(req: Request, { params }: { params: { orderId: string 
         status: order.status,
         cancelledBy: order.cancelledBy || null,
         cancelledAt: order.cancelledAt || null,
+        isCancelled: isOrderCancelled(order as any),
+        cancellationSource: cancellationSource(order as any),
         paymentMethod: paymentMethodFromOrder(order),
         isCod: isCodOrder(order),
         codStoreCreditMessage: isCodOrder(order) ? COD_STORE_CREDIT_MESSAGE : null,

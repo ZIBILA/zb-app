@@ -1,3 +1,4 @@
+import { isOrderCancelled, cancellationSource } from '@/lib/order-filters';
 import { pickActiveOutboundShipment, shipmentAwb } from "@/lib/logistics/status";
 import { summarizeRequest } from "@/lib/services/requestSummary";
 import { NextResponse } from "next/server";
@@ -269,6 +270,8 @@ export async function GET(
           id: wso.id,
           orderNumber: wso.orderNumber,
           status: derivedStatus,
+          isCancelled,
+          cancellationSource: null,
           paymentStatus: wso.paymentStatus,
           paymentMethod: isCodOrder ? "COD" : String(wso.paymentMethod || "razorpay").toUpperCase(),
           isCod: isCodOrder,
@@ -472,6 +475,9 @@ export async function GET(
       storeCreditEarnedStatus: couponCredit?.type === "COUPON_REBATE" ? "credited" : couponCredit ? "pending_delivery" : null,
       subtotalPrice,
       statusTimeline: statusTimeline(order),
+      // One cancellation rule for the website, the app and the dashboard (lib/order-filters.ts).
+      isCancelled: isOrderCancelled(order as any),
+      cancellationSource: cancellationSource(order as any),
     };
 
     return NextResponse.json({ order: finalOrder });
