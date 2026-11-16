@@ -82,6 +82,13 @@ export async function deliverOnce(opts: {
   send: () => Promise<void>;
 }): Promise<'sent' | 'duplicate' | 'failed'> {
   let rowId: string;
+  // Already handled and not retryable: answer without attempting the insert. The scanner re-checks the same orders
+  // every few minutes, and each refused insert was logged by Prisma as an error.
+  const prior = await prisma.customerEventDelivery.findUnique({
+    where: { eventKey_channel: { eventKey: opts.eventKey, channel: opts.channel } },
+    select: { status: true },
+  });
+  if (prior && prior.status !== 'failed' && prior.status !== 'sending') return 'duplicate';
   try {
     const row = await prisma.customerEventDelivery.create({
       data: {
