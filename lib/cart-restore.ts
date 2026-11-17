@@ -9,8 +9,11 @@
  *  - user edited the cart while the DB request was in flight → keep their edit
  */
 
+import { cartLineKey, collapseVariantLines } from '@/lib/cart-merge';
+
 export interface CartLine {
   id: string;
+  variantId?: string;
   quantity: number;
 }
 
@@ -29,13 +32,27 @@ export interface CartMeta {
 
 export const EMPTY_META: CartMeta = { updatedAt: 0, syncedLocalAt: 0, syncedServerAt: null, owner: null };
 
+/**
+ * Combines lines that are the same variant in two COPIES of the cart: max quantity, never summed
+ * (summing would double a cart that exists both on this device and in the account).
+ */
 export function dedupeLines<T extends CartLine>(lines: T[]): T[] {
   const map = new Map<string, T>();
-  for (const line of lines) {
-    const ex = map.get(line.id);
-    map.set(line.id, ex ? { ...ex, quantity: Math.max(ex.quantity, line.quantity) } : line);
-  }
+  lines.forEach((line, n) => {
+    const key = cartLineKey(line) ?? `#${n}`; // a line with no identity at all is kept as its own
+    const ex = map.get(key);
+    map.set(key, ex ? { ...ex, quantity: Math.max(ex.quantity, line.quantity) } : line);
+  });
   return Array.from(map.values());
+}
+
+/**
+ * Union of two copies of the cart. Duplicate-variant lines WITHIN one copy are summed first (they are
+ * separate adds), then the copies are combined with the max — so a cart already holding the same
+ * variant twice heals itself on load, and a line present in both copies is not double counted.
+ */
+export function mergeCartCopies<T extends CartLine>(a: T[], b: T[]): T[] {
+  return dedupeLines([...collapseVariantLines(a), ...collapseVariantLines(b)]);
 }
 
 export type RestoreDecision<T> =
@@ -53,7 +70,7 @@ export function decideCartRestore<T extends CartLine>(args: {
   requestStartedAt: number;
 }): RestoreDecision<T> {
   const { meta, localItems, userKey, requestStartedAt, dbUpdatedAt } = args;
-  const dbItems = dedupeLines(args.dbItems);
+  const dbItems = collapseVariantLines(args.dbItems);
 
   if (meta.updatedAt > requestStartedAt) {
     return { action: 'keep', push: false }; // edited mid-request — the edit's own sync will push it
@@ -67,7 +84,7 @@ export function decideCartRestore<T extends CartLine>(args: {
   if (meta.owner !== userKey) {
     // Real login on this browser: guest cart + account cart. Max quantity, never summed.
     return dbItems.length > 0
-      ? { action: 'replace', items: dedupeLines([...localItems, ...dbItems]), push: true }
+      ? { action: 'replace', items: mergeCartCopies(localItems, dbItems), push: true }
       : { action: 'keep', push: true };
   }
 

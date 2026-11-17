@@ -13,6 +13,8 @@ import { whenMetaConsentAllows } from '@/lib/meta/consent-client';
  * Cart → Meta catalog payload. Catalog item id = feed.xml <g:id> = Shopify VARIANT id
  * (g:item_group_id is the product id and is never used with content_type "product").
  * Lines without a provable variant id are left out rather than sent with a wrong id.
+ * One `contents` entry per id: lines sharing a variant are merged (quantities summed, the first
+ * line's unit price / title / category kept) so an id is never repeated in `ids`.
  * numItems = total units (sum of quantities), not cart lines.
  */
 export function metaCartPayload(
@@ -24,18 +26,26 @@ export function metaCartPayload(
   contents: { id: string; quantity: number; item_price?: number; title?: string; category?: string }[];
   numItems: number;
 } {
-  const contents = items
-    .map(it => {
-      const price = typeof it.price === 'number' ? it.price : parseFloat(String(it.price ?? ''));
-      return {
-        id: normalizeVariantId(it.variantId) || '',
-        quantity: Math.max(1, Number(it.quantity) || 1),
-        item_price: Number.isFinite(price) ? money.amount(price) : undefined,
-        title: it.title || undefined,
-        category: it.category || undefined,
-      };
-    })
-    .filter(c => c.id);
+  const byId = new Map<string, { id: string; quantity: number; item_price?: number; title?: string; category?: string }>();
+  for (const it of items) {
+    const id = normalizeVariantId(it.variantId) || '';
+    if (!id) continue;
+    const quantity = Math.max(1, Number(it.quantity) || 1);
+    const seen = byId.get(id);
+    if (seen) {
+      seen.quantity += quantity;
+      continue;
+    }
+    const price = typeof it.price === 'number' ? it.price : parseFloat(String(it.price ?? ''));
+    byId.set(id, {
+      id,
+      quantity,
+      item_price: Number.isFinite(price) ? money.amount(price) : undefined,
+      title: it.title || undefined,
+      category: it.category || undefined,
+    });
+  }
+  const contents = Array.from(byId.values()); // Map keeps first-seen order
   return {
     ids: contents.map(c => c.id),
     contents,

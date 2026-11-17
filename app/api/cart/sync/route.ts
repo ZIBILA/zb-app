@@ -5,6 +5,7 @@ import { getAppAuthFromRequest, resolveAuthCustomer } from "@/lib/appAuth";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
 import { buildCustomerIdentityOrClauses, areItemsIdentical } from "@/lib/cartCustomerMatch";
+import { collapseVariantLines } from "@/lib/cart-merge";
 
 export const dynamic = "force-dynamic";
 
@@ -25,9 +26,12 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const { 
-      items, guestId, name, email, phone, source,
+      items: rawItems, guestId, name, email, phone, source,
       city, state, zip, country, latitude, longitude 
     } = body;
+    // The stored cart keeps one row per variant: the same variant sent on two lines (web or app)
+    // is summed here, so the DB copy (abandoned-cart admin, recovery messages) cannot hold duplicates.
+    const items = Array.isArray(rawItems) ? collapseVariantLines(rawItems) : rawItems;
 
     // ── IP Geolocation Fallback ──
     // If client didn't provide geo data (user denied/ignored location prompt),
