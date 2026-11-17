@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { resolveRazorpayCredentials } from '@/lib/razorpay-credentials';
+import { dashboardUrl } from '@/lib/storefront-url';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export async function GET() {
           'Razorpay setup incomplete. Add Key ID and Secret in Dashboard → Settings → Payment Gateways (both are required), or set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on the server.',
         isConfigured: false,
         mockAllowed: true,
-        setupUrl: 'https://app.zicabella.com/dashboard/payments/razorpay',
+        setupUrl: dashboardUrl('/dashboard/payments/razorpay'),
       },
       { status: 200 }
     );

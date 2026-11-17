@@ -3,6 +3,8 @@
 // Zoho Mail REST API (OAuth 2.0)
 // ──────────────────────────────────────────────────
 
+import { DASHBOARD_ORIGIN } from "@/lib/storefront-url";
+
 const ZOHO_ACCOUNTS_URL = "https://accounts.zoho.in/oauth/v2/token";
 
 // ─── Types ───────────────────────────────────────
@@ -206,7 +208,7 @@ function wrapTemplate(title: string, content: string): string {
         Powered by Zica AI · Claude Sonnet 4
       </p>
       <p style="margin:8px 0 0;font-size:10px;color:rgba(255,255,255,0.1);">
-        <a href="https://app.zicabella.com/dashboard" style="color:rgba(138,110,255,0.5);text-decoration:none;">Open Dashboard →</a>
+        <a href="${DASHBOARD_ORIGIN}/dashboard" style="color:rgba(138,110,255,0.5);text-decoration:none;">Open Dashboard →</a>
       </p>
     </div>
   </div>
@@ -245,7 +247,7 @@ export function emailTaskCreated(task: {
         <p style="margin:4px 0;">👤 Created by: <strong style="color:rgba(138,110,255,0.7);">${task.createdBy}</strong></p>
       </div>
     </div>
-    <a href="https://app.zicabella.com/dashboard/manufacturing/tasks" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Tasks →</a>
+    <a href="${DASHBOARD_ORIGIN}/dashboard/manufacturing/tasks" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Tasks →</a>
   `;
 
   return {
@@ -272,7 +274,7 @@ export function emailTaskUpdated(task: {
         Status changed to <strong style="color:#fff;">${task.status}</strong> by <strong style="color:rgba(138,110,255,0.7);">${task.updatedBy}</strong>
       </p>
     </div>
-    <a href="https://app.zicabella.com/dashboard/manufacturing/tasks" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Tasks →</a>
+    <a href="${DASHBOARD_ORIGIN}/dashboard/manufacturing/tasks" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Tasks →</a>
   `;
 
   return {
@@ -307,7 +309,7 @@ export function emailProductionUpdate(batch: {
         ${batch.quantity ? `<p style="margin:8px 0 0;font-size:11px;color:rgba(255,255,255,0.3);">Quantity: <strong style="color:rgba(255,255,255,0.6);">${batch.quantity} units</strong></p>` : ""}
       </div>
     </div>
-    <a href="https://app.zicabella.com/dashboard/manufacturing/production" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Production →</a>
+    <a href="${DASHBOARD_ORIGIN}/dashboard/manufacturing/production" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Production →</a>
   `;
 
   return {
@@ -336,7 +338,7 @@ export function emailDailyBriefing(briefingText: string): { subject: string; htm
     <div style="background:rgba(255,255,255,0.03);border-radius:12px;padding:20px;border:1px solid rgba(255,255,255,0.06);margin-bottom:16px;">
       ${htmlContent}
     </div>
-    <a href="https://app.zicabella.com/dashboard" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">Open Dashboard →</a>
+    <a href="${DASHBOARD_ORIGIN}/dashboard" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">Open Dashboard →</a>
   `;
 
   return {
@@ -377,7 +379,7 @@ export function emailLowStockAlert(items: { name: string; sku: string; stock: nu
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <a href="https://app.zicabella.com/dashboard/manufacturing/fabric" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Inventory →</a>
+    <a href="${DASHBOARD_ORIGIN}/dashboard/manufacturing/fabric" style="display:inline-block;padding:12px 24px;background:#fff;color:#000;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:1px;text-transform:uppercase;">View Inventory →</a>
   `;
 
   return {
