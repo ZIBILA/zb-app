@@ -23,6 +23,7 @@ import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult
 import { isEventTimeSendable } from '@/lib/snap-capi';
 import { metaPurchaseValue as sharedValue, metaPurchaseCurrency, isWebsiteOrder, isPurchasePaidStatus, PURCHASE_PAID_STATUSES, PURCHASE_SCAN_STATUSES } from '@/lib/meta/order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
+import { orderContentCategory } from '@/lib/tracking/product-type';
 import { isPrivateIP } from '@/lib/ip-geo';
 import { clientIpFromHeaders } from '@/lib/client-ip';
 import { isPlaceholderEmail, pickRealFullName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
@@ -181,6 +182,9 @@ export function buildMetaPurchaseFromOrder(order: any, ctx: MetaClickContext, ev
       content_ids: Array.from(new Set(contents.map(c => c.id))),
       contents,
       num_items: numItems || undefined,
+      // Distinct product types of the items (OrderItem.productType), the value the browser
+      // Pixel sends; absent (never a placeholder) when none is stored.
+      content_category: orderContentCategory(order.items),
     },
   };
 }

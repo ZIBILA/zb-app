@@ -13,6 +13,7 @@ import { withComposedStreet } from "@/lib/address-lines";
 import { recordMetaPurchaseContext, metaContextFromRequest } from "@/lib/meta/purchase-server";
 import { resolveWebCoupon } from "@/lib/web-coupon";
 import { fetchVariantPrices, variantNumericId } from "@/lib/variant-prices";
+import { resolveCartProductTypes } from "@/lib/services/orderItemProductType";
 import { checkCartStock, stockShortageMessage } from "@/lib/stock-availability";
 
 export const dynamic = 'force-dynamic';
@@ -311,6 +312,9 @@ export async function POST(req: Request) {
         const { customer } = await resolveAndSyncCustomerAddress(shop.id, address, sessionUserId);
 
           // 2. Resolve Line Items
+          // Product type per line (content_category of the server Purchase): the cart item's
+          // category, else Shopify's product_type; never throws.
+          const cartProductTypes = await resolveCartProductTypes(pricedItems);
           const resolvedItems = await Promise.all(pricedItems.map(async (item: any, index: number) => {
             let dbProductId = null;
             let image = item.image || null;
@@ -337,6 +341,7 @@ export async function POST(req: Request) {
               price: parseFloat(item.price || '0'),
               sku: item.variantId || item.productId || null,
               variantId: normalizeVariantId(item.variantId),
+              productType: cartProductTypes[index] ?? null,
               image: image
             };
           }));
@@ -413,6 +418,7 @@ export async function POST(req: Request) {
                   price: item.price,
                   sku: item.sku,
                   variantId: item.variantId ?? null,
+                  productType: item.productType ?? null,
                   image: item.image
                 }))
               });
@@ -510,6 +516,7 @@ export async function POST(req: Request) {
                     price: item.price,
                     sku: item.sku,
                     variantId: item.variantId ?? null,
+                    productType: item.productType ?? null,
                     image: item.image
                   }))
                 }

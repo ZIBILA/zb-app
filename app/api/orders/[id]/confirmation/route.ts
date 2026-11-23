@@ -40,6 +40,7 @@ export async function GET(
           variantId: true,
           productId: true,
           image: true,
+          productType: true,
         },
       },
       customer: {
@@ -213,6 +214,7 @@ export async function GET(
             quantity: item.quantity,
             price: item.price,
             title: item.title,
+            productType: item.productType ?? null,
           })),
         },
       });

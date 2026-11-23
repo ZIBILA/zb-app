@@ -18,6 +18,7 @@
  */
 import { metaPurchaseValue, metaPurchaseCurrency, isWebsiteOrder, isPurchasePaidStatus } from './order-value';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
+import { normalizeProductType, orderContentCategory } from '@/lib/tracking/product-type';
 import { isPlaceholderEmail, pickRealName, pickRealPhone } from '@/lib/tracking/placeholder-identity';
 
 export const META_BROWSER_PURCHASE_KEY_PREFIX = 'zb_meta_pixel_purchase_sent_';
@@ -62,7 +63,7 @@ export interface OrderServerFacts {
   internal?: boolean;
   totalPrice?: number;
   currency?: string;
-  items?: Array<{ variantId?: string | null; sku?: string | null; quantity?: number; price?: number; title?: string | null }>;
+  items?: Array<{ variantId?: string | null; sku?: string | null; quantity?: number; price?: number; title?: string | null; productType?: string | null }>;
 }
 
 /**
@@ -89,9 +90,23 @@ export function pickOrderServerFacts(serverOrder: any, expectedOrderId?: string)
       quantity: Number(i?.quantity) || 1,
       price: Number(i?.price) || 0,
       title: i?.title ?? null,
+      // Shopify product_type stored on the order line: the Purchase's content_category.
+      productType: normalizeProductType(i?.productType),
     }));
   }
   return facts;
+}
+
+/**
+ * content_category of the browser Purchase: the product types stored on the order's
+ * lines (server facts / the stored order — the same value the server Purchase sends),
+ * else the checkout's own copy (sessionStorage `order_categories_<orderId>`).
+ */
+export function browserPurchaseCategory(
+  trackingOrder: { items?: ReadonlyArray<{ productType?: unknown } | null> | null } | null | undefined,
+  storedCategory?: string | null,
+): string | undefined {
+  return orderContentCategory(trackingOrder?.items) || storedCategory || undefined;
 }
 
 /** The order as tracking must see it: the displayed copy with the server facts on top. */

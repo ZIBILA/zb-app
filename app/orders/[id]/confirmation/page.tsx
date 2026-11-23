@@ -31,6 +31,7 @@ import {
   fetchOrderServerFacts,
   hasPaymentFacts,
   orderForTracking,
+  browserPurchaseCategory,
   META_PENDING_POLL_INTERVAL_MS,
   META_PENDING_POLL_MAX,
 } from "@/lib/meta/browser-purchase";
@@ -161,6 +162,8 @@ export default function OrderConfirmationPage() {
       if (typeof window !== "undefined") {
         storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
       }
+      // The stored order's product types win over the checkout's sessionStorage copy.
+      storedCategory = browserPurchaseCategory(trackingOrder, storedCategory);
 
       ga4Purchase(
         order.id,
@@ -248,6 +251,8 @@ export default function OrderConfirmationPage() {
     try {
       storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
     } catch {}
+    // The stored order's product types win over the checkout's sessionStorage copy.
+    storedCategory = browserPurchaseCategory(trackingOrder, storedCategory);
     dispatchMetaBrowserPurchaseOnce(order.id, async () => {
       if (!(await waitForFbq())) return false;
       trackPurchase(
@@ -325,6 +330,8 @@ export default function OrderConfirmationPage() {
     try {
       storedCategory = sessionStorage.getItem(`order_categories_${order.id}`) || undefined;
     } catch {}
+    // The stored order's product types win over the checkout's sessionStorage copy.
+    storedCategory = browserPurchaseCategory(trackingOrder, storedCategory);
     dispatchSnapBrowserPurchaseOnce(order.id, async () => {
       if (!(await waitForSnaptr())) return false;
       trackSnapPurchase(

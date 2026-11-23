@@ -33,6 +33,7 @@ import type { SnapCapiEventPayload } from '@/lib/snap-capi';
 import { createDeliveryLedger, isMissingTable, MAX_ATTEMPTS, type DeliveryResult, type LedgerRowSummary } from '@/lib/snap/ledger';
 import { findRecoveryCandidates } from '@/lib/snap/recovery';
 import { snapCatalogIdFromOrderItem } from '@/lib/snap/catalog-id';
+import { orderContentCategory } from '@/lib/tracking/product-type';
 import { snapDefaultSiteOrigin, snapStorefrontOrigin } from '@/lib/snap/config';
 import { isSnapSupportedCurrency, snapPurchaseCurrency } from '@/lib/snap/currency';
 import { isPrivateIP } from '@/lib/ip-geo';
@@ -137,8 +138,8 @@ export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventT
   const contents: Array<{ id: string; quantity: number; item_price?: number }> = [];
   let numItems = 0;
   // Snap's "description" of the purchase (Events Manager showed 0 % coverage): the
-  // distinct item titles, in order, as custom_data.content_name. Order rows store no
-  // product type, so content_category stays with the browser copy.
+  // distinct item titles, in order, as custom_data.content_name. content_category is the
+  // items' stored product types (OrderItem.productType), the value the browser pixel sends.
   const titles: string[] = [];
   for (const it of order.items || []) {
     const qty = Math.max(1, Number(it.quantity) || 1);
@@ -185,6 +186,8 @@ export function buildPurchaseFromOrder(order: any, ctx: SnapClickContext, eventT
       num_items: numItems || undefined,
       order_id: order.id,
       content_name: titles.join(' | ').slice(0, 200) || undefined,
+      // Distinct product types of the items; absent (never a placeholder) when none is stored.
+      content_category: orderContentCategory(order.items),
     },
   };
 }
