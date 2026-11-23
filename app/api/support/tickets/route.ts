@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { sendMail } from '@/lib/mailer';
+import { dashboardUrl } from '@/lib/storefront-url';
 import { resolvePrincipal } from '@/lib/ai/principal';
 import { processSupportTicketAIReply } from '@/lib/ai/supportAgent';
 import { resolveEventGeo } from '@/lib/resolve-event-geo';
@@ -349,7 +350,7 @@ export async function POST(req: NextRequest) {
         <p><strong>Message:</strong></p>
         <p>${content}</p>
         <hr />
-        <p>View in Admin Dashboard: <a href="https://app.zicabella.com/dashboard/support/${ticket.id}">View Ticket</a></p>
+        <p>View in Admin Dashboard: <a href="${dashboardUrl(`/dashboard/support/${ticket.id}`)}">View Ticket</a></p>
       `,
     }).catch((mailError) => {
       console.error('[Support API] Failed to send notification email:', mailError);
