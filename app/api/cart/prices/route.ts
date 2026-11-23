@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
  * server-side price check would reject the order ("Cart total mismatch"), so the cart refreshes them here.
  */
 export async function GET(req: Request) {
-  const rateLimitResult = await checkRateLimit(req, 'cart-prices', { maxRequests: 60, windowMs: 60_000 });
+  const rateLimitResult = await checkRateLimit(req, 'cart-prices', { maxRequests: 60, windowMs: 60_000, memoryOnly: true });
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
   }

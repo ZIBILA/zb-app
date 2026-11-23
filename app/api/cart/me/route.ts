@@ -15,7 +15,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
  * with the logged-in customer.
  */
 export async function GET(req: Request) {
-  const rateLimitResult = await checkRateLimit(req, "cart-me", { maxRequests: 60, windowMs: 60_000 });
+  const rateLimitResult = await checkRateLimit(req, "cart-me", { maxRequests: 60, windowMs: 60_000, memoryOnly: true });
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
   }

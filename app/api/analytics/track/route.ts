@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from 'next/server';
-import prisma from '@/lib/db';
+import { analyticsWriter } from '@/lib/analytics/analytics-writer';
 import { rateLimitInMemory } from '@/lib/rate-limit-memory';
 import { getClientIP, lookupIpGeo } from '@/lib/ip-geo';
 
@@ -12,6 +12,19 @@ const VALID_EVENTS = new Set([
   'payment_initiated', 'purchase', 'refund', 'cart_abandoned', 'cart_recovered',
   'session_started',
 ]);
+
+/** A finite number or null — one NaN would make the whole batched insert fail. */
+function num(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(String(v));
+  return Number.isFinite(n) ? n : null;
+}
+
+function int(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
 
 export async function POST(req: Request) {
   // Rate limit: 120 req/min per IP. In-memory (no DB) — this endpoint fires on every page view.
@@ -40,7 +53,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid event name' }, { status: 400 });
     }
 
-    // Geo lookup + DB writes run after the response — tracking must never slow the storefront.
+    // Geo lookup runs after the response; the database writes are queued in memory and flushed in
+    // batches by lib/analytics/write-buffer.ts (sessions at most once a minute, events in one
+    // INSERT per batch) — tracking must never slow the storefront or hold a pool connection per event.
     void (async () => {
       const ip = getClientIP(req);
       const needsIpGeo = !rawCountryCode && !rawCountry;
@@ -55,106 +70,81 @@ export async function POST(req: Request) {
       const finalCountry = rawCountry || ipGeo?.country || null;
       const finalRegion = rawRegion || ipGeo?.region || null;
       const finalCity = rawCity || ipGeo?.city || null;
-      const finalLat = rawLat != null ? parseFloat(String(rawLat)) : (ipGeo?.lat ?? null);
-      const finalLng = rawLng != null ? parseFloat(String(rawLng)) : (ipGeo?.lng ?? null);
+      const finalLat = rawLat != null ? num(rawLat) : (ipGeo?.lat ?? null);
+      const finalLng = rawLng != null ? num(rawLng) : (ipGeo?.lng ?? null);
 
-      // Upsert avoids find→create races that spam prisma:error P2002
       if (sessionId && anonymousId) {
-        try {
-          const updateLocationData: Record<string, any> = {};
-          if (finalCountryCode) updateLocationData.countryCode = finalCountryCode;
-          if (finalCountry) updateLocationData.country = finalCountry;
-          if (finalRegion) updateLocationData.region = finalRegion;
-          if (finalCity) updateLocationData.city = finalCity;
-          if (finalLat != null) updateLocationData.lat = finalLat;
-          if (finalLng != null) updateLocationData.lng = finalLng;
-          if (rawLat != null && rawLng != null) {
-            updateLocationData.lat = parseFloat(String(rawLat));
-            updateLocationData.lng = parseFloat(String(rawLng));
-          }
-
-          await prisma.analyticsSession.upsert({
-            where: { id: sessionId },
-            create: {
-              id: sessionId,
-              anonymousId,
-              customerId: customerId || null,
-              platform: platform || 'web',
-              landingPage: pageUrl || null,
-              currentPage: pageUrl || null,
-              pageViews: eventName === 'page_view' ? 1 : 0,
-              deviceType: deviceType || null,
-              browser: browser || null,
-              os: os || null,
-              referrer: referrer || null,
-              utmSource: utmSource || null,
-              utmMedium: utmMedium || null,
-              utmCampaign: utmCampaign || null,
-              countryCode: finalCountryCode,
-              country: finalCountry,
-              region: finalRegion,
-              city: finalCity,
-              lat: finalLat,
-              lng: finalLng,
-              isNew: true,
-            },
-            update: {
-              lastActiveAt: new Date(),
-              currentPage: pageUrl || undefined,
-              pageViews: eventName === 'page_view' ? { increment: 1 } : undefined,
-              customerId: customerId || undefined,
-              ...updateLocationData,
-            },
-          });
-        } catch (sessionErr: any) {
-          // Non-fatal — never block event ingest
-          if (sessionErr?.code !== 'P2002') {
-            console.warn('[Analytics] Session upsert failed:', sessionErr?.message || 'error');
-          }
+        const location: Record<string, any> = {};
+        if (finalCountryCode) location.countryCode = finalCountryCode;
+        if (finalCountry) location.country = finalCountry;
+        if (finalRegion) location.region = finalRegion;
+        if (finalCity) location.city = finalCity;
+        if (finalLat != null) location.lat = finalLat;
+        if (finalLng != null) location.lng = finalLng;
+        if (rawLat != null && rawLng != null && num(rawLat) != null && num(rawLng) != null) {
+          location.lat = num(rawLat);
+          location.lng = num(rawLng);
         }
-      }
 
-      // Upsert with empty update = silent dedupe (no prisma:error on unique eventId)
-      try {
-        await prisma.analyticsEvent.upsert({
-          where: { eventId },
-          create: {
-            eventId,
-            eventName,
-            sessionId: sessionId || null,
+        analyticsWriter.touchSession(
+          {
+            id: sessionId,
+            anonymousId,
             customerId: customerId || null,
-            anonymousId: anonymousId || null,
             platform: platform || 'web',
-            productId: productId || null,
-            variantId: variantId || null,
-            cartId: cartId || null,
-            orderId: orderId || null,
-            value: value != null ? parseFloat(String(value)) : null,
-            currency: currency || 'INR',
-            quantity: quantity != null ? parseInt(String(quantity), 10) : null,
-            pageUrl: pageUrl || null,
+            landingPage: pageUrl || null,
+            currentPage: pageUrl || null,
+            deviceType: deviceType || null,
+            browser: browser || null,
+            os: os || null,
             referrer: referrer || null,
             utmSource: utmSource || null,
             utmMedium: utmMedium || null,
             utmCampaign: utmCampaign || null,
-            utmContent: utmContent || null,
-            utmTerm: utmTerm || null,
-            deviceType: deviceType || null,
-            browser: browser || null,
-            os: os || null,
             countryCode: finalCountryCode,
             country: finalCountry,
             region: finalRegion,
             city: finalCity,
             lat: finalLat,
             lng: finalLng,
-            metadata: metadata || null,
+            isNew: true,
           },
-          update: {},
-        });
-      } catch (eventErr: any) {
-        if (eventErr?.code !== 'P2002') throw eventErr;
+          { pageView: eventName === 'page_view', pageUrl: pageUrl || null, customerId: customerId || null, location },
+        );
       }
+
+      analyticsWriter.enqueueEvent({
+        eventId: String(eventId),
+        eventName,
+        sessionId: sessionId || null,
+        customerId: customerId || null,
+        anonymousId: anonymousId || null,
+        platform: platform || 'web',
+        productId: productId || null,
+        variantId: variantId || null,
+        cartId: cartId || null,
+        orderId: orderId || null,
+        value: num(value),
+        currency: currency || 'INR',
+        quantity: int(quantity),
+        pageUrl: pageUrl || null,
+        referrer: referrer || null,
+        utmSource: utmSource || null,
+        utmMedium: utmMedium || null,
+        utmCampaign: utmCampaign || null,
+        utmContent: utmContent || null,
+        utmTerm: utmTerm || null,
+        deviceType: deviceType || null,
+        browser: browser || null,
+        os: os || null,
+        countryCode: finalCountryCode,
+        country: finalCountry,
+        region: finalRegion,
+        city: finalCity,
+        lat: finalLat,
+        lng: finalLng,
+        metadata: metadata || null,
+      });
     })().catch((persistErr: any) => {
       console.error('[Analytics Track] Error:', persistErr?.message || persistErr);
     });
