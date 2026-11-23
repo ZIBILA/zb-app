@@ -27,7 +27,7 @@
  * (cart_items → ON DELETE CASCADE, whatsapp_event_logs → CASCADE) or modify (whatsapp_messages.
  * cart_id → ON DELETE SET NULL) protected data. No statement here deletes from or updates them.
  *
- * Runs: nightly at 03:30 IST from lib/background-jobs.ts, or on demand through
+ * Runs: nightly at 06:30 IST (after the Supabase daily backup) from lib/background-jobs.ts, or on demand through
  * GET /api/cron/data-retention (Bearer CRON_SECRET; fails closed).
  */
 import { Client } from 'pg';

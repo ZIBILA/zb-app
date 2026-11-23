@@ -181,8 +181,8 @@ const JOBS: Job[] = [
   { name: 'shipment-sync', everyMs: 15 * 60_000, firstRunMs: 160_000, run: shipmentSync },
   { name: 'refund-retry', everyMs: 10 * 60_000, firstRunMs: 180_000, run: refundRetry },
   { name: 'shopify-lifecycle-sync', everyMs: 10 * 60_000, firstRunMs: 200_000, run: shopifyLifecycleSync },
-  // Once a day at 03:30 IST (quietest hour). Several instances all fire then; the job's advisory lock lets one run.
-  { name: 'data-retention', everyMs: 24 * 60 * 60_000, firstRunMs: msUntilNextIst(3, 30), run: dataRetention },
+  // Once a day at 06:30 IST, after Supabase's daily backup (~05:53 IST). Several instances all fire then; the job's advisory lock lets one run.
+  { name: 'data-retention', everyMs: 24 * 60 * 60_000, firstRunMs: msUntilNextIst(6, 30), run: dataRetention },
 ];
 
 const g = globalThis as unknown as { __zbJobsStarted?: boolean };

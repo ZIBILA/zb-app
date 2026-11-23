@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 /**
  * Backup trigger for the nightly data-retention job (lib/services/dataRetention.ts); the primary
- * run is the 03:30 IST job in lib/background-jobs.ts. Dry run unless DATA_RETENTION_ENABLED=true.
+ * run is the 06:30 IST job in lib/background-jobs.ts (after the Supabase daily backup). Dry run unless DATA_RETENTION_ENABLED=true.
  *
  * Auth: `Authorization: Bearer <CRON_SECRET>` is REQUIRED; fails closed (401, nothing runs) when
  * CRON_SECRET is unset. No ?secret= query param: URLs end up in logs.
