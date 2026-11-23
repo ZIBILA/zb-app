@@ -5,6 +5,7 @@ import { getAppAuthFromRequest, resolveAuthCustomer } from "@/lib/appAuth";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/options";
 import { buildCustomerIdentityOrClauses, areItemsIdentical } from "@/lib/cartCustomerMatch";
+import { shouldSkipEmptyCartCreation } from "./empty-cart-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -237,6 +238,16 @@ export async function POST(req: Request) {
     const cartSource = source || (auth ? "app" : "webstore");
 
     if (!cart) {
+      // No cart exists for this visitor and the incoming cart is empty: there is nothing to store,
+      // so do not create a row (see ./empty-cart-guard.ts). Same 2xx shape as a normal sync; the
+      // first sync that carries items creates the cart as before.
+      if (shouldSkipEmptyCartCreation(cart, items)) {
+        return NextResponse.json(
+          { success: true, count: 0, updatedAt: null, skippedEmptyCart: true },
+          { headers: corsHeaders }
+        );
+      }
+
       // Prevent post-checkout race condition duplicates: skip creation if converted recently (15 mins) with identical items
       const identityClauses = buildCustomerIdentityOrClauses({
         customerId: customerId || null,
