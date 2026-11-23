@@ -1,4 +1,5 @@
 import prisma from "./db";
+import { rateLimitSlidingWindow } from "./rate-limit-memory";
 
 // In-memory fallback store
 const inMemoryStore = new Map<string, { count: number; resetAt: number }>();
@@ -196,10 +197,11 @@ export async function checkRateLimit(
     : scope
       ? `${keyPrefix}:${ip}:${scope}`
       : `${keyPrefix}:${ip}`;
-  // memoryOnly: coarse abuse caps that do not justify three database round trips
-  // per request (the DB limiter costs DELETE + COUNT + INSERT on every call).
+  // memoryOnly: limits that do not justify three database round trips per request
+  // (the DB limiter costs DELETE + COUNT + INSERT on "RateLimitLog" on every call).
+  // Same sliding-window semantics as rateLimit(), counted per app instance.
   const { allowed, resetAfter } = options.memoryOnly
-    ? inMemoryRateLimit(key, options.maxRequests ?? 10, options.windowMs ?? 60_000)
+    ? rateLimitSlidingWindow(key, { maxRequests: options.maxRequests ?? 10, windowMs: options.windowMs ?? 60_000 })
     : await rateLimit(key, { maxRequests: options.maxRequests, windowMs: options.windowMs });
 
   if (!allowed) {

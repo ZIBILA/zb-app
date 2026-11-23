@@ -17,7 +17,9 @@ export async function OPTIONS(req: Request) {
 import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
-  const rateLimitResult = await checkRateLimit(req, "cart-sync", { maxRequests: 60, windowMs: 60_000 });
+  // Counted in memory per instance: the Postgres-backed limiter wrote (and deleted) a "RateLimitLog" row
+  // on every cart sync, three statements per storefront page load, and saturated the database on 23 Nov 2026.
+  const rateLimitResult = await checkRateLimit(req, "cart-sync", { maxRequests: 60, windowMs: 60_000, memoryOnly: true });
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
   }

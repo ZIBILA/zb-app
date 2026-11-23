@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function GET(req: Request) {
-  const rateLimitResult = await checkRateLimit(req, "cart-recover", { maxRequests: 60, windowMs: 60_000 });
+  const rateLimitResult = await checkRateLimit(req, "cart-recover", { maxRequests: 60, windowMs: 60_000, memoryOnly: true });
   if (!rateLimitResult.allowed && rateLimitResult.response) {
     return rateLimitResult.response;
   }

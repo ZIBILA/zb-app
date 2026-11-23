@@ -1,0 +1,82 @@
+# >>> PENDING: this file belongs in .github/workflows/db-retention.yml. It was committed here because the
+# >>> GitHub token used to push PR branches lacks the `workflow` scope, which GitHub requires to add or
+# >>> change anything under .github/workflows/. Move it with:  git mv .github/workflows-pending/db-retention.yml .github/workflows/
+# >>> (or grant the scope once with `gh auth refresh -h github.com -s workflow` and push the move).
+name: DB retention
+
+# Manual only — nothing runs on a schedule. The default mode is a dry run that reports how many rows
+# each policy would delete and the current table sizes. mode=apply deletes in batches (5,000 rows,
+# 45 s budget per call) and calls the endpoint again until every table reports complete or `rounds`
+# calls have been made. Policies: analytics_events > 90 d, analytics_sessions > 180 d,
+# cart_sessions > 180 d idle and never converted, whatsapp_events > 90 d, RateLimitLog > 1 h.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run (count only) or apply (delete)'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options: [dry-run, apply]
+      tables:
+        description: 'all, or a comma list of analytics_events,analytics_sessions,cart_sessions,whatsapp_events,rate_limit_log'
+        required: true
+        default: 'all'
+        type: string
+      rounds:
+        description: 'apply only: maximum number of 45 s calls in this run'
+        required: true
+        default: '10'
+        type: string
+
+concurrency:
+  group: db-retention
+  cancel-in-progress: false
+
+jobs:
+  retention:
+    name: DB retention (${{ github.event.inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Call endpoint
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          TABLES: ${{ github.event.inputs.tables }}
+          ROUNDS: ${{ github.event.inputs.rounds }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -u
+          BASE="https://app.zicabella.com/api/cron/db-retention"
+          if [ "$MODE" != "apply" ]; then
+            code=$(curl -sS -m 90 -o /tmp/resp.json -w '%{http_code}' -X GET "$BASE?tables=$TABLES" \
+              -H "Authorization: Bearer $CRON_SECRET") || code="${code:-000}"
+            echo "HTTP $code"; cat /tmp/resp.json; echo
+            if [ "$code" = "200" ]; then
+              jq -r '.tables[] | "\(.name): \(.candidates)\(if .candidatesCapped then "+" else "" end) rows past \(.cutoff) (table \(.size.totalMB // "?") MB)"' /tmp/resp.json \
+                | while read -r line; do echo "::notice title=DB retention dry run::$line"; done
+            else
+              echo "::error title=DB retention dry run::HTTP $code"; exit 1
+            fi
+            exit 0
+          fi
+
+          round=0
+          total=0
+          while [ "$round" -lt "$ROUNDS" ]; do
+            round=$((round + 1))
+            code=$(curl -sS -m 90 -o /tmp/resp.json -w '%{http_code}' -X POST "$BASE?mode=apply&tables=$TABLES" \
+              -H "Authorization: Bearer $CRON_SECRET") || code="${code:-000}"
+            echo "round $round: HTTP $code"; cat /tmp/resp.json; echo
+            if [ "$code" != "200" ]; then
+              echo "::error title=DB retention apply::round $round HTTP $code"; exit 1
+            fi
+            deleted=$(jq '[.tables[].deleted // 0] | add' /tmp/resp.json)
+            total=$((total + deleted))
+            if [ "$(jq -r '.complete' /tmp/resp.json)" = "true" ]; then
+              echo "::notice title=DB retention apply::complete after $round round(s), $total rows deleted"
+              exit 0
+            fi
+          done
+          echo "::warning title=DB retention apply::budget of $ROUNDS rounds used, $total rows deleted so far — run again to continue"
