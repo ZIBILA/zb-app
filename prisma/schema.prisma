@@ -1130,7 +1130,6 @@ model WhatsAppEvent {
   @@index([eventName])
   @@index([customerPhone])
   @@index([status])
-  @@index([createdAt])
   @@map("whatsapp_events")
 }
 
