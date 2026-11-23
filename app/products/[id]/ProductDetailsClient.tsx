@@ -192,7 +192,7 @@ function ProductDescriptionContainer({
 }
 
 import { toast } from "sonner";
-import Image from "next/image";
+import Image, { getImageProps } from "next/image";
 import ProductCard from "@/components/ProductCard";
 import { motion, AnimatePresence } from "framer-motion";
 import { useCart } from "@/lib/cart-context";
@@ -201,6 +201,7 @@ import { trackStorefrontEvent } from "@/lib/track-client";
 import { trackViewItem as zbTrackViewItem } from "@/lib/analytics-tracker";
 import { useRecentlyViewed } from "@/lib/recently-viewed-context";
 import { handleImageError } from "@/components/ImagePlaceholder";
+import { shopifyResponsiveImage } from "@/lib/shopify-resize-url";
 import dynamic from "next/dynamic";
 
 const CheckoutWebView = dynamic(() => import("@/components/CheckoutWebView"), { ssr: false });
@@ -238,6 +239,63 @@ function TrustBoxIcon({ icon }: { icon: string }) {
     : Info;
   return <Icon className="w-5 h-5" strokeWidth={1.75} />;
 }
+
+/* ─── Hero image, one per viewport tree ──────────────────────────────────────
+ * The desktop (`hidden md:block`) and mobile (`md:hidden`) trees are both in the DOM, and an
+ * eager <img> is downloaded even inside a display:none subtree (that is why desktop used to
+ * fetch the mobile 100vw hero as well). Each hero is therefore a <picture> whose <source> for
+ * the OTHER viewport is a 1×1 transparent pixel, so only the visible tree's hero is fetched,
+ * and its preload carries the same media query. Breakpoint = Tailwind `md` (768px). */
+const HERO_MEDIA = { desktop: "(min-width: 768px)", mobile: "(max-width: 767.98px)" } as const;
+const BLANK_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+function HeroImage({
+  viewport,
+  src,
+  alt,
+  sizes,
+  className,
+  preload = false,
+  onError,
+}: {
+  viewport: keyof typeof HERO_MEDIA;
+  src: string;
+  alt: string;
+  sizes: string;
+  className?: string;
+  /** Emit a <link rel="preload"> — only for the image that is server-rendered first (the LCP candidate). */
+  preload?: boolean;
+  onError?: React.ReactEventHandler<HTMLImageElement>;
+}) {
+  const other = viewport === "desktop" ? "mobile" : "desktop";
+  // Exactly the src/srcSet/sizes/style that <Image fill> would render (same loader, deviceSizes
+  // and quality), without its media-less preload.
+  const { props } = getImageProps({ src, alt, fill: true, sizes, className, loading: "eager", fetchPriority: "high" });
+  return (
+    <>
+      {preload && props.srcSet && (
+        // No href on purpose: Safari would preload it instead of the srcSet candidate (next/image does the same).
+        <link
+          rel="preload"
+          as="image"
+          imageSrcSet={props.srcSet}
+          imageSizes={props.sizes}
+          fetchPriority="high"
+          media={HERO_MEDIA[viewport]}
+        />
+      )}
+      <picture className="contents">
+        <source media={HERO_MEDIA[other]} srcSet={BLANK_PIXEL} />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img {...props} alt={alt} onError={onError} />
+      </picture>
+    </>
+  );
+}
+
+/** Mood-board slots: the mobile card is full-width; the desktop right column is 548px from 1280px up, else half the viewport minus the gutters. */
+const MOOD_BOARD_SIZES_MOBILE = "100vw";
+const MOOD_BOARD_SIZES_DESKTOP = "(min-width: 1280px) 548px, calc(50vw - 92px)";
 
 /** COD / prepaid offer / delivery / returns tiles shown under Buy Now (mirrors the mobile app) */
 function TrustBoxes({ boxes }: { boxes: PdpTrustBox[] }) {
@@ -695,13 +753,14 @@ export default function ProductDetailsClient({
               onClick={() => setIsGalleryOpen(true)}
               className="relative aspect-[3/4] w-full max-w-[520px] rounded-xl overflow-hidden border border-foreground/5 shadow-2xl bg-foreground/[0.01] cursor-zoom-in hover:brightness-95 transition-all duration-300"
             >
-              <Image
+              {/* Desktop LCP: eager, fetchpriority=high, preloaded for md+ only (see HeroImage) */}
+              <HeroImage
+                viewport="desktop"
                 src={allImages[activeImg]?.src || "/zb-logo-220px.png"}
                 alt={product.title}
-                fill
                 className="object-cover transition-all duration-1200"
-                // One LCP candidate only (mobile carousel owns priority below)
                 sizes="(max-width: 1200px) 50vw, 600px"
+                preload={activeImg === 0}
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/10 to-transparent pointer-events-none" />
             </div>
@@ -882,10 +941,11 @@ export default function ProductDetailsClient({
                       style={{ aspectRatio: '16/10' }}
                     >
                       <img
-                        src={img}
+                        {...shopifyResponsiveImage(img, MOOD_BOARD_SIZES_DESKTOP)}
                         alt={`${product.title} mood board ${idx + 1}`}
                         className="w-full h-full object-cover"
                         loading="lazy"
+                        decoding="async"
                         referrerPolicy="no-referrer"
                       />
                     </div>
@@ -993,15 +1053,27 @@ export default function ProductDetailsClient({
                     setIsGalleryOpen(true);
                   }}
                 >
-                  <Image
-                    src={img.src || "/zb-logo-220px.png"}
-                    alt={product.title}
-                    fill
-                    className="object-cover"
-                    priority={i === 0}
-                    sizes="100vw"
-                    onError={handleImageError}
-                  />
+                  {i === 0 ? (
+                    /* Mobile LCP: eager, fetchpriority=high, preloaded below md only (see HeroImage) */
+                    <HeroImage
+                      viewport="mobile"
+                      src={img.src || "/zb-logo-220px.png"}
+                      alt={product.title}
+                      className="object-cover"
+                      sizes="100vw"
+                      preload
+                      onError={handleImageError}
+                    />
+                  ) : (
+                    <Image
+                      src={img.src || "/zb-logo-220px.png"}
+                      alt={product.title}
+                      fill
+                      className="object-cover"
+                      sizes="100vw"
+                      onError={handleImageError}
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -1287,10 +1359,11 @@ export default function ProductDetailsClient({
                           style={{ aspectRatio: '16/10' }}
                         >
                           <img
-                            src={img}
+                            {...shopifyResponsiveImage(img, MOOD_BOARD_SIZES_MOBILE)}
                             alt={`${product.title} mood ${idx + 1}`}
                             className="w-full h-full object-cover"
                             loading="lazy"
+                            decoding="async"
                             referrerPolicy="no-referrer"
                           />
                         </div>
