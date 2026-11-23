@@ -138,6 +138,27 @@ async function shopifyLifecycleSync() {
   }
 }
 
+/**
+ * Nightly retention for the tracking / log tables (lib/services/dataRetention.ts). Counts only
+ * (dry run) until DATA_RETENTION_ENABLED=true; batched deletes under an advisory lock after that.
+ */
+async function dataRetention() {
+  const { runDataRetention, formatRetentionSummary } = await import('@/lib/services/dataRetention');
+  const r = await runDataRetention();
+  console.log(`[jobs] data-retention ${formatRetentionSummary(r)}`);
+}
+
+/** Delay until the next HH:MM in IST (UTC+5:30), for the once-a-day jobs. */
+function msUntilNextIst(hour: number, minute: number): number {
+  const IST_OFFSET_MS = 5.5 * 60 * 60_000;
+  const DAY_MS = 24 * 60 * 60_000;
+  const nowIst = Date.now() + IST_OFFSET_MS;
+  const todayIst = Math.floor(nowIst / DAY_MS) * DAY_MS;
+  let target = todayIst + (hour * 60 + minute) * 60_000;
+  if (target <= nowIst) target += DAY_MS;
+  return target - nowIst;
+}
+
 /** Rejects if `work` has not settled in `ms`. The abandoned promise is left to finish on its own. */
 export function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -160,6 +181,8 @@ const JOBS: Job[] = [
   { name: 'shipment-sync', everyMs: 15 * 60_000, firstRunMs: 160_000, run: shipmentSync },
   { name: 'refund-retry', everyMs: 10 * 60_000, firstRunMs: 180_000, run: refundRetry },
   { name: 'shopify-lifecycle-sync', everyMs: 10 * 60_000, firstRunMs: 200_000, run: shopifyLifecycleSync },
+  // Once a day at 06:30 IST, after Supabase's daily backup (~05:53 IST). Several instances all fire then; the job's advisory lock lets one run.
+  { name: 'data-retention', everyMs: 24 * 60 * 60_000, firstRunMs: msUntilNextIst(6, 30), run: dataRetention },
 ];
 
 const g = globalThis as unknown as { __zbJobsStarted?: boolean };
